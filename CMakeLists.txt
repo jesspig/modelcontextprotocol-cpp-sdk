@@ -89,8 +89,13 @@ set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH
 # ====================================================================
 add_library(mcp-client STATIC)
 target_sources(mcp-client PRIVATE
-    src/client/McpClient.cpp)
+    src/client/McpClient.cpp
+    src/client/auth/OAuthClientProvider.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
+if(OpenSSL_FOUND)
+    target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
+    target_compile_definitions(mcp-client PRIVATE MCP_HAVE_OPENSSL)
+endif()
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
