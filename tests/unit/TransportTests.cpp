@@ -1,8 +1,6 @@
 #include <gtest/gtest.h>
 
-// 占位: 传输实现测试
-// 将在 Phase 2 实现
-
+// 传输测试将在 Phase 2 (传输实现) 中补充
 TEST(TransportTest, Placeholder) {
     EXPECT_TRUE(true);
 }
