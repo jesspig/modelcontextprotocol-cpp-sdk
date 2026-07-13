@@ -1,21 +1,118 @@
 #pragma once
 
+#include <mcp/protocol/Protocol.hpp>
+#include <mcp/client/ClientOptions.hpp>
+#include <mcp/client/ClientHandlers.hpp>
+#include <mcp/client/McpClientTool.hpp>
+#include <mcp/client/VersionNegotiation.hpp>
+
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace mcp {
 
+// ── McpClient (对应 C# McpClient) ──
 class McpClient {
 public:
-    template <typename CompletionToken>
-    static auto Create(
-        std::unique_ptr<class ClientTransport> transport,
-        const void* options = nullptr,
-        CompletionToken&& token = {});
+    // ── Factory ──
+    // Create and connect. Blocks until negotiation completes.
+    static std::unique_ptr<McpClient> Create(
+        std::unique_ptr<Transport> transport,
+        const ClientOptions& options = {});
 
-    virtual ~McpClient() = default;
+    ~McpClient();
 
-    virtual void Connect() = 0;
-    virtual void Close() = 0;
+    // ── Properties (对应 C# ServerCapabilities / ServerInfo / ServerInstructions) ──
+    const ServerCapabilities& GetServerCapabilities() const;
+    const Implementation& GetServerInfo() const;
+    std::optional<std::string> GetInstructions() const;
+    std::string_view GetNegotiatedProtocolVersion() const;
+    bool IsModernProtocol() const;
+
+    // ── Tools ──
+    ListToolsResult ListTools(const CacheableRequestOptions& options = {});
+    CallToolResult CallTool(
+        std::string_view name,
+        std::optional<nlohmann::json> arguments = std::nullopt,
+        const RequestOptions& options = {});
+
+    // ── Resources ──
+    ListResourcesResult ListResources(const CacheableRequestOptions& options = {});
+    ListResourceTemplatesResult ListResourceTemplates(const CacheableRequestOptions& options = {});
+    ReadResourceResult ReadResource(
+        std::string_view uri,
+        const CacheableRequestOptions& options = {});
+    EmptyResult SubscribeResource(std::string_view uri);
+    EmptyResult UnsubscribeResource(std::string_view uri);
+
+    // ── Prompts ──
+    ListPromptsResult ListPrompts(const CacheableRequestOptions& options = {});
+    GetPromptResult GetPrompt(
+        std::string_view name,
+        std::optional<nlohmann::json> arguments = std::nullopt,
+        const RequestOptions& options = {});
+
+    // ── Completions ──
+    CompleteResult Complete(const CompleteRequestParams& params);
+
+    // ── Ping ──
+    EmptyResult Ping();
+
+    // ── Discover (re-negotiate) ──
+    DiscoverResult Discover();
+
+    // ── Client handlers (server-to-client: sampling, roots, elicitation) ──
+    void SetSamplingHandler(SamplingHandler handler);
+    void SetRootsHandler(RootsHandler handler);
+    void SetElicitationHandler(ElicitationHandler handler);
+    void SetNotificationHandler(
+        std::string_view method,
+        ClientNotificationHandler handler);
+
+    // ── Tool cache management (对应 C# AddKnownTools / RemoveKnownTools / ClearKnownTools) ──
+    void AddKnownTools(const std::vector<Tool>& tools);
+    void RemoveKnownTools(const std::vector<std::string>& names);
+    void ClearKnownTools();
+
+    // ── Close ──
+    void Close();
+
+private:
+    McpClient(
+        std::unique_ptr<Transport> transport,
+        ClientOptions options);
+
+    // Internal helpers
+    void WireClientHandlers();
+    NegotiationResult NegotiateProtocol();
+
+    // Request sending helpers
+    template <typename TParams, typename TResult>
+    TResult SendRequest(
+        std::string_view method,
+        TParams params,
+        std::chrono::milliseconds timeout = std::chrono::seconds(30));
+
+    // State
+    asio::io_context io_ctx_;
+    std::unique_ptr<Transport> transport_;
+    std::shared_ptr<Protocol> protocol_;
+    ClientOptions options_;
+
+    // Negotiation result
+    NegotiationResult negotiation_;
+    bool negotiated_{false};
+
+    // Server-to-client handlers
+    std::optional<SamplingHandler> sampling_handler_;
+    std::optional<RootsHandler> roots_handler_;
+    std::optional<ElicitationHandler> elicitation_handler_;
+    std::vector<std::pair<std::string, ClientNotificationHandler>> notif_handlers_;
+
+    // Known tool cache (for client-side tool metadata)
+    std::unordered_map<std::string, McpClientTool> known_tools_;
 };
 
 } // namespace mcp
