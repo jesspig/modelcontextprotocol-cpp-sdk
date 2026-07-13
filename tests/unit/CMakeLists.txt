@@ -1,0 +1,16 @@
+include(GoogleTest)
+
+add_executable(mcp-core-tests
+    JsonRpcTests.cpp
+    McpTypesTests.cpp)
+
+target_link_libraries(mcp-core-tests PRIVATE mcp-core GTest::gtest_main)
+gtest_discover_tests(mcp-core-tests)
+
+add_executable(mcp-wire-codec-tests WireCodecTests.cpp)
+target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol GTest::gtest_main)
+gtest_discover_tests(mcp-wire-codec-tests)
+
+add_executable(mcp-transport-tests TransportTests.cpp)
+target_link_libraries(mcp-transport-tests PRIVATE mcp-transport GTest::gtest_main)
+gtest_discover_tests(mcp-transport-tests)

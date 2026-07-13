@@ -1,0 +1,3 @@
+add_subdirectory(EchoServer)
+add_subdirectory(WeatherServer)
+add_subdirectory(SimpleClient)
