@@ -9,10 +9,11 @@ public:
     StreamableHttpServerTransport();
     ~StreamableHttpServerTransport() override;
 
-    std::string_view SessionId() const override;
     void Start() override;
-    void SendMessage(const void* message) override;
     void Close() override;
+    void SendMessageAsync(JsonRpcMessage message) override;
+    MessageChannel& GetMessageChannel() override;
+    asio::io_context& IoContext() override;
 };
 
 } // namespace mcp
