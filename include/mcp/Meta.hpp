@@ -1,55 +1,125 @@
 #pragma once
 
-#include <mcp/Progress.hpp>
-#include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
-#include <string>
-#include <optional>
+#include <mcp/Implementation.hpp>
+#include <mcp/JsonRpc.hpp>
+#include <mcp/ProtocolVersion.hpp>
+
 #include <nlohmann/json.hpp>
+
+#include <optional>
+#include <string>
+#include <variant>
 
 namespace mcp {
 
-/// Request _meta envelope. Every request carries protocol version,
-/// client info, and capabilities per-request (2026-07-28 style).
+using ProgressToken = std::variant<std::string, int64_t>;
+
+inline void to_json(nlohmann::json& j, const ProgressToken& pt) {
+    std::visit([&j](const auto& v) { j = v; }, pt);
+}
+inline void from_json(const nlohmann::json& j, ProgressToken& pt) {
+    if (j.is_string()) pt = j.get<std::string>();
+    else pt = j.get<int64_t>();
+}
+
+enum class LoggingLevel {
+    Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency
+};
+
+inline void to_json(nlohmann::json& j, LoggingLevel l) {
+    switch (l) {
+        case LoggingLevel::Debug:     j = "debug";     break;
+        case LoggingLevel::Info:      j = "info";      break;
+        case LoggingLevel::Notice:    j = "notice";    break;
+        case LoggingLevel::Warning:   j = "warning";   break;
+        case LoggingLevel::Error:     j = "error";     break;
+        case LoggingLevel::Critical:  j = "critical";  break;
+        case LoggingLevel::Alert:     j = "alert";     break;
+        case LoggingLevel::Emergency: j = "emergency"; break;
+    }
+}
+inline void from_json(const nlohmann::json& j, LoggingLevel& l) {
+    auto s = j.get<std::string>();
+    if (s == "debug")         l = LoggingLevel::Debug;
+    else if (s == "info")     l = LoggingLevel::Info;
+    else if (s == "notice")   l = LoggingLevel::Notice;
+    else if (s == "warning")  l = LoggingLevel::Warning;
+    else if (s == "error")    l = LoggingLevel::Error;
+    else if (s == "critical") l = LoggingLevel::Critical;
+    else if (s == "alert")    l = LoggingLevel::Alert;
+    else if (s == "emergency")l = LoggingLevel::Emergency;
+    else throw std::runtime_error("unknown LoggingLevel: " + s);
+}
+
 struct RequestMeta {
     std::optional<ProgressToken> progress_token;
-    std::string protocol_version;
-    Implementation client_info;
-    ClientCapabilities client_capabilities;
-    std::optional<LoggingLevel> log_level;  // [deprecated]
-    std::optional<nlohmann::json> additional;
-
-    nlohmann::json ToJson() const;
-    static RequestMeta FromJson(const nlohmann::json& j);
-
-    static RequestMeta Default(
-        const Implementation& client_info,
-        std::string_view protocol_version = LatestProtocolVersion);
+    std::string protocol_version{kLatestProtocolVersion.data()};
+    std::optional<Implementation> client_info;
+    std::optional<ClientCapabilities> client_capabilities;
+    std::optional<LoggingLevel> log_level;
+    std::optional<nlohmann::json> extensions;
 };
+inline void to_json(nlohmann::json& j, const RequestMeta& v) {
+    j = nlohmann::json::object();
+    if (v.progress_token) {
+        std::visit([&j](const auto& val) { j["progressToken"] = val; }, *v.progress_token);
+    }
+    j["io.modelcontextprotocol/protocolVersion"] = v.protocol_version;
+    if (v.client_info)         j["io.modelcontextprotocol/clientInfo"] = *v.client_info;
+    if (v.client_capabilities) j["io.modelcontextprotocol/clientCapabilities"] = *v.client_capabilities;
+    if (v.log_level)           j["io.modelcontextprotocol/logLevel"] = *v.log_level;
+    if (v.extensions) {
+        for (auto& [k, val] : v.extensions->items()) j[k] = val;
+    }
+}
+inline void from_json(const nlohmann::json& j, RequestMeta& v) {
+    if (auto it = j.find("progressToken"); it != j.end()) {
+        const auto& val = *it;
+        if (val.is_string()) v.progress_token = val.get<std::string>();
+        else v.progress_token = val.get<int64_t>();
+    }
+    if (auto it = j.find("io.modelcontextprotocol/protocolVersion"); it != j.end())
+        v.protocol_version = it->get<std::string>();
+    if (auto it = j.find("io.modelcontextprotocol/clientInfo"); it != j.end())
+        v.client_info = it->get<Implementation>();
+    if (auto it = j.find("io.modelcontextprotocol/clientCapabilities"); it != j.end())
+        v.client_capabilities = it->get<ClientCapabilities>();
+    if (auto it = j.find("io.modelcontextprotocol/logLevel"); it != j.end())
+        v.log_level = it->get<LoggingLevel>();
+}
 
-/// Notification _meta envelope (2026-07-28 style).
 struct NotificationMeta {
-    std::optional<ProgressToken> progress_token;
-    std::optional<std::string> subscription_id;
-    std::optional<nlohmann::json> additional;
-
-    nlohmann::json ToJson() const;
-    static NotificationMeta FromJson(const nlohmann::json& j);
+    std::optional<RequestId> subscription_id;
 };
+inline void to_json(nlohmann::json& j, const NotificationMeta& v) {
+    j = nlohmann::json::object();
+    if (v.subscription_id) {
+        std::visit([&j](const auto& val) {
+            j["io.modelcontextprotocol/subscriptionId"] = val;
+        }, *v.subscription_id);
+    }
+}
+inline void from_json(const nlohmann::json& j, NotificationMeta& v) {
+    if (auto it = j.find("io.modelcontextprotocol/subscriptionId"); it != j.end()) {
+        const auto& val = *it;
+        if (val.is_number_integer()) v.subscription_id = val.get<int64_t>();
+        else v.subscription_id = val.get<std::string>();
+    }
+}
 
-/// Logging levels (RFC 5424).
-enum class LoggingLevel {
-    Debug = 0,
-    Info = 1,
-    Notice = 2,
-    Warning = 3,
-    Error = 4,
-    Critical = 5,
-    Alert = 6,
-    Emergency = 7,
+struct CacheHint {
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
 };
-
-std::string_view LoggingLevelToString(LoggingLevel level);
-std::optional<LoggingLevel> LoggingLevelFromString(std::string_view s);
+inline void to_json(nlohmann::json& j, const CacheHint& v) {
+    j = nlohmann::json::object();
+    if (v.ttl_ms)     j["ttlMs"] = *v.ttl_ms;
+    if (v.cache_scope) j["cacheScope"] = *v.cache_scope;
+}
+inline void from_json(const nlohmann::json& j, CacheHint& v) {
+    if (auto it = j.find("ttlMs"); it != j.end())     v.ttl_ms = it->get<int64_t>();
+    if (auto it = j.find("cacheScope"); it != j.end()) v.cache_scope = it->get<std::string>();
+}
 
 } // namespace mcp
