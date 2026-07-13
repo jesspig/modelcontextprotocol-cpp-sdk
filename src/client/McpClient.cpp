@@ -357,8 +357,101 @@ CallToolResult McpClient::CallTool(
     CallToolRequestParams params;
     params.name = std::string(name);
     params.arguments = std::move(arguments);
-    return SendRequest<CallToolRequestParams, CallToolResult>(
-        methods::kCallTool, params);
+
+    auto& cfg = options_.input_required_config;
+    int max_rounds = cfg ? cfg->max_rounds : 0;
+    auto round_timeout = cfg ? cfg->round_timeout : std::chrono::seconds(600);
+    bool auto_fulfill = cfg ? cfg->auto_fulfill : false;
+
+    // Send with meta
+    RequestMeta meta;
+    meta.protocol_version = negotiation_.negotiated_version;
+    meta.client_info = options_.client_info;
+    if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options.meta) meta.extensions = options.meta;
+
+    for (int round = 0; round <= max_rounds; ++round) {
+        // Build request params JSON manually so we can inject input_responses
+        nlohmann::json req_json;
+        req_json["name"] = params.name;
+        if (params.arguments) req_json["arguments"] = *params.arguments;
+        if (params.input_responses) req_json["inputResponses"] = *params.input_responses;
+        if (params.request_state)   req_json["requestState"] = *params.request_state;
+
+        // Add _meta (for 2026 era)
+        if (meta.protocol_version >= "2026-07-28") {
+            auto meta_json = nlohmann::json::object();
+            meta_json["io.modelcontextprotocol/protocolVersion"] = meta.protocol_version;
+            if (meta.client_info)
+                meta_json["io.modelcontextprotocol/clientInfo"] = *meta.client_info;
+            if (meta.client_capabilities)
+                meta_json["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
+            req_json["_meta"] = std::move(meta_json);
+        }
+
+        auto future = protocol_->SendRequest(
+            methods::kCallTool, req_json, meta, round_timeout);
+        auto result_json = future.get();
+
+        // Check for protocol errors
+        if (result_json.contains("code") && result_json["code"].get<int32_t>() < 0) {
+            throw McpError(
+                static_cast<McpErrorCode>(result_json["code"].get<int32_t>()),
+                result_json.value("message", "request failed"));
+        }
+
+        // Check for input_required (MRTR)
+        if (auto rt = result_json.find("resultType"); rt != result_json.end()
+            && rt->get<std::string>() == "input_required" && auto_fulfill)
+        {
+            // Parse InputRequiredResult
+            InputRequiredResult input_req;
+            from_json(result_json, input_req);
+
+            if (!input_req.input_requests.elicit && !input_req.input_requests.confirm) {
+                // No actionable requests — stop the loop
+                CallToolResult fallback;
+                from_json(result_json, fallback);
+                return fallback;
+            }
+
+            // Fulfill each request
+            nlohmann::json responses = nlohmann::json::object();
+
+            if (input_req.input_requests.elicit && elicitation_handler_) {
+                auto& elicit_req = *input_req.input_requests.elicit;
+                ElicitRequestParams ep;
+                ep.message = elicit_req.message;
+                ep.requested_schema = elicit_req.requested_schema;
+                auto elicit_result = (*elicitation_handler_)(ep);
+                if (elicit_result.values)
+                    responses["elicit"] = *elicit_result.values;
+            }
+
+            if (input_req.input_requests.confirm && elicitation_handler_) {
+                auto& confirm_req = *input_req.input_requests.confirm;
+                ElicitRequestParams ep;
+                ep.message = confirm_req.message;
+                ep.requested_schema = confirm_req.requested_schema;
+                auto confirm_result = (*elicitation_handler_)(ep);
+                if (confirm_result.values)
+                    responses["confirm"] = *confirm_result.values;
+            }
+
+            // Set up retry with responses
+            params.input_responses = std::move(responses);
+            params.request_state = input_req.request_state;
+            continue;
+        }
+
+        // Complete result — deserialize and return
+        CallToolResult result;
+        from_json(result_json, result);
+        return result;
+    }
+
+    throw McpError(McpErrorCode::InternalError,
+        "MRTR: exceeded max_rounds (" + std::to_string(max_rounds) + ")");
 }
 
 // ====================================================================
@@ -418,6 +511,39 @@ GetPromptResult McpClient::GetPrompt(
     params.arguments = std::move(arguments);
     return SendRequest<GetPromptRequestParams, GetPromptResult>(
         methods::kGetPrompt, params);
+}
+
+// ====================================================================
+// ====================================================================
+// Tasks
+// ====================================================================
+GetTaskResult McpClient::GetTask(std::string_view task_id) {
+    GetTaskRequestParams params;
+    params.task_id = std::string(task_id);
+    return SendRequest<GetTaskRequestParams, GetTaskResult>(
+        methods::kGetTask, params, std::chrono::seconds(600));
+}
+
+UpdateTaskResult McpClient::UpdateTask(
+    std::string_view task_id,
+    std::optional<nlohmann::json> result)
+{
+    UpdateTaskRequestParams params;
+    params.task_id = std::string(task_id);
+    params.result = std::move(result);
+    return SendRequest<UpdateTaskRequestParams, UpdateTaskResult>(
+        methods::kUpdateTask, params, std::chrono::seconds(600));
+}
+
+CancelTaskResult McpClient::CancelTask(
+    std::string_view task_id,
+    std::optional<std::string> reason)
+{
+    CancelTaskRequestParams params;
+    params.task_id = std::string(task_id);
+    params.reason = std::move(reason);
+    return SendRequest<CancelTaskRequestParams, CancelTaskResult>(
+        methods::kCancelTask, params, std::chrono::seconds(600));
 }
 
 // ====================================================================
