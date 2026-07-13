@@ -362,7 +362,7 @@ inline void from_json(const nlohmann::json&, DiscoverRequestParams&) {}
 
 struct InitializeRequestParams {
     std::string protocol_version;
-    ServerCapabilities capabilities;
+    ClientCapabilities capabilities;   // client capabilities, not server
     Implementation client_info;
 };
 inline void to_json(nlohmann::json& j, const InitializeRequestParams& v) {
@@ -370,7 +370,8 @@ inline void to_json(nlohmann::json& j, const InitializeRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, InitializeRequestParams& v) {
     j.at("protocolVersion").get_to(v.protocol_version);
-    v.capabilities = j.at("capabilities").get<ServerCapabilities>();
+    // capabilities in initialize response are server capabilities
+    v.capabilities = j.at("capabilities").get<ClientCapabilities>();
     v.client_info = j.at("clientInfo").get<Implementation>();
 }
 
