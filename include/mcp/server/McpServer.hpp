@@ -5,6 +5,7 @@
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
 #include <mcp/server/ServerHandlers.hpp>
+#include <mcp/server/Extension.hpp>
 
 
 #include <memory>
@@ -61,6 +62,12 @@ public:
         const PromptOptions& /*options*/,
         std::function<GetPromptResult(const std::string& name,
             const std::optional<nlohmann::json>& args)> handler);
+
+    // ── Extension registration ──
+    void RegisterExtension(std::shared_ptr<Extension> extension);
+
+    // ── Elicitation (server→client) ──
+    std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
 
     // ── Notifications ──
     void SendToolListChanged();
@@ -134,6 +141,9 @@ private:
     // Client info (set on first request in 2026-era, or from initialize)
     std::optional<ClientCapabilities> client_capabilities_;
     std::optional<Implementation> client_info_;
+
+    // Extensions
+    std::vector<std::shared_ptr<Extension>> extensions_;
 
     // Notification flags
     bool tools_changed_flag_{false};
