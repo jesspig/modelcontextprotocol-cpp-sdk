@@ -1,0 +1,135 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "default",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_STANDARD": "17",
+                "MCP_BUILD_TESTS": "ON",
+                "MCP_BUILD_EXAMPLES": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "inherits": "default",
+            "displayName": "Debug",
+            "description": "Debug build with ASAN, no unity build",
+            "binaryDir": "${sourceDir}/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_UNITY_BUILD": "OFF",
+                "CMAKE_CXX_FLAGS_DEBUG": "-fsanitize=address -fno-omit-frame-pointer"
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "default",
+            "displayName": "Release",
+            "description": "Optimised release build with unity build",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_UNITY_BUILD": "ON"
+            }
+        },
+        {
+            "name": "ci",
+            "inherits": "default",
+            "displayName": "CI",
+            "description": "CI build with full warnings and tests",
+            "binaryDir": "${sourceDir}/build/ci",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_UNITY_BUILD": "ON"
+            }
+        },
+        {
+            "name": "fastbuild",
+            "inherits": "default",
+            "displayName": "FASTBuild",
+            "description": "Build using FASTBuild generator with caching",
+            "binaryDir": "${sourceDir}/build/fastbuild",
+            "generator": "FASTBuild",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_UNITY_BUILD": "ON",
+                "CMAKE_FASTBUILD_CACHE_PATH": "${sourceDir}/.fastbuild-cache"
+            }
+        },
+        {
+            "name": "msvc-debug",
+            "inherits": "default",
+            "displayName": "MSVC Debug",
+            "description": "Visual Studio 17 2022 debug build",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/msvc-debug",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_UNITY_BUILD": "OFF"
+            }
+        },
+        {
+            "name": "msvc-release",
+            "inherits": "default",
+            "displayName": "MSVC Release",
+            "description": "Visual Studio 17 2022 release build with unity build",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/msvc-release",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_UNITY_BUILD": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci"
+        },
+        {
+            "name": "fastbuild",
+            "configurePreset": "fastbuild"
+        },
+        {
+            "name": "msvc-debug",
+            "configurePreset": "msvc-debug"
+        },
+        {
+            "name": "msvc-release",
+            "configurePreset": "msvc-release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci"
+        }
+    ]
+}

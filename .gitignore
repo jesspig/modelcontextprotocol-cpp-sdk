@@ -1,0 +1,53 @@
+# ── Build directories ──
+build/
+cmake-build-*/
+out/
+
+# ── IDE / Editor ──
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ── CMake generated files ──
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+*.cmake.in
+
+# ── MSVC / Windows ──
+*.aps
+*.log
+*.manifest
+*.obj
+*.pdb
+*.idb
+*.ipdb
+*.iobj
+*.ilk
+*.exp
+*.tlog
+Debug/
+Release/
+x64/
+Win32/
+
+# ── FASTBuild ──
+.fastbuild-cache/
+*.fdbuildstate
+
+# ── Dependency downloads ──
+_deps/
+
+# ── Documentation ──
+docs/_site/
+docs/.doxygen/
+
+# ── OS files ──
+Thumbs.db
+Desktop.ini
