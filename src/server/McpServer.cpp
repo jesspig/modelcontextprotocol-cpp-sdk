@@ -148,6 +148,56 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
 }
 
 // ====================================================================
+// Elicitation
+// ====================================================================
+std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
+    RequestMeta meta;
+    auto vers = protocol_->NegotiatedProtocolVersion();
+    meta.protocol_version = vers.empty()
+        ? std::string(kLatestProtocolVersion) : std::string(vers);
+
+    auto future = protocol_->SendRequest(
+        methods::kElicit, nlohmann::json(params), meta, std::chrono::seconds(600));
+
+    // Wrap response
+    auto result_future = std::async(std::launch::async, [future = std::move(future)]() mutable {
+        auto json = future.get();
+        // Check for errors
+        if (json.contains("code") && json["code"].get<int32_t>() < 0) {
+            throw McpError(
+                static_cast<McpErrorCode>(json["code"].get<int32_t>()),
+                json.value("message", "elicitation failed"));
+        }
+        return json.get<ElicitResult>();
+    });
+
+    return result_future;
+}
+
+// ====================================================================
+// Extension registration
+// ====================================================================
+void McpServer::RegisterExtension(std::shared_ptr<Extension> extension) {
+    extensions_.push_back(extension);
+
+    // Register tools from extension
+    for (auto& tool : extension->Tools()) {
+        RegisterTool(tool);
+    }
+
+    // Register methods from extension
+    for (auto& [method, handler] : extension->Methods()) {
+        protocol_->SetRequestHandler(method,
+            [handler](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                handler(req, std::move(p));
+            });
+    }
+
+    WireHandlers();
+    DeriveCapabilities();
+}
+
+// ====================================================================
 // Handlers auto-wiring
 // ====================================================================
 void McpServer::WireHandlers() {
@@ -216,6 +266,59 @@ void McpServer::WireHandlers() {
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleComplete(req, std::move(p));
         });
+
+    // ── server/extensions/list ──
+    protocol_->SetRequestHandler(methods::kListExtensions,
+        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            ExtensionListResult r;
+            for (auto& ext : extensions_)
+                r.extensions.push_back(ext->Identifier());
+            nlohmann::json j = r;
+            p.set_value(std::move(j));
+        });
+
+    // ── tasks/get, tasks/update, tasks/cancel ──
+    auto& store = options_.task_store;
+    if (store) {
+        protocol_->SetRequestHandler(methods::kGetTask,
+            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                GetTaskRequestParams params;
+                if (req.params) from_json(*req.params, params);
+                auto task = store->GetTask(params.task_id);
+                if (!task) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InvalidParams,
+                                 "task not found: " + params.task_id)));
+                    return;
+                }
+                GetTaskResult r;
+                r.task_id = task->task_id;
+                r.status = std::to_string(static_cast<int>(task->status));
+                r.result = task->result;
+                r.error_message = task->error_message;
+                r.input_required = task->input_required;
+                nlohmann::json j = r;
+                p.set_value(std::move(j));
+            });
+
+        protocol_->SetRequestHandler(methods::kUpdateTask,
+            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                UpdateTaskRequestParams params;
+                if (req.params) from_json(*req.params, params);
+                store->UpdateTask(params.task_id, params.result);
+                UpdateTaskResult r;
+                p.set_value(nlohmann::json(r));
+            });
+
+        protocol_->SetRequestHandler(methods::kCancelTask,
+            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                CancelTaskRequestParams params;
+                if (req.params) from_json(*req.params, params);
+                store->CancelTask(params.task_id, params.reason);
+                CancelTaskResult r;
+                p.set_value(nlohmann::json(r));
+            });
+    }
 }
 
 // ====================================================================
@@ -234,6 +337,9 @@ void McpServer::DeriveCapabilities() {
     if (!prompts_.empty()) {
         capabilities_.prompts = PromptsCapability{};
         capabilities_.prompts->list_changed = true;
+    }
+    if (options_.task_store) {
+        capabilities_.tasks = TasksCapability{};
     }
 }
 

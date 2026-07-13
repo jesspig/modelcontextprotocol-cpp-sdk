@@ -239,15 +239,21 @@ struct CallToolRequestParams {
     std::string name;
     std::optional<nlohmann::json> arguments;
     std::optional<RequestMeta> meta;
+    std::optional<nlohmann::json> input_responses;  // MRTR: responses to InputRequired requests
+    std::optional<std::string> request_state;        // MRTR: opaque state from server
 };
 inline void to_json(nlohmann::json& j, const CallToolRequestParams& v) {
     j = nlohmann::json{{"name", v.name}};
     if (v.arguments) j["arguments"] = *v.arguments;
     if (v.meta)      j["_meta"] = *v.meta;
+    if (v.input_responses) j["inputResponses"] = *v.input_responses;
+    if (v.request_state)   j["requestState"] = *v.request_state;
 }
 inline void from_json(const nlohmann::json& j, CallToolRequestParams& v) {
     v.name = j.at("name").get<std::string>();
     if (auto it = j.find("arguments"); it != j.end()) v.arguments = *it;
+    if (auto it = j.find("inputResponses"); it != j.end()) v.input_responses = *it;
+    if (auto it = j.find("requestState"); it != j.end()) v.request_state = it->get<std::string>();
 }
 
 struct ReadResourceRequestParams {
@@ -823,6 +829,36 @@ inline void from_json(const nlohmann::json& j, SetLevelRequestParams& v) {
 // ====================================================================
 // Tasks
 // ====================================================================
+struct GetTaskResult : Result {
+    std::string task_id;
+    std::string status;
+    std::optional<nlohmann::json> result;
+    std::optional<std::string> error_message;
+    std::optional<nlohmann::json> input_required;
+};
+inline void to_json(nlohmann::json& j, const GetTaskResult& v) {
+    j = nlohmann::json{{"taskId", v.task_id}, {"status", v.status}};
+    if (v.result)         j["result"] = *v.result;
+    if (v.error_message)  j["errorMessage"] = *v.error_message;
+    if (v.input_required) j["inputRequired"] = *v.input_required;
+    if (v.meta)           j["_meta"] = *v.meta;
+}
+inline void from_json(const nlohmann::json& j, GetTaskResult& v) {
+    v.task_id = j.at("taskId").get<std::string>();
+    v.status = j.at("status").get<std::string>();
+    if (auto it = j.find("result"); it != j.end()) v.result = *it;
+    if (auto it = j.find("errorMessage"); it != j.end()) v.error_message = it->get<std::string>();
+    if (auto it = j.find("inputRequired"); it != j.end()) v.input_required = *it;
+}
+
+struct UpdateTaskResult : Result {};
+inline void to_json(nlohmann::json& j, const UpdateTaskResult&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json&, UpdateTaskResult&) {}
+
+struct CancelTaskResult : Result {};
+inline void to_json(nlohmann::json& j, const CancelTaskResult&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json&, CancelTaskResult&) {}
+
 struct GetTaskRequestParams {
     std::string task_id;
 };

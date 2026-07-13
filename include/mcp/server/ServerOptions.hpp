@@ -4,6 +4,8 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/McpTypes.hpp>
 
+#include <mcp/server/McpTaskStore.hpp>
+
 #include <chrono>
 #include <memory>
 #include <optional>
@@ -46,6 +48,9 @@ struct ServerOptions {
     // JSON Schema validation
     bool validate_tool_input{false};
     bool validate_tool_output{false};
+
+    // Task store (enables tasks/get, tasks/update, tasks/cancel)
+    std::shared_ptr<class IMcpTaskStore> task_store;
 };
 
 } // namespace mcp

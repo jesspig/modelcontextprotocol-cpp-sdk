@@ -57,6 +57,15 @@ public:
     // ── Completions ──
     CompleteResult Complete(const CompleteRequestParams& params);
 
+    // ── Tasks ──
+    GetTaskResult GetTask(std::string_view task_id);
+    UpdateTaskResult UpdateTask(
+        std::string_view task_id,
+        std::optional<nlohmann::json> result = std::nullopt);
+    CancelTaskResult CancelTask(
+        std::string_view task_id,
+        std::optional<std::string> reason = std::nullopt);
+
     // ── Ping ──
     EmptyResult Ping();
 
