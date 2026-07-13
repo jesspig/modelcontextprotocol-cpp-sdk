@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
+cmake_policy(SET CMP0156 NEW)
 
 # ── 编译器自动探测 (project 之前, 不影响预设显式指定) ──
 if(WIN32 AND NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
