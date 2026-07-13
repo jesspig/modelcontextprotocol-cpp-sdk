@@ -853,4 +853,46 @@ inline void from_json(const nlohmann::json& j, CancelTaskRequestParams& v) {
     if (auto it = j.find("reason"); it != j.end()) v.reason = it->get<std::string>();
 }
 
+// ====================================================================
+// Options — registration helpers (移除了 Tool.hpp/Resource.hpp/Prompt.hpp 的替代)
+// ====================================================================
+struct ToolOptions {
+    std::optional<std::string> name;
+    std::optional<std::string> description;
+    std::optional<std::string> title;
+    std::optional<bool> destructive;
+    std::optional<bool> idempotent;
+    std::optional<bool> read_only_hint;
+    std::optional<bool> open_world_hint;
+    bool use_structured_content{false};
+    std::optional<nlohmann::json> output_schema;
+    std::vector<Icon> icons;
+    std::optional<nlohmann::json> meta;
+
+    ToolOptions& Description(std::string_view d) { description = std::string(d); return *this; }
+    ToolOptions& Title(std::string_view t) { title = std::string(t); return *this; }
+};
+
+struct ResourceOptions {
+    std::optional<std::string> name;
+    std::optional<std::string> description;
+    std::optional<std::string> title;
+    std::optional<std::string> mime_type;
+    std::vector<Icon> icons;
+
+    ResourceOptions& Description(std::string_view d) { description = std::string(d); return *this; }
+    ResourceOptions& Title(std::string_view t) { title = std::string(t); return *this; }
+    ResourceOptions& MimeType(std::string_view m) { mime_type = std::string(m); return *this; }
+};
+
+struct PromptOptions {
+    std::optional<std::string> name;
+    std::optional<std::string> description;
+    std::optional<std::string> title;
+    std::vector<Icon> icons;
+
+    PromptOptions& Description(std::string_view d) { description = std::string(d); return *this; }
+    PromptOptions& Title(std::string_view t) { title = std::string(t); return *this; }
+};
+
 } // namespace mcp

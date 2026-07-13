@@ -59,7 +59,8 @@ target_sources(mcp-transport PRIVATE
     src/transport/StdioClientTransport.cpp
     src/transport/StreamableHttpServerTransport.cpp
     src/transport/StreamableHttpClientTransport.cpp
-    src/transport/SseClientTransport.cpp)
+    src/transport/SseClientTransport.cpp
+    src/transport/InMemoryTransport.cpp)
 target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -80,8 +81,7 @@ set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BAT
 # ====================================================================
 add_library(mcp-server STATIC)
 target_sources(mcp-server PRIVATE
-    src/server/McpServer.cpp
-    src/server/McpServerTool.cpp)
+    src/server/McpServer.cpp)
 target_link_libraries(mcp-server PUBLIC mcp-protocol)
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
