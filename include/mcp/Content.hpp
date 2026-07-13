@@ -1,79 +1,129 @@
 #pragma once
 
+#include <nlohmann/json.hpp>
+
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
-#include <optional>
-#include <nlohmann/json.hpp>
 
 namespace mcp {
 
-/// Text content block.
-struct TextContent {
-    std::string text;
-
-    nlohmann::json ToJson() const;
-    static TextContent FromJson(const nlohmann::json& j);
-};
-
-/// Image content block (base64-encoded data).
-struct ImageContent {
-    std::string data;  // base64-encoded
+struct Icon {
+    std::string src;
     std::string mime_type;
-
-    nlohmann::json ToJson() const;
-    static ImageContent FromJson(const nlohmann::json& j);
+    std::optional<std::vector<std::string>> sizes;
 };
+inline void to_json(nlohmann::json& j, const Icon& v) {
+    j = nlohmann::json::object();
+    j["src"] = v.src;
+    j["mimeType"] = v.mime_type;
+    if (v.sizes) j["sizes"] = *v.sizes;
+}
+inline void from_json(const nlohmann::json& j, Icon& v) {
+    j.at("src").get_to(v.src);
+    j.at("mimeType").get_to(v.mime_type);
+    if (auto it = j.find("sizes"); it != j.end()) v.sizes = it->get<decltype(v.sizes)::value_type>();
+}
 
-/// Audio content block (base64-encoded data).
-struct AudioContent {
-    std::string data;  // base64-encoded
-    std::string mime_type;
-
-    nlohmann::json ToJson() const;
-    static AudioContent FromJson(const nlohmann::json& j);
-};
-
-/// Embedded resource content block.
-struct EmbeddedResource {
-    nlohmann::json resource;  // ResourceContents variant
-
-    nlohmann::json ToJson() const;
-    static EmbeddedResource FromJson(const nlohmann::json& j);
-};
-
-/// Content block variant (matches schema.ts Content union).
-using Content = std::variant<
-    TextContent,
-    ImageContent,
-    AudioContent,
-    EmbeddedResource>;
-
-nlohmann::json ContentToJson(const Content& content);
-Content ContentFromJson(const nlohmann::json& j);
-
-/// Resource contents (for ReadResourceResult).
 struct TextResourceContents {
     std::string uri;
     std::string text;
     std::optional<std::string> mime_type;
-
-    nlohmann::json ToJson() const;
-    static TextResourceContents FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const TextResourceContents& v) {
+    j = nlohmann::json::object();
+    j["uri"] = v.uri;
+    j["text"] = v.text;
+    if (v.mime_type) j["mimeType"] = *v.mime_type;
+}
+inline void from_json(const nlohmann::json& j, TextResourceContents& v) {
+    j.at("uri").get_to(v.uri);
+    j.at("text").get_to(v.text);
+    if (auto it = j.find("mimeType"); it != j.end()) v.mime_type = it->get<std::string>();
+}
 
 struct BlobResourceContents {
     std::string uri;
-    std::string blob;  // base64-encoded
+    std::string blob;
     std::optional<std::string> mime_type;
-
-    nlohmann::json ToJson() const;
-    static BlobResourceContents FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const BlobResourceContents& v) {
+    j = nlohmann::json::object();
+    j["uri"] = v.uri;
+    j["blob"] = v.blob;
+    if (v.mime_type) j["mimeType"] = *v.mime_type;
+}
+inline void from_json(const nlohmann::json& j, BlobResourceContents& v) {
+    j.at("uri").get_to(v.uri);
+    j.at("blob").get_to(v.blob);
+    if (auto it = j.find("mimeType"); it != j.end()) v.mime_type = it->get<std::string>();
+}
 
 using ResourceContents = std::variant<TextResourceContents, BlobResourceContents>;
 
-nlohmann::json ResourceContentsToJson(const ResourceContents& rc);
-ResourceContents ResourceContentsFromJson(const nlohmann::json& j);
+inline void to_json(nlohmann::json& j, const ResourceContents& rc) {
+    std::visit([&j](const auto& v) { j = nlohmann::json(v); }, rc);
+}
+inline void from_json(const nlohmann::json& j, ResourceContents& rc) {
+    if (j.contains("text"))       rc = j.get<TextResourceContents>();
+    else if (j.contains("blob")) rc = j.get<BlobResourceContents>();
+    else throw std::runtime_error("unknown ResourceContents type");
+}
+
+struct TextContent {
+    std::string type = "text";
+    std::string text;
+    std::optional<std::string> mime_type;
+};
+inline void to_json(nlohmann::json& j, const TextContent& v) {
+    j = nlohmann::json{{"type", v.type}, {"text", v.text}};
+    if (v.mime_type) j["mimeType"] = *v.mime_type;
+}
+inline void from_json(const nlohmann::json& j, TextContent& v) {
+    j.at("type").get_to(v.type);
+    j.at("text").get_to(v.text);
+    if (auto it = j.find("mimeType"); it != j.end()) v.mime_type = it->get<std::string>();
+}
+
+struct ImageContent {
+    std::string type = "image";
+    std::string data;
+    std::string mime_type;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ImageContent, type, data, mime_type)
+
+struct AudioContent {
+    std::string type = "audio";
+    std::string data;
+    std::string mime_type;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AudioContent, type, data, mime_type)
+
+struct EmbeddedResource {
+    std::string type = "resource";
+    ResourceContents resource;
+};
+inline void to_json(nlohmann::json& j, const EmbeddedResource& v) {
+    j = nlohmann::json{{"type", v.type}, {"resource", v.resource}};
+}
+inline void from_json(const nlohmann::json& j, EmbeddedResource& v) {
+    j.at("type").get_to(v.type);
+    v.resource = j.at("resource").get<ResourceContents>();
+}
+
+using ContentVariant = std::variant<TextContent, ImageContent, AudioContent, EmbeddedResource>;
+
+inline void to_json(nlohmann::json& j, const ContentVariant& content) {
+    std::visit([&j](const auto& v) { j = nlohmann::json(v); }, content);
+}
+inline void from_json(const nlohmann::json& j, ContentVariant& content) {
+    auto type = j.at("type").get<std::string>();
+    if (type == "text")         content = j.get<TextContent>();
+    else if (type == "image")   content = j.get<ImageContent>();
+    else if (type == "audio")   content = j.get<AudioContent>();
+    else if (type == "resource") content = j.get<EmbeddedResource>();
+    else throw std::runtime_error("unknown Content type: " + type);
+}
 
 } // namespace mcp

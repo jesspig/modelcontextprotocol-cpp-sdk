@@ -1,91 +1,174 @@
 #pragma once
 
+#include <mcp/ProtocolVersion.hpp>
 #include <mcp/ErrorCodes.hpp>
-#include <mcp/McpError.hpp>
-#include <mcp/McpTypes.hpp>
-#include <variant>
+
+#include <nlohmann/json.hpp>
+
 #include <cstdint>
 #include <optional>
-#include <nlohmann/json.hpp>
+#include <string>
+#include <variant>
 
 namespace mcp {
 
-// ── Forward declarations ──
-struct JsonRpcRequest;
-struct JsonRpcNotification;
-struct JsonRpcResponse;
-struct JsonRpcError;
+// ── RequestId = variant<int64_t, string> ──
+using RequestId = std::variant<int64_t, std::string>;
 
-/// JSON-RPC 2.0 request message.
+inline void to_json(nlohmann::json& j, const RequestId& id) {
+    std::visit([&j](const auto& v) { j = v; }, id);
+}
+inline RequestId request_id_from_json(const nlohmann::json& j) {
+    if (j.is_number_integer()) return j.get<int64_t>();
+    return j.get<std::string>();
+}
+
+// ── ErrorData ──
+struct ErrorData {
+    McpErrorCode code{McpErrorCode::InternalError};
+    std::string message;
+    std::optional<nlohmann::json> data;
+};
+inline void to_json(nlohmann::json& j, const ErrorData& v) {
+    j = nlohmann::json::object();
+    j["code"] = static_cast<int32_t>(v.code);
+    j["message"] = v.message;
+    if (v.data) j["data"] = *v.data;
+}
+inline void from_json(const nlohmann::json& j, ErrorData& v) {
+    v.code = static_cast<McpErrorCode>(j.at("code").get<int32_t>());
+    v.message = j.at("message").get<std::string>();
+    if (auto it = j.find("data"); it != j.end()) v.data = *it;
+}
+
+// ── JsonRpcRequest ──
 struct JsonRpcRequest {
-    std::string jsonrpc{JsonRpcVersion};
+    std::string jsonrpc = "2.0";
     RequestId id;
     std::string method;
     std::optional<nlohmann::json> params;
-
-    nlohmann::json ToJson() const;
-    static JsonRpcRequest FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const JsonRpcRequest& v) {
+    j = nlohmann::json::object();
+    j["jsonrpc"] = v.jsonrpc;
+    std::visit([&j](const auto& val) { j["id"] = val; }, v.id);
+    j["method"] = v.method;
+    if (v.params) j["params"] = *v.params;
+}
+inline void from_json(const nlohmann::json& j, JsonRpcRequest& v) {
+    j.at("jsonrpc").get_to(v.jsonrpc);
+    v.id = request_id_from_json(j.at("id"));
+    v.method = j.at("method").get<std::string>();
+    if (auto it = j.find("params"); it != j.end()) v.params = *it;
+}
 
-/// JSON-RPC 2.0 notification message (no id).
+// ── JsonRpcNotification ──
 struct JsonRpcNotification {
-    std::string jsonrpc{JsonRpcVersion};
+    std::string jsonrpc = "2.0";
     std::string method;
     std::optional<nlohmann::json> params;
-
-    nlohmann::json ToJson() const;
-    static JsonRpcNotification FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const JsonRpcNotification& v) {
+    j = nlohmann::json::object();
+    j["jsonrpc"] = v.jsonrpc;
+    j["method"] = v.method;
+    if (v.params) j["params"] = *v.params;
+}
+inline void from_json(const nlohmann::json& j, JsonRpcNotification& v) {
+    j.at("jsonrpc").get_to(v.jsonrpc);
+    v.method = j.at("method").get<std::string>();
+    if (auto it = j.find("params"); it != j.end()) v.params = *it;
+}
 
-/// JSON-RPC 2.0 success response.
+// ── JsonRpcResponse ──
 struct JsonRpcResponse {
-    std::string jsonrpc{JsonRpcVersion};
+    std::string jsonrpc = "2.0";
     RequestId id;
     nlohmann::json result;
-
-    nlohmann::json ToJson() const;
-    static JsonRpcResponse FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const JsonRpcResponse& v) {
+    j = nlohmann::json::object();
+    j["jsonrpc"] = v.jsonrpc;
+    std::visit([&j](const auto& val) { j["id"] = val; }, v.id);
+    j["result"] = v.result;
+}
+inline void from_json(const nlohmann::json& j, JsonRpcResponse& v) {
+    j.at("jsonrpc").get_to(v.jsonrpc);
+    v.id = request_id_from_json(j.at("id"));
+    v.result = j.at("result");
+}
 
-/// JSON-RPC 2.0 error response.
-struct JsonRpcError {
-    std::string jsonrpc{JsonRpcVersion};
+// ── JsonRpcErrorResponse ──
+struct JsonRpcErrorResponse {
+    std::string jsonrpc = "2.0";
     RequestId id;
     ErrorData error;
-
-    nlohmann::json ToJson() const;
-    static JsonRpcError FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const JsonRpcErrorResponse& v) {
+    j = nlohmann::json::object();
+    j["jsonrpc"] = v.jsonrpc;
+    std::visit([&j](const auto& val) { j["id"] = val; }, v.id);
+    j["error"] = v.error;
+}
+inline void from_json(const nlohmann::json& j, JsonRpcErrorResponse& v) {
+    j.at("jsonrpc").get_to(v.jsonrpc);
+    v.id = request_id_from_json(j.at("id"));
+    v.error = j.at("error").get<ErrorData>();
+}
 
-/// JSON-RPC 2.0 message variant (the wire format).
+// ── JsonRpcMessage variant ──
 using JsonRpcMessage = std::variant<
     JsonRpcRequest,
     JsonRpcNotification,
     JsonRpcResponse,
-    JsonRpcError>;
+    JsonRpcErrorResponse>;
 
-/// Serialize a JsonRpcMessage to JSON.
-nlohmann::json JsonRpcMessageToJson(const JsonRpcMessage& msg);
+inline void to_json(nlohmann::json& j, const JsonRpcMessage& msg) {
+    std::visit([&j](const auto& m) { j = nlohmann::json(m); }, msg);
+}
+inline void from_json(const nlohmann::json& j, JsonRpcMessage& msg) {
+    auto it_method = j.find("method");
+    auto it_id = j.find("id");
+    auto it_result = j.find("result");
+    auto it_error = j.find("error");
 
-/// Deserialize a JsonRpcMessage from JSON.
-/// Returns the appropriate variant member based on JSON-RPC 2.0 dispatch rules:
-/// - method present + id present  → JsonRpcRequest
-/// - method present + no id       → JsonRpcNotification
-/// - id present + result present  → JsonRpcResponse
-/// - id present + error present   → JsonRpcError
-JsonRpcMessage JsonRpcMessageFromJson(const nlohmann::json& j);
+    if (it_method != j.end() && it_id != j.end()) {
+        msg = j.get<JsonRpcRequest>();
+    } else if (it_method != j.end()) {
+        msg = j.get<JsonRpcNotification>();
+    } else if (it_result != j.end()) {
+        msg = j.get<JsonRpcResponse>();
+    } else if (it_error != j.end()) {
+        msg = j.get<JsonRpcErrorResponse>();
+    } else {
+        throw std::runtime_error("unknown JSON-RPC message type");
+    }
+}
 
-// ── Transport-level message with metadata ──
-
-struct MessageMetadata {
-    std::optional<std::string> session_id;
-    std::optional<std::map<std::string, std::string>> headers;
-    std::optional<RequestId> related_request_id;
-};
-
-struct SessionMessage {
-    JsonRpcMessage message;
-    MessageMetadata metadata;
-};
+// ── Helpers ──
+inline bool IsRequest(const JsonRpcMessage& msg) noexcept {
+    return std::holds_alternative<JsonRpcRequest>(msg);
+}
+inline bool IsNotification(const JsonRpcMessage& msg) noexcept {
+    return std::holds_alternative<JsonRpcNotification>(msg);
+}
+inline bool IsResponse(const JsonRpcMessage& msg) noexcept {
+    return std::holds_alternative<JsonRpcResponse>(msg);
+}
+inline bool IsError(const JsonRpcMessage& msg) noexcept {
+    return std::holds_alternative<JsonRpcErrorResponse>(msg);
+}
+inline const JsonRpcRequest* AsRequest(const JsonRpcMessage& msg) noexcept {
+    return std::get_if<JsonRpcRequest>(&msg);
+}
+inline const JsonRpcNotification* AsNotification(const JsonRpcMessage& msg) noexcept {
+    return std::get_if<JsonRpcNotification>(&msg);
+}
+inline const JsonRpcResponse* AsResponse(const JsonRpcMessage& msg) noexcept {
+    return std::get_if<JsonRpcResponse>(&msg);
+}
+inline const JsonRpcErrorResponse* AsError(const JsonRpcMessage& msg) noexcept {
+    return std::get_if<JsonRpcErrorResponse>(&msg);
+}
 
 } // namespace mcp

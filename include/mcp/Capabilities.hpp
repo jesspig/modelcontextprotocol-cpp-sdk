@@ -1,109 +1,146 @@
 #pragma once
 
-#include <string>
-#include <optional>
 #include <nlohmann/json.hpp>
+
+#include <optional>
 
 namespace mcp {
 
-/// Tools capability.
 struct ToolsCapability {
     std::optional<bool> list_changed;
-    std::optional<bool> subscribe;
-
-    nlohmann::json ToJson() const;
-    static ToolsCapability FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const ToolsCapability& v) {
+    j = nlohmann::json::object();
+    if (v.list_changed) j["listChanged"] = *v.list_changed;
+}
+inline void from_json(const nlohmann::json& j, ToolsCapability& v) {
+    if (auto it = j.find("listChanged"); it != j.end())
+        v.list_changed = it->get<bool>();
+}
 
-/// Resources capability.
 struct ResourcesCapability {
-    std::optional<bool> list_changed;
     std::optional<bool> subscribe;
-
-    nlohmann::json ToJson() const;
-    static ResourcesCapability FromJson(const nlohmann::json& j);
+    std::optional<bool> list_changed;
 };
+inline void to_json(nlohmann::json& j, const ResourcesCapability& v) {
+    j = nlohmann::json::object();
+    if (v.subscribe)   j["subscribe"] = *v.subscribe;
+    if (v.list_changed) j["listChanged"] = *v.list_changed;
+}
+inline void from_json(const nlohmann::json& j, ResourcesCapability& v) {
+    if (auto it = j.find("subscribe"); it != j.end()) v.subscribe = it->get<bool>();
+    if (auto it = j.find("listChanged"); it != j.end()) v.list_changed = it->get<bool>();
+}
 
-/// Prompts capability.
 struct PromptsCapability {
     std::optional<bool> list_changed;
-
-    nlohmann::json ToJson() const;
-    static PromptsCapability FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const PromptsCapability& v) {
+    j = nlohmann::json::object();
+    if (v.list_changed) j["listChanged"] = *v.list_changed;
+}
+inline void from_json(const nlohmann::json& j, PromptsCapability& v) {
+    if (auto it = j.find("listChanged"); it != j.end())
+        v.list_changed = it->get<bool>();
+}
 
-/// Logging capability [deprecated].
-struct LoggingCapability {
-    std::optional<nlohmann::json> additional;
+struct LoggingCapability {};
+inline void to_json(nlohmann::json& j, const LoggingCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json& j, LoggingCapability&) {}
 
-    nlohmann::json ToJson() const;
-    static LoggingCapability FromJson(const nlohmann::json& j);
-};
+struct SamplingCapability {};
+inline void to_json(nlohmann::json& j, const SamplingCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json& j, SamplingCapability&) {}
 
-/// Sampling capability [deprecated].
-struct SamplingCapability {
-    std::optional<nlohmann::json> additional;
-
-    nlohmann::json ToJson() const;
-    static SamplingCapability FromJson(const nlohmann::json& j);
-};
-
-/// Roots capability [deprecated].
 struct RootsCapability {
     std::optional<bool> list_changed;
-
-    nlohmann::json ToJson() const;
-    static RootsCapability FromJson(const nlohmann::json& j);
 };
+inline void to_json(nlohmann::json& j, const RootsCapability& v) {
+    j = nlohmann::json::object();
+    if (v.list_changed) j["listChanged"] = *v.list_changed;
+}
+inline void from_json(const nlohmann::json& j, RootsCapability& v) {
+    if (auto it = j.find("listChanged"); it != j.end()) v.list_changed = it->get<bool>();
+}
 
-/// Tasks capability.
-struct TasksCapability {
-    std::optional<nlohmann::json> additional;
-
-    nlohmann::json ToJson() const;
-    static TasksCapability FromJson(const nlohmann::json& j);
-};
-
-/// Elicitation capability.
 struct ElicitationCapability {
     std::optional<nlohmann::json> form;
-    std::optional<bool> url;
-
-    nlohmann::json ToJson() const;
-    static ElicitationCapability FromJson(const nlohmann::json& j);
+    std::optional<nlohmann::json> url;
 };
+inline void to_json(nlohmann::json& j, const ElicitationCapability& v) {
+    j = nlohmann::json::object();
+    if (v.form) j["form"] = *v.form;
+    if (v.url)  j["url"] = *v.url;
+}
+inline void from_json(const nlohmann::json& j, ElicitationCapability& v) {
+    if (auto it = j.find("form"); it != j.end()) v.form = *it;
+    if (auto it = j.find("url"); it != j.end())  v.url = *it;
+}
 
-/// Server-side capabilities.
+struct TasksCapability {};
+inline void to_json(nlohmann::json& j, const TasksCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json& j, TasksCapability&) {}
+
+struct SubscriptionsCapability {};
+inline void to_json(nlohmann::json& j, const SubscriptionsCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json& j, SubscriptionsCapability&) {}
+
 struct ServerCapabilities {
     std::optional<ToolsCapability> tools;
     std::optional<ResourcesCapability> resources;
     std::optional<PromptsCapability> prompts;
-    std::optional<LoggingCapability> logging;        // [deprecated]
-    std::optional<SamplingCapability> sampling;       // [deprecated]
-    std::optional<RootsCapability> roots;             // [deprecated]
-    std::optional<TasksCapability> tasks;
-
-    nlohmann::json ToJson() const;
-    static ServerCapabilities FromJson(const nlohmann::json& j);
-
-    static ServerCapabilities Default();
-    ServerCapabilities& WithTools(bool list_changed = false, bool subscribe = false);
-    ServerCapabilities& WithResources(bool list_changed = false, bool subscribe = false);
-    ServerCapabilities& WithPrompts(bool list_changed = false);
-    ServerCapabilities& WithTasks();
-};
-
-/// Client-side capabilities.
-struct ClientCapabilities {
-    std::optional<RootsCapability> roots;              // [deprecated]
-    std::optional<SamplingCapability> sampling;        // [deprecated]
+    std::optional<LoggingCapability> logging;
+    std::optional<SamplingCapability> sampling;
+    std::optional<RootsCapability> roots;
     std::optional<ElicitationCapability> elicitation;
-
-    nlohmann::json ToJson() const;
-    static ClientCapabilities FromJson(const nlohmann::json& j);
-
-    static ClientCapabilities Default();
-    ClientCapabilities& WithElicitation(bool form = true, bool url = false);
+    std::optional<TasksCapability> tasks;
+    std::optional<SubscriptionsCapability> subscriptions;
+    std::optional<nlohmann::json> experimental;
 };
+inline void to_json(nlohmann::json& j, const ServerCapabilities& v) {
+    j = nlohmann::json::object();
+    if (v.tools)         j["tools"] = *v.tools;
+    if (v.resources)     j["resources"] = *v.resources;
+    if (v.prompts)       j["prompts"] = *v.prompts;
+    if (v.logging)       j["logging"] = *v.logging;
+    if (v.sampling)      j["sampling"] = *v.sampling;
+    if (v.roots)         j["roots"] = *v.roots;
+    if (v.elicitation)   j["elicitation"] = *v.elicitation;
+    if (v.tasks)         j["tasks"] = *v.tasks;
+    if (v.subscriptions) j["subscriptions"] = *v.subscriptions;
+    if (v.experimental)  j["experimental"] = *v.experimental;
+}
+inline void from_json(const nlohmann::json& j, ServerCapabilities& v) {
+    if (auto it = j.find("tools"); it != j.end())         v.tools = it->get<ToolsCapability>();
+    if (auto it = j.find("resources"); it != j.end())     v.resources = it->get<ResourcesCapability>();
+    if (auto it = j.find("prompts"); it != j.end())       v.prompts = it->get<PromptsCapability>();
+    if (auto it = j.find("logging"); it != j.end())       v.logging = it->get<LoggingCapability>();
+    if (auto it = j.find("sampling"); it != j.end())      v.sampling = it->get<SamplingCapability>();
+    if (auto it = j.find("roots"); it != j.end())         v.roots = it->get<RootsCapability>();
+    if (auto it = j.find("elicitation"); it != j.end())   v.elicitation = it->get<ElicitationCapability>();
+    if (auto it = j.find("tasks"); it != j.end())         v.tasks = it->get<TasksCapability>();
+    if (auto it = j.find("subscriptions"); it != j.end()) v.subscriptions = it->get<SubscriptionsCapability>();
+    if (auto it = j.find("experimental"); it != j.end())  v.experimental = *it;
+}
+
+struct ClientCapabilities {
+    std::optional<RootsCapability> roots;
+    std::optional<SamplingCapability> sampling;
+    std::optional<ElicitationCapability> elicitation;
+    std::optional<nlohmann::json> experimental;
+};
+inline void to_json(nlohmann::json& j, const ClientCapabilities& v) {
+    j = nlohmann::json::object();
+    if (v.roots)       j["roots"] = *v.roots;
+    if (v.sampling)    j["sampling"] = *v.sampling;
+    if (v.elicitation) j["elicitation"] = *v.elicitation;
+    if (v.experimental) j["experimental"] = *v.experimental;
+}
+inline void from_json(const nlohmann::json& j, ClientCapabilities& v) {
+    if (auto it = j.find("roots"); it != j.end())       v.roots = it->get<RootsCapability>();
+    if (auto it = j.find("sampling"); it != j.end())    v.sampling = it->get<SamplingCapability>();
+    if (auto it = j.find("elicitation"); it != j.end()) v.elicitation = it->get<ElicitationCapability>();
+    if (auto it = j.find("experimental"); it != j.end()) v.experimental = *it;
+}
 
 } // namespace mcp
