@@ -4,6 +4,10 @@
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
+# 共享依赖缓存目录 — 所有 preset 共用，删 build/ 不丢
+set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/.cache/deps" CACHE PATH
+    "FetchContent base directory (shared across all presets)")
+
 # ====================================================================
 # nlohmann/json — JSON 解析/序列化
 # ====================================================================

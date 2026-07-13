@@ -2,134 +2,164 @@
     "version": 8,
     "configurePresets": [
         {
-            "name": "default",
+            "name": "gen-ninja",
             "hidden": true,
-            "generator": "Ninja",
+            "generator": "Ninja"
+        },
+        {
+            "name": "gen-vs",
+            "hidden": true,
+            "generator": "Visual Studio 17 2022",
+            "architecture": { "value": "x64", "strategy": "set" }
+        },
+        {
+            "name": "cc-msvc",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl.exe",
+                "CMAKE_CXX_COMPILER": "cl.exe"
+            }
+        },
+        {
+            "name": "cc-clang-cl",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang-cl.exe",
+                "CMAKE_CXX_COMPILER": "clang-cl.exe",
+                "CMAKE_CXX_FLAGS": "--target=x86_64-pc-windows-msvc"
+            }
+        },
+        {
+            "name": "cc-mingw",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "x86_64-w64-mingw32-gcc",
+                "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++"
+            }
+        },
+        {
+            "name": "cc-gcc",
+            "hidden": true,
+            "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "cc-clang",
+            "hidden": true,
+            "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
+            }
+        },
+        {
+            "name": "build-debug",
+            "hidden": true,
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "build-release",
+            "hidden": true,
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "base",
+            "hidden": true,
             "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_CXX_STANDARD": "17",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "MCP_BUILD_TESTS": "ON",
                 "MCP_BUILD_EXAMPLES": "ON"
             }
         },
         {
+            "name": "win-msvc-debug",
+            "inherits": ["base", "gen-vs", "cc-msvc", "build-debug"],
+            "displayName": "Windows MSVC Debug"
+        },
+        {
+            "name": "win-msvc-release",
+            "inherits": ["base", "gen-vs", "cc-msvc", "build-release"],
+            "displayName": "Windows MSVC Release"
+        },
+        {
+            "name": "win-clang-cl-debug",
+            "inherits": ["base", "gen-ninja", "cc-clang-cl", "build-debug"],
+            "displayName": "Windows clang-cl Debug"
+        },
+        {
+            "name": "win-clang-cl-release",
+            "inherits": ["base", "gen-ninja", "cc-clang-cl", "build-release"],
+            "displayName": "Windows clang-cl Release"
+        },
+        {
+            "name": "win-mingw-debug",
+            "inherits": ["base", "gen-ninja", "cc-mingw", "build-debug"],
+            "displayName": "Windows MinGW Debug"
+        },
+        {
+            "name": "linux-gcc-debug",
+            "inherits": ["base", "gen-ninja", "cc-gcc", "build-debug"],
+            "displayName": "Linux GCC Debug",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-gcc-release",
+            "inherits": ["base", "gen-ninja", "cc-gcc", "build-release"],
+            "displayName": "Linux GCC Release",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-clang-debug",
+            "inherits": ["base", "gen-ninja", "cc-clang", "build-debug"],
+            "displayName": "Linux Clang Debug",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-clang-release",
+            "inherits": ["base", "gen-ninja", "cc-clang", "build-release"],
+            "displayName": "Linux Clang Release",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
             "name": "debug",
-            "inherits": "default",
+            "inherits": ["base", "gen-ninja"],
             "displayName": "Debug",
-            "description": "Debug build with ASAN, no unity build",
-            "binaryDir": "${sourceDir}/build/debug",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_UNITY_BUILD": "OFF",
-                "CMAKE_CXX_FLAGS_DEBUG": "-fsanitize=address -fno-omit-frame-pointer"
-            }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
         },
         {
             "name": "release",
-            "inherits": "default",
+            "inherits": ["base", "gen-ninja"],
             "displayName": "Release",
-            "description": "Optimised release build with unity build",
-            "binaryDir": "${sourceDir}/build/release",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_UNITY_BUILD": "ON"
-            }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
             "name": "ci",
-            "inherits": "default",
+            "inherits": ["base", "gen-ninja"],
             "displayName": "CI",
-            "description": "CI build with full warnings and tests",
-            "binaryDir": "${sourceDir}/build/ci",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-                "CMAKE_UNITY_BUILD": "ON"
-            }
-        },
-        {
-            "name": "fastbuild",
-            "inherits": "default",
-            "displayName": "FASTBuild",
-            "description": "Build using FASTBuild generator with caching",
-            "binaryDir": "${sourceDir}/build/fastbuild",
-            "generator": "FASTBuild",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_UNITY_BUILD": "ON",
-                "CMAKE_FASTBUILD_CACHE_PATH": "${sourceDir}/.fastbuild-cache"
-            }
-        },
-        {
-            "name": "msvc-debug",
-            "inherits": "default",
-            "displayName": "MSVC Debug",
-            "description": "Visual Studio 17 2022 debug build",
-            "generator": "Visual Studio 17 2022",
-            "binaryDir": "${sourceDir}/build/msvc-debug",
-            "architecture": {
-                "value": "x64",
-                "strategy": "set"
-            },
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_UNITY_BUILD": "OFF"
-            }
-        },
-        {
-            "name": "msvc-release",
-            "inherits": "default",
-            "displayName": "MSVC Release",
-            "description": "Visual Studio 17 2022 release build with unity build",
-            "generator": "Visual Studio 17 2022",
-            "binaryDir": "${sourceDir}/build/msvc-release",
-            "architecture": {
-                "value": "x64",
-                "strategy": "set"
-            },
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_UNITY_BUILD": "ON"
+                "MCP_CACHE": "off"
             }
         }
     ],
     "buildPresets": [
-        {
-            "name": "debug",
-            "configurePreset": "debug"
-        },
-        {
-            "name": "release",
-            "configurePreset": "release"
-        },
-        {
-            "name": "ci",
-            "configurePreset": "ci"
-        },
-        {
-            "name": "fastbuild",
-            "configurePreset": "fastbuild"
-        },
-        {
-            "name": "msvc-debug",
-            "configurePreset": "msvc-debug"
-        },
-        {
-            "name": "msvc-release",
-            "configurePreset": "msvc-release"
-        }
+        { "name": "win-msvc-debug",      "configurePreset": "win-msvc-debug" },
+        { "name": "win-msvc-release",    "configurePreset": "win-msvc-release" },
+        { "name": "win-clang-cl-debug",  "configurePreset": "win-clang-cl-debug" },
+        { "name": "win-clang-cl-release","configurePreset": "win-clang-cl-release" },
+        { "name": "win-mingw-debug",     "configurePreset": "win-mingw-debug" },
+        { "name": "linux-gcc-debug",     "configurePreset": "linux-gcc-debug" },
+        { "name": "linux-gcc-release",   "configurePreset": "linux-gcc-release" },
+        { "name": "linux-clang-debug",   "configurePreset": "linux-clang-debug" },
+        { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
+        { "name": "debug",               "configurePreset": "debug" },
+        { "name": "release",             "configurePreset": "release" },
+        { "name": "ci",                  "configurePreset": "ci" }
     ],
     "testPresets": [
-        {
-            "name": "debug",
-            "configurePreset": "debug"
-        },
-        {
-            "name": "release",
-            "configurePreset": "release"
-        },
-        {
-            "name": "ci",
-            "configurePreset": "ci"
-        }
+        { "name": "debug",   "configurePreset": "debug" },
+        { "name": "release", "configurePreset": "release" },
+        { "name": "ci",      "configurePreset": "ci" }
     ]
 }
