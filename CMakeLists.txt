@@ -57,8 +57,6 @@ add_library(mcp-transport STATIC)
 target_sources(mcp-transport PRIVATE
     src/transport/StdioServerTransport.cpp
     src/transport/StdioClientTransport.cpp
-    src/transport/StreamableHttpServerTransport.cpp
-    src/transport/StreamableHttpClientTransport.cpp
     src/transport/SseClientTransport.cpp
     src/transport/InMemoryTransport.cpp)
 target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio)
@@ -103,8 +101,9 @@ set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
 add_library(mcp-http STATIC)
 target_sources(mcp-http PRIVATE
     src/http/HttpServer.cpp
-    src/http/EventStore.cpp)
-target_link_libraries(mcp-http PUBLIC mcp-server)
+    src/http/EventStore.cpp
+    src/http/StreamableHttpServerTransport.cpp)
+target_link_libraries(mcp-http PUBLIC mcp-transport)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
