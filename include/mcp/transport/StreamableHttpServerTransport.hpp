@@ -4,6 +4,8 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <memory>
 #include <string>
 
@@ -31,7 +33,7 @@ struct StreamableHttpServerOptions {
 // ── StreamableHttpServerTransport ──
 // HTTP transport implementing the MCP Streamable HTTP spec.
 // Supports both 2026-07-28 (stateless) and legacy modes.
-class StreamableHttpServerTransport : public Transport {
+class StreamableHttpServerTransport : public TransportBase {
 public:
     StreamableHttpServerTransport(
         asio::io_context& io_ctx,
@@ -39,13 +41,17 @@ public:
 
     ~StreamableHttpServerTransport() override;
 
-    void Start() override;
+    void Start();
     void Close() override;
     void SendMessageAsync(JsonRpcMessage message) override;
-    MessageChannel& GetMessageChannel() override;
-    asio::io_context& IoContext() override;
-    std::string_view SessionId() const override { return session_id_; }
     bool IsStateless() const override { return options_.stateless; }
+
+    // Validate Mcp-Method and Mcp-Name headers match body (SEP-2243)
+    static bool ValidateMcpHeaders(
+        const std::string& method_header,
+        const std::string& name_header,
+        const nlohmann::json& body,
+        std::string& error_out);
 
 private:
     // HTTP request handlers
@@ -59,12 +65,9 @@ private:
     std::string GetMcpHeader(const HttpRequest& req,
                              std::string_view header_name) const;
 
-    asio::io_context& io_ctx_;
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;
-    std::unique_ptr<MessageChannel> channel_;
     std::shared_ptr<EventStore> event_store_;
-    std::string session_id_;
 };
 
 } // namespace mcp

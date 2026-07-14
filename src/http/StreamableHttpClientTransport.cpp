@@ -68,19 +68,21 @@ std::wstring ToWideStr(const std::string& s) {
 }
 
 // ── StreamableHttpClientSessionTransport ──
-class StreamableHttpSessionTransport : public Transport {
+class StreamableHttpSessionTransport : public TransportBase {
 public:
     StreamableHttpSessionTransport(
         std::shared_ptr<asio::io_context> io_ctx,
         HttpClientTransportOptions options)
-        : io_ctx_(std::move(io_ctx))
+        : TransportBase(*io_ctx)
+        , io_ctx_(std::move(io_ctx))
         , options_(std::move(options))
-        , channel_(*io_ctx_, 64)
-    {}
+    {
+        channel_ = std::make_unique<MessageChannel>(*io_ctx_, 64);
+    }
 
     ~StreamableHttpSessionTransport() override { Close(); }
 
-    void Start() override {
+    void Start() {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] { SendLoop(); });
     }
@@ -93,8 +95,8 @@ public:
         }
         if (sse_thread_.joinable()) sse_thread_.join();
         if (send_thread_.joinable()) send_thread_.join();
-        channel_.close();
-        NotifyClose();
+        if (channel_) channel_->Close();
+        SetDisconnected();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
@@ -106,9 +108,6 @@ public:
         }
         send_cv_.notify_one();
     }
-
-    MessageChannel& GetMessageChannel() override { return channel_; }
-    asio::io_context& IoContext() override { return *io_ctx_; }
 
 private:
     void SendLoop() {
@@ -209,8 +208,7 @@ private:
                         auto j = nlohmann::json::parse(resp_body);
                         JsonRpcMessage msg = j.get<JsonRpcMessage>();
                         asio::post(*io_ctx_, [this, msg = std::move(msg)]() {
-                            channel_.async_send(asio::error_code{}, std::move(msg),
-                                [](asio::error_code) {});
+                            if (channel_) channel_->Send(std::move(msg));
                         });
                     } catch (...) {}
                 }
@@ -264,8 +262,7 @@ private:
                 auto j = nlohmann::json::parse(data);
                 JsonRpcMessage msg = j.get<JsonRpcMessage>();
                 asio::post(*io_ctx_, [this, msg = std::move(msg)]() {
-                    channel_.async_send(asio::error_code{}, std::move(msg),
-                        [](asio::error_code) {});
+                    if (channel_) channel_->Send(std::move(msg));
                 });
             } catch (...) {}
         }
@@ -273,7 +270,6 @@ private:
 
     std::shared_ptr<asio::io_context> io_ctx_;
     HttpClientTransportOptions options_;
-    MessageChannel channel_;
     std::thread send_thread_;
     std::thread sse_thread_;
     std::mutex send_mutex_;
@@ -294,9 +290,9 @@ std::string_view StreamableHttpClientTransport::Name() const {
     return options_.name.empty() ? "streamable-http" : options_.name;
 }
 
-std::unique_ptr<Transport> StreamableHttpClientTransport::Connect() {
+std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
     auto io_ctx = std::make_shared<asio::io_context>();
-    auto session = std::make_unique<StreamableHttpSessionTransport>(
+    auto session = std::make_shared<StreamableHttpSessionTransport>(
         std::move(io_ctx), options_);
     session->Start();
     return session;

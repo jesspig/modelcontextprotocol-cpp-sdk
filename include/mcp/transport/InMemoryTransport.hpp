@@ -7,9 +7,9 @@ namespace mcp {
 
 class InMemoryTransport {
 public:
-    struct Pair {
-        std::unique_ptr<Transport> client;
-        std::unique_ptr<Transport> server;
+struct Pair {
+        std::shared_ptr<ITransport> client;
+        std::shared_ptr<ITransport> server;
     };
 
     static Pair CreatePair();

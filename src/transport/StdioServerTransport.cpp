@@ -17,9 +17,10 @@
 namespace mcp {
 
 StdioServerTransport::StdioServerTransport(asio::io_context& io_ctx)
-    : io_ctx_(io_ctx)
-    , channel_(io_ctx, 64)
-{}
+    : TransportBase(io_ctx)
+{
+    channel_ = std::make_unique<MessageChannel>(io_ctx, 64);
+}
 
 StdioServerTransport::~StdioServerTransport() {
     Close();
@@ -37,8 +38,8 @@ void StdioServerTransport::Close() {
     if (read_thread_.joinable())
         read_thread_.join();
 
-    channel_.close();
-    NotifyClose();
+    if (channel_) channel_->Close();
+    SetDisconnected();
 }
 
 void StdioServerTransport::SendMessageAsync(JsonRpcMessage message) {
@@ -56,14 +57,6 @@ void StdioServerTransport::SendMessageAsync(JsonRpcMessage message) {
 #else
     write(STDOUT_FILENO, line.data(), line.size());
 #endif
-}
-
-Transport::MessageChannel& StdioServerTransport::GetMessageChannel() {
-    return channel_;
-}
-
-asio::io_context& StdioServerTransport::IoContext() {
-    return io_ctx_;
 }
 
 void StdioServerTransport::ReadLoop() {
@@ -103,10 +96,9 @@ void StdioServerTransport::ReadLoop() {
             try {
                 auto j = nlohmann::json::parse(line);
                 JsonRpcMessage msg = j.get<JsonRpcMessage>();
-                asio::post(io_ctx_, [this, msg = std::move(msg)]() {
+                asio::post(IoContext(), [this, msg = std::move(msg)]() {
                     if (!running_) return;
-                    channel_.async_send(asio::error_code{}, std::move(msg),
-                        [](asio::error_code) {});
+                    if (channel_) channel_->Send(std::move(msg));
                 });
             } catch (const std::exception& e) {
                 NotifyError(e.what());

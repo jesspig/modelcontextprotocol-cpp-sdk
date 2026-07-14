@@ -12,27 +12,30 @@ namespace mcp {
 
 namespace {
 
-class StdioClientSessionTransport : public Transport {
+class StdioClientSessionTransport : public TransportBase {
 public:
     StdioClientSessionTransport(
         std::shared_ptr<asio::io_context> io_ctx,
         PROCESS_INFORMATION process_info,
         HANDLE stdin_write,
         HANDLE stdout_read)
-        : io_ctx_(std::move(io_ctx))
+        : TransportBase(*io_ctx)
+        , io_ctx_(std::move(io_ctx))
         , process_info_(process_info)
         , stdin_write_(stdin_write)
         , stdout_read_(stdout_read)
-        , channel_(*io_ctx_, 64)
-    {}
+    {
+        channel_ = std::make_unique<MessageChannel>(*io_ctx_, 64);
+    }
 
     ~StdioClientSessionTransport() override {
         Close();
     }
 
-    void Start() override {
+    void Start() {
         running_ = true;
         read_thread_ = std::thread([this]() { ReadThread(); });
+        SetConnected();
     }
 
     void Close() override {
@@ -66,8 +69,8 @@ public:
             read_thread_.join();
         }
 
-        channel_.close();
-        NotifyClose();
+        if (channel_) channel_->Close();
+        SetDisconnected();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
@@ -79,9 +82,6 @@ public:
         DWORD written = 0;
         WriteFile(stdin_write_, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
     }
-
-    MessageChannel& GetMessageChannel() override { return channel_; }
-    asio::io_context& IoContext() override { return *io_ctx_; }
 
 private:
     void ReadThread() {
@@ -109,8 +109,7 @@ private:
                     auto j = nlohmann::json::parse(line);
                     JsonRpcMessage msg = j.get<JsonRpcMessage>();
                     asio::post(*io_ctx_, [this, msg = std::move(msg)]() {
-                        channel_.async_send(asio::error_code{}, std::move(msg),
-                            [](asio::error_code) {});
+                        if (channel_) channel_->Send(std::move(msg));
                     });
                 } catch (const std::exception& e) {
                     NotifyError(e.what());
@@ -120,7 +119,6 @@ private:
     }
 
     std::shared_ptr<asio::io_context> io_ctx_;
-    MessageChannel channel_;
     std::thread read_thread_;
     PROCESS_INFORMATION process_info_{};
     HANDLE stdin_write_ = INVALID_HANDLE_VALUE;
@@ -137,7 +135,7 @@ StdioClientTransport::~StdioClientTransport() = default;
 
 std::string_view StdioClientTransport::Name() const { return options_.name.empty() ? "stdio" : options_.name; }
 
-std::unique_ptr<Transport> StdioClientTransport::Connect() {
+std::shared_ptr<ITransport> StdioClientTransport::Connect() {
     // Build command line
     std::string cmd_line;
 #ifdef _WIN32
@@ -234,7 +232,7 @@ std::unique_ptr<Transport> StdioClientTransport::Connect() {
     }
 
     auto io_ctx = std::make_shared<asio::io_context>();
-    auto session = std::make_unique<StdioClientSessionTransport>(
+    auto session = std::make_shared<StdioClientSessionTransport>(
         std::move(io_ctx), pi, stdin_write, stdout_read);
 
     session->Start();

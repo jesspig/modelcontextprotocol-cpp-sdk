@@ -24,5 +24,3 @@
 // ── 错误 ──
 #include <mcp/McpError.hpp>
 
-// ── 传输接口 ──
-#include <mcp/Transport.hpp>

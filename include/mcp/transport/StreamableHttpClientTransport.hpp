@@ -22,13 +22,13 @@ struct HttpClientTransportOptions {
     std::map<std::string, std::string> additional_headers;
 };
 
-class StreamableHttpClientTransport : public ClientTransport {
+class StreamableHttpClientTransport : public IClientTransport {
 public:
     explicit StreamableHttpClientTransport(const HttpClientTransportOptions& options);
     ~StreamableHttpClientTransport() override;
 
     std::string_view Name() const override;
-    std::unique_ptr<Transport> Connect() override;
+    std::shared_ptr<ITransport> Connect() override;
 
 private:
     HttpClientTransportOptions options_;

@@ -144,23 +144,24 @@ std::wstring ToWide(const std::string& s) {
 // SseClientSessionTransport  (anonymous namespace)
 // ═══════════════════════════════════════════════════════════════════════
 
-class SseClientSessionTransport final : public Transport {
+class SseClientSessionTransport final : public TransportBase {
 public:
     SseClientSessionTransport(std::shared_ptr<asio::io_context> io_ctx,
                               std::string server_url,
                               std::string name)
-        : io_ctx_(std::move(io_ctx))
+        : TransportBase(*io_ctx)
+        , io_ctx_(std::move(io_ctx))
         , server_url_(std::move(server_url))
         , name_(std::move(name))
-        , channel_(*io_ctx_, 64)
     {
+        channel_ = std::make_unique<MessageChannel>(*io_ctx_, 64);
     }
 
     ~SseClientSessionTransport() override {
         Close();
     }
 
-    void Start() override {
+    void Start() {
         if (running_.exchange(true))
             return;
 
@@ -199,8 +200,8 @@ public:
         if (sse_thread_.joinable())
             sse_thread_.join();
 
-        channel_.close();
-        NotifyClose();
+        if (channel_) channel_->Close();
+        SetDisconnected();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
@@ -216,9 +217,6 @@ public:
         }
         send_cv_.notify_one();
     }
-
-    MessageChannel& GetMessageChannel() override { return channel_; }
-    asio::io_context& IoContext() override { return *io_ctx_; }
 
 private:
     // ── SSE read thread ──
@@ -313,8 +311,8 @@ private:
                 std::lock_guard<std::mutex> lk(send_mutex_);
                 send_cv_.notify_one();
             }
-            channel_.close();
-            NotifyClose();
+            if (channel_) channel_->Close();
+            SetDisconnected();
         }
     }
 
@@ -338,8 +336,7 @@ private:
     void EnqueueMessage(JsonRpcMessage msg) {
         asio::post(*io_ctx_, [this, msg = std::move(msg)]() mutable {
             if (!running_) return;
-            channel_.async_send(asio::error_code{}, std::move(msg),
-                                [](asio::error_code) {});
+            if (channel_) channel_->Send(std::move(msg));
         });
     }
 
@@ -440,9 +437,6 @@ private:
     HINTERNET hConnect_ = nullptr;
     HINTERNET hGetRequest_ = nullptr;
 
-    // Message channel — delivers parsed JSON-RPC messages to the protocol
-    MessageChannel channel_;
-
     // SSE reader thread + send thread
     std::thread sse_thread_;
     std::thread send_thread_;
@@ -470,10 +464,12 @@ SseClientTransport::~SseClientTransport() = default;
 
 std::string_view SseClientTransport::Name() const { return name_; }
 
-std::unique_ptr<Transport> SseClientTransport::Connect() {
+std::shared_ptr<ITransport> SseClientTransport::Connect() {
     auto io_ctx = std::make_shared<asio::io_context>();
-    return std::make_unique<SseClientSessionTransport>(std::move(io_ctx),
-                                                       server_url_, name_);
+    auto session = std::make_shared<SseClientSessionTransport>(std::move(io_ctx),
+                                                               server_url_, name_);
+    session->Start();
+    return session;
 }
 
 } // namespace mcp

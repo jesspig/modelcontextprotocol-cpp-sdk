@@ -16,13 +16,13 @@ struct StdioClientTransportOptions {
     std::map<std::string, std::string> environment_variables;
 };
 
-class StdioClientTransport : public ClientTransport {
+class StdioClientTransport : public IClientTransport {
 public:
     explicit StdioClientTransport(const StdioClientTransportOptions& options);
     ~StdioClientTransport() override;
 
     std::string_view Name() const override;
-    std::unique_ptr<Transport> Connect() override;
+    std::shared_ptr<ITransport> Connect() override;
 
 private:
     StdioClientTransportOptions options_;
