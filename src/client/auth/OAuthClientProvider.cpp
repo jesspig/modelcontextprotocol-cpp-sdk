@@ -200,6 +200,15 @@ bool OAuthClientProvider::DiscoverMetadata() {
     return true;
 }
 
+bool OAuthClientProvider::ValidateTokenIssuer(const nlohmann::json& response) const {
+    if (!metadata_) return false;
+    auto it = response.find("iss");
+    if (it == response.end()) {
+        return true;
+    }
+    return it->get<std::string>() == metadata_->issuer;
+}
+
 bool OAuthClientProvider::RegisterClient() {
     if (!metadata_->registration_endpoint) return false;
     auto info = ClientRegistrationInfo::Register(
@@ -252,6 +261,7 @@ bool OAuthClientProvider::ExchangeCodeForToken(
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.is_discarded()) return false;
+    if (!ValidateTokenIssuer(json)) return false;
 
     TokenContainer tokens;
     tokens.access_token = json.value("access_token", "");
@@ -279,6 +289,7 @@ bool OAuthClientProvider::RefreshTokens() {
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.is_discarded()) return false;
+    if (!ValidateTokenIssuer(json)) return false;
 
     TokenContainer tokens;
     tokens.access_token = json.value("access_token", cached->access_token);

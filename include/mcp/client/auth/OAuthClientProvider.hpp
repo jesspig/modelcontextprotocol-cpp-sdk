@@ -79,6 +79,9 @@ private:
     bool StartAuthorizationFlow();
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
 
+    // RFC 9207: validate issuer parameter in token response
+    bool ValidateTokenIssuer(const nlohmann::json& response) const;
+
     // HTTP POST helper (minimal, for OAuth endpoints only)
     nlohmann::json HttpPost(
         std::string_view url,
