@@ -60,7 +60,11 @@ target_sources(mcp-transport PRIVATE
     src/transport/StdioClientTransport.cpp
     src/transport/SseClientTransport.cpp
     src/transport/InMemoryTransport.cpp)
-target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio)
+if(WIN32)
+    target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio winhttp)
+else()
+    target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio)
+endif()
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 

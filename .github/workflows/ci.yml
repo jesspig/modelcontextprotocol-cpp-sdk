@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CMAKE_VERSION: "4.2.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            preset: win-msvc-debug
+            cache: sccache
+          - os: windows-2022
+            preset: win-clang-cl-debug
+            cache: sccache
+          - os: ubuntu-24.04
+            preset: linux-gcc-debug
+            cache: ccache
+            asan: ON
+          - os: ubuntu-24.04
+            preset: linux-clang-debug
+            cache: ccache
+            asan: ON
+          - os: macos-15
+            preset: debug
+            cache: ccache
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Setup sccache (Windows)
+        if: matrix.cache == 'sccache'
+        uses: mozilla-actions/sccache-action@v0.0.7
+
+      - name: Setup ccache (Linux/macOS)
+        if: matrix.cache == 'ccache'
+        uses: hendrikmuhs/ccache-action@v1.2
+
+      - name: Configure CMake
+        run: >
+          cmake --preset ${{ matrix.preset }}
+          -DMCP_CACHE=${{ matrix.cache }}
+          ${{ matrix.asan == 'ON' && '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer' || '' }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Run tests
+        working-directory: build/${{ matrix.preset }}
+        run: ctest --output-on-failure --parallel
