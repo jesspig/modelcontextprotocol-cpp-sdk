@@ -46,6 +46,11 @@ _deps/
 # ── Documentation ──
 docs/_site/
 docs/.doxygen/
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/package-lock.json
+
 
 # ── Test output artifacts ──
 Testing/
