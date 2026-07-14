@@ -61,12 +61,12 @@ inline constexpr std::string_view kMessage = "notifications/message";
 inline constexpr std::string_view kElicitComplete = "notifications/elicitation/complete";
 inline constexpr std::string_view kSubscriptionAcknowledged = "notifications/subscriptions/acknowledged";
 
-inline constexpr std::string_view kTaskStatus = "notifications/task/status";
-inline constexpr std::string_view kTaskWorking = "notifications/task/working";
-inline constexpr std::string_view kTaskCompleted = "notifications/task/completed";
-inline constexpr std::string_view kTaskFailed = "notifications/task/failed";
-inline constexpr std::string_view kTaskCancelled = "notifications/task/cancelled";
-inline constexpr std::string_view kTaskInputRequired = "notifications/task/input_required";
+inline constexpr std::string_view kTaskStatus = "notifications/tasks/status";
+inline constexpr std::string_view kTaskWorking = "notifications/tasks/working";
+inline constexpr std::string_view kTaskCompleted = "notifications/tasks/completed";
+inline constexpr std::string_view kTaskFailed = "notifications/tasks/failed";
+inline constexpr std::string_view kTaskCancelled = "notifications/tasks/cancelled";
+inline constexpr std::string_view kTaskInputRequired = "notifications/tasks/input_required";
 
 } // namespace notifications
 

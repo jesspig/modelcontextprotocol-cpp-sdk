@@ -387,23 +387,49 @@ inline void from_json(const nlohmann::json& j, InitializeRequestParams& v) {
     v.client_info = j.at("clientInfo").get<Implementation>();
 }
 
+// ====================================================================
+// Subscription
+// ====================================================================
+struct SubscriptionFilter {
+    std::optional<bool> tools_list_changed;
+    std::optional<bool> prompts_list_changed;
+    std::optional<bool> resources_list_changed;
+    std::vector<std::string> resource_subscriptions;
+};
+inline void to_json(nlohmann::json& j, const SubscriptionFilter& v) {
+    j = nlohmann::json::object();
+    if (v.tools_list_changed.has_value())     j["toolsListChanged"] = *v.tools_list_changed;
+    if (v.prompts_list_changed.has_value())   j["promptsListChanged"] = *v.prompts_list_changed;
+    if (v.resources_list_changed.has_value()) j["resourcesListChanged"] = *v.resources_list_changed;
+    if (!v.resource_subscriptions.empty())    j["resourceSubscriptions"] = v.resource_subscriptions;
+}
+inline void from_json(const nlohmann::json& j, SubscriptionFilter& v) {
+    if (auto it = j.find("toolsListChanged"); it != j.end())     v.tools_list_changed = it->get<bool>();
+    if (auto it = j.find("promptsListChanged"); it != j.end())   v.prompts_list_changed = it->get<bool>();
+    if (auto it = j.find("resourcesListChanged"); it != j.end()) v.resources_list_changed = it->get<bool>();
+    if (auto it = j.find("resourceSubscriptions"); it != j.end()) v.resource_subscriptions = it->get<decltype(v.resource_subscriptions)>();
+}
+
 struct SubscriptionsListenRequestParams {
-    std::optional<nlohmann::json> tools_filter;
-    std::optional<nlohmann::json> resources_filter;
-    std::optional<nlohmann::json> prompts_filter;
+    SubscriptionFilter notifications;
     std::optional<RequestMeta> meta;
 };
 inline void to_json(nlohmann::json& j, const SubscriptionsListenRequestParams& v) {
-    j = nlohmann::json::object();
-    if (v.tools_filter)     j["tools"] = *v.tools_filter;
-    if (v.resources_filter) j["resources"] = *v.resources_filter;
-    if (v.prompts_filter)   j["prompts"] = *v.prompts_filter;
-    if (v.meta)             j["_meta"] = *v.meta;
+    j = nlohmann::json{{"notifications", v.notifications}};
+    if (v.meta) j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, SubscriptionsListenRequestParams& v) {
-    if (auto it = j.find("tools"); it != j.end())     v.tools_filter = *it;
-    if (auto it = j.find("resources"); it != j.end()) v.resources_filter = *it;
-    if (auto it = j.find("prompts"); it != j.end())   v.prompts_filter = *it;
+    j.at("notifications").get_to(v.notifications);
+}
+
+struct SubscriptionsAcknowledgedNotificationParams {
+    SubscriptionFilter notifications;
+};
+inline void to_json(nlohmann::json& j, const SubscriptionsAcknowledgedNotificationParams& v) {
+    j = nlohmann::json{{"notifications", v.notifications}};
+}
+inline void from_json(const nlohmann::json& j, SubscriptionsAcknowledgedNotificationParams& v) {
+    j.at("notifications").get_to(v.notifications);
 }
 
 // ====================================================================
@@ -800,29 +826,6 @@ inline void from_json(const nlohmann::json& j, ListRootsResult& v) {
 }
 
 // ====================================================================
-// Subscription
-// ====================================================================
-struct SubscriptionFilter {
-    std::optional<bool> tools_list_changed;
-    std::optional<bool> prompts_list_changed;
-    std::optional<bool> resources_list_changed;
-    std::vector<std::string> resource_subscriptions;
-};
-inline void to_json(nlohmann::json& j, const SubscriptionFilter& v) {
-    j = nlohmann::json::object();
-    if (v.tools_list_changed)     j["toolsListChanged"] = *v.tools_list_changed;
-    if (v.prompts_list_changed)   j["promptsListChanged"] = *v.prompts_list_changed;
-    if (v.resources_list_changed) j["resourcesListChanged"] = *v.resources_list_changed;
-    if (!v.resource_subscriptions.empty()) j["resourceSubscriptions"] = v.resource_subscriptions;
-}
-inline void from_json(const nlohmann::json& j, SubscriptionFilter& v) {
-    if (auto it = j.find("toolsListChanged"); it != j.end())     v.tools_list_changed = it->get<bool>();
-    if (auto it = j.find("promptsListChanged"); it != j.end())   v.prompts_list_changed = it->get<bool>();
-    if (auto it = j.find("resourcesListChanged"); it != j.end()) v.resources_list_changed = it->get<bool>();
-    if (auto it = j.find("resourceSubscriptions"); it != j.end()) v.resource_subscriptions = it->get<decltype(v.resource_subscriptions)>();
-}
-
-// ====================================================================
 // RequestOptions / CacheableRequestOptions
 // ====================================================================
 struct RequestOptions {
@@ -856,12 +859,13 @@ inline void from_json(const nlohmann::json& j, SetLevelRequestParams& v) {
 struct GetTaskResult : Result {
     std::string task_id;
     std::string status;
+    std::string result_type{"task"};
     std::optional<nlohmann::json> result;
     std::optional<std::string> error_message;
     std::optional<nlohmann::json> input_required;
 };
 inline void to_json(nlohmann::json& j, const GetTaskResult& v) {
-    j = nlohmann::json{{"taskId", v.task_id}, {"status", v.status}};
+    j = nlohmann::json{{"taskId", v.task_id}, {"status", v.status}, {"resultType", v.result_type}};
     if (v.result)         j["result"] = *v.result;
     if (v.error_message)  j["errorMessage"] = *v.error_message;
     if (v.input_required) j["inputRequired"] = *v.input_required;
