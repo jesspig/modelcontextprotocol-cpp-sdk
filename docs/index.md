@@ -1,29 +1,24 @@
 ---
-layout: home
-
-hero:
-  name: MCP C++ SDK
-  text: Model Context Protocol for C++17
-  tagline: Build MCP servers and clients with full protocol support, dual-era WireCodec, and zero-cost abstractions.
-  actions:
-    - theme: brand
-      text: Get Started
-      link: /getting-started
-    - theme: alt
-      text: View on GitHub
-      link: https://github.com/modelcontextprotocol/cpp-sdk
-
-features:
-  - title: Full Protocol
-    details: Tools, Resources, Prompts, Elicitation, MRTR, Tasks, Subscriptions — all MCP primitives supported across both protocol eras.
-  - title: Dual Transports
-    details: Stdio, Streamable HTTP, SSE, WebSocket, and InMemory transports. Easy to extend with custom transports.
-  - title: Dual-Era WireCodec
-    details: Automatic version negotiation between 2025-11-25 (legacy) and 2026-07-28 (modern) protocol versions.
-  - title: C++17 Native
-    details: No GC, no heavy frameworks. Uses std::variant, smart pointers, asio, and nlohmann-json for type-safe, zero-cost abstractions.
-  - title: Tier 1 Ready
-    details: 216 tests, 122 conformance tests, OAuth PKCE, persistent storage backends, MessageFilter pipeline.
-  - title: Cross-Platform
-    details: Windows (MSVC, clang-cl), Linux (GCC, Clang), macOS (Clang). Single CMake preset for all platforms.
+lang: en-US
+title: MCP C++ SDK
 ---
+
+<script setup>
+import { useRouter } from 'vitepress'
+import { onMounted } from 'vue'
+
+const router = useRouter()
+onMounted(() => {
+  const lang = navigator.language || navigator.userLanguage
+  if (lang.startsWith('zh')) {
+    router.go('/zh/')
+  } else {
+    router.go('/en/')
+  }
+})
+</script>
+
+<div style="text-align:center;padding:4rem 0">
+  <p>Redirecting based on your browser language...</p>
+  <p><a href="/en/">English</a> | <a href="/zh/">简体中文</a></p>
+</div>
