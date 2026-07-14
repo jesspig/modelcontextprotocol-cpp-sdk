@@ -874,6 +874,7 @@ inline void to_json(nlohmann::json& j, const GetTaskResult& v) {
 inline void from_json(const nlohmann::json& j, GetTaskResult& v) {
     v.task_id = j.at("taskId").get<std::string>();
     v.status = j.at("status").get<std::string>();
+    if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<std::string>();
     if (auto it = j.find("result"); it != j.end()) v.result = *it;
     if (auto it = j.find("errorMessage"); it != j.end()) v.error_message = it->get<std::string>();
     if (auto it = j.find("inputRequired"); it != j.end()) v.input_required = *it;

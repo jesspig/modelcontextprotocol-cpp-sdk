@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <system_error>
 
 namespace mcp {
@@ -204,14 +205,14 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
 // ═══════════════════════════════════════════════════════════════════════
 // Response/Error handling (correlate with pending requests)
 // ═══════════════════════════════════════════════════════════════════════
-int64_t McpSessionHandler::GetNumericId(const RequestId& rid) {
+std::string McpSessionHandler::GetRequestIdKey(const RequestId& rid) {
     if (std::holds_alternative<int64_t>(rid))
-        return std::get<int64_t>(rid);
-    return static_cast<int64_t>(std::hash<std::string>{}(std::get<std::string>(rid)));
+        return std::to_string(std::get<int64_t>(rid));
+    return std::get<std::string>(rid);
 }
 
 void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
-    auto id = GetNumericId(resp.id);
+    auto id = GetRequestIdKey(resp.id);
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
     if (it != pending_.end()) {
@@ -224,7 +225,7 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
 }
 
 void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
-    auto id = GetNumericId(err.id);
+    auto id = GetRequestIdKey(err.id);
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
     if (it != pending_.end()) {
@@ -291,24 +292,25 @@ std::future<nlohmann::json> McpSessionHandler::SendRequest(
     if (timeout.count() > 0) {
         pending->timer = std::make_shared<asio::steady_timer>(io_ctx_);
         pending->timer->expires_after(timeout);
+        auto self = shared_from_this();
         pending->timer->async_wait(
-            [this, id, promise](asio::error_code ec) {
+            [self, id, promise](asio::error_code ec) {
                 if (ec) return;
-                std::lock_guard<std::mutex> lock(pending_mutex_);
-                auto it = pending_.find(id);
-                if (it != pending_.end()) {
+                std::lock_guard<std::mutex> lock(self->pending_mutex_);
+                auto it = self->pending_.find(std::to_string(id));
+                if (it != self->pending_.end()) {
                     nlohmann::json err;
                     err["code"] = static_cast<int32_t>(McpErrorCode::RequestTimeout);
                     err["message"] = "request timed out";
                     it->second->callback(std::move(err));
-                    pending_.erase(it);
+                    self->pending_.erase(it);
                 }
             });
     }
 
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        pending_[id] = pending;
+        pending_[std::to_string(id)] = pending;
     }
 
     // Apply outgoing filters for the request
@@ -408,24 +410,22 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     return meta;
 }
 
-void McpSessionHandler::PopulateContextFromMeta(JsonRpcRequest& req) {
-    // In C#: reads _meta and projects protocolVersion/clientInfo/clientCapabilities/logLevel into request.Context
-    // For C++: we update the req.meta with extracted values
-    // This is handled by ExtractIncomingMeta - kept for API compatibility
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Subscriptions
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::AddSubscription(Subscription sub) {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
     subscriptions_[sub.id] = std::move(sub);
 }
 
 void McpSessionHandler::RemoveSubscription(std::string_view id) {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
     subscriptions_.erase(std::string(id));
 }
 
 void McpSessionHandler::NotifySubscribers(std::string_view notification, nlohmann::json params) {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
     if (subscriptions_.empty()) return;
 
     for (const auto& [id, sub] : subscriptions_) {
@@ -456,19 +456,17 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     if (reason_it != p.end() && reason_it->is_string())
         reason = reason_it->get<std::string>();
 
-    // Resolve the request ID (int64 or string)
-    int64_t target_id = 0;
+    std::string target_id_key;
     if (req_id_it->is_number_integer()) {
-        target_id = req_id_it->get<int64_t>();
+        target_id_key = std::to_string(req_id_it->get<int64_t>());
     } else if (req_id_it->is_string()) {
-        target_id = static_cast<int64_t>(
-            std::hash<std::string>{}(req_id_it->get<std::string>()));
+        target_id_key = req_id_it->get<std::string>();
     } else {
         return;
     }
 
     std::lock_guard<std::mutex> lock(pending_mutex_);
-    auto it = pending_.find(target_id);
+    auto it = pending_.find(target_id_key);
     if (it != pending_.end() && it->second) {
         if (it->second->timer) it->second->timer->cancel();
         nlohmann::json err;

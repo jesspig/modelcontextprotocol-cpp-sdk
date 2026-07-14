@@ -71,7 +71,6 @@ public:
     // ── Meta helpers (2026-era) ──
     void StampOutgoingMeta(nlohmann::json& body, const RequestMeta& meta);
     IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
-    static void PopulateContextFromMeta(JsonRpcRequest& req);
 
     // ── Subscription management ──
     void AddSubscription(Subscription sub);
@@ -102,7 +101,7 @@ private:
     void OnNotification(const JsonRpcNotification& notif);
 
     // ── Request/response correlation ──
-    int64_t GetNumericId(const RequestId& rid);
+    static std::string GetRequestIdKey(const RequestId& rid);
     int64_t next_request_id_ = 1;
 
     // ── Members ──
@@ -118,11 +117,12 @@ private:
     std::unordered_map<std::string, NotificationHandler> notif_handlers_;
 
     // Pending request tracking (for response/error correlation)
-    std::unordered_map<int64_t, std::shared_ptr<PendingRequest>> pending_;
+    std::unordered_map<std::string, std::shared_ptr<PendingRequest>> pending_;
     std::mutex pending_mutex_;
 
     // Subscriptions
     std::unordered_map<std::string, Subscription> subscriptions_;
+    std::mutex subscriptions_mutex_;
 
     // Filter pipelines
     std::shared_ptr<FilterPipeline> incoming_filters_;

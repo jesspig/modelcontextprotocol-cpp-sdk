@@ -390,17 +390,6 @@ CallToolResult McpClient::CallTool(
         if (params.input_responses) req_json["inputResponses"] = *params.input_responses;
         if (params.request_state)   req_json["requestState"] = *params.request_state;
 
-        // Add _meta (for 2026 era)
-        if (meta.protocol_version >= "2026-07-28") {
-            auto meta_json = nlohmann::json::object();
-            meta_json["io.modelcontextprotocol/protocolVersion"] = meta.protocol_version;
-            if (meta.client_info)
-                meta_json["io.modelcontextprotocol/clientInfo"] = *meta.client_info;
-            if (meta.client_capabilities)
-                meta_json["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
-            req_json["_meta"] = std::move(meta_json);
-        }
-
         auto future = handler_->SendRequest(
             methods::kCallTool, req_json, meta, round_timeout);
         auto result_json = future.get();
@@ -655,26 +644,6 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
             result_json.value("message", "subscriptions/listen failed"));
     }
 
-    // Register notification handlers for list-changed events.
-    // These will clear cached lists when the server signals a change.
-    // Caches are handled during negotiation; extend with user callbacks when needed.
-    if (params.notifications.tools_list_changed.value_or(false)) {
-        handler_->SetNotificationHandler(notifications::kToolListChanged,
-            [](const JsonRpcNotification&) {
-            });
-    }
-
-    if (params.notifications.prompts_list_changed.value_or(false)) {
-        handler_->SetNotificationHandler(notifications::kPromptListChanged,
-            [](const JsonRpcNotification&) {
-            });
-    }
-
-    if (params.notifications.resources_list_changed.value_or(false)) {
-        handler_->SetNotificationHandler(notifications::kResourceListChanged,
-            [](const JsonRpcNotification&) {
-            });
-    }
 }
 
 } // namespace mcp

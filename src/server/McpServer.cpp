@@ -4,6 +4,7 @@
 #include <asio/post.hpp>
 #include <asio/signal_set.hpp>
 
+#include <thread>
 #include <set>
 
 namespace mcp {
@@ -417,16 +418,19 @@ void McpServer::HandleCallTool(
         *this, req, std::move(params), *io_ctx_ptr_);
 
     auto tool = it->second;
-    auto result_promise = std::make_shared<std::promise<CallToolResult>>();
-    auto result_future = result_promise->get_future();
-    tool->InvokeAsync(ctx, std::move(*result_promise));
-    try {
-        auto result = result_future.get();
-        nlohmann::json j = result;
-        promise.set_value(std::move(j));
-    } catch (...) {
-        promise.set_exception(std::current_exception());
-    }
+    std::thread([tool, ctx = std::move(ctx),
+                 promise = std::move(promise)]() mutable {
+        auto result_promise = std::make_shared<std::promise<CallToolResult>>();
+        auto result_future = result_promise->get_future();
+        tool->InvokeAsync(ctx, std::move(*result_promise));
+        try {
+            auto result = result_future.get();
+            nlohmann::json j = result;
+            promise.set_value(std::move(j));
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+        }
+    }).detach();
 }
 
 void McpServer::HandleListResources(
