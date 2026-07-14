@@ -61,7 +61,9 @@ TEST(McpServerTest, RegisterResource) {
             TextResourceContents trc;
             trc.uri = uri;
             trc.text = "static content";
-            return ReadResourceResult{{mcp::ResourceContents{trc}}};
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
         });
 
     EXPECT_TRUE(server->GetCapabilities().resources.has_value());
@@ -83,7 +85,9 @@ TEST(McpServerTest, RegisterResourceTemplate) {
             TextResourceContents trc;
             trc.uri = uri;
             trc.text = "param=" + vars.at("param");
-            return ReadResourceResult{{mcp::ResourceContents{trc}}};
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
         });
 
     EXPECT_TRUE(server->GetCapabilities().resources.has_value());

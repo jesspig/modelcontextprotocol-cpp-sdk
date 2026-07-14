@@ -48,7 +48,9 @@ int main() {
             TextResourceContents trc;
             trc.uri = uri;
             trc.text = "Echo!";
-            return ReadResourceResult{{ResourceContents{trc}}};
+            ReadResourceResult rr;
+            rr.contents = {ResourceContents{trc}};
+            return rr;
         });
 
     // 注册模板资源
@@ -60,7 +62,9 @@ int main() {
             TextResourceContents trc;
             trc.uri = uri;
             trc.text = "Echo: " + vars.at("text");
-            return ReadResourceResult{{ResourceContents{trc}}};
+            ReadResourceResult rr;
+            rr.contents = {ResourceContents{trc}};
+            return rr;
         });
 
     // 注册 prompt
