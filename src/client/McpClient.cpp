@@ -132,8 +132,7 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
 McpClient::McpClient(
     std::shared_ptr<ITransport> transport,
     ClientOptions options)
-    : io_ctx_()
-    , transport_(std::move(transport))
+    : transport_(std::move(transport))
     , options_(std::move(options))
 {
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
@@ -170,7 +169,6 @@ NegotiationResult McpClient::NegotiateProtocol() {
 // ====================================================================
 void McpClient::Close() {
     if (handler_) handler_->Close();
-    io_ctx_.stop();
 }
 
 // ====================================================================

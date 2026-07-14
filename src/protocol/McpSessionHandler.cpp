@@ -215,6 +215,7 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
     // Handle protocol-level notifications first
     if (notif.method == notifications::kCancelled) {
         HandleCancelled(notif);
+        return;
     }
 
     auto it = notif_handlers_.find(notif.method);
@@ -330,14 +331,17 @@ void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMet
     if (meta.protocol_version < "2026-07-28")
         return;
 
-    body["_meta"] = nlohmann::json::object();
-    body["_meta"]["io.modelcontextprotocol/protocolVersion"] = meta.protocol_version;
+    auto& meta_obj = body["_meta"];
+    if (meta_obj.is_null()) {
+        meta_obj = nlohmann::json::object();
+    }
+    meta_obj["io.modelcontextprotocol/protocolVersion"] = meta.protocol_version;
     if (meta.client_info)
-        body["_meta"]["io.modelcontextprotocol/clientInfo"] = *meta.client_info;
+        meta_obj["io.modelcontextprotocol/clientInfo"] = *meta.client_info;
     if (meta.client_capabilities)
-        body["_meta"]["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
+        meta_obj["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
     if (meta.log_level)
-        body["_meta"]["io.modelcontextprotocol/logLevel"] = *meta.log_level;
+        meta_obj["io.modelcontextprotocol/logLevel"] = *meta.log_level;
 }
 
 IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest& req) {
@@ -419,21 +423,29 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     if (reason_it != p.end() && reason_it->is_string())
         reason = reason_it->get<std::string>();
 
-    // Try to find the request ID (could be int or string)
-    // We iterate through pending to find matching ID
-    std::lock_guard<std::mutex> lock(pending_mutex_);
-    for (auto& [id, pending] : pending_) {
-        if (pending) {
-            if (pending->timer) pending->timer->cancel();
-            nlohmann::json err;
-            err["code"] = static_cast<int32_t>(McpErrorCode::RequestCancelled);
-            err["message"] = "request cancelled";
-            if (!reason.empty())
-                err["data"]["reason"] = reason;
-            pending->callback(std::move(err));
-        }
+    // Resolve the request ID (int64 or string)
+    int64_t target_id = 0;
+    if (req_id_it->is_number_integer()) {
+        target_id = req_id_it->get<int64_t>();
+    } else if (req_id_it->is_string()) {
+        target_id = static_cast<int64_t>(
+            std::hash<std::string>{}(req_id_it->get<std::string>()));
+    } else {
+        return;
     }
-    pending_.clear();
+
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    auto it = pending_.find(target_id);
+    if (it != pending_.end() && it->second) {
+        if (it->second->timer) it->second->timer->cancel();
+        nlohmann::json err;
+        err["code"] = static_cast<int32_t>(McpErrorCode::RequestCancelled);
+        err["message"] = "request cancelled";
+        if (!reason.empty())
+            err["data"]["reason"] = reason;
+        it->second->callback(std::move(err));
+        pending_.erase(it);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

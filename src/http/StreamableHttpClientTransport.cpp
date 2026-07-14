@@ -85,6 +85,7 @@ public:
     void Start() {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] { SendLoop(); });
+        io_thread_ = std::thread([this]() { io_ctx_->run(); });
     }
 
     void Close() override {
@@ -95,6 +96,8 @@ public:
         }
         if (sse_thread_.joinable()) sse_thread_.join();
         if (send_thread_.joinable()) send_thread_.join();
+        io_ctx_->stop();
+        if (io_thread_.joinable()) io_thread_.join();
         if (channel_) channel_->Close();
         SetDisconnected();
     }
@@ -272,6 +275,7 @@ private:
     HttpClientTransportOptions options_;
     std::thread send_thread_;
     std::thread sse_thread_;
+    std::thread io_thread_;
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;

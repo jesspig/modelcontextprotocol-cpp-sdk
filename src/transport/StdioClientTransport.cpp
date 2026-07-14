@@ -35,6 +35,7 @@ public:
     void Start() {
         running_ = true;
         read_thread_ = std::thread([this]() { ReadThread(); });
+        io_thread_ = std::thread([this]() { io_ctx_->run(); });
         SetConnected();
     }
 
@@ -67,6 +68,11 @@ public:
 
         if (read_thread_.joinable()) {
             read_thread_.join();
+        }
+
+        io_ctx_->stop();
+        if (io_thread_.joinable()) {
+            io_thread_.join();
         }
 
         if (channel_) channel_->Close();
@@ -120,6 +126,7 @@ private:
 
     std::shared_ptr<asio::io_context> io_ctx_;
     std::thread read_thread_;
+    std::thread io_thread_;
     PROCESS_INFORMATION process_info_{};
     HANDLE stdin_write_ = INVALID_HANDLE_VALUE;
     HANDLE stdout_read_ = INVALID_HANDLE_VALUE;

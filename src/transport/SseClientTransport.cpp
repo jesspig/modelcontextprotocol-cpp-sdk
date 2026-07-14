@@ -168,6 +168,7 @@ public:
         url_ = ParseUrl(server_url_);
         sse_thread_ = std::thread([this] { SseReadLoop(); });
         send_thread_ = std::thread([this] { SendLoop(); });
+        io_thread_ = std::thread([this]() { io_ctx_->run(); });
     }
 
     void Close() override {
@@ -199,6 +200,10 @@ public:
             send_thread_.join();
         if (sse_thread_.joinable())
             sse_thread_.join();
+
+        io_ctx_->stop();
+        if (io_thread_.joinable())
+            io_thread_.join();
 
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -437,9 +442,10 @@ private:
     HINTERNET hConnect_ = nullptr;
     HINTERNET hGetRequest_ = nullptr;
 
-    // SSE reader thread + send thread
+    // SSE reader thread + send thread + io_context runner
     std::thread sse_thread_;
     std::thread send_thread_;
+    std::thread io_thread_;
     std::atomic<bool> running_{false};
 
     // Send queue (producer: SendMessageAsync / consumer: SendLoop)

@@ -105,7 +105,6 @@ private:
         std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
     // State
-    asio::io_context io_ctx_;
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
     ClientOptions options_;
