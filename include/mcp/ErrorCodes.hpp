@@ -16,6 +16,7 @@ enum class McpErrorCode : int32_t {
     UrlElicitationRequired = -32042,
     ConnectionClosed = -32000,
     RequestTimeout = -32001,
+    RequestCancelled = -32800,
 };
 
 } // namespace mcp

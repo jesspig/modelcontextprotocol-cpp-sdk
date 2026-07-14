@@ -70,17 +70,20 @@ struct JsonRpcNotification {
     std::string jsonrpc = "2.0";
     std::string method;
     std::optional<nlohmann::json> params;
+    std::optional<nlohmann::json> meta;   // top-level _meta (2026 era)
 };
 inline void to_json(nlohmann::json& j, const JsonRpcNotification& v) {
     j = nlohmann::json::object();
     j["jsonrpc"] = v.jsonrpc;
     j["method"] = v.method;
     if (v.params) j["params"] = *v.params;
+    if (v.meta)   j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, JsonRpcNotification& v) {
     j.at("jsonrpc").get_to(v.jsonrpc);
     v.method = j.at("method").get<std::string>();
     if (auto it = j.find("params"); it != j.end()) v.params = *it;
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = *it;
 }
 
 // ── JsonRpcResponse ──

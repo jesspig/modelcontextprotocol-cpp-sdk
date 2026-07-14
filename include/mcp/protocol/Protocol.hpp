@@ -2,6 +2,7 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/Methods.hpp>
 
 #include <asio/steady_timer.hpp>
 #include <asio/io_context.hpp>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace mcp {
 
@@ -25,9 +27,28 @@ using NotificationHandler = std::function<
 // ── Callback for pending requests ──
 using ResponseCallback = std::function<void(nlohmann::json)>;
 
+// ── Per-request _meta extraction result (2026 era) ──
+struct IncomingRequestMeta {
+    std::string protocol_version;
+    std::optional<Implementation> client_info;
+    std::optional<ClientCapabilities> client_capabilities;
+    std::optional<LoggingLevel> log_level;
+    std::optional<ProgressToken> progress_token;
+    std::optional<std::string> subscription_id;
+};
+
+// ── Active subscription entry ──
+struct Subscription {
+    std::string id;
+    std::optional<std::string> tools_filter;
+    std::optional<std::string> resources_filter;
+    std::optional<std::string> prompts_filter;
+};
+
 // ── Protocol — base protocol engine ──
 // Handles: JSON-RPC framing, request/response correlation,
-//          timeout, handler dispatch, per-request _meta envelopes.
+//          timeout, handler dispatch, per-request _meta envelopes,
+//          subscription/listen management, cancelled notification handling.
 class Protocol : public std::enable_shared_from_this<Protocol> {
 public:
     Protocol(
@@ -54,6 +75,20 @@ public:
     void SendNotification(
         std::string_view method,
         nlohmann::json params = {});
+
+    // ── Per-request _meta extraction ──
+    IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
+
+    // ── Subscription/listen management ──
+    void AddSubscription(Subscription sub);
+    void RemoveSubscription(std::string_view id);
+    void NotifySubscribers(std::string_view notification, nlohmann::json params);
+
+    // ── MRTR result type discrimination ──
+    bool IsInputRequired(const nlohmann::json& result);
+
+    // ── Cancelled notification handling ──
+    void HandleCancelled(const JsonRpcNotification& notif);
 
     // ── Handler registration ──
     void SetRequestHandler(
@@ -101,6 +136,8 @@ private:
     int64_t next_request_id_ = 1;
     bool started_ = false;
     bool closed_ = false;
+
+    std::unordered_map<std::string, Subscription> subscriptions_;
 };
 
 } // namespace mcp

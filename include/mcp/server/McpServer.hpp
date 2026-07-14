@@ -19,9 +19,13 @@ namespace mcp {
 class McpServer {
 public:
     // ── Factory ──
+    // If io_ctx is provided, use it instead of creating an internal one.
+    // This is required for transports (e.g., StdioServerTransport) that need
+    // to share the same io_context with the protocol.
     static std::unique_ptr<McpServer> Create(
         std::unique_ptr<Transport> transport,
-        const ServerOptions& options = {});
+        const ServerOptions& options = {},
+        asio::io_context* io_ctx = nullptr);
 
     virtual ~McpServer() = default;
 
@@ -84,12 +88,13 @@ public:
 
     // ── Internal access (for RequestContext) ──
     Protocol& GetProtocol() { return *protocol_; }
-    asio::io_context& IoContext() { return io_ctx_; }
+    asio::io_context& IoContext() { return *io_ctx_ptr_; }
 
 private:
     McpServer(
         std::unique_ptr<Transport> transport,
-        ServerOptions options);
+        ServerOptions options,
+        asio::io_context* external_io_ctx);
 
     // ── Auto-wire handlers from registered tools/resources/prompts ──
     void WireHandlers();
@@ -116,7 +121,10 @@ private:
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
 
     // ── State ──
-    asio::io_context io_ctx_;
+    // io_ctx_ptr_ owns the io_context if created internally; otherwise
+    // it references an external io_context. io_ctx_ is always valid.
+    std::unique_ptr<asio::io_context> io_ctx_owner_;
+    asio::io_context* io_ctx_ptr_;
     std::unique_ptr<Transport> transport_;
     std::shared_ptr<Protocol> protocol_;
     ServerOptions options_;

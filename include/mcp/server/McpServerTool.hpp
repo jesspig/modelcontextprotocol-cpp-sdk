@@ -66,22 +66,20 @@ public:
         const RequestContext<CallToolRequestParams>& ctx,
         std::promise<CallToolResult> result_promise) override
     {
-        std::thread([this, &ctx, promise = std::move(result_promise)]() mutable {
-            try {
-                auto result = callable_(ctx);
-                promise.set_value(std::move(result));
-            } catch (const McpError& e) {
-                CallToolResult err_result;
-                err_result.is_error = true;
-                err_result.content.push_back(TextContent{"text", e.what()});
-                promise.set_value(std::move(err_result));
-            } catch (...) {
-                CallToolResult err_result;
-                err_result.is_error = true;
-                err_result.content.push_back(TextContent{"text", "internal error"});
-                promise.set_value(std::move(err_result));
-            }
-        }).detach();
+        try {
+            auto result = callable_(ctx);
+            result_promise.set_value(std::move(result));
+        } catch (const McpError& e) {
+            CallToolResult err_result;
+            err_result.is_error = true;
+            err_result.content.push_back(TextContent{"text", e.what()});
+            result_promise.set_value(std::move(err_result));
+        } catch (...) {
+            CallToolResult err_result;
+            err_result.is_error = true;
+            err_result.content.push_back(TextContent{"text", "internal error"});
+            result_promise.set_value(std::move(err_result));
+        }
     }
 
 private:

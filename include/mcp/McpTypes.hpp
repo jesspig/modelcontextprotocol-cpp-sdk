@@ -251,6 +251,7 @@ inline void to_json(nlohmann::json& j, const CallToolRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, CallToolRequestParams& v) {
     v.name = j.at("name").get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end()) v.meta = *it;
     if (auto it = j.find("arguments"); it != j.end()) v.arguments = *it;
     if (auto it = j.find("inputResponses"); it != j.end()) v.input_responses = *it;
     if (auto it = j.find("requestState"); it != j.end()) v.request_state = it->get<std::string>();

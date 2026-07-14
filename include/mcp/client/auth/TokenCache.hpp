@@ -46,11 +46,13 @@ struct OAuthMetadata {
     std::string issuer;
     std::string authorization_endpoint;
     std::string token_endpoint;
+    std::optional<std::string> revocation_endpoint;
     std::optional<std::string> registration_endpoint;
+    std::optional<std::string> jwks_uri;
     std::vector<std::string> scopes_supported;
+    std::vector<std::string> response_types_supported;
     std::vector<std::string> grant_types_supported;
     std::vector<std::string> code_challenge_methods_supported;
-    std::optional<std::string> jwks_uri;
 
     static std::optional<OAuthMetadata> Discover(std::string_view server_url);
 };

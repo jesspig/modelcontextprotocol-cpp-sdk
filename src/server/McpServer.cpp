@@ -13,20 +13,23 @@ namespace mcp {
 // ====================================================================
 std::unique_ptr<McpServer> McpServer::Create(
     std::unique_ptr<Transport> transport,
-    const ServerOptions& options)
+    const ServerOptions& options,
+    asio::io_context* io_ctx)
 {
     return std::unique_ptr<McpServer>(
-        new McpServer(std::move(transport), options));
+        new McpServer(std::move(transport), options, io_ctx));
 }
 
 McpServer::McpServer(
     std::unique_ptr<Transport> transport,
-    ServerOptions options)
-    : io_ctx_()
+    ServerOptions options,
+    asio::io_context* external_io_ctx)
+    : io_ctx_owner_(external_io_ctx ? nullptr : std::make_unique<asio::io_context>())
+    , io_ctx_ptr_(external_io_ctx ? external_io_ctx : io_ctx_owner_.get())
     , transport_(std::move(transport))
     , options_(std::move(options))
 {
-    protocol_ = std::make_shared<Protocol>(io_ctx_, std::move(transport_));
+    protocol_ = std::make_shared<Protocol>(*io_ctx_ptr_, std::move(transport_));
 
     // Wire built-in handlers
     WireHandlers();
@@ -47,12 +50,12 @@ McpServer::McpServer(
 // Lifecycle
 // ====================================================================
 void McpServer::Run() {
-    io_ctx_.run();
+    io_ctx_ptr_->run();
 }
 
 void McpServer::Close() {
     protocol_->Close();
-    io_ctx_.stop();
+    io_ctx_ptr_->stop();
 }
 
 // ====================================================================
@@ -376,22 +379,19 @@ void McpServer::HandleCallTool(
 
     // Build RequestContext and invoke
     auto ctx = RequestContext<CallToolRequestParams>(
-        *this, req, std::move(params), io_ctx_);
+        *this, req, std::move(params), *io_ctx_ptr_);
 
     auto tool = it->second;
-    std::thread([tool, ctx = std::move(ctx),
-                 promise = std::move(promise)]() mutable {
-        auto result_promise = std::make_shared<std::promise<CallToolResult>>();
-        auto result_future = result_promise->get_future();
-        tool->InvokeAsync(ctx, std::move(*result_promise));
-        try {
-            auto result = result_future.get();
-            nlohmann::json j = result;
-            promise.set_value(std::move(j));
-        } catch (...) {
-            promise.set_exception(std::current_exception());
-        }
-    }).detach();
+    auto result_promise = std::make_shared<std::promise<CallToolResult>>();
+    auto result_future = result_promise->get_future();
+    tool->InvokeAsync(ctx, std::move(*result_promise));
+    try {
+        auto result = result_future.get();
+        nlohmann::json j = result;
+        promise.set_value(std::move(j));
+    } catch (...) {
+        promise.set_exception(std::current_exception());
+    }
 }
 
 void McpServer::HandleListResources(
@@ -512,10 +512,14 @@ void McpServer::HandleDiscover(
         kLatestProtocolVersion.data()
     };
     result.capabilities = capabilities_;
-    result.server_info = Implementation{
-        options_.server_info->name,
-        options_.server_info->version
-    };
+    if (options_.server_info) {
+        result.server_info = Implementation{
+            options_.server_info->name,
+            options_.server_info->version
+        };
+    } else {
+        result.server_info = Implementation{"mcp-server", "0.1.0"};
+    }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }
