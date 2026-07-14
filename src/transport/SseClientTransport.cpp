@@ -4,8 +4,16 @@
 #include <asio/experimental/channel.hpp>
 #include <asio/post.hpp>
 
+#ifdef _WIN32
 #include <winhttp.h>
 #include <windows.h>
+#else
+#include <mcp/transport/detail/http_client.hpp>
+#include <asio/connect.hpp>
+#include <asio/ip/tcp.hpp>
+#include <asio/read.hpp>
+#include <asio/write.hpp>
+#endif
 
 #include <atomic>
 #include <condition_variable>
@@ -17,7 +25,9 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
+#endif
 
 namespace mcp {
 
@@ -128,6 +138,7 @@ SseEvent ParseSseEvent(const std::string& block) {
     return evt;
 }
 
+#ifdef _WIN32
 // Widen a UTF-8 string for WinAPI
 std::wstring ToWide(const std::string& s) {
     if (s.empty()) return {};
@@ -139,6 +150,7 @@ std::wstring ToWide(const std::string& s) {
                         static_cast<int>(s.size()), &w[0], len);
     return w;
 }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════
 // SseClientSessionTransport  (anonymous namespace)
@@ -181,6 +193,7 @@ public:
             send_cv_.notify_one();
         }
 
+#ifdef _WIN32
         // Abort GET request — unblocks WinHttpReadData in SseReadLoop
         if (hGetRequest_) {
             WinHttpCloseHandle(hGetRequest_);
@@ -194,6 +207,14 @@ public:
             WinHttpCloseHandle(hSession_);
             hSession_ = nullptr;
         }
+#else
+        // Close SSE socket — unblocks read_some in SseReadLoop
+        if (sse_socket_) {
+            asio::error_code ec;
+            sse_socket_->close(ec);
+            sse_socket_.reset();
+        }
+#endif
 
         // Join threads
         if (send_thread_.joinable())
@@ -227,6 +248,7 @@ private:
     // ── SSE read thread ──
 
     void SseReadLoop() {
+#ifdef _WIN32
         hSession_ = WinHttpOpen(L"MCP-SSE-Client/1.0",
                                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                 WINHTTP_NO_PROXY_NAME,
@@ -264,7 +286,6 @@ private:
             return;
         }
 
-        // Tell server we want SSE
         static const wchar_t accept_hdr[] = L"Accept: text/event-stream\r\n";
         WinHttpAddRequestHeaders(hGetRequest_, accept_hdr,
                                  static_cast<DWORD>(wcslen(accept_hdr)),
@@ -309,6 +330,67 @@ private:
                 DispatchSseEvent(block);
             }
         }
+#else
+        try {
+            asio::io_context sse_ctx;
+            asio::ip::tcp::resolver resolver(sse_ctx);
+            sse_socket_ = std::make_shared<asio::ip::tcp::socket>(sse_ctx);
+
+            auto endpoints = resolver.resolve(url_.host,
+                                              std::to_string(url_.port));
+            asio::connect(*sse_socket_, endpoints);
+
+            std::string request =
+                "GET " + url_.path + " HTTP/1.1\r\n"
+                "Host: " + url_.host + "\r\n"
+                "Accept: text/event-stream\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n";
+
+            asio::write(*sse_socket_, asio::buffer(request));
+
+            // Read response headers
+            asio::error_code ec;
+            std::string header_buf;
+            while (running_) {
+                char c = 0;
+                size_t n = sse_socket_->read_some(asio::buffer(&c, 1), ec);
+                if (ec || n == 0) break;
+                header_buf += c;
+                if (header_buf.size() >= 4 &&
+                    header_buf.substr(header_buf.size() - 4) == "\r\n\r\n")
+                    break;
+            }
+
+            if (!running_) {
+                sse_socket_->close(ec);
+                sse_socket_.reset();
+                return;
+            }
+
+            // Read SSE stream
+            std::string buffer;
+            while (running_) {
+                char chunk[4096];
+                size_t len = sse_socket_->read_some(asio::buffer(chunk), ec);
+                if (ec) break;
+
+                buffer.append(chunk, len);
+
+                size_t pos;
+                while ((pos = buffer.find("\n\n")) != std::string::npos) {
+                    auto block = buffer.substr(0, pos);
+                    buffer.erase(0, pos + 2);
+                    DispatchSseEvent(block);
+                }
+            }
+        } catch (const std::exception& e) {
+            if (running_)
+                NotifyError(std::string("SSE read error: ") + e.what());
+        }
+
+        sse_socket_.reset();
+#endif
 
         // Connection lost — notify unless we initiated the close
         if (running_.exchange(false)) {
@@ -373,6 +455,7 @@ private:
             ep = ParseUrl(endpoint_url_);
         }
 
+#ifdef _WIN32
         HINTERNET hSession = WinHttpOpen(
             L"MCP-SSE-Client/1.0",
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -427,6 +510,15 @@ private:
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
+#else
+        (void)ep;
+        try {
+            asio::io_context tmp_ctx;
+            detail::HttpPost(tmp_ctx, endpoint_url_, body);
+        } catch (...) {
+            // Silently ignore (matches WinHTTP behavior)
+        }
+#endif
     }
 
     // ── Members ──
@@ -437,10 +529,15 @@ private:
     std::string endpoint_url_;
     UrlComponents url_;
 
+#ifdef _WIN32
     // WinHTTP handles (owned by SseReadLoop)
     HINTERNET hSession_ = nullptr;
     HINTERNET hConnect_ = nullptr;
     HINTERNET hGetRequest_ = nullptr;
+#else
+    // asio socket for SSE streaming (owned by SseReadLoop)
+    std::shared_ptr<asio::ip::tcp::socket> sse_socket_;
+#endif
 
     // SSE reader thread + send thread + io_context runner
     std::thread sse_thread_;
