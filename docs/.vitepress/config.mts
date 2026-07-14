@@ -79,7 +79,7 @@ const zh = {
 export default defineConfig({
   title: 'MCP C++ SDK',
   description: 'C++17 implementation of the Model Context Protocol',
-  base: '/',
+  base: '/modelcontextprotocol-cpp-sdk/',
 
   locales: {
     en: {

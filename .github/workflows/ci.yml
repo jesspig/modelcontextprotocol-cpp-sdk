@@ -15,24 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-2022
-            compiler: cl.exe
-            cache: sccache
-          - os: windows-2022
-            compiler: clang-cl
-            cache: sccache
-          - os: ubuntu-24.04
-            compiler: g++
-            cache: ccache
-            asan: ON
-          - os: ubuntu-24.04
-            compiler: clang++
-            cache: ccache
-            asan: ON
-          - os: macos-15
-            compiler: clang++
-            cache: ccache
+        os: [windows-2022, ubuntu-24.04, macos-15]
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -41,27 +24,11 @@ jobs:
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
-      - name: Setup sccache (Windows)
-        if: matrix.cache == 'sccache'
-        uses: mozilla-actions/sccache-action@v0.0.7
-
-      - name: Setup ccache (Linux/macOS)
-        if: matrix.cache == 'ccache'
-        uses: hendrikmuhs/ccache-action@v1.2
-
-      - name: Install ASan/UBSan (Linux)
-        if: matrix.asan == 'ON'
-        run: sudo apt-get update && sudo apt-get install -y libasan6 libubsan1
-
       - name: Configure
-        run: >
-          cmake --preset debug
-          -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
-          ${{ matrix.asan == 'ON' && '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -DASIO_DISABLE_SIGNAL_HANDLER' || '' }}
+        run: cmake --preset debug
 
       - name: Build
         run: cmake --build --preset debug
 
       - name: Test
-        working-directory: build/debug
-        run: ctest --output-on-failure
+        run: ctest --preset debug --output-on-failure

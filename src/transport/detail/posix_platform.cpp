@@ -206,8 +206,31 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
             for (auto& es : env_strings) envp.push_back(es.data());
             envp.push_back(nullptr);
 
-            // Use execvpe for PATH search with custom env
-            execvpe(info.command.c_str(), argv.data(), envp.data());
+            // execvpe is not available on macOS/BSD.
+            // Search PATH manually, then use execve.
+            std::string resolved = info.command;
+            if (resolved.find('/') == std::string::npos) {
+                const char* path_env = getenv("PATH");
+                if (path_env) {
+                    std::string path(path_env);
+                    size_t start = 0, end;
+                    while ((end = path.find(':', start)) != std::string::npos) {
+                        std::string candidate = path.substr(start, end - start)
+                                              + "/" + info.command;
+                        if (access(candidate.c_str(), X_OK) == 0) {
+                            resolved = candidate;
+                            break;
+                        }
+                        start = end + 1;
+                    }
+                    if (resolved == info.command) {
+                        std::string candidate = path.substr(start) + "/" + info.command;
+                        if (access(candidate.c_str(), X_OK) == 0)
+                            resolved = candidate;
+                    }
+                }
+            }
+            execve(resolved.c_str(), argv.data(), envp.data());
         } else {
             execvp(info.command.c_str(), argv.data());
         }
