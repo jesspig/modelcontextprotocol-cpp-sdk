@@ -111,7 +111,6 @@ public:
 
     bool HasRequestMethod(std::string_view method) const override {
         static const std::unordered_set<std::string> methods = {
-            "ping",
             "server/discover",
             "tools/list", "tools/call",
             "resources/list", "resources/read", "resources/templates/list",
@@ -151,7 +150,7 @@ public:
         }
         // Verify _meta is present for requests that require it
         // (all client-initiated requests in 2026 era)
-        if (method != "server/discover" && method != "ping" &&
+        if (method != "server/discover" &&
             !raw.contains("_meta")) {
             return WireValidation::Invalid;
         }

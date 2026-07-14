@@ -215,6 +215,11 @@ inline void from_json(const nlohmann::json& j, Pagination& v) {
 // ====================================================================
 enum class ResultType { Complete, InputRequired };
 
+NLOHMANN_JSON_SERIALIZE_ENUM(ResultType, {
+    {ResultType::Complete, "complete"},
+    {ResultType::InputRequired, "input_required"},
+})
+
 struct Result {
     std::optional<nlohmann::json> meta;
 };
@@ -428,68 +433,83 @@ inline void from_json(const nlohmann::json& j, CallToolResult& v) {
 struct ListToolsResult : Result {
     std::vector<Tool> tools;
     std::optional<std::string> next_cursor;
+    std::optional<CacheHint> cache_hint;
 };
 inline void to_json(nlohmann::json& j, const ListToolsResult& v) {
     j = nlohmann::json{{"tools", v.tools}};
     if (v.next_cursor) j["nextCursor"] = *v.next_cursor;
+    if (v.cache_hint)  j["cacheHint"] = *v.cache_hint;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, ListToolsResult& v) {
     v.tools = j.at("tools").get<decltype(v.tools)>();
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
+    if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
 }
 
 struct ListResourcesResult : Result {
     std::vector<Resource> resources;
     std::optional<std::string> next_cursor;
+    std::optional<CacheHint> cache_hint;
 };
 inline void to_json(nlohmann::json& j, const ListResourcesResult& v) {
     j = nlohmann::json{{"resources", v.resources}};
     if (v.next_cursor) j["nextCursor"] = *v.next_cursor;
+    if (v.cache_hint)  j["cacheHint"] = *v.cache_hint;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, ListResourcesResult& v) {
     v.resources = j.at("resources").get<decltype(v.resources)>();
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
+    if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
 }
 
 struct ListResourceTemplatesResult : Result {
     std::vector<ResourceTemplate> resource_templates;
     std::optional<std::string> next_cursor;
+    std::optional<CacheHint> cache_hint;
 };
 inline void to_json(nlohmann::json& j, const ListResourceTemplatesResult& v) {
     j = nlohmann::json{{"resourceTemplates", v.resource_templates}};
     if (v.next_cursor) j["nextCursor"] = *v.next_cursor;
+    if (v.cache_hint)  j["cacheHint"] = *v.cache_hint;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, ListResourceTemplatesResult& v) {
     v.resource_templates = j.at("resourceTemplates").get<decltype(v.resource_templates)>();
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
+    if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
 }
 
 struct ReadResourceResult : Result {
     std::vector<ResourceContents> contents;
+    std::optional<CacheHint> cache_hint;
 };
 inline void to_json(nlohmann::json& j, const ReadResourceResult& v) {
     j = nlohmann::json{{"contents", v.contents}};
-    if (v.meta) j["_meta"] = *v.meta;
+    if (v.cache_hint) j["cacheHint"] = *v.cache_hint;
+    if (v.meta)       j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, ReadResourceResult& v) {
     v.contents = j.at("contents").get<decltype(v.contents)>();
+    if (auto it = j.find("cacheHint"); it != j.end()) v.cache_hint = it->get<CacheHint>();
 }
 
 struct ListPromptsResult : Result {
     std::vector<Prompt> prompts;
     std::optional<std::string> next_cursor;
+    std::optional<CacheHint> cache_hint;
 };
 inline void to_json(nlohmann::json& j, const ListPromptsResult& v) {
     j = nlohmann::json{{"prompts", v.prompts}};
     if (v.next_cursor) j["nextCursor"] = *v.next_cursor;
+    if (v.cache_hint)  j["cacheHint"] = *v.cache_hint;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, ListPromptsResult& v) {
     v.prompts = j.at("prompts").get<decltype(v.prompts)>();
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
+    if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
 }
 
 struct GetPromptResult : Result {
@@ -540,10 +560,12 @@ struct DiscoverResult : Result {
     ServerCapabilities capabilities;
     Implementation server_info;
     std::optional<std::string> instructions;
+    std::optional<CacheHint> cache_hint;
 };
 inline void to_json(nlohmann::json& j, const DiscoverResult& v) {
     j = nlohmann::json{{"supportedVersions", v.supported_versions}, {"capabilities", v.capabilities}, {"serverInfo", v.server_info}};
     if (v.instructions) j["instructions"] = *v.instructions;
+    if (v.cache_hint)   j["cacheHint"] = *v.cache_hint;
     if (v.meta)         j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, DiscoverResult& v) {
@@ -551,6 +573,7 @@ inline void from_json(const nlohmann::json& j, DiscoverResult& v) {
     v.capabilities = j.at("capabilities").get<ServerCapabilities>();
     v.server_info = j.at("serverInfo").get<Implementation>();
     if (auto it = j.find("instructions"); it != j.end()) v.instructions = it->get<std::string>();
+    if (auto it = j.find("cacheHint"); it != j.end())    v.cache_hint = it->get<CacheHint>();
 }
 
 struct PingResult : Result {};
