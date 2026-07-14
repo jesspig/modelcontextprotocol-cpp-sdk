@@ -1,16 +1,18 @@
 #pragma once
 
 #include <mcp/Transport.hpp>
+#include <mcp/transport/HttpTransportMode.hpp>
+
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <queue>
 #include <string>
-#include <map>
+#include <thread>
+#include <vector>
 
 namespace mcp {
-
-enum class HttpTransportMode {
-    AutoDetect,
-    StreamableHttp,
-    Sse,
-};
 
 struct HttpClientTransportOptions {
     std::string endpoint;
