@@ -5,6 +5,8 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
+#include <asio/io_context.hpp>
+
 #include <iostream>
 #include <memory>
 #include <string>
@@ -14,14 +16,15 @@ using Ctx = RequestContext<CallToolRequestParams>;
 
 int main() {
     // 创建 stdio 传输
-    auto transport = std::make_unique<StdioServerTransport>();
+    asio::io_context io_ctx;
+    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
 
     // 创建服务器
     ServerOptions opts;
     opts.server_info = Implementation{"EchoServer", "1.0.0"};
     opts.server_instructions = "An echo server — sends back what you send.";
 
-    auto server = McpServer::Create(std::move(transport), opts);
+    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
 
     // 注册 echo 工具
     server->RegisterTool("echo",
