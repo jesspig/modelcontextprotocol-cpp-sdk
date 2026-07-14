@@ -13,15 +13,13 @@ C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Build Instructions](#build-instructions)
 - [Architecture](#architecture)
 - [Transports](#transports)
 - [Usage](#usage)
 - [OAuth Support](#oauth-support)
 - [Protocol Versions](#protocol-versions)
+- [Conformance Tests](#conformance-tests)
 - [Examples](#examples)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
 - [Related Projects](#related-projects)
 - [License](#license)
 
@@ -29,11 +27,11 @@ C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 
 ## What is MCP?
 
-The [Model Context Protocol](https://modelcontextprotocol.io) lets you build servers that expose data and functionality to LLM applications in a secure, standardized way. Think of it like a web API, but designed for LLM interactions. With this SDK you can:
+The [Model Context Protocol](https://modelcontextprotocol.io) lets you build servers that expose data and functionality to LLM applications in a secure, standardized way. With this SDK you can:
 
 - **Build MCP servers** that expose tools, resources, and prompts to any MCP host
 - **Build MCP clients** that connect to any MCP server
-- Support every standard transport: stdio, Streamable HTTP, and SSE
+- Support every standard transport: stdio, Streamable HTTP, SSE, WebSocket
 
 ## Requirements
 
@@ -56,7 +54,7 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/modelcontextprotocol/cpp-sdk
-    GIT_TAG        main  # or a specific release tag
+    GIT_TAG        main
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
@@ -68,68 +66,45 @@ Available library targets: `mcp-core` (header-only), `mcp-transport`, `mcp-proto
 ## Quick Start
 
 ```bash
-# Configure
-cmake --preset debug
-
-# Build
-cmake --build --preset debug
-
-# Run tests
-cd build/debug && ctest --output-on-failure
-```
-
-## Build Instructions
-
-```bash
-# Debug build (auto-detects compiler on any platform)
 cmake --preset debug
 cmake --build --preset debug
-
-# Release build (optimized with LTO)
-cmake --preset release
-cmake --build --preset release
-
-# CI build (RelWithDebInfo, no compiler cache)
-cmake --preset ci
-cmake --build --preset ci
-ctest --preset ci
+ctest --preset debug --output-on-failure
 ```
 
-Platform-specific presets (`win-msvc-*`, `win-clang-cl-*`, `linux-gcc-*`, `linux-clang-*`) are also available when you need to target a specific compiler.
+Configure presets: `debug`, `release`. Ninja generator required.
 
 ## Architecture
 
-The SDK is organized into layered components:
-
 ```
 ┌─────────────────────────────────────┐
-│  mcp-server        mcp-client       │  — Server & Client API
+│  mcp-server        mcp-client       │  Server & Client API
 ├─────────────────────────────────────┤
-│  mcp-protocol                       │  — WireCodec, version negotiation
+│  mcp-protocol                       │  WireCodec, version negotiation
 ├─────────────────────────────────────┤
-│  mcp-transport                      │  — I/O transports
+│  mcp-transport                      │  Stdio, SSE, WebSocket, Streamable HTTP
 ├─────────────────────────────────────┤
-│  mcp-core            mcp-http       │  — Types, JSON-RPC, HTTP serving
+│  mcp-core            mcp-http       │  Types, JSON-RPC, HTTP serving
 └─────────────────────────────────────┘
 ```
 
-### Layer Descriptions
+Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
 
-- **mcp-core** — Header-only interface library. Defines all MCP protocol types (`Tool`, `Resource`, `Prompt`), JSON-RPC message structures, error codes, capabilities, and the abstract `Transport` interface.
-- **mcp-transport** — Transport implementations: stdio (client/server), SSE client, and in-memory transport for testing.
-- **mcp-protocol** — Protocol layer with `WireCodec` era-gating (2025 vs 2026 protocol versions), request validation, and result encoding.
-- **mcp-server** — Server implementation with tool/resource/prompt registration and request dispatching.
-- **mcp-client** — Client implementation with server connection management, request/response handling, and OAuth support.
-- **mcp-http** — HTTP server transport for Streamable HTTP mode and SSE endpoint serving.
+- **mcp-core** — Header-only. All MCP protocol types (`Tool`, `Resource`, `Prompt`, `ElicitResult`, etc.), JSON-RPC message structures, error codes, capabilities, transport interfaces.
+- **mcp-transport** — Transport implementations: stdio (client/server), SSE client, WebSocket (simplified), in-memory for testing.
+- **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation, `MessageFilter` pipeline.
+- **mcp-server** — `McpServer` with tool/resource/prompt registration, `Extension` framework, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation.
+- **mcp-client** — `McpClient` with server discovery, version negotiation, OAuth (PKCE/DCR), MRTR driver, tool cache, `FileTokenCache`.
+- **mcp-http** — HTTP server for Streamable HTTP mode and SSE endpoint serving.
 
-## Transports
+### All transports
 
-| Transport       | Client | Server | Description                             |
-|-----------------|--------|--------|-----------------------------------------|
-| Stdio           | Yes    | Yes    | Communicates over stdin/stdout pipes     |
-| Streamable HTTP | Yes    | Yes    | HTTP POST with streaming responses       |
-| SSE             | Yes    | No     | Server-Sent Events for server → client push |
-| InMemory        | Yes    | Yes    | In-process transport for testing         |
+| Transport       | Client | Server | Description                                   |
+|-----------------|--------|--------|-----------------------------------------------|
+| Stdio           | Yes    | Yes    | stdin/stdout pipes                            |
+| Streamable HTTP | Yes    | Yes    | HTTP POST with streaming responses            |
+| SSE             | Yes    | No     | Server-Sent Events for server → client push   |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (simplified)          |
+| InMemory        | Yes    | Yes    | In-process transport for testing              |
 
 ## Usage
 
@@ -191,13 +166,12 @@ auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
 
 ## OAuth Support
 
-The client supports the MCP OAuth authorization flow for servers that require authentication:
+The client supports the MCP OAuth authorization flow:
 
 - **Authorization Code + PKCE** flow with S256 code challenge
-- Configurable authorization server metadata
-- Token refresh and storage via pluggable `OAuthTokenStore`
-
-Enable OAuth by providing an `OAuthClientProvider` when creating the client:
+- Dynamic Client Registration (DCR)
+- Token refresh and revocation
+- Pluggable token cache (`ITokenCache`), persistent `FileTokenCache` included
 
 ```cpp
 auto oauth = std::make_shared<OAuthClientProvider>(
@@ -208,23 +182,31 @@ client->SetOAuthProvider(oauth);
 
 ## Protocol Versions
 
-The SDK supports two MCP protocol eras:
+| Version     | Status  | Key Features                      |
+|-------------|---------|-----------------------------------|
+| 2025-11-25  | Legacy  | `initialize` handshake, standalone sampling/roots/list |
+| 2026-07-28  | Current | `server/discover`, per-request `_meta`, MRTR (`InputRequiredResult`), `subscriptions/listen` |
 
-| Version     | Status  | Key Features                   |
-|-------------|---------|--------------------------------|
-| 2025-11-25  | Legacy  | `initialize` handshake         |
-| 2026-07-28  | Current | `server/discover`, `_meta` envelope |
+The `WireCodec` factory auto-selects the correct codec for the negotiated version via a simple string comparison (`version >= "2026-07-28"`).
 
-The `WireCodec` factory auto-selects the correct codec for the negotiated version:
+## Conformance Tests
 
-```cpp
-auto codec = MakeWireCodec("2026-07-28");
-codec->StampOutgoingRequest(body, meta);
-```
+**122 conformance tests** covering protocol type serialization across both eras:
+
+- JSON-RPC message round-trips (request, notification, response, error)
+- WireCodec era-gating (2025 vs 2026 method/notification sets)
+- Tool, Resource, Prompt serialization with annotations and icons
+- Content variant dispatch (text, image, audio, embedded resource)
+- Elicitation and ElicitResultTyped<T>
+- MRTR (InputRequiredResult, InputRequests, factory helpers)
+- Structured meta (RequestMetaObject, NotificationMetaObject)
+- Extensions capability, ResultType enum, SubscriptionFilter
+- Tasks (get/update/cancel), Logging (8 levels)
+- Pagination, caching, protocol version helpers
 
 ## Examples
 
-Runnable examples are located in the [`examples/`](examples/) directory:
+Runnable examples in [`examples/`](examples/):
 
 | Example                          | Description                                    |
 |----------------------------------|------------------------------------------------|
@@ -232,18 +214,27 @@ Runnable examples are located in the [`examples/`](examples/) directory:
 | [WeatherServer](examples/WeatherServer/) | Server with external API integration     |
 | [SimpleClient](examples/SimpleClient/) | Client that connects to a server in-process |
 
-Build and run an example:
+Build and run:
 
 ```bash
 cmake --preset debug -DMCP_BUILD_EXAMPLES=ON
 cmake --build --preset debug
-./build/debug/examples/EchoServer/EchoServer
+# Run the echo server:
+build/debug/examples/EchoServer/EchoServer
 ```
 
-## Documentation
+## References
 
-- [MCP Documentation](https://modelcontextprotocol.io/docs) — official MCP guides and concepts
-- [MCP Specification](https://modelcontextprotocol.io/specification/latest) — protocol specification
+This SDK was developed against the official MCP protocol specification and reference implementations:
+
+| Language   | Repository                                                       |
+|------------|-----------------------------------------------------------------|
+| Python     | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) |
+| TypeScript | [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) |
+| Go         | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) |
+| C#         | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) |
+| Java       | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) |
+| Rust       | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) |
 
 ## License
 
