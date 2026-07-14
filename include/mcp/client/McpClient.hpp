@@ -66,6 +66,12 @@ public:
         std::string_view task_id,
         std::optional<std::string> reason = std::nullopt);
 
+    // 轮询任务直到完成
+    GetTaskResult PollTaskToCompletionAsync(
+        const std::string& task_id,
+        std::chrono::milliseconds poll_interval = std::chrono::milliseconds(500),
+        std::chrono::seconds timeout = std::chrono::seconds(300));
+
     // ── Ping ──
     EmptyResult Ping();
 
@@ -79,6 +85,9 @@ public:
     void SetNotificationHandler(
         std::string_view method,
         ClientNotificationHandler handler);
+
+    // ── Subscriptions ──
+    void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
 
     // ── Tool cache management (对应 C# AddKnownTools / RemoveKnownTools / ClearKnownTools) ──
     void AddKnownTools(const std::vector<Tool>& tools);

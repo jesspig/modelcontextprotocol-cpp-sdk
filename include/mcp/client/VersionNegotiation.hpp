@@ -35,7 +35,8 @@ public:
     static std::optional<DiscoverResult> ProbeDiscover(
         McpSessionHandler& handler,
         std::string_view preferred_version,
-        std::chrono::seconds timeout);
+        std::chrono::seconds timeout,
+        const ClientOptions& options);
 
     // Send initialize handshake
     static InitializeResult HandshakeInitialize(

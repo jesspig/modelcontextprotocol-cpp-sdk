@@ -283,11 +283,16 @@ void McpServer::WireHandlers() {
             p.set_value(std::move(j));
         });
 
-    // ── tasks/get, tasks/update, tasks/cancel ──
+    // ── tasks/get, tasks/update, tasks/cancel (2026+ only) ──
     auto& store = options_.task_store;
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
-            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound, "tasks/get not available in this protocol version")));
+                    return;
+                }
                 GetTaskRequestParams params;
                 if (req.params) from_json(*req.params, params);
                 auto task = store->GetTask(params.task_id);
@@ -308,7 +313,12 @@ void McpServer::WireHandlers() {
             });
 
         handler_->SetRequestHandler(methods::kUpdateTask,
-            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound, "tasks/update not available in this protocol version")));
+                    return;
+                }
                 UpdateTaskRequestParams params;
                 if (req.params) from_json(*req.params, params);
                 store->UpdateTask(params.task_id, params.result);
@@ -317,7 +327,12 @@ void McpServer::WireHandlers() {
             });
 
         handler_->SetRequestHandler(methods::kCancelTask,
-            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound, "tasks/cancel not available in this protocol version")));
+                    return;
+                }
                 CancelTaskRequestParams params;
                 if (req.params) from_json(*req.params, params);
                 store->CancelTask(params.task_id, params.reason);
@@ -325,6 +340,12 @@ void McpServer::WireHandlers() {
                 p.set_value(nlohmann::json(r));
             });
     }
+
+    // ── subscriptions/listen (2026 era only) ──
+    handler_->SetRequestHandler(methods::kSubscribe,
+        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            HandleSubscriptionsListen(req, std::move(p));
+        });
 }
 
 // ====================================================================
@@ -345,7 +366,18 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts->list_changed = true;
     }
     if (options_.task_store) {
-        capabilities_.tasks = TasksCapability{};
+        if (!capabilities_.extensions) capabilities_.extensions = nlohmann::json::object();
+        (*capabilities_.extensions)["io.modelcontextprotocol/tasks"] = nlohmann::json::object();
+    }
+    if (options_.extensions) {
+        capabilities_.extensions = options_.extensions;
+    }
+    if (!extensions_.empty()) {
+        auto ext_json = capabilities_.extensions.value_or(nlohmann::json::object());
+        for (auto& ext : extensions_) {
+            ext_json[ext->Identifier()] = nlohmann::json::object();
+        }
+        capabilities_.extensions = std::move(ext_json);
     }
 }
 
@@ -528,6 +560,32 @@ void McpServer::HandleDiscover(
     }
     nlohmann::json j = result;
     promise.set_value(std::move(j));
+}
+
+void McpServer::HandleSubscriptionsListen(
+    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+{
+    if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "subscriptions/listen not available in this protocol version")));
+        return;
+    }
+
+    SubscriptionsListenRequestParams params;
+    if (req.params) from_json(*req.params, params);
+
+    Subscription sub;
+    sub.id = std::to_string(
+        std::hash<std::string>{}(req.method + std::to_string(
+            std::chrono::system_clock::now().time_since_epoch().count())));
+    sub.granted = std::move(params.notifications);
+
+    handler_->AddSubscription(std::move(sub));
+
+    nlohmann::json result = nlohmann::json::object();
+    result["resultType"] = "complete";
+    promise.set_value(std::move(result));
 }
 
 // ====================================================================

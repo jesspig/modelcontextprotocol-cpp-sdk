@@ -119,6 +119,8 @@ private:
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
     void HandleDiscover(
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+    void HandleSubscriptionsListen(
+        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
 
     // ── State ──
     // io_ctx_ptr_ owns the io_context if created internally; otherwise
@@ -152,6 +154,9 @@ private:
 
     // Extensions
     std::vector<std::shared_ptr<Extension>> extensions_;
+
+    // Active subscriptions
+    std::vector<Subscription> subscriptions_;
 
     // Notification flags
     bool tools_changed_flag_{false};

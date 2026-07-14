@@ -49,7 +49,7 @@ NegotiationResult VersionNegotiation::Negotiate(
     // Auto mode: probe server/discover, fallback to initialize
     auto discover = ProbeDiscover(
         handler, std::string(kLatestProtocolVersion),
-        options.discover_probe_timeout);
+        options.discover_probe_timeout, options);
 
     if (discover.has_value()) {
         NegotiationResult result;
@@ -81,12 +81,16 @@ NegotiationResult VersionNegotiation::Negotiate(
 std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
     McpSessionHandler& handler,
     std::string_view preferred_version,
-    std::chrono::seconds timeout)
+    std::chrono::seconds timeout,
+    const ClientOptions& options)
 {
     RequestMeta meta;
     meta.protocol_version = std::string(preferred_version);
-    meta.client_info = Implementation{"mcp-cpp-client", "0.1.0"};
-    meta.client_capabilities = ClientCapabilities{};
+    meta.client_info = options.client_info;
+    meta.client_capabilities = options.capabilities.value_or(ClientCapabilities{});
+    if (options.extensions) {
+        meta.client_capabilities->extensions = options.extensions;
+    }
 
     auto future = handler.SendRequest(
         methods::kDiscover, nlohmann::json::object(), meta, timeout);
@@ -323,6 +327,10 @@ TResult McpClient::SendRequest(
     if (options_.capabilities) {
         meta.client_capabilities = options_.capabilities;
     }
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
 
     auto future = handler_->SendRequest(method, params_json, meta, timeout);
     auto result_json = future.get();
@@ -368,6 +376,10 @@ CallToolResult McpClient::CallTool(
     meta.protocol_version = negotiation_.negotiated_version;
     meta.client_info = options_.client_info;
     if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
     if (options.meta) meta.extensions = options.meta;
 
     for (int round = 0; round <= max_rounds; ++round) {
@@ -442,6 +454,31 @@ CallToolResult McpClient::CallTool(
             params.input_responses = std::move(responses);
             params.request_state = input_req.request_state;
             continue;
+        }
+
+        // Check for task result type (扩展任务)
+        if (auto rt = result_json.find("resultType"); rt != result_json.end()
+            && rt->get<std::string>() == "task")
+        {
+            auto task_id = result_json["taskId"].get<std::string>();
+            auto task_result = PollTaskToCompletionAsync(task_id);
+
+            if (task_result.status == "failed") {
+                throw McpError(McpErrorCode::InternalError,
+                    "Task failed: " + task_id +
+                    (task_result.error_message ? ": " + *task_result.error_message : ""));
+            }
+
+            if (task_result.status == "cancelled") {
+                throw McpError(McpErrorCode::InternalError,
+                    "Task cancelled: " + task_id);
+            }
+
+            CallToolResult result;
+            if (task_result.result) {
+                from_json(*task_result.result, result);
+            }
+            return result;
         }
 
         // Complete result — deserialize and return
@@ -547,6 +584,38 @@ CancelTaskResult McpClient::CancelTask(
 }
 
 // ====================================================================
+// PollTaskToCompletion
+// ====================================================================
+GetTaskResult McpClient::PollTaskToCompletionAsync(
+    const std::string& task_id,
+    std::chrono::milliseconds poll_interval,
+    std::chrono::seconds timeout)
+{
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto task = GetTask(task_id);
+
+        if (task.status == "completed" ||
+            task.status == "failed" ||
+            task.status == "cancelled")
+        {
+            return task;
+        }
+
+        // 检查剩余时间是否足够再睡一轮
+        if (std::chrono::steady_clock::now() + poll_interval >= deadline) {
+            break;
+        }
+
+        std::this_thread::sleep_for(poll_interval);
+    }
+
+    throw McpError(McpErrorCode::InternalError,
+        "Task polling timed out for task: " + task_id);
+}
+
+// ====================================================================
 // Completions / Ping / Discover
 // ====================================================================
 CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
@@ -567,6 +636,45 @@ DiscoverResult McpClient::Discover() {
         methods::kDiscover, nlohmann::json::object(), {}, std::chrono::seconds(30));
     auto result_json = future.get();
     return result_json.get<DiscoverResult>();
+}
+
+// ====================================================================
+// Subscriptions
+// ====================================================================
+void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
+    nlohmann::json params_json;
+    to_json(params_json, params);
+
+    auto future = handler_->SendRequest(
+        methods::kSubscribe, params_json, {}, std::chrono::seconds(30));
+    auto result_json = future.get();
+
+    if (result_json.contains("code") && result_json["code"].get<int32_t>() < 0) {
+        throw McpError(
+            static_cast<McpErrorCode>(result_json["code"].get<int32_t>()),
+            result_json.value("message", "subscriptions/listen failed"));
+    }
+
+    // Register notification handlers for list-changed events.
+    // These will clear cached lists when the server signals a change.
+    // Caches are handled during negotiation; extend with user callbacks when needed.
+    if (params.notifications.tools_list_changed.value_or(false)) {
+        handler_->SetNotificationHandler(notifications::kToolListChanged,
+            [](const JsonRpcNotification&) {
+            });
+    }
+
+    if (params.notifications.prompts_list_changed.value_or(false)) {
+        handler_->SetNotificationHandler(notifications::kPromptListChanged,
+            [](const JsonRpcNotification&) {
+            });
+    }
+
+    if (params.notifications.resources_list_changed.value_or(false)) {
+        handler_->SetNotificationHandler(notifications::kResourceListChanged,
+            [](const JsonRpcNotification&) {
+            });
+    }
 }
 
 } // namespace mcp
