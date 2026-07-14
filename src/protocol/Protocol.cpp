@@ -10,14 +10,12 @@ namespace mcp {
 // ====================================================================
 Protocol::Protocol(
     asio::io_context& io_ctx,
-    std::unique_ptr<Transport> transport)
+    std::shared_ptr<ITransport> transport)
     : io_ctx_(io_ctx)
     , transport_(std::move(transport))
     , codec_(MakeWireCodec("2025-11-25"))
 {
-    asio::post(io_ctx_, [this]() {
-        if (transport_) transport_->Start();
-    });
+    // Transport lifecycle is managed by McpSessionHandler
 }
 
 Protocol::~Protocol() {
@@ -60,7 +58,7 @@ void Protocol::MessageLoop() {
     // Try to read from the transport channel
     auto& channel = transport_->GetMessageChannel();
 
-    channel.async_receive(
+    channel.AsyncReceive(
         [this](asio::error_code ec, JsonRpcMessage msg) {
             if (ec || closed_) {
                 if (!closed_) Close();
@@ -394,7 +392,7 @@ void Protocol::SetNegotiatedProtocolVersion(std::string_view version) {
 
 std::unique_ptr<WireCodec>& Protocol::Codec() { return codec_; }
 const std::unique_ptr<WireCodec>& Protocol::Codec() const { return codec_; }
-Transport& Protocol::GetTransport() { return *transport_; }
+ITransport& Protocol::GetTransport() { return *transport_; }
 asio::io_context& Protocol::IoContext() { return io_ctx_; }
 
 } // namespace mcp

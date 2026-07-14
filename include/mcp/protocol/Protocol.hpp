@@ -2,6 +2,7 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/protocol/IncomingRequestMeta.hpp>
 #include <mcp/Methods.hpp>
 
 #include <asio/steady_timer.hpp>
@@ -27,24 +28,6 @@ using NotificationHandler = std::function<
 // ── Callback for pending requests ──
 using ResponseCallback = std::function<void(nlohmann::json)>;
 
-// ── Per-request _meta extraction result (2026 era) ──
-struct IncomingRequestMeta {
-    std::string protocol_version;
-    std::optional<Implementation> client_info;
-    std::optional<ClientCapabilities> client_capabilities;
-    std::optional<LoggingLevel> log_level;
-    std::optional<ProgressToken> progress_token;
-    std::optional<std::string> subscription_id;
-};
-
-// ── Active subscription entry ──
-struct Subscription {
-    std::string id;
-    std::optional<std::string> tools_filter;
-    std::optional<std::string> resources_filter;
-    std::optional<std::string> prompts_filter;
-};
-
 // ── Protocol — base protocol engine ──
 // Handles: JSON-RPC framing, request/response correlation,
 //          timeout, handler dispatch, per-request _meta envelopes,
@@ -53,7 +36,7 @@ class Protocol : public std::enable_shared_from_this<Protocol> {
 public:
     Protocol(
         asio::io_context& io_ctx,
-        std::unique_ptr<Transport> transport);
+        std::shared_ptr<ITransport> transport);
 
     ~Protocol();
 
@@ -109,7 +92,7 @@ public:
     std::unique_ptr<WireCodec>& Codec();
     const std::unique_ptr<WireCodec>& Codec() const;
 
-    Transport& GetTransport();
+    ITransport& GetTransport();
     asio::io_context& IoContext();
 
 private:
@@ -121,7 +104,7 @@ private:
     void OnNotification(const JsonRpcNotification& notif);
 
     asio::io_context& io_ctx_;
-    std::unique_ptr<Transport> transport_;
+    std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
     std::string negotiated_version_;
 

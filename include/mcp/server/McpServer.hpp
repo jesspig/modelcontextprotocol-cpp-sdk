@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/protocol/Protocol.hpp>
+#include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
@@ -23,7 +23,7 @@ public:
     // This is required for transports (e.g., StdioServerTransport) that need
     // to share the same io_context with the protocol.
     static std::unique_ptr<McpServer> Create(
-        std::unique_ptr<Transport> transport,
+        std::shared_ptr<ITransport> transport,
         const ServerOptions& options = {},
         asio::io_context* io_ctx = nullptr);
 
@@ -87,12 +87,12 @@ public:
     bool IsMrtrSupported() const;
 
     // ── Internal access (for RequestContext) ──
-    Protocol& GetProtocol() { return *protocol_; }
+    McpSessionHandler& GetSessionHandler() { return *handler_; }
     asio::io_context& IoContext() { return *io_ctx_ptr_; }
 
 private:
     McpServer(
-        std::unique_ptr<Transport> transport,
+        std::shared_ptr<ITransport> transport,
         ServerOptions options,
         asio::io_context* external_io_ctx);
 
@@ -125,8 +125,8 @@ private:
     // it references an external io_context. io_ctx_ is always valid.
     std::unique_ptr<asio::io_context> io_ctx_owner_;
     asio::io_context* io_ctx_ptr_;
-    std::unique_ptr<Transport> transport_;
-    std::shared_ptr<Protocol> protocol_;
+    std::shared_ptr<ITransport> transport_;
+    std::shared_ptr<McpSessionHandler> handler_;
     ServerOptions options_;
     ServerCapabilities capabilities_;
 

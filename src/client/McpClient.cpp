@@ -12,12 +12,12 @@ namespace mcp {
 // VersionNegotiation implementation
 // ====================================================================
 NegotiationResult VersionNegotiation::Negotiate(
-    Protocol& protocol, const ClientOptions& options)
+    McpSessionHandler& handler, const ClientOptions& options)
 {
     if (options.connect_mode == ConnectMode::Legacy) {
         // Force legacy initialize handshake
         auto init = HandshakeInitialize(
-            protocol, options.client_info, options.capabilities,
+            handler, options.client_info, options.capabilities,
             options.initialization_timeout);
         NegotiationResult result;
         result.is_modern = false;
@@ -26,7 +26,7 @@ NegotiationResult VersionNegotiation::Negotiate(
         result.capabilities = result.initialize->capabilities;
         result.server_info = result.initialize->server_info;
         result.instructions = result.initialize->instructions;
-        protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+        handler.SetNegotiatedProtocolVersion(result.negotiated_version);
         return result;
     }
 
@@ -36,7 +36,7 @@ NegotiationResult VersionNegotiation::Negotiate(
         result.is_modern = true;
         result.negotiated_version = options.pin_protocol_version.value_or(
             std::string(kLatestProtocolVersion));
-        protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+        handler.SetNegotiatedProtocolVersion(result.negotiated_version);
 
         DiscoverResult disc;
         disc.supported_versions = {result.negotiated_version};
@@ -48,7 +48,7 @@ NegotiationResult VersionNegotiation::Negotiate(
 
     // Auto mode: probe server/discover, fallback to initialize
     auto discover = ProbeDiscover(
-        protocol, std::string(kLatestProtocolVersion),
+        handler, std::string(kLatestProtocolVersion),
         options.discover_probe_timeout);
 
     if (discover.has_value()) {
@@ -59,13 +59,13 @@ NegotiationResult VersionNegotiation::Negotiate(
         result.capabilities = result.discover->capabilities;
         result.server_info = result.discover->server_info;
         result.instructions = result.discover->instructions;
-        protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+        handler.SetNegotiatedProtocolVersion(result.negotiated_version);
         return result;
     }
 
     // Fallback to initialize
     auto init = HandshakeInitialize(
-        protocol, options.client_info, options.capabilities,
+        handler, options.client_info, options.capabilities,
         options.initialization_timeout);
     NegotiationResult result;
     result.is_modern = false;
@@ -74,12 +74,12 @@ NegotiationResult VersionNegotiation::Negotiate(
     result.capabilities = result.initialize->capabilities;
     result.server_info = result.initialize->server_info;
     result.instructions = result.initialize->instructions;
-    protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+    handler.SetNegotiatedProtocolVersion(result.negotiated_version);
     return result;
 }
 
 std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
-    Protocol& protocol,
+    McpSessionHandler& handler,
     std::string_view preferred_version,
     std::chrono::seconds timeout)
 {
@@ -88,7 +88,7 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
     meta.client_info = Implementation{"mcp-cpp-client", "0.1.0"};
     meta.client_capabilities = ClientCapabilities{};
 
-    auto future = protocol.SendRequest(
+    auto future = handler.SendRequest(
         methods::kDiscover, nlohmann::json::object(), meta, timeout);
 
     if (future.wait_for(timeout) == std::future_status::timeout) {
@@ -109,7 +109,7 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
 }
 
 InitializeResult VersionNegotiation::HandshakeInitialize(
-    Protocol& protocol,
+    McpSessionHandler& handler,
     const Implementation& client_info,
     const std::optional<ClientCapabilities>& capabilities,
     std::chrono::seconds timeout)
@@ -119,7 +119,7 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
     params.client_info = client_info;
     params.capabilities = capabilities.value_or(ClientCapabilities{});
 
-    auto future = protocol.SendRequest(
+    auto future = handler.SendRequest(
         methods::kInitialize, nlohmann::json(params), {}, timeout);
 
     auto result = future.get();
@@ -130,14 +130,16 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
 // McpClient construction / destruction
 // ====================================================================
 McpClient::McpClient(
-    std::unique_ptr<Transport> transport,
+    std::shared_ptr<ITransport> transport,
     ClientOptions options)
     : io_ctx_()
     , transport_(std::move(transport))
     , options_(std::move(options))
 {
-    protocol_ = std::make_shared<Protocol>(io_ctx_, std::move(transport_));
-    protocol_->Start();
+    auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
+    handler_ = std::make_shared<McpSessionHandler>(
+        transport_, std::move(codec), false);
+    handler_->Start();
     WireClientHandlers();
 }
 
@@ -146,7 +148,7 @@ McpClient::~McpClient() {
 }
 
 std::unique_ptr<McpClient> McpClient::Create(
-    std::unique_ptr<Transport> transport,
+    std::shared_ptr<ITransport> transport,
     const ClientOptions& options)
 {
     auto client = std::unique_ptr<McpClient>(
@@ -160,14 +162,14 @@ std::unique_ptr<McpClient> McpClient::Create(
 // Negotiation
 // ====================================================================
 NegotiationResult McpClient::NegotiateProtocol() {
-    return VersionNegotiation::Negotiate(*protocol_, options_);
+    return VersionNegotiation::Negotiate(*handler_, options_);
 }
 
 // ====================================================================
 // Close
 // ====================================================================
 void McpClient::Close() {
-    if (protocol_) protocol_->Close();
+    if (handler_) handler_->Close();
     io_ctx_.stop();
 }
 
@@ -176,7 +178,7 @@ void McpClient::Close() {
 // ====================================================================
 void McpClient::WireClientHandlers() {
     // Sampling handler (deprecated)
-    protocol_->SetRequestHandler(methods::kCreateMessage,
+    handler_->SetRequestHandler(methods::kCreateMessage,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             if (!sampling_handler_) {
                 JsonRpcErrorResponse err;
@@ -197,7 +199,7 @@ void McpClient::WireClientHandlers() {
         });
 
     // Roots handler (deprecated)
-    protocol_->SetRequestHandler(methods::kListRoots,
+    handler_->SetRequestHandler(methods::kListRoots,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             if (!roots_handler_) {
                 ListRootsResult empty;
@@ -213,7 +215,7 @@ void McpClient::WireClientHandlers() {
         });
 
     // Elicitation handler
-    protocol_->SetRequestHandler(methods::kElicit,
+    handler_->SetRequestHandler(methods::kElicit,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             if (!elicitation_handler_) {
                 JsonRpcErrorResponse err;
@@ -234,10 +236,10 @@ void McpClient::WireClientHandlers() {
         });
 
     // Notification handlers
-    for (auto& [method, handler] : notif_handlers_) {
-        protocol_->SetNotificationHandler(method,
-            [handler](const JsonRpcNotification& notif) {
-                handler(notif);
+    for (auto& [method, notif_handler] : notif_handlers_) {
+        handler_->SetNotificationHandler(method,
+            [notif_handler](const JsonRpcNotification& notif) {
+                notif_handler(notif);
             });
     }
 }
@@ -324,7 +326,7 @@ TResult McpClient::SendRequest(
         meta.client_capabilities = options_.capabilities;
     }
 
-    auto future = protocol_->SendRequest(method, params_json, meta, timeout);
+    auto future = handler_->SendRequest(method, params_json, meta, timeout);
     auto result_json = future.get();
 
     // Check for error
@@ -389,7 +391,7 @@ CallToolResult McpClient::CallTool(
             req_json["_meta"] = std::move(meta_json);
         }
 
-        auto future = protocol_->SendRequest(
+        auto future = handler_->SendRequest(
             methods::kCallTool, req_json, meta, round_timeout);
         auto result_json = future.get();
 
@@ -556,14 +558,14 @@ CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
 
 EmptyResult McpClient::Ping() {
     nlohmann::json empty_params = nlohmann::json::object();
-    auto future = protocol_->SendRequest(methods::kPing, empty_params, {}, std::chrono::seconds(10));
+    auto future = handler_->SendRequest(methods::kPing, empty_params, {}, std::chrono::seconds(10));
     auto result_json = future.get();
     EmptyResult result;
     return result;
 }
 
 DiscoverResult McpClient::Discover() {
-    auto future = protocol_->SendRequest(
+    auto future = handler_->SendRequest(
         methods::kDiscover, nlohmann::json::object(), {}, std::chrono::seconds(30));
     auto result_json = future.get();
     return result_json.get<DiscoverResult>();

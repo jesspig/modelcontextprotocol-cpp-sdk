@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/protocol/Protocol.hpp>
+#include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
 
 #include <memory>
@@ -28,18 +28,18 @@ public:
     // Must be called after connecting the transport but before sending
     // non-negotiation requests.
     static NegotiationResult Negotiate(
-        Protocol& protocol,
+        McpSessionHandler& handler,
         const ClientOptions& options);
 
     // Send discover probe
     static std::optional<DiscoverResult> ProbeDiscover(
-        Protocol& protocol,
+        McpSessionHandler& handler,
         std::string_view preferred_version,
         std::chrono::seconds timeout);
 
     // Send initialize handshake
     static InitializeResult HandshakeInitialize(
-        Protocol& protocol,
+        McpSessionHandler& handler,
         const Implementation& client_info,
         const std::optional<ClientCapabilities>& capabilities,
         std::chrono::seconds timeout);

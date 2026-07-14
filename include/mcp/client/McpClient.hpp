@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/protocol/Protocol.hpp>
+#include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
 #include <mcp/client/ClientHandlers.hpp>
 #include <mcp/client/McpClientTool.hpp>
@@ -19,7 +19,7 @@ public:
     // ── Factory ──
     // Create and connect. Blocks until negotiation completes.
     static std::unique_ptr<McpClient> Create(
-        std::unique_ptr<Transport> transport,
+        std::shared_ptr<ITransport> transport,
         const ClientOptions& options = {});
 
     ~McpClient();
@@ -90,7 +90,7 @@ public:
 
 private:
     McpClient(
-        std::unique_ptr<Transport> transport,
+        std::shared_ptr<ITransport> transport,
         ClientOptions options);
 
     // Internal helpers
@@ -106,8 +106,8 @@ private:
 
     // State
     asio::io_context io_ctx_;
-    std::unique_ptr<Transport> transport_;
-    std::shared_ptr<Protocol> protocol_;
+    std::shared_ptr<ITransport> transport_;
+    std::shared_ptr<McpSessionHandler> handler_;
     ClientOptions options_;
 
     // Negotiation result
