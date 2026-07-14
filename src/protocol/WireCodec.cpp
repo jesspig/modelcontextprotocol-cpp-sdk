@@ -133,12 +133,12 @@ public:
             "notifications/tools/list_changed",
             "notifications/prompts/list_changed",
             "notifications/subscriptions/acknowledged",
-            "notifications/task/status",
-            "notifications/task/working",
-            "notifications/task/completed",
-            "notifications/task/failed",
-            "notifications/task/cancelled",
-            "notifications/task/input_required",
+            "notifications/tasks/status",
+            "notifications/tasks/working",
+            "notifications/tasks/completed",
+            "notifications/tasks/failed",
+            "notifications/tasks/cancelled",
+            "notifications/tasks/input_required",
         };
         return notifs.count(std::string(method)) > 0;
     }

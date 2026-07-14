@@ -64,6 +64,10 @@ public:
     void RemoveRequestHandler(std::string_view method);
     void RemoveNotificationHandler(std::string_view method);
 
+    // ── Capability validation ──
+    static std::optional<std::string> RequiredClientCapability(std::string_view method);
+    void SetClientCapabilities(ClientCapabilities caps);
+
     // ── Meta helpers (2026-era) ──
     void StampOutgoingMeta(nlohmann::json& body, const RequestMeta& meta);
     IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
@@ -123,6 +127,9 @@ private:
     // Filter pipelines
     std::shared_ptr<FilterPipeline> incoming_filters_;
     std::shared_ptr<FilterPipeline> outgoing_filters_;
+
+    // Client capabilities (2025-era, set from initialize)
+    std::optional<ClientCapabilities> client_capabilities_;
 
     asio::io_context& io_ctx_;
 };

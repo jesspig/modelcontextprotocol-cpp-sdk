@@ -124,6 +124,39 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         return;
     }
 
+    // ── Capability verification ──
+    auto required_cap = RequiredClientCapability(req.method);
+    if (required_cap) {
+        bool has_capability = false;
+
+        // 2026-era: per-request _meta
+        auto meta = ExtractIncomingMeta(req);
+        if (meta.client_capabilities) {
+            const auto& caps = *meta.client_capabilities;
+            if (*required_cap == "sampling" && caps.sampling) has_capability = true;
+            if (*required_cap == "roots" && caps.roots) has_capability = true;
+        }
+
+        // 2025-era: stored from initialize
+        if (!has_capability && client_capabilities_) {
+            const auto& caps = *client_capabilities_;
+            if (*required_cap == "sampling" && caps.sampling) has_capability = true;
+            if (*required_cap == "roots" && caps.roots) has_capability = true;
+        }
+
+        if (!has_capability) {
+            JsonRpcErrorResponse err_resp;
+            err_resp.id = req.id;
+            err_resp.error.code = McpErrorCode::MissingRequiredClientCapability;
+            err_resp.error.message = "missing required client capability: " + *required_cap;
+            nlohmann::json data = nlohmann::json::object();
+            data["requiredCapabilities"] = nlohmann::json::array({*required_cap});
+            err_resp.error.data = std::move(data);
+            transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            return;
+        }
+    }
+
     auto promise = std::make_shared<std::promise<nlohmann::json>>();
     auto future = promise->get_future();
 
@@ -465,6 +498,19 @@ void McpSessionHandler::RemoveRequestHandler(std::string_view method) {
 
 void McpSessionHandler::RemoveNotificationHandler(std::string_view method) {
     notif_handlers_.erase(std::string(method));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Capability validation
+// ═══════════════════════════════════════════════════════════════════════
+std::optional<std::string> McpSessionHandler::RequiredClientCapability(std::string_view method) {
+    if (method == methods::kCreateMessage) return std::string("sampling");
+    if (method == methods::kListRoots) return std::string("roots");
+    return std::nullopt;
+}
+
+void McpSessionHandler::SetClientCapabilities(ClientCapabilities caps) {
+    client_capabilities_ = std::move(caps);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -2,6 +2,7 @@
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
+#include <mcp/McpTypes.hpp>
 #include <asio/steady_timer.hpp>
 #include <optional>
 #include <string>
@@ -34,9 +35,7 @@ struct PendingRequest {
 // ═══════════════════════════════════════════════════════════════════════
 struct Subscription {
     std::string id;
-    std::optional<std::string> tools_filter;
-    std::optional<std::string> resources_filter;
-    std::optional<std::string> prompts_filter;
+    SubscriptionFilter granted;
 };
 
 } // namespace mcp
