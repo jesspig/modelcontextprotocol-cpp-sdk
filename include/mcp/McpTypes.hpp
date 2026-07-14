@@ -43,6 +43,23 @@ inline void from_json(const nlohmann::json& j, ToolAnnotations& v) {
 }
 
 // ====================================================================
+// ResourceAnnotations
+// ====================================================================
+struct ResourceAnnotations {
+    std::optional<std::vector<std::string>> audience;
+    std::optional<double> priority;
+};
+inline void to_json(nlohmann::json& j, const ResourceAnnotations& v) {
+    j = nlohmann::json::object();
+    if (v.audience) j["audience"] = *v.audience;
+    if (v.priority) j["priority"] = *v.priority;
+}
+inline void from_json(const nlohmann::json& j, ResourceAnnotations& v) {
+    if (auto it = j.find("audience"); it != j.end()) v.audience = it->get<std::vector<std::string>>();
+    if (auto it = j.find("priority"); it != j.end()) v.priority = it->get<double>();
+}
+
+// ====================================================================
 // Tool
 // ====================================================================
 struct Tool {
@@ -88,6 +105,7 @@ struct Resource {
     std::optional<std::string> mime_type;
     std::optional<int64_t> size;
     std::optional<std::vector<Icon>> icons;
+    std::optional<ResourceAnnotations> annotations;
     std::optional<nlohmann::json> meta;
 };
 inline void to_json(nlohmann::json& j, const Resource& v) {
@@ -98,6 +116,7 @@ inline void to_json(nlohmann::json& j, const Resource& v) {
     if (v.mime_type)   j["mimeType"] = *v.mime_type;
     if (v.size)        j["size"] = *v.size;
     if (v.icons)       j["icons"] = *v.icons;
+    if (v.annotations) j["annotations"] = *v.annotations;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, Resource& v) {
@@ -107,6 +126,7 @@ inline void from_json(const nlohmann::json& j, Resource& v) {
     if (auto it = j.find("mimeType"); it != j.end())    v.mime_type = it->get<std::string>();
     if (auto it = j.find("size"); it != j.end())        v.size = it->get<int64_t>();
     if (auto it = j.find("icons"); it != j.end())       v.icons = it->get<std::vector<Icon>>();
+    if (auto it = j.find("annotations"); it != j.end()) v.annotations = it->get<ResourceAnnotations>();
     if (auto it = j.find("_meta"); it != j.end())       v.meta = *it;
 }
 
@@ -120,6 +140,7 @@ struct ResourceTemplate {
     std::optional<std::string> description;
     std::optional<std::string> mime_type;
     std::optional<std::vector<Icon>> icons;
+    std::optional<ResourceAnnotations> annotations;
     std::optional<nlohmann::json> meta;
 };
 inline void to_json(nlohmann::json& j, const ResourceTemplate& v) {
@@ -129,6 +150,7 @@ inline void to_json(nlohmann::json& j, const ResourceTemplate& v) {
     if (v.description) j["description"] = *v.description;
     if (v.mime_type)   j["mimeType"] = *v.mime_type;
     if (v.icons)       j["icons"] = *v.icons;
+    if (v.annotations) j["annotations"] = *v.annotations;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, ResourceTemplate& v) {
@@ -137,6 +159,7 @@ inline void from_json(const nlohmann::json& j, ResourceTemplate& v) {
     if (auto it = j.find("description"); it != j.end()) v.description = it->get<std::string>();
     if (auto it = j.find("mimeType"); it != j.end())    v.mime_type = it->get<std::string>();
     if (auto it = j.find("icons"); it != j.end())       v.icons = it->get<std::vector<Icon>>();
+    if (auto it = j.find("annotations"); it != j.end()) v.annotations = it->get<ResourceAnnotations>();
     if (auto it = j.find("_meta"); it != j.end())       v.meta = *it;
 }
 
@@ -165,6 +188,7 @@ struct Prompt {
     std::optional<std::string> description;
     std::optional<std::vector<PromptArgument>> arguments;
     std::optional<std::vector<Icon>> icons;
+    std::optional<ResourceAnnotations> annotations;
     std::optional<nlohmann::json> meta;
 };
 inline void to_json(nlohmann::json& j, const Prompt& v) {
@@ -173,6 +197,7 @@ inline void to_json(nlohmann::json& j, const Prompt& v) {
     if (v.description) j["description"] = *v.description;
     if (v.arguments)   j["arguments"] = *v.arguments;
     if (v.icons)       j["icons"] = *v.icons;
+    if (v.annotations) j["annotations"] = *v.annotations;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, Prompt& v) {
@@ -181,6 +206,7 @@ inline void from_json(const nlohmann::json& j, Prompt& v) {
     if (auto it = j.find("description"); it != j.end()) v.description = it->get<std::string>();
     if (auto it = j.find("arguments"); it != j.end())   v.arguments = it->get<std::vector<PromptArgument>>();
     if (auto it = j.find("icons"); it != j.end())       v.icons = it->get<std::vector<Icon>>();
+    if (auto it = j.find("annotations"); it != j.end()) v.annotations = it->get<ResourceAnnotations>();
     if (auto it = j.find("_meta"); it != j.end())       v.meta = *it;
 }
 
@@ -641,7 +667,7 @@ struct InputRequiredResult {
     std::optional<std::string> request_state;
 };
 inline void to_json(nlohmann::json& j, const InputRequiredResult& v) {
-    j = nlohmann::json{{"inputRequests", v.input_requests}};
+    j = nlohmann::json{{"inputRequests", v.input_requests}, {"resultType", "input_required"}};
     if (v.request_state) j["requestState"] = *v.request_state;
 }
 inline void from_json(const nlohmann::json& j, InputRequiredResult& v) {

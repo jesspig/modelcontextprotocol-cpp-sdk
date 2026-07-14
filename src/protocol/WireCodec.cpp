@@ -204,7 +204,9 @@ public:
     nlohmann::json EncodeResult(
         std::string_view /*method*/, const nlohmann::json& result) const override {
         auto j = result;
-        j["resultType"] = "complete";
+        if (!j.contains("resultType")) {
+            j["resultType"] = "complete";
+        }
         return j;
     }
 
