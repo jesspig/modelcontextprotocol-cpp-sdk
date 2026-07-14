@@ -46,6 +46,11 @@ McpServer::McpServer(
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
     }
 
+    // Wire request state verifier if configured
+    if (options_.request_state_verifier) {
+        handler_->SetRequestStateVerifier(options_.request_state_verifier);
+    }
+
     // Start the session handler
     handler_->Start();
 }
@@ -533,9 +538,28 @@ void McpServer::HandleGetPrompt(
                  "prompt not found: " + params.name)));
 }
 
+void McpServer::SetCompletionHandler(CompletionHandler handler) {
+    completion_handler_ = std::move(handler);
+}
+
 void McpServer::HandleComplete(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
 {
+    CompleteRequestParams params;
+    if (req.params) from_json(*req.params, params);
+
+    if (completion_handler_) {
+        try {
+            auto result = completion_handler_(params);
+            nlohmann::json j = result;
+            promise.set_value(std::move(j));
+            return;
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+            return;
+        }
+    }
+
     CompleteResult result;
     result.completion = nlohmann::json{{"values", nlohmann::json::array()}};
     nlohmann::json j = result;
@@ -588,7 +612,6 @@ void McpServer::HandleSubscriptionsListen(
     handler_->AddSubscription(std::move(sub));
 
     nlohmann::json result = nlohmann::json::object();
-    result["resultType"] = "complete";
     promise.set_value(std::move(result));
 }
 

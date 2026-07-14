@@ -80,6 +80,9 @@ public:
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
 
+    // ── Request state verification (HMAC/AEAD) ──
+    void SetRequestStateVerifier(std::function<bool(std::string_view)> verifier);
+
     // ── Version negotiation ──
     void SetNegotiatedProtocolVersion(std::string_view version);
 
@@ -127,6 +130,9 @@ private:
     // Filter pipelines
     std::shared_ptr<FilterPipeline> incoming_filters_;
     std::shared_ptr<FilterPipeline> outgoing_filters_;
+
+    // Request state verification callback
+    std::function<bool(std::string_view)> request_state_verifier_;
 
     // Client capabilities (2025-era, set from initialize)
     std::optional<ClientCapabilities> client_capabilities_;

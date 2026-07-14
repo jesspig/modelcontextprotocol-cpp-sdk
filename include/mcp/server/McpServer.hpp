@@ -73,6 +73,10 @@ public:
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
 
+    // ── Completion handler ──
+    using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;
+    void SetCompletionHandler(CompletionHandler handler);
+
     // ── Notifications ──
     void SendToolListChanged();
     void SendResourceListChanged();
@@ -151,6 +155,9 @@ private:
     // Client info (set on first request in 2026-era, or from initialize)
     std::optional<ClientCapabilities> client_capabilities_;
     std::optional<Implementation> client_info_;
+
+    // Completion handler (optional user-registered)
+    std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
 
     // Extensions
     std::vector<std::shared_ptr<Extension>> extensions_;

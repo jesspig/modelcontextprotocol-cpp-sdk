@@ -158,6 +158,21 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
     }
 
+    // ── Request state verification (HMAC/AEAD) ──
+    if (request_state_verifier_ && req.params) {
+        auto rs_it = req.params->find("requestState");
+        if (rs_it != req.params->end() && rs_it->is_string()) {
+            if (!request_state_verifier_(rs_it->get<std::string>())) {
+                JsonRpcErrorResponse err_resp;
+                err_resp.id = req.id;
+                err_resp.error.code = McpErrorCode::InvalidParams;
+                err_resp.error.message = "invalid requestState";
+                transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+                return;
+            }
+        }
+    }
+
     auto promise = std::make_shared<std::promise<nlohmann::json>>();
     auto future = promise->get_future();
 
@@ -496,6 +511,10 @@ void McpSessionHandler::RemoveRequestHandler(std::string_view method) {
 
 void McpSessionHandler::RemoveNotificationHandler(std::string_view method) {
     notif_handlers_.erase(std::string(method));
+}
+
+void McpSessionHandler::SetRequestStateVerifier(std::function<bool(std::string_view)> verifier) {
+    request_state_verifier_ = std::move(verifier);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
