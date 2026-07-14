@@ -2,12 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop]
   pull_request:
-    branches: [main, develop]
-
-env:
-  CMAKE_VERSION: "4.2.0"
+    branches: [develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,27 +17,26 @@ jobs:
       matrix:
         include:
           - os: windows-2022
-            preset: win-msvc-debug
+            compiler: cl.exe
             cache: sccache
           - os: windows-2022
-            preset: win-clang-cl-debug
+            compiler: clang-cl
             cache: sccache
           - os: ubuntu-24.04
-            preset: linux-gcc-debug
+            compiler: g++
             cache: ccache
             asan: ON
           - os: ubuntu-24.04
-            preset: linux-clang-debug
+            compiler: clang++
             cache: ccache
             asan: ON
           - os: macos-15
-            preset: debug
+            compiler: clang++
             cache: ccache
 
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
@@ -53,15 +49,19 @@ jobs:
         if: matrix.cache == 'ccache'
         uses: hendrikmuhs/ccache-action@v1.2
 
-      - name: Configure CMake
+      - name: Install ASan/UBSan (Linux)
+        if: matrix.asan == 'ON'
+        run: sudo apt-get update && sudo apt-get install -y libasan6 libubsan1
+
+      - name: Configure
         run: >
-          cmake --preset ${{ matrix.preset }}
-          -DMCP_CACHE=${{ matrix.cache }}
-          ${{ matrix.asan == 'ON' && '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer' || '' }}
+          cmake --preset debug
+          -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          ${{ matrix.asan == 'ON' && '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -DASIO_DISABLE_SIGNAL_HANDLER' || '' }}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel
+        run: cmake --build --preset debug
 
-      - name: Run tests
-        working-directory: build/${{ matrix.preset }}
-        run: ctest --output-on-failure --parallel
+      - name: Test
+        working-directory: build/debug
+        run: ctest --output-on-failure

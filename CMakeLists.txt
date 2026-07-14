@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 4.2)
 cmake_policy(SET CMP0156 NEW)
 
-# ── 编译器自动探测 (project 之前, 不影响预设显式指定) ──
+# ── 编译器自动探测 (project 之前) ──
+# 优先级: clang-cl (ThinLTO 支持) > 系统默认
 if(WIN32 AND NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
     find_program(MCP_CLANG_CL NAMES clang-cl)
     if(MCP_CLANG_CL)
@@ -23,23 +24,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(Platform)              # 平台/架构/CI 检测
-include(CompilerOptions)       # 编译器特定标志
 include(BuildOptimization)     # Unity batch + Ninja pools (CPU+memory aware)
-include(Cache)                 # sccache / ccache
+include(CompilerOptions)       # 编译器特定标志
+include(Cache)                 # sccache / ccache 自动检测
 include(FetchDependencies)     # FetchContent 依赖
-include(Lto)                   # LTO (Release 仅)
+include(Lto)                   # ThinLTO / LTCG / IPO (Release)
 
-# ── 链接器优化: lld-link — MSVC 下显著加速 ──
-if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    find_program(MCP_LLD_LINK NAMES lld-link)
-    if(MCP_LLD_LINK)
+# ── lld-link 自动检测 (MSVC cl.exe + Ninja 时加速链接) ──
+if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHES "Ninja")
+    find_program(_lld_link NAMES lld-link)
+    if(_lld_link)
         add_link_options("/lldlink")
-        message(STATUS "[mcp] Linker: lld-link (${MCP_LLD_LINK})")
-    else()
-        message(STATUS "[mcp] Linker: default (lld-link not found, using link.exe)")
+        message(STATUS "[mcp] Linker: lld-link (${_lld_link})")
     endif()
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(STATUS "[mcp] Linker: lld (native, clang)")
 endif()
 
 # ====================================================================
@@ -61,8 +58,10 @@ target_sources(mcp-transport PRIVATE
     src/transport/SseClientTransport.cpp
     src/transport/InMemoryTransport.cpp)
 if(WIN32)
+    target_sources(mcp-transport PRIVATE src/transport/detail/win32_platform.cpp)
     target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio winhttp)
 else()
+    target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
     target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio)
 endif()
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
@@ -132,9 +131,6 @@ if(MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# ── 安装规则 (开发阶段暂不启用) ──
-# include(InstallRules)
-
 # ====================================================================
 # 构建配置摘要
 # ====================================================================
@@ -146,5 +142,4 @@ file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "compiler_launcher=${CMAKE_CXX_COMPILER_LAUNCHER}\n"
     "lto=${MCP_LTO}\n"
     "unity_enabled=${MCP_UNITY_ENABLED}\n"
-    "unity_batch=${MCP_UNITY_BATCH}\n"
-)
+    "unity_batch=${MCP_UNITY_BATCH}\n")
