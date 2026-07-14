@@ -5,82 +5,70 @@
 ```bash
 cmake --preset debug                          # Configure (Ninja, Debug)
 cmake --build --preset debug                  # Build
-ctest --preset debug --output-on-failure      # Run all 137 tests
+ctest --preset debug --output-on-failure      # Run all 216 tests
 ctest -R WireCodec                            # Filter single suite
-ctest -R "Conformance.Tool" -V               # Filter specific test
+ctest -R "Conformance" -V                     # Filter group with verbose
 ```
 
-Presets: `debug`, `release` only. Ninja generator, clang-cl auto-detected (ThinLTO on Release). No platform-specific presets needed — everything auto-detected.
+Presets: `debug`, `release`. Ninja generator only.
 
 ### Non-obvious build facts
 
-- **Unity (jumbo) builds ON** by default (multi-core only). Override `-DMCP_UNITY_BUILD=OFF`. `mcp-client` sets `UNITY_BUILD_UNIQUE_ID ON` to avoid OAuth symbol clashes.
-- **Ninja job pools**: compile `min(mem/1500MB, cores-2)`, link `min(mem/4000MB, 2)`. Auto-computed from hardware. Override via `MCP_COMPILE_JOBS` / `MCP_LINK_JOBS`.
-- **Compiler auto-detection priority**: clang-cl (if found) → system default. sccache → ccache → none. All auto-detected.
-- **lld-link**: auto-detected on Windows MSVC when using Ninja generator; `/lldlink` added automatically.
-- **Out-of-source libs**: `target_link_libraries(mcp-transport PUBLIC winhttp)` on Windows only.
-- **WireCodec version negotiation**: simple string comparison `version >= "2026-07-28"` — version IDs are ISO date strings.
-- **Dependencies cached per build dir** in `build/<preset>/_deps/`. No global `.cache/deps/`. Do NOT delete `build/` — re-downloading dependencies is expensive.
+- **Unity (jumbo) builds ON** by default (multi-core). Override `-DMCP_UNITY_BUILD=OFF`. `mcp-client` sets `UNITY_BUILD_UNIQUE_ID ON` to avoid OAuth symbol clashes.
+- **Ninja job pools**: compile `min(mem/1500MB, cores-2)`, link `min(mem/4000MB, 2)`. Auto-computed. Override via `MCP_COMPILE_JOBS` / `MCP_LINK_JOBS`.
+- **Compiler auto-detection priority**: clang-cl (if found) → system default. sccache → ccache → none.
+- **lld-link**: auto-detected on Windows MSVC + Ninja; `/lldlink` added automatically.
+- **Out-of-source libs**: `mcp-transport` links `winhttp` on Windows only.
+- **Dependencies cached per build dir** in `build/<preset>/_deps/`. Do NOT delete `build/` — re-downloading dependencies is expensive.
 - `mcp-core` is INTERFACE (header-only); changing type serialization recompiles everything.
+- **WireCodec version negotiation**: simple string comparison `version >= "2026-07-28"` — version IDs are ISO date strings.
 
 ## Architecture
 
 ```
-include/mcp/       — Public headers (PascalCase: McpClient.hpp)
+include/mcp/       — Public headers
 src/client/        — McpClient, OAuth, MRTR helper
-src/server/        — McpServer, Extension framework
+src/server/        — McpServer, Extension framework, FileTaskStore
 src/protocol/      — McpSessionHandler (engine), WireCodec, cache
-src/transport/     — StdioServer/Client, SSE Client, InMemory
+src/transport/     — Stdio, SSE, InMemory, WebSocket transport impls
 src/http/          — HttpServer, EventStore, StreamableHttp*
-tests/unit/        — Google Test (12 suites)
-tests/integration/ — Client-server round-trip tests (enabled)
-tests/conformance/ — MCP spec conformance (43 tests)
+tests/             — unit/ (gtest), integration/, conformance/ (122 tests)
 examples/          — EchoServer, WeatherServer, SimpleClient
 cmake/             — Build modules: auto-detect compiler/hardware/cache/LTO
 ```
 
-Library dependency chain: `mcp-core` (header-only INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
+Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
 
 ### Transport hierarchy
 
 ```
-ITransport (interface)
-  ├── TransportBase (3-state machine: Initial→Connected→Disconnected)
-  │   ├── StdioServerTransport
-  │   ├── InMemoryTransportImpl
-  │   ├── StreamableHttpServerTransport
-  │   └── ...session transports
-  └── Transport (backward-compatible, provides Start()/IoContext())
+ITransport —— TransportBase (3-state: Initial→Connected→Disconnected)
+  ├── StdioServerTransport
+  ├── InMemoryTransportImpl
+  ├── StreamableHttpServerTransport (+ IStatelessTransport)
+  └── WebSocketTransport
 
-IClientTransport (connection factory interface)
+IClientTransport (connection factory)
   ├── StdioClientTransport
   ├── SseClientTransport
-  └── StreamableHttpClientTransport
+  ├── StreamableHttpClientTransport
+  └── WebSocketClientTransport
 ```
 
-New code should use `ITransport`/`TransportBase`/`IClientTransport`. The old `Transport`/`ClientTransport` base classes exist in `Transport.hpp` for backward compat but are deprecated.
+New code use `ITransport`/`TransportBase`/`IClientTransport`. Old `Transport`/`ClientTransport` in `Transport.hpp` are deprecated.
 
 ### Protocol engine
 
-`McpSessionHandler` (in `mcp-protocol`) is the core JSON-RPC engine. It manages:
+`McpSessionHandler` (in `mcp-protocol`) is the JSON-RPC engine:
 - Async message loop over `MessageChannel` (wraps `asio::experimental::channel`)
 - Request/response correlation with timeout
-- Handler dispatch via registered maps
-- `_meta` per-request metadata injection/extraction (2026-era)
+- Handler dispatch via `unordered_map` (not virtual dispatch)
+- Dual-era `WireCodec` (2025-11-25 initialize handshake / 2026-07-28 per-request `_meta`)
 - Inbound/outbound `MessageFilter` pipeline
-
-## Traps
-
-- **`McpServer::Create` / `McpClient::Create` take `shared_ptr<ITransport>`**: When using `StdioServerTransport`, both the transport and server/client must use the same `asio::io_context`. Pass the third argument: `McpServer::Create(transport, opts, &io_ctx)`. Omitting it creates an internal io_context that won't be shared with the transport, causing silent data loss on the channel.
-- **`McpServerTool::InvokeAsync` runs synchronously**: It calls the callable and sets the promise on the calling thread. Async dispatch happens in `McpSessionHandler::OnRequest` via `asio::post`.
-- **`HttpTransportMode` defined twice**: in `include/mcp/transport/HttpTransportMode.hpp` AND duplicated inside `StreamableHttpClientTransport.hpp`. Both define `enum class HttpTransportMode` with the same values. Changing one without the other causes ODR violations.
-- **`Protocol.hpp` name collision**: `include/mcp/Protocol.hpp` now redirects to `include/mcp/protocol/Protocol.hpp`. For new code, prefer `<mcp/protocol/McpSessionHandler.hpp>`.
-- **All types in `McpTypes.hpp`**: `Result.hpp`, `Progress.hpp`, `Notifications.hpp` were deleted; everything is in `McpTypes.hpp`.
-- **Don't delete `build/`**: Dependencies are cached in `build/<preset>/_deps/`. Deleting build forces re-download of asio, nlohmann-json, googletest — expensive on slow networks.
 
 ## Coding Style
 
-- **C++17**, `#pragma once`, 4-space indentation
+- **C++17**, `#pragma once`, 4-space indent
 - **Types/Functions**: PascalCase (`WireCodec`, `MakeWireCodec`)
 - **Constants**: `k` + PascalCase (`kLatestProtocolVersion`)
 - **Members**: snake_case + underscore (`io_ctx_`)
@@ -91,35 +79,38 @@ New code should use `ITransport`/`TransportBase`/`IClientTransport`. The old `Tr
 
 ## Testing
 
-Tests use **Google Test v1.15.2** (auto-fetched). **137 tests** across 12 suites:
+**216 tests** — Google Test v1.15.2 (auto-fetched).
 
-| Suite | File | Count | Notes |
-|-------|------|-------|-------|
-| `JsonRpcTest` | `JsonRpcTests.cpp` | 12 | Message serialization + variant dispatch |
-| `McpTypesTest` | `McpTypesTests.cpp` | 26 | Type round-trips |
-| `WireCodecTest` | `WireCodecTests.cpp` | 13 | Era-gating codec |
-| `McpServerTest` | `McpServerTests.cpp` | 9 | Registration, capabilities |
-| `McpClientTest` | `McpClientTests.cpp` | 10 | Client creation, tool cache |
-| `OAuthTest` | `OAuthTests.cpp` | 15 | PKCE, token cache |
-| `TransportTest` | `TransportTests.cpp` | 2 | InMemory transport |
-| `Conformance` | `ProtocolConformance.cpp` | 43 | Spec compliance |
-| `Integration` | `ClientServerRoundTrip.cpp` | 7+ | Client-server round-trip |
+| Suite | Location | Purpose |
+|-------|----------|---------|
+| `JsonRpcTest` | `tests/unit/` | Message serialization + variant dispatch |
+| `McpTypesTest` | `tests/unit/` | Type round-trips |
+| `WireCodecTest` | `tests/unit/` | Era-gating codec |
+| `McpServerTest` | `tests/unit/` | Registration, capabilities |
+| `McpClientTest` | `tests/unit/` | Client creation, tool cache |
+| `OAuthTest` | `tests/unit/` | PKCE, token cache |
+| `TransportTest` | `tests/unit/` | InMemory transport |
+| `Conformance` | `tests/conformance/` | 122 MCP spec compliance tests |
+| `Integration` | `tests/integration/` | Client-server round-trip |
 
-- Client tests link **both** mcp-client and mcp-server.
-- All tests are synchronous and self-contained (inline `nlohmann::json`, no external fixtures).
-- New features need matching `tests/unit/` tests; transport changes should add integration tests.
+## Traps
+
+- **`McpServer::Create` / `McpClient::Create` take `shared_ptr<ITransport>`**: When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — causes silent data loss.
+- **`Protocol.hpp` name collision**: `include/mcp/Protocol.hpp` redirects to `include/mcp/protocol/Protocol.hpp`. Prefer `<mcp/protocol/McpSessionHandler.hpp>`.
+- **All types in `McpTypes.hpp`**: `Result.hpp`, `Progress.hpp`, etc. were consolidated; everything lives in `McpTypes.hpp`.
+- **Don't delete `build/`**: Dependencies cached in `build/<preset>/_deps/`. Deleting forces re-download of asio, nlohmann-json, googletest.
 
 ## Dependencies
 
-All fetched automatically via `FetchContent`, cached per build directory:
+All fetched automatically via `FetchContent`:
 
 | Dep | Version | Notes |
 |-----|---------|-------|
 | asio | 1.30.2 | Header-only; manual INTERFACE target (no upstream CMakeLists.txt) |
-| nlohmann-json | 3.11.3 | SYSTEM, fetched shallow |
+| nlohmann-json | 3.11.3 | SYSTEM, shallow fetch |
 | GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Optional; enables OAuth PKCE (`MCP_HAVE_OPENSSL`) |
+| OpenSSL | system | Optional; OAuth PKCE (`MCP_HAVE_OPENSSL`) |
 
 ## Commits
 
-Conventional Commits with scope: `feat(transport):`, `fix(server):`, etc. Scopes: `client`, `server`, `protocol`, `transport`, `http`, `core`, `build`, `test`, `examples`. PRs target `develop`.
+Conventional Commits with scope: `feat(transport):`, `fix(server):`, etc. Scopes: `client`, `server`, `protocol`, `transport`, `http`, `core`, `build`, `test`, `examples`.

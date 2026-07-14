@@ -87,6 +87,8 @@ public:
     DiscoverResult Discover();
 
     // ── Client handlers (server-to-client: sampling, roots, elicitation) ──
+    // SetSamplingHandler is deprecated in 2026-07-28 (SEP-2577).
+    // Use SetElicitationHandler instead.
     void SetSamplingHandler(SamplingHandler handler);
     void SetRootsHandler(RootsHandler handler);
     void SetElicitationHandler(ElicitationHandler handler);

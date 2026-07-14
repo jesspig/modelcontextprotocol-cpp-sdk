@@ -35,6 +35,9 @@ McpServer::McpServer(
     handler_ = std::make_shared<McpSessionHandler>(
         transport_, std::move(codec), true);
 
+    // Detect stateless transport
+    is_stateless_ = dynamic_cast<IStatelessTransport*>(transport_.get()) != nullptr;
+
     // Wire built-in handlers
     WireHandlers();
 
@@ -157,6 +160,12 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     params["data"] = data;
     params["logger"] = "mcp-server";
     handler_->SendNotification(notifications::kMessage, std::move(params));
+}
+
+void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level) {
+    if (min_level && static_cast<int>(level) < static_cast<int>(*min_level))
+        return;
+    SendLoggingMessage(level, data);
 }
 
 // ====================================================================
@@ -371,19 +380,8 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts = PromptsCapability{};
         capabilities_.prompts->list_changed = true;
     }
-    if (options_.task_store) {
-        if (!capabilities_.extensions) capabilities_.extensions = nlohmann::json::object();
-        (*capabilities_.extensions)["io.modelcontextprotocol/tasks"] = nlohmann::json::object();
-    }
-    if (options_.extensions) {
-        capabilities_.extensions = options_.extensions;
-    }
-    if (!extensions_.empty()) {
-        auto ext_json = capabilities_.extensions.value_or(nlohmann::json::object());
-        for (auto& ext : extensions_) {
-            ext_json[ext->Identifier()] = nlohmann::json::object();
-        }
-        capabilities_.extensions = std::move(ext_json);
+    if (options_.task_store || options_.extensions || !extensions_.empty()) {
+        capabilities_.extensions = ExtensionsCapability{};
     }
 }
 
@@ -419,8 +417,11 @@ void McpServer::HandleCallTool(
     }
 
     // Build RequestContext and invoke
+    auto log_fn = [this](LoggingLevel level, std::string_view data) {
+        SendLoggingMessage(level, data);
+    };
     auto ctx = RequestContext<CallToolRequestParams>(
-        *this, req, std::move(params), *io_ctx_ptr_);
+        *this, req, std::move(params), *io_ctx_ptr_, std::move(log_fn));
 
     auto tool = it->second;
     std::thread([tool, ctx = std::move(ctx),
@@ -603,13 +604,20 @@ void McpServer::HandleSubscriptionsListen(
     SubscriptionsListenRequestParams params;
     if (req.params) from_json(*req.params, params);
 
-    Subscription sub;
-    sub.id = std::to_string(
+    auto meta = handler_->ExtractIncomingMeta(req);
+
+    SubscriptionEntry entry;
+    entry.id = std::to_string(
         std::hash<std::string>{}(req.method + std::to_string(
             std::chrono::system_clock::now().time_since_epoch().count())));
-    sub.granted = std::move(params.notifications);
+    entry.filter = std::move(params.notifications);
+    entry.created_at = std::chrono::steady_clock::now();
 
-    handler_->AddSubscription(std::move(sub));
+    if (meta.subscription_id) {
+        entry.session_id = *meta.subscription_id;
+    }
+
+    handler_->AddSubscriptionEntry(std::move(entry));
 
     nlohmann::json result = nlohmann::json::object();
     promise.set_value(std::move(result));
@@ -635,6 +643,8 @@ const ServerCapabilities& McpServer::GetCapabilities() const {
 }
 
 bool McpServer::IsMrtrSupported() const {
+    // MRTR requires stateful transport
+    if (is_stateless_) return false;
     auto* caps = GetClientCapabilities();
     return caps && caps->elicitation.has_value();
 }

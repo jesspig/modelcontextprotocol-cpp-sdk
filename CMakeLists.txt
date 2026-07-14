@@ -56,7 +56,8 @@ target_sources(mcp-transport PRIVATE
     src/transport/StdioServerTransport.cpp
     src/transport/StdioClientTransport.cpp
     src/transport/SseClientTransport.cpp
-    src/transport/InMemoryTransport.cpp)
+    src/transport/InMemoryTransport.cpp
+    src/transport/WebSocketClientTransport.cpp)
 if(WIN32)
     target_sources(mcp-transport PRIVATE src/transport/detail/win32_platform.cpp)
     target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio winhttp)
@@ -85,7 +86,8 @@ set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BAT
 # ====================================================================
 add_library(mcp-server STATIC)
 target_sources(mcp-server PRIVATE
-    src/server/McpServer.cpp)
+    src/server/McpServer.cpp
+    src/server/FileTaskStore.cpp)
 target_link_libraries(mcp-server PUBLIC mcp-protocol)
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -97,7 +99,8 @@ add_library(mcp-client STATIC)
 target_sources(mcp-client PRIVATE
     src/client/McpClient.cpp
     src/client/MrtrHelper.cpp
-    src/client/auth/OAuthClientProvider.cpp)
+    src/client/auth/OAuthClientProvider.cpp
+    src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)

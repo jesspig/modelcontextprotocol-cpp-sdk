@@ -8,6 +8,7 @@
 #include <mcp/Methods.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/post.hpp>
+#include <chrono>
 #include <mutex>
 #include <unordered_map>
 #include <memory>
@@ -24,6 +25,14 @@ class MessageChannel;
 using RequestHandler = std::function<void(const JsonRpcRequest&, std::promise<nlohmann::json>)>;
 using NotificationHandler = std::function<void(const JsonRpcNotification&)>;
 using ResponseCallback = std::function<void(nlohmann::json)>;
+
+// Enhanced subscription entry with 2026-era filter support
+struct SubscriptionEntry {
+    std::string id;
+    std::string session_id;
+    SubscriptionFilter filter;
+    std::chrono::steady_clock::time_point created_at;
+};
 
 // ═══════════════════════════════════════════════════════════════════════
 // McpSessionHandler — internal JSON-RPC engine
@@ -74,8 +83,12 @@ public:
 
     // ── Subscription management ──
     void AddSubscription(Subscription sub);
+    void AddSubscriptionEntry(SubscriptionEntry entry);
     void RemoveSubscription(std::string_view id);
-    void NotifySubscribers(std::string_view notification, nlohmann::json params);
+    void NotifySubscribers(
+        std::string_view notification_type,
+        nlohmann::json params,
+        std::optional<std::string> resource_uri = std::nullopt);
 
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
@@ -124,7 +137,7 @@ private:
     std::mutex pending_mutex_;
 
     // Subscriptions
-    std::unordered_map<std::string, Subscription> subscriptions_;
+    std::unordered_map<std::string, SubscriptionEntry> subscriptions_;
     std::mutex subscriptions_mutex_;
 
     // Filter pipelines

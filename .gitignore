@@ -47,6 +47,9 @@ _deps/
 docs/_site/
 docs/.doxygen/
 
+# ── Test output artifacts ──
+Testing/
+
 # ── OS files ──
 Thumbs.db
 Desktop.ini

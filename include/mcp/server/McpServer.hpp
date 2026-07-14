@@ -8,6 +8,7 @@
 #include <mcp/server/Extension.hpp>
 
 
+#include <future>
 #include <memory>
 #include <string_view>
 #include <unordered_map>
@@ -73,6 +74,29 @@ public:
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
 
+    // ── Elicitation typed (generic) ──
+    template <typename T>
+    std::future<ElicitResultTyped<T>> Elicit(
+        std::string_view message,
+        std::optional<nlohmann::json> extra_meta = std::nullopt)
+    {
+        ElicitRequestParams params;
+        params.message = std::string(message);
+        params.requested_schema = detail::build_json_schema<T>();
+
+        auto raw_future = Elicit(params);
+        return std::async(std::launch::deferred,
+            [raw_future = std::move(raw_future)]() mutable {
+                auto raw = raw_future.get();
+                ElicitResultTyped<T> typed;
+                if (raw.values) {
+                    typed.content = raw.values->get<T>();
+                    typed.action = "accept";
+                }
+                return typed;
+            });
+    }
+
     // ── Completion handler ──
     using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;
     void SetCompletionHandler(CompletionHandler handler);
@@ -82,6 +106,7 @@ public:
     void SendResourceListChanged();
     void SendPromptListChanged();
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
+    void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
 
     // ── Properties ──
     const ClientCapabilities* GetClientCapabilities() const;
@@ -169,6 +194,9 @@ private:
     bool tools_changed_flag_{false};
     bool resources_changed_flag_{false};
     bool prompts_changed_flag_{false};
+
+    // Stateless mode (no session persistence, no MRTR)
+    bool is_stateless_{false};
 };
 
 } // namespace mcp

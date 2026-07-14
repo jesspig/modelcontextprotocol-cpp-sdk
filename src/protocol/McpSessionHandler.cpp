@@ -430,8 +430,17 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
 // Subscriptions
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::AddSubscription(Subscription sub) {
+    SubscriptionEntry entry;
+    entry.id = std::move(sub.id);
+    entry.filter = std::move(sub.granted);
+    entry.created_at = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-    subscriptions_[sub.id] = std::move(sub);
+    subscriptions_[entry.id] = std::move(entry);
+}
+
+void McpSessionHandler::AddSubscriptionEntry(SubscriptionEntry entry) {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+    subscriptions_[entry.id] = std::move(entry);
 }
 
 void McpSessionHandler::RemoveSubscription(std::string_view id) {
@@ -439,13 +448,38 @@ void McpSessionHandler::RemoveSubscription(std::string_view id) {
     subscriptions_.erase(std::string(id));
 }
 
-void McpSessionHandler::NotifySubscribers(std::string_view notification, nlohmann::json params) {
+void McpSessionHandler::NotifySubscribers(
+    std::string_view notification_type,
+    nlohmann::json params,
+    std::optional<std::string> resource_uri)
+{
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
     if (subscriptions_.empty()) return;
 
-    for (const auto& [id, sub] : subscriptions_) {
+    for (const auto& [id, entry] : subscriptions_) {
+        bool should_notify = false;
+
+        if (notification_type == notifications::kToolListChanged) {
+            should_notify = entry.filter.tools_list_changed.value_or(false);
+        } else if (notification_type == notifications::kPromptListChanged) {
+            should_notify = entry.filter.prompts_list_changed.value_or(false);
+        } else if (notification_type == notifications::kResourceListChanged) {
+            should_notify = entry.filter.resources_list_changed.value_or(false);
+        } else if (notification_type == notifications::kResourceUpdated) {
+            if (resource_uri && !entry.filter.resource_subscriptions.empty()) {
+                for (const auto& uri : entry.filter.resource_subscriptions) {
+                    if (uri == *resource_uri) {
+                        should_notify = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!should_notify) continue;
+
         JsonRpcNotification notif;
-        notif.method = std::string(notification);
+        notif.method = std::string(notification_type);
         notif.params = params;
 
         nlohmann::json meta = nlohmann::json::object();

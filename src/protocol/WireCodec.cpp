@@ -114,7 +114,6 @@ public:
             "server/discover",
             "tools/list", "tools/call",
             "resources/list", "resources/read", "resources/templates/list",
-            "resources/subscribe", "resources/unsubscribe",
             "prompts/list", "prompts/get",
             "completion/complete",
             "subscriptions/listen",

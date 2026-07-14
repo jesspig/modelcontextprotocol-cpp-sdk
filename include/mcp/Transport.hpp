@@ -13,6 +13,11 @@
 namespace mcp {
 
 // ═══════════════════════════════════════════════════════════════════════
+// IStatelessTransport — marker for stateless transport (no session persistence)
+// ═══════════════════════════════════════════════════════════════════════
+class IStatelessTransport {};
+
+// ═══════════════════════════════════════════════════════════════════════
 // ITransport — established bidirectional session
 // ═══════════════════════════════════════════════════════════════════════
 class ITransport {

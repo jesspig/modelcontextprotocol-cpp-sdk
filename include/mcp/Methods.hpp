@@ -70,17 +70,6 @@ inline constexpr std::string_view kTaskInputRequired = "notifications/tasks/inpu
 
 } // namespace notifications
 
-namespace headers {
-
-inline constexpr std::string_view kProtocolVersion = "MCP-Protocol-Version";
-inline constexpr std::string_view kMethod = "Mcp-Method";
-inline constexpr std::string_view kName = "Mcp-Name";
-inline constexpr std::string_view kSessionId = "Mcp-Session-Id";
-inline constexpr std::string_view kLastEventId = "Last-Event-ID";
-inline constexpr std::string_view kParamPrefix = "Mcp-Param-";
-
-} // namespace headers
-
 // ── 常量 ──
 inline constexpr std::string_view kSseEndpoint = "endpoint";
 inline constexpr std::string_view kSseMessage = "message";
