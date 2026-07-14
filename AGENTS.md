@@ -81,17 +81,23 @@ New code use `ITransport`/`TransportBase`/`IClientTransport`. Old `Transport`/`C
 
 **216 tests** — Google Test v1.15.2 (auto-fetched).
 
-| Suite | Location | Purpose |
-|-------|----------|---------|
-| `JsonRpcTest` | `tests/unit/` | Message serialization + variant dispatch |
-| `McpTypesTest` | `tests/unit/` | Type round-trips |
-| `WireCodecTest` | `tests/unit/` | Era-gating codec |
-| `McpServerTest` | `tests/unit/` | Registration, capabilities |
-| `McpClientTest` | `tests/unit/` | Client creation, tool cache |
-| `OAuthTest` | `tests/unit/` | PKCE, token cache |
-| `TransportTest` | `tests/unit/` | InMemory transport |
-| `Conformance` | `tests/conformance/` | 122 MCP spec compliance tests |
-| `Integration` | `tests/integration/` | Client-server round-trip |
+| Suite | CMake Target | Location | Purpose |
+|-------|-------------|----------|---------|
+| `JsonRpcTest` | `mcp-core-tests` | `tests/unit/` | Message serialization + variant dispatch |
+| `McpTypesTest` | `mcp-core-tests` | `tests/unit/` | Type round-trips |
+| `WireCodecTest` | `mcp-wire-codec-tests` | `tests/unit/` | Era-gating codec |
+| `McpServerTest` | `mcp-server-tests` | `tests/unit/` | Registration, capabilities |
+| `McpClientTest` | `mcp-client-tests` | `tests/unit/` | Client creation, tool cache |
+| `OAuthTest` | `mcp-oauth-tests` | `tests/unit/` | PKCE, token cache |
+| `TransportTest` | `mcp-transport-tests` | `tests/unit/` | InMemory transport |
+| `Conformance` | `mcp-conformance-tests` | `tests/conformance/` | 122 MCP spec compliance tests |
+| `Integration` | `mcp-integration-tests` | `tests/integration/` | Client-server round-trip |
+
+Run a single target: `cmake --build --preset debug --target mcp-core-tests`
+
+## CI
+
+CI (`ci.yml`) runs on `develop` branch only — both push and PR. Docs (`docs.yml`) deploys from `master`. Examples built and tested by default in debug preset.
 
 ## Traps
 

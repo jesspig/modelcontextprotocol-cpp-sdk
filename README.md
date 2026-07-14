@@ -1,5 +1,7 @@
 # MCP C++ SDK
 
+> **中文版文档**：[README_zh.md](README_zh.md)
+
 C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), providing both client and server libraries for building MCP-based AI tooling integrations.
 [![MCP](https://badge.mcpx.dev/?type=plugin&plugin_id=github.com/jesspig/GodotMind&logo=true)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -37,7 +39,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 
 | Dependency     | Minimum Version | Notes                        |
 |----------------|----------------|------------------------------|
-| CMake          | 4.2            | Generator: Ninja recommended |
+| CMake          | 3.28           | Generator: Ninja recommended |
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
 | asio           | 1.30.2         | Fetched automatically        |
 | nlohmann-json  | 3.11.3         | Fetched automatically        |
