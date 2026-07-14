@@ -32,15 +32,21 @@ public:
     bool IsModernProtocol() const;
 
     // ── Tools ──
-    ListToolsResult ListTools(const CacheableRequestOptions& options = {});
+    ListToolsResult ListTools(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
     CallToolResult CallTool(
         std::string_view name,
         std::optional<nlohmann::json> arguments = std::nullopt,
         const RequestOptions& options = {});
 
     // ── Resources ──
-    ListResourcesResult ListResources(const CacheableRequestOptions& options = {});
-    ListResourceTemplatesResult ListResourceTemplates(const CacheableRequestOptions& options = {});
+    ListResourcesResult ListResources(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
+    ListResourceTemplatesResult ListResourceTemplates(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
     ReadResourceResult ReadResource(
         std::string_view uri,
         const CacheableRequestOptions& options = {});
@@ -48,7 +54,9 @@ public:
     EmptyResult UnsubscribeResource(std::string_view uri);
 
     // ── Prompts ──
-    ListPromptsResult ListPrompts(const CacheableRequestOptions& options = {});
+    ListPromptsResult ListPrompts(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
     GetPromptResult GetPrompt(
         std::string_view name,
         std::optional<nlohmann::json> arguments = std::nullopt,
@@ -112,6 +120,13 @@ private:
         std::string_view method,
         TParams params,
         std::chrono::milliseconds timeout = std::chrono::seconds(30));
+
+    // MRTR-aware request: handles input_required loop
+    nlohmann::json SendRequestWithMrtr(
+        std::string_view method,
+        nlohmann::json params_json,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout);
 
     // State
     std::shared_ptr<ITransport> transport_;

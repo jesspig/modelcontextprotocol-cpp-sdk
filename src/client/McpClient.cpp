@@ -348,11 +348,107 @@ TResult McpClient::SendRequest(
 }
 
 // ====================================================================
+// MRTR helper: attempt to fulfill input_required responses via elicitation handler
+// ====================================================================
+static bool TryFulfillInputRequired(
+    const nlohmann::json& result_json,
+    const ClientOptions& options,
+    const std::optional<std::function<ElicitResult(const ElicitRequestParams&)>>& elicitation_handler,
+    nlohmann::json& out_input_responses,
+    std::optional<std::string>& out_request_state)
+{
+    auto rt = result_json.find("resultType");
+    if (rt == result_json.end() || rt->get<std::string>() != "input_required") {
+        return false;
+    }
+
+    if (!options.input_required_config || !options.input_required_config->auto_fulfill) {
+        return false;
+    }
+
+    InputRequiredResult input_req;
+    from_json(result_json, input_req);
+
+    if (!input_req.input_requests.elicit && !input_req.input_requests.confirm) {
+        return false;
+    }
+
+    nlohmann::json responses = nlohmann::json::object();
+
+    if (input_req.input_requests.elicit && elicitation_handler) {
+        auto& elicit_req = *input_req.input_requests.elicit;
+        ElicitRequestParams ep;
+        ep.message = elicit_req.message;
+        ep.requested_schema = elicit_req.requested_schema;
+        auto elicit_result = (*elicitation_handler)(ep);
+        if (elicit_result.values)
+            responses["elicit"] = *elicit_result.values;
+    }
+
+    if (input_req.input_requests.confirm && elicitation_handler) {
+        auto& confirm_req = *input_req.input_requests.confirm;
+        ElicitRequestParams ep;
+        ep.message = confirm_req.message;
+        ep.requested_schema = confirm_req.requested_schema;
+        auto confirm_result = (*elicitation_handler)(ep);
+        if (confirm_result.values)
+            responses["confirm"] = *confirm_result.values;
+    }
+
+    out_input_responses = std::move(responses);
+    out_request_state = input_req.request_state;
+    return true;
+}
+
+nlohmann::json McpClient::SendRequestWithMrtr(
+    std::string_view method,
+    nlohmann::json params_json,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout)
+{
+    auto& cfg = options_.input_required_config;
+    int max_rounds = cfg ? cfg->max_rounds : 0;
+    auto effective_timeout = cfg ? cfg->round_timeout : timeout;
+
+    for (int round = 0; round <= max_rounds; ++round) {
+        auto future = handler_->SendRequest(method, params_json, meta, effective_timeout);
+        auto result_json = future.get();
+
+        // Check for protocol errors
+        if (result_json.contains("code") && result_json["code"].get<int32_t>() < 0) {
+            throw McpError(
+                static_cast<McpErrorCode>(result_json["code"].get<int32_t>()),
+                result_json.value("message", "request failed"));
+        }
+
+        // Check for input_required (MRTR)
+        nlohmann::json input_responses;
+        std::optional<std::string> request_state;
+        if (TryFulfillInputRequired(result_json, options_, elicitation_handler_,
+                input_responses, request_state)) {
+            // Inject input_responses for next round
+            params_json["inputResponses"] = std::move(input_responses);
+            if (request_state) params_json["requestState"] = *request_state;
+            continue;
+        }
+
+        // Complete result or non-MRTR — return raw JSON
+        return result_json;
+    }
+
+    throw McpError(McpErrorCode::InternalError,
+        "MRTR: exceeded max_rounds (" + std::to_string(max_rounds) + ")");
+}
+
+// ====================================================================
 // Tools
 // ====================================================================
-ListToolsResult McpClient::ListTools(const CacheableRequestOptions& options) {
+ListToolsResult McpClient::ListTools(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListToolsRequestParams params;
-    params.cursor = std::nullopt;
+    params.cursor = std::move(cursor);
     return SendRequest<ListToolsRequestParams, ListToolsResult>(
         methods::kListTools, params);
 }
@@ -483,14 +579,22 @@ CallToolResult McpClient::CallTool(
 // ====================================================================
 // Resources
 // ====================================================================
-ListResourcesResult McpClient::ListResources(const CacheableRequestOptions& options) {
+ListResourcesResult McpClient::ListResources(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListResourcesRequestParams params;
+    params.cursor = std::move(cursor);
     return SendRequest<ListResourcesRequestParams, ListResourcesResult>(
         methods::kListResources, params);
 }
 
-ListResourceTemplatesResult McpClient::ListResourceTemplates(const CacheableRequestOptions& options) {
+ListResourceTemplatesResult McpClient::ListResourceTemplates(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListResourceTemplatesRequestParams params;
+    params.cursor = std::move(cursor);
     return SendRequest<ListResourceTemplatesRequestParams, ListResourceTemplatesResult>(
         methods::kListResourceTemplates, params);
 }
@@ -498,10 +602,25 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(const CacheableRequ
 ReadResourceResult McpClient::ReadResource(
     std::string_view uri, const CacheableRequestOptions& options)
 {
-    ReadResourceRequestParams params;
-    params.uri = std::string(uri);
-    return SendRequest<ReadResourceRequestParams, ReadResourceResult>(
-        methods::kReadResource, params);
+    RequestMeta meta;
+    meta.protocol_version = negotiation_.negotiated_version;
+    meta.client_info = options_.client_info;
+    if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
+    if (options.meta) meta.extensions = options.meta;
+
+    nlohmann::json req_json;
+    req_json["uri"] = std::string(uri);
+
+    auto timeout = options.read_timeout_ms
+        ? std::chrono::milliseconds(*options.read_timeout_ms)
+        : std::chrono::seconds(30);
+    auto result_json = SendRequestWithMrtr(
+        methods::kReadResource, std::move(req_json), meta, timeout);
+    return result_json.get<ReadResourceResult>();
 }
 
 EmptyResult McpClient::SubscribeResource(std::string_view uri) {
@@ -521,8 +640,12 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
 // ====================================================================
 // Prompts
 // ====================================================================
-ListPromptsResult McpClient::ListPrompts(const CacheableRequestOptions& options) {
+ListPromptsResult McpClient::ListPrompts(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListPromptsRequestParams params;
+    params.cursor = std::move(cursor);
     return SendRequest<ListPromptsRequestParams, ListPromptsResult>(
         methods::kListPrompts, params);
 }
@@ -532,11 +655,52 @@ GetPromptResult McpClient::GetPrompt(
     std::optional<nlohmann::json> arguments,
     const RequestOptions& options)
 {
-    GetPromptRequestParams params;
-    params.name = std::string(name);
-    params.arguments = std::move(arguments);
-    return SendRequest<GetPromptRequestParams, GetPromptResult>(
-        methods::kGetPrompt, params);
+    RequestMeta meta;
+    meta.protocol_version = negotiation_.negotiated_version;
+    meta.client_info = options_.client_info;
+    if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
+    if (options.meta) meta.extensions = options.meta;
+
+    nlohmann::json req_json;
+    req_json["name"] = std::string(name);
+    if (arguments) req_json["arguments"] = *arguments;
+
+    auto timeout = options.read_timeout_ms
+        ? std::chrono::milliseconds(*options.read_timeout_ms)
+        : std::chrono::seconds(30);
+    auto result_json = SendRequestWithMrtr(
+        methods::kGetPrompt, std::move(req_json), meta, timeout);
+
+    // Check for task result type
+    if (auto rt = result_json.find("resultType"); rt != result_json.end()
+        && rt->get<std::string>() == "task")
+    {
+        auto task_id = result_json["taskId"].get<std::string>();
+        auto task_result = PollTaskToCompletionAsync(task_id);
+
+        if (task_result.status == "failed") {
+            throw McpError(McpErrorCode::InternalError,
+                "Task failed: " + task_id +
+                (task_result.error_message ? ": " + *task_result.error_message : ""));
+        }
+
+        if (task_result.status == "cancelled") {
+            throw McpError(McpErrorCode::InternalError,
+                "Task cancelled: " + task_id);
+        }
+
+        GetPromptResult result;
+        if (task_result.result) {
+            from_json(*task_result.result, result);
+        }
+        return result;
+    }
+
+    return result_json.get<GetPromptResult>();
 }
 
 // ====================================================================
