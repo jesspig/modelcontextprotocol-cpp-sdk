@@ -4,6 +4,7 @@
 #include <asio/post.hpp>
 #include <asio/signal_set.hpp>
 
+#include <thread>
 #include <set>
 
 namespace mcp {
@@ -12,21 +13,30 @@ namespace mcp {
 // Factory
 // ====================================================================
 std::unique_ptr<McpServer> McpServer::Create(
-    std::unique_ptr<Transport> transport,
-    const ServerOptions& options)
+    std::shared_ptr<ITransport> transport,
+    const ServerOptions& options,
+    asio::io_context* io_ctx)
 {
     return std::unique_ptr<McpServer>(
-        new McpServer(std::move(transport), options));
+        new McpServer(std::move(transport), options, io_ctx));
 }
 
 McpServer::McpServer(
-    std::unique_ptr<Transport> transport,
-    ServerOptions options)
-    : io_ctx_()
+    std::shared_ptr<ITransport> transport,
+    ServerOptions options,
+    asio::io_context* external_io_ctx)
+    : io_ctx_owner_(external_io_ctx ? nullptr : std::make_unique<asio::io_context>())
+    , io_ctx_ptr_(external_io_ctx ? external_io_ctx : io_ctx_owner_.get())
     , transport_(std::move(transport))
     , options_(std::move(options))
 {
-    protocol_ = std::make_shared<Protocol>(io_ctx_, std::move(transport_));
+    auto codec = MakeWireCodec(
+        options_.protocol_version.value_or(std::string(kLatestProtocolVersion)));
+    handler_ = std::make_shared<McpSessionHandler>(
+        transport_, std::move(codec), true);
+
+    // Detect stateless transport
+    is_stateless_ = dynamic_cast<IStatelessTransport*>(transport_.get()) != nullptr;
 
     // Wire built-in handlers
     WireHandlers();
@@ -36,23 +46,28 @@ McpServer::McpServer(
 
     // Negotiate protocol version
     if (options_.protocol_version) {
-        protocol_->SetNegotiatedProtocolVersion(*options_.protocol_version);
+        handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
     }
 
-    // Start the protocol engine
-    protocol_->Start();
+    // Wire request state verifier if configured
+    if (options_.request_state_verifier) {
+        handler_->SetRequestStateVerifier(options_.request_state_verifier);
+    }
+
+    // Start the session handler
+    handler_->Start();
 }
 
 // ====================================================================
 // Lifecycle
 // ====================================================================
 void McpServer::Run() {
-    io_ctx_.run();
+    io_ctx_ptr_->run();
 }
 
 void McpServer::Close() {
-    protocol_->Close();
-    io_ctx_.stop();
+    handler_->Close();
+    io_ctx_ptr_->stop();
 }
 
 // ====================================================================
@@ -125,17 +140,17 @@ void McpServer::RegisterPrompt(
 // Notifications
 // ====================================================================
 void McpServer::SendToolListChanged() {
-    protocol_->SendNotification(
+    handler_->SendNotification(
         notifications::kToolListChanged, nlohmann::json::object());
 }
 
 void McpServer::SendResourceListChanged() {
-    protocol_->SendNotification(
+    handler_->SendNotification(
         notifications::kResourceListChanged, nlohmann::json::object());
 }
 
 void McpServer::SendPromptListChanged() {
-    protocol_->SendNotification(
+    handler_->SendNotification(
         notifications::kPromptListChanged, nlohmann::json::object());
 }
 
@@ -144,7 +159,13 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     params["level"] = level;
     params["data"] = data;
     params["logger"] = "mcp-server";
-    protocol_->SendNotification(notifications::kMessage, std::move(params));
+    handler_->SendNotification(notifications::kMessage, std::move(params));
+}
+
+void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level) {
+    if (min_level && static_cast<int>(level) < static_cast<int>(*min_level))
+        return;
+    SendLoggingMessage(level, data);
 }
 
 // ====================================================================
@@ -152,11 +173,11 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
 // ====================================================================
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
     RequestMeta meta;
-    auto vers = protocol_->NegotiatedProtocolVersion();
+    auto vers = handler_->NegotiatedProtocolVersion();
     meta.protocol_version = vers.empty()
         ? std::string(kLatestProtocolVersion) : std::string(vers);
 
-    auto future = protocol_->SendRequest(
+    auto future = handler_->SendRequest(
         methods::kElicit, nlohmann::json(params), meta, std::chrono::seconds(600));
 
     // Wrap response
@@ -186,10 +207,10 @@ void McpServer::RegisterExtension(std::shared_ptr<Extension> extension) {
     }
 
     // Register methods from extension
-    for (auto& [method, handler] : extension->Methods()) {
-        protocol_->SetRequestHandler(method,
-            [handler](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
-                handler(req, std::move(p));
+    for (auto& [method, ext_handler] : extension->Methods()) {
+        handler_->SetRequestHandler(method,
+            [ext_handler](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                ext_handler(req, std::move(p));
             });
     }
 
@@ -203,14 +224,14 @@ void McpServer::RegisterExtension(std::shared_ptr<Extension> extension) {
 void McpServer::WireHandlers() {
     // ── tools/list ──
     if (!tools_.empty()) {
-        protocol_->SetRequestHandler(methods::kListTools,
+        handler_->SetRequestHandler(methods::kListTools,
             [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
                 HandleListTools(req, std::move(p));
             });
     }
 
     // ── tools/call ──
-    protocol_->SetRequestHandler(methods::kCallTool,
+    handler_->SetRequestHandler(methods::kCallTool,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleCallTool(req, std::move(p));
         });
@@ -218,7 +239,7 @@ void McpServer::WireHandlers() {
     // ── resources/list ──
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return !r.is_template; })) {
-        protocol_->SetRequestHandler(methods::kListResources,
+        handler_->SetRequestHandler(methods::kListResources,
             [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
                 HandleListResources(req, std::move(p));
             });
@@ -227,7 +248,7 @@ void McpServer::WireHandlers() {
     // ── resources/templates/list ──
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return r.is_template; })) {
-        protocol_->SetRequestHandler(methods::kListResourceTemplates,
+        handler_->SetRequestHandler(methods::kListResourceTemplates,
             [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
                 HandleListResourceTemplates(req, std::move(p));
             });
@@ -235,7 +256,7 @@ void McpServer::WireHandlers() {
 
     // ── resources/read ──
     if (!resources_.empty()) {
-        protocol_->SetRequestHandler(methods::kReadResource,
+        handler_->SetRequestHandler(methods::kReadResource,
             [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
                 HandleReadResource(req, std::move(p));
             });
@@ -243,32 +264,32 @@ void McpServer::WireHandlers() {
 
     // ── prompts/list ──
     if (!prompts_.empty()) {
-        protocol_->SetRequestHandler(methods::kListPrompts,
+        handler_->SetRequestHandler(methods::kListPrompts,
             [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
                 HandleListPrompts(req, std::move(p));
             });
     }
 
     // ── prompts/get ──
-    protocol_->SetRequestHandler(methods::kGetPrompt,
+    handler_->SetRequestHandler(methods::kGetPrompt,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleGetPrompt(req, std::move(p));
         });
 
     // ── server/discover ──
-    protocol_->SetRequestHandler(methods::kDiscover,
+    handler_->SetRequestHandler(methods::kDiscover,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleDiscover(req, std::move(p));
         });
 
     // ── completion/complete ──
-    protocol_->SetRequestHandler(methods::kComplete,
+    handler_->SetRequestHandler(methods::kComplete,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleComplete(req, std::move(p));
         });
 
     // ── server/extensions/list ──
-    protocol_->SetRequestHandler(methods::kListExtensions,
+    handler_->SetRequestHandler(methods::kListExtensions,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             ExtensionListResult r;
             for (auto& ext : extensions_)
@@ -277,11 +298,16 @@ void McpServer::WireHandlers() {
             p.set_value(std::move(j));
         });
 
-    // ── tasks/get, tasks/update, tasks/cancel ──
+    // ── tasks/get, tasks/update, tasks/cancel (2026+ only) ──
     auto& store = options_.task_store;
     if (store) {
-        protocol_->SetRequestHandler(methods::kGetTask,
-            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        handler_->SetRequestHandler(methods::kGetTask,
+            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound, "tasks/get not available in this protocol version")));
+                    return;
+                }
                 GetTaskRequestParams params;
                 if (req.params) from_json(*req.params, params);
                 auto task = store->GetTask(params.task_id);
@@ -301,8 +327,13 @@ void McpServer::WireHandlers() {
                 p.set_value(std::move(j));
             });
 
-        protocol_->SetRequestHandler(methods::kUpdateTask,
-            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        handler_->SetRequestHandler(methods::kUpdateTask,
+            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound, "tasks/update not available in this protocol version")));
+                    return;
+                }
                 UpdateTaskRequestParams params;
                 if (req.params) from_json(*req.params, params);
                 store->UpdateTask(params.task_id, params.result);
@@ -310,8 +341,13 @@ void McpServer::WireHandlers() {
                 p.set_value(nlohmann::json(r));
             });
 
-        protocol_->SetRequestHandler(methods::kCancelTask,
-            [store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        handler_->SetRequestHandler(methods::kCancelTask,
+            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound, "tasks/cancel not available in this protocol version")));
+                    return;
+                }
                 CancelTaskRequestParams params;
                 if (req.params) from_json(*req.params, params);
                 store->CancelTask(params.task_id, params.reason);
@@ -319,6 +355,12 @@ void McpServer::WireHandlers() {
                 p.set_value(nlohmann::json(r));
             });
     }
+
+    // ── subscriptions/listen (2026 era only) ──
+    handler_->SetRequestHandler(methods::kSubscribe,
+        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            HandleSubscriptionsListen(req, std::move(p));
+        });
 }
 
 // ====================================================================
@@ -338,8 +380,8 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts = PromptsCapability{};
         capabilities_.prompts->list_changed = true;
     }
-    if (options_.task_store) {
-        capabilities_.tasks = TasksCapability{};
+    if (options_.task_store || options_.extensions || !extensions_.empty()) {
+        capabilities_.extensions = ExtensionsCapability{};
     }
 }
 
@@ -375,8 +417,11 @@ void McpServer::HandleCallTool(
     }
 
     // Build RequestContext and invoke
+    auto log_fn = [this](LoggingLevel level, std::string_view data) {
+        SendLoggingMessage(level, data);
+    };
     auto ctx = RequestContext<CallToolRequestParams>(
-        *this, req, std::move(params), io_ctx_);
+        *this, req, std::move(params), *io_ctx_ptr_, std::move(log_fn));
 
     auto tool = it->second;
     std::thread([tool, ctx = std::move(ctx),
@@ -494,9 +539,28 @@ void McpServer::HandleGetPrompt(
                  "prompt not found: " + params.name)));
 }
 
+void McpServer::SetCompletionHandler(CompletionHandler handler) {
+    completion_handler_ = std::move(handler);
+}
+
 void McpServer::HandleComplete(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
 {
+    CompleteRequestParams params;
+    if (req.params) from_json(*req.params, params);
+
+    if (completion_handler_) {
+        try {
+            auto result = completion_handler_(params);
+            nlohmann::json j = result;
+            promise.set_value(std::move(j));
+            return;
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+            return;
+        }
+    }
+
     CompleteResult result;
     result.completion = nlohmann::json{{"values", nlohmann::json::array()}};
     nlohmann::json j = result;
@@ -512,15 +576,51 @@ void McpServer::HandleDiscover(
         kLatestProtocolVersion.data()
     };
     result.capabilities = capabilities_;
-    result.server_info = Implementation{
-        options_.server_info->name,
-        options_.server_info->version
-    };
+    if (options_.server_info) {
+        result.server_info = Implementation{
+            options_.server_info->name,
+            options_.server_info->version
+        };
+    } else {
+        result.server_info = Implementation{"mcp-server", "0.1.0"};
+    }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }
     nlohmann::json j = result;
     promise.set_value(std::move(j));
+}
+
+void McpServer::HandleSubscriptionsListen(
+    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+{
+    if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "subscriptions/listen not available in this protocol version")));
+        return;
+    }
+
+    SubscriptionsListenRequestParams params;
+    if (req.params) from_json(*req.params, params);
+
+    auto meta = handler_->ExtractIncomingMeta(req);
+
+    SubscriptionEntry entry;
+    entry.id = std::to_string(
+        std::hash<std::string>{}(req.method + std::to_string(
+            std::chrono::system_clock::now().time_since_epoch().count())));
+    entry.filter = std::move(params.notifications);
+    entry.created_at = std::chrono::steady_clock::now();
+
+    if (meta.subscription_id) {
+        entry.session_id = *meta.subscription_id;
+    }
+
+    handler_->AddSubscriptionEntry(std::move(entry));
+
+    nlohmann::json result = nlohmann::json::object();
+    promise.set_value(std::move(result));
 }
 
 // ====================================================================
@@ -535,7 +635,7 @@ const Implementation* McpServer::GetClientInfo() const {
 }
 
 std::string_view McpServer::GetNegotiatedProtocolVersion() const {
-    return protocol_->NegotiatedProtocolVersion();
+    return handler_->NegotiatedProtocolVersion();
 }
 
 const ServerCapabilities& McpServer::GetCapabilities() const {
@@ -543,6 +643,8 @@ const ServerCapabilities& McpServer::GetCapabilities() const {
 }
 
 bool McpServer::IsMrtrSupported() const {
+    // MRTR requires stateful transport
+    if (is_stateless_) return false;
     auto* caps = GetClientCapabilities();
     return caps && caps->elicitation.has_value();
 }

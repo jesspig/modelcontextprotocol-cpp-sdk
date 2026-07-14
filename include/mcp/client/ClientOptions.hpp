@@ -52,6 +52,9 @@ struct ClientOptions {
     };
     std::optional<CacheConfig> cache_config;
 
+    // Extensions declaration map
+    std::optional<nlohmann::json> extensions;
+
     // Other
     bool enforce_strict_capabilities{false};
     int list_max_pages{64};

@@ -10,14 +10,12 @@ namespace mcp {
 // ====================================================================
 Protocol::Protocol(
     asio::io_context& io_ctx,
-    std::unique_ptr<Transport> transport)
+    std::shared_ptr<ITransport> transport)
     : io_ctx_(io_ctx)
     , transport_(std::move(transport))
     , codec_(MakeWireCodec("2025-11-25"))
 {
-    asio::post(io_ctx_, [this]() {
-        if (transport_) transport_->Start();
-    });
+    // Transport lifecycle is managed by McpSessionHandler
 }
 
 Protocol::~Protocol() {
@@ -60,7 +58,7 @@ void Protocol::MessageLoop() {
     // Try to read from the transport channel
     auto& channel = transport_->GetMessageChannel();
 
-    channel.async_receive(
+    channel.AsyncReceive(
         [this](asio::error_code ec, JsonRpcMessage msg) {
             if (ec || closed_) {
                 if (!closed_) Close();
@@ -110,31 +108,32 @@ void Protocol::OnRequest(const JsonRpcRequest& req) {
     it->second(req, std::move(*promise));
 
     // When the handler completes, send the response
-    std::thread([this, req, future = std::move(future)]() mutable {
+    auto self = shared_from_this();
+    asio::post(io_ctx_, [self, req, future = std::move(future)]() mutable {
         try {
             auto result = future.get();
-            if (closed_) return;
+            if (self->closed_) return;
 
             JsonRpcResponse resp;
             resp.id = req.id;
-            resp.result = codec_->EncodeResult(req.method, result);
-            transport_->SendMessageAsync(JsonRpcMessage{std::move(resp)});
+            resp.result = self->codec_->EncodeResult(req.method, result);
+            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(resp)});
         } catch (const McpError& e) {
-            if (closed_) return;
+            if (self->closed_) return;
             JsonRpcErrorResponse err_resp;
             err_resp.id = req.id;
             err_resp.error.code = e.Code();
             err_resp.error.message = e.what();
-            transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
         } catch (...) {
-            if (closed_) return;
+            if (self->closed_) return;
             JsonRpcErrorResponse err_resp;
             err_resp.id = req.id;
             err_resp.error.code = McpErrorCode::InternalError;
             err_resp.error.message = "internal handler error";
-            transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
         }
-    }).detach();
+    });
 }
 
 // ── Extract int64 from RequestId ──
@@ -173,6 +172,11 @@ void Protocol::OnError(const JsonRpcErrorResponse& err) {
 
 // ── Handle notification ──
 void Protocol::OnNotification(const JsonRpcNotification& notif) {
+    // Handle protocol-level notifications first
+    if (notif.method == notifications::kCancelled) {
+        HandleCancelled(notif);
+    }
+
     auto it = notif_handlers_.find(notif.method);
     if (it != notif_handlers_.end()) {
         it->second(notif);
@@ -253,7 +257,102 @@ void Protocol::SendNotification(
     if (!params.is_null() && !params.empty()) {
         notif.params = std::move(params);
     }
+
+    // Stamp _meta for 2026 era
+    if (!negotiated_version_.empty() && IsModernProtocolVersion(negotiated_version_)) {
+        nlohmann::json meta = nlohmann::json::object();
+        meta["io.modelcontextprotocol/protocolVersion"] = negotiated_version_;
+        notif.meta = std::move(meta);
+    }
+
     transport_->SendMessageAsync(JsonRpcMessage{std::move(notif)});
+}
+
+// ====================================================================
+// ExtractIncomingMeta — extract _meta fields from incoming request
+// ====================================================================
+IncomingRequestMeta Protocol::ExtractIncomingMeta(const JsonRpcRequest& req) {
+    IncomingRequestMeta meta;
+    if (!req.meta) return meta;
+
+    const auto& j = *req.meta;
+
+    if (auto it = j.find("io.modelcontextprotocol/protocolVersion"); it != j.end())
+        meta.protocol_version = it->get<std::string>();
+    if (auto it = j.find("io.modelcontextprotocol/clientInfo"); it != j.end())
+        meta.client_info = it->get<Implementation>();
+    if (auto it = j.find("io.modelcontextprotocol/clientCapabilities"); it != j.end())
+        meta.client_capabilities = it->get<ClientCapabilities>();
+    if (auto it = j.find("io.modelcontextprotocol/logLevel"); it != j.end())
+        meta.log_level = it->get<LoggingLevel>();
+    if (auto it = j.find("progressToken"); it != j.end()) {
+        const auto& val = *it;
+        if (val.is_string()) meta.progress_token = val.get<std::string>();
+        else meta.progress_token = val.get<int64_t>();
+    }
+    if (auto it = j.find("io.modelcontextprotocol/subscriptionId"); it != j.end())
+        meta.subscription_id = it->get<std::string>();
+
+    return meta;
+}
+
+// ====================================================================
+// Subscription management
+// ====================================================================
+void Protocol::AddSubscription(Subscription sub) {
+    subscriptions_[sub.id] = std::move(sub);
+}
+
+void Protocol::RemoveSubscription(std::string_view id) {
+    subscriptions_.erase(std::string(id));
+}
+
+void Protocol::NotifySubscribers(std::string_view notification, nlohmann::json params) {
+    if (subscriptions_.empty()) return;
+
+    for (const auto& [id, sub] : subscriptions_) {
+        JsonRpcNotification notif;
+        notif.method = std::string(notification);
+        notif.params = params;
+
+        // Stamp subscription ID in _meta
+        nlohmann::json meta = nlohmann::json::object();
+        meta["io.modelcontextprotocol/subscriptionId"] = id;
+        if (!negotiated_version_.empty() && IsModernProtocolVersion(negotiated_version_)) {
+            meta["io.modelcontextprotocol/protocolVersion"] = negotiated_version_;
+        }
+        notif.meta = std::move(meta);
+
+        transport_->SendMessageAsync(JsonRpcMessage{std::move(notif)});
+    }
+}
+
+// ====================================================================
+// MRTR result type discrimination
+// ====================================================================
+bool Protocol::IsInputRequired(const nlohmann::json& result) {
+    auto it = result.find("resultType");
+    return it != result.end() && *it == "input_required";
+}
+
+// ====================================================================
+// HandleCancelled — cancel pending request by notification
+// ====================================================================
+void Protocol::HandleCancelled(const JsonRpcNotification& notif) {
+    if (!notif.params) return;
+
+    auto params = notif.params->get<CancelledNotificationParams>();
+    auto id = RequestIdToInt64(params.request_id);
+    auto it = pending_.find(id);
+    if (it != pending_.end()) {
+        if (it->second->timer) it->second->timer->cancel();
+        nlohmann::json err;
+        err["code"] = static_cast<int32_t>(McpErrorCode::RequestCancelled);
+        err["message"] = "request cancelled";
+        if (params.reason) err["data"] = *params.reason;
+        it->second->callback(std::move(err));
+        pending_.erase(it);
+    }
 }
 
 // ====================================================================
@@ -293,7 +392,7 @@ void Protocol::SetNegotiatedProtocolVersion(std::string_view version) {
 
 std::unique_ptr<WireCodec>& Protocol::Codec() { return codec_; }
 const std::unique_ptr<WireCodec>& Protocol::Codec() const { return codec_; }
-Transport& Protocol::GetTransport() { return *transport_; }
+ITransport& Protocol::GetTransport() { return *transport_; }
 asio::io_context& Protocol::IoContext() { return io_ctx_; }
 
 } // namespace mcp

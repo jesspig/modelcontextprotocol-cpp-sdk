@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/protocol/Protocol.hpp>
+#include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
@@ -8,6 +8,7 @@
 #include <mcp/server/Extension.hpp>
 
 
+#include <future>
 #include <memory>
 #include <string_view>
 #include <unordered_map>
@@ -19,9 +20,13 @@ namespace mcp {
 class McpServer {
 public:
     // ── Factory ──
+    // If io_ctx is provided, use it instead of creating an internal one.
+    // This is required for transports (e.g., StdioServerTransport) that need
+    // to share the same io_context with the protocol.
     static std::unique_ptr<McpServer> Create(
-        std::unique_ptr<Transport> transport,
-        const ServerOptions& options = {});
+        std::shared_ptr<ITransport> transport,
+        const ServerOptions& options = {},
+        asio::io_context* io_ctx = nullptr);
 
     virtual ~McpServer() = default;
 
@@ -69,11 +74,39 @@ public:
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
 
+    // ── Elicitation typed (generic) ──
+    template <typename T>
+    std::future<ElicitResultTyped<T>> Elicit(
+        std::string_view message,
+        std::optional<nlohmann::json> extra_meta = std::nullopt)
+    {
+        ElicitRequestParams params;
+        params.message = std::string(message);
+        params.requested_schema = detail::build_json_schema<T>();
+
+        auto raw_future = Elicit(params);
+        return std::async(std::launch::deferred,
+            [raw_future = std::move(raw_future)]() mutable {
+                auto raw = raw_future.get();
+                ElicitResultTyped<T> typed;
+                if (raw.values) {
+                    typed.content = raw.values->get<T>();
+                    typed.action = "accept";
+                }
+                return typed;
+            });
+    }
+
+    // ── Completion handler ──
+    using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;
+    void SetCompletionHandler(CompletionHandler handler);
+
     // ── Notifications ──
     void SendToolListChanged();
     void SendResourceListChanged();
     void SendPromptListChanged();
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
+    void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
 
     // ── Properties ──
     const ClientCapabilities* GetClientCapabilities() const;
@@ -83,13 +116,14 @@ public:
     bool IsMrtrSupported() const;
 
     // ── Internal access (for RequestContext) ──
-    Protocol& GetProtocol() { return *protocol_; }
-    asio::io_context& IoContext() { return io_ctx_; }
+    McpSessionHandler& GetSessionHandler() { return *handler_; }
+    asio::io_context& IoContext() { return *io_ctx_ptr_; }
 
 private:
     McpServer(
-        std::unique_ptr<Transport> transport,
-        ServerOptions options);
+        std::shared_ptr<ITransport> transport,
+        ServerOptions options,
+        asio::io_context* external_io_ctx);
 
     // ── Auto-wire handlers from registered tools/resources/prompts ──
     void WireHandlers();
@@ -114,11 +148,16 @@ private:
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
     void HandleDiscover(
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+    void HandleSubscriptionsListen(
+        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
 
     // ── State ──
-    asio::io_context io_ctx_;
-    std::unique_ptr<Transport> transport_;
-    std::shared_ptr<Protocol> protocol_;
+    // io_ctx_ptr_ owns the io_context if created internally; otherwise
+    // it references an external io_context. io_ctx_ is always valid.
+    std::unique_ptr<asio::io_context> io_ctx_owner_;
+    asio::io_context* io_ctx_ptr_;
+    std::shared_ptr<ITransport> transport_;
+    std::shared_ptr<McpSessionHandler> handler_;
     ServerOptions options_;
     ServerCapabilities capabilities_;
 
@@ -142,13 +181,22 @@ private:
     std::optional<ClientCapabilities> client_capabilities_;
     std::optional<Implementation> client_info_;
 
+    // Completion handler (optional user-registered)
+    std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
+
     // Extensions
     std::vector<std::shared_ptr<Extension>> extensions_;
+
+    // Active subscriptions
+    std::vector<Subscription> subscriptions_;
 
     // Notification flags
     bool tools_changed_flag_{false};
     bool resources_changed_flag_{false};
     bool prompts_changed_flag_{false};
+
+    // Stateless mode (no session persistence, no MRTR)
+    bool is_stateless_{false};
 };
 
 } // namespace mcp

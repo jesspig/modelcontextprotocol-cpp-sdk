@@ -1,12 +1,9 @@
 # ====================================================================
 # mcp-cpp-sdk 依赖管理 (FetchContent)
+# 使用 CMake 默认缓存目录 (build/<preset>/_deps)，无需全局共享缓存
 # ====================================================================
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
-
-# 共享依赖缓存目录 — 所有 preset 共用，删 build/ 不丢
-set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/.cache/deps" CACHE PATH
-    "FetchContent base directory (shared across all presets)")
 
 # ====================================================================
 # nlohmann/json — JSON 解析/序列化

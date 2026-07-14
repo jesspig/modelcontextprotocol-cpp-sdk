@@ -28,6 +28,16 @@ public:
         std::function<void(const JsonRpcRequest&, std::promise<nlohmann::json>)>>>
     Methods() { return {}; }
 
+    // Validate extension identifier (reverse-DNS format, e.g. "io.modelcontextprotocol/tasks")
+    static bool ValidateExtensionIdentifier(const std::string& identifier) {
+        if (identifier.empty() || identifier.size() > 256) return false;
+        for (char c : identifier) {
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '/' && c != '-' && c != '_')
+                return false;
+        }
+        return true;
+    }
+
     // Tool call interceptor — can modify params, result, or reject
     // Return true to continue with the next interceptor/handler
     // Return false if the interceptor handled the call completely

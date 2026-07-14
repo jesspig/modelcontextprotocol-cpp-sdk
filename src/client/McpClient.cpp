@@ -12,12 +12,12 @@ namespace mcp {
 // VersionNegotiation implementation
 // ====================================================================
 NegotiationResult VersionNegotiation::Negotiate(
-    Protocol& protocol, const ClientOptions& options)
+    McpSessionHandler& handler, const ClientOptions& options)
 {
     if (options.connect_mode == ConnectMode::Legacy) {
         // Force legacy initialize handshake
         auto init = HandshakeInitialize(
-            protocol, options.client_info, options.capabilities,
+            handler, options.client_info, options.capabilities,
             options.initialization_timeout);
         NegotiationResult result;
         result.is_modern = false;
@@ -26,7 +26,7 @@ NegotiationResult VersionNegotiation::Negotiate(
         result.capabilities = result.initialize->capabilities;
         result.server_info = result.initialize->server_info;
         result.instructions = result.initialize->instructions;
-        protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+        handler.SetNegotiatedProtocolVersion(result.negotiated_version);
         return result;
     }
 
@@ -36,7 +36,7 @@ NegotiationResult VersionNegotiation::Negotiate(
         result.is_modern = true;
         result.negotiated_version = options.pin_protocol_version.value_or(
             std::string(kLatestProtocolVersion));
-        protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+        handler.SetNegotiatedProtocolVersion(result.negotiated_version);
 
         DiscoverResult disc;
         disc.supported_versions = {result.negotiated_version};
@@ -48,8 +48,8 @@ NegotiationResult VersionNegotiation::Negotiate(
 
     // Auto mode: probe server/discover, fallback to initialize
     auto discover = ProbeDiscover(
-        protocol, std::string(kLatestProtocolVersion),
-        options.discover_probe_timeout);
+        handler, std::string(kLatestProtocolVersion),
+        options.discover_probe_timeout, options);
 
     if (discover.has_value()) {
         NegotiationResult result;
@@ -59,13 +59,13 @@ NegotiationResult VersionNegotiation::Negotiate(
         result.capabilities = result.discover->capabilities;
         result.server_info = result.discover->server_info;
         result.instructions = result.discover->instructions;
-        protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+        handler.SetNegotiatedProtocolVersion(result.negotiated_version);
         return result;
     }
 
     // Fallback to initialize
     auto init = HandshakeInitialize(
-        protocol, options.client_info, options.capabilities,
+        handler, options.client_info, options.capabilities,
         options.initialization_timeout);
     NegotiationResult result;
     result.is_modern = false;
@@ -74,21 +74,25 @@ NegotiationResult VersionNegotiation::Negotiate(
     result.capabilities = result.initialize->capabilities;
     result.server_info = result.initialize->server_info;
     result.instructions = result.initialize->instructions;
-    protocol.SetNegotiatedProtocolVersion(result.negotiated_version);
+    handler.SetNegotiatedProtocolVersion(result.negotiated_version);
     return result;
 }
 
 std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
-    Protocol& protocol,
+    McpSessionHandler& handler,
     std::string_view preferred_version,
-    std::chrono::seconds timeout)
+    std::chrono::seconds timeout,
+    const ClientOptions& options)
 {
     RequestMeta meta;
     meta.protocol_version = std::string(preferred_version);
-    meta.client_info = Implementation{"mcp-cpp-client", "0.1.0"};
-    meta.client_capabilities = ClientCapabilities{};
+    meta.client_info = options.client_info;
+    meta.client_capabilities = options.capabilities.value_or(ClientCapabilities{});
+    if (options.extensions) {
+        meta.client_capabilities->extensions = options.extensions;
+    }
 
-    auto future = protocol.SendRequest(
+    auto future = handler.SendRequest(
         methods::kDiscover, nlohmann::json::object(), meta, timeout);
 
     if (future.wait_for(timeout) == std::future_status::timeout) {
@@ -109,7 +113,7 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
 }
 
 InitializeResult VersionNegotiation::HandshakeInitialize(
-    Protocol& protocol,
+    McpSessionHandler& handler,
     const Implementation& client_info,
     const std::optional<ClientCapabilities>& capabilities,
     std::chrono::seconds timeout)
@@ -119,7 +123,7 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
     params.client_info = client_info;
     params.capabilities = capabilities.value_or(ClientCapabilities{});
 
-    auto future = protocol.SendRequest(
+    auto future = handler.SendRequest(
         methods::kInitialize, nlohmann::json(params), {}, timeout);
 
     auto result = future.get();
@@ -130,14 +134,15 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
 // McpClient construction / destruction
 // ====================================================================
 McpClient::McpClient(
-    std::unique_ptr<Transport> transport,
+    std::shared_ptr<ITransport> transport,
     ClientOptions options)
-    : io_ctx_()
-    , transport_(std::move(transport))
+    : transport_(std::move(transport))
     , options_(std::move(options))
 {
-    protocol_ = std::make_shared<Protocol>(io_ctx_, std::move(transport_));
-    protocol_->Start();
+    auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
+    handler_ = std::make_shared<McpSessionHandler>(
+        transport_, std::move(codec), false);
+    handler_->Start();
     WireClientHandlers();
 }
 
@@ -146,7 +151,7 @@ McpClient::~McpClient() {
 }
 
 std::unique_ptr<McpClient> McpClient::Create(
-    std::unique_ptr<Transport> transport,
+    std::shared_ptr<ITransport> transport,
     const ClientOptions& options)
 {
     auto client = std::unique_ptr<McpClient>(
@@ -160,15 +165,14 @@ std::unique_ptr<McpClient> McpClient::Create(
 // Negotiation
 // ====================================================================
 NegotiationResult McpClient::NegotiateProtocol() {
-    return VersionNegotiation::Negotiate(*protocol_, options_);
+    return VersionNegotiation::Negotiate(*handler_, options_);
 }
 
 // ====================================================================
 // Close
 // ====================================================================
 void McpClient::Close() {
-    if (protocol_) protocol_->Close();
-    io_ctx_.stop();
+    if (handler_) handler_->Close();
 }
 
 // ====================================================================
@@ -176,7 +180,7 @@ void McpClient::Close() {
 // ====================================================================
 void McpClient::WireClientHandlers() {
     // Sampling handler (deprecated)
-    protocol_->SetRequestHandler(methods::kCreateMessage,
+    handler_->SetRequestHandler(methods::kCreateMessage,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             if (!sampling_handler_) {
                 JsonRpcErrorResponse err;
@@ -197,7 +201,7 @@ void McpClient::WireClientHandlers() {
         });
 
     // Roots handler (deprecated)
-    protocol_->SetRequestHandler(methods::kListRoots,
+    handler_->SetRequestHandler(methods::kListRoots,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             if (!roots_handler_) {
                 ListRootsResult empty;
@@ -213,7 +217,7 @@ void McpClient::WireClientHandlers() {
         });
 
     // Elicitation handler
-    protocol_->SetRequestHandler(methods::kElicit,
+    handler_->SetRequestHandler(methods::kElicit,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             if (!elicitation_handler_) {
                 JsonRpcErrorResponse err;
@@ -234,10 +238,10 @@ void McpClient::WireClientHandlers() {
         });
 
     // Notification handlers
-    for (auto& [method, handler] : notif_handlers_) {
-        protocol_->SetNotificationHandler(method,
-            [handler](const JsonRpcNotification& notif) {
-                handler(notif);
+    for (auto& [method, notif_handler] : notif_handlers_) {
+        handler_->SetNotificationHandler(method,
+            [notif_handler](const JsonRpcNotification& notif) {
+                notif_handler(notif);
             });
     }
 }
@@ -323,8 +327,12 @@ TResult McpClient::SendRequest(
     if (options_.capabilities) {
         meta.client_capabilities = options_.capabilities;
     }
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
 
-    auto future = protocol_->SendRequest(method, params_json, meta, timeout);
+    auto future = handler_->SendRequest(method, params_json, meta, timeout);
     auto result_json = future.get();
 
     // Check for error
@@ -340,11 +348,107 @@ TResult McpClient::SendRequest(
 }
 
 // ====================================================================
+// MRTR helper: attempt to fulfill input_required responses via elicitation handler
+// ====================================================================
+static bool TryFulfillInputRequired(
+    const nlohmann::json& result_json,
+    const ClientOptions& options,
+    const std::optional<std::function<ElicitResult(const ElicitRequestParams&)>>& elicitation_handler,
+    nlohmann::json& out_input_responses,
+    std::optional<std::string>& out_request_state)
+{
+    auto rt = result_json.find("resultType");
+    if (rt == result_json.end() || rt->get<std::string>() != "input_required") {
+        return false;
+    }
+
+    if (!options.input_required_config || !options.input_required_config->auto_fulfill) {
+        return false;
+    }
+
+    InputRequiredResult input_req;
+    from_json(result_json, input_req);
+
+    if (!input_req.input_requests.elicit && !input_req.input_requests.confirm) {
+        return false;
+    }
+
+    nlohmann::json responses = nlohmann::json::object();
+
+    if (input_req.input_requests.elicit && elicitation_handler) {
+        auto& elicit_req = *input_req.input_requests.elicit;
+        ElicitRequestParams ep;
+        ep.message = elicit_req.message;
+        ep.requested_schema = elicit_req.requested_schema;
+        auto elicit_result = (*elicitation_handler)(ep);
+        if (elicit_result.values)
+            responses["elicit"] = *elicit_result.values;
+    }
+
+    if (input_req.input_requests.confirm && elicitation_handler) {
+        auto& confirm_req = *input_req.input_requests.confirm;
+        ElicitRequestParams ep;
+        ep.message = confirm_req.message;
+        ep.requested_schema = confirm_req.requested_schema;
+        auto confirm_result = (*elicitation_handler)(ep);
+        if (confirm_result.values)
+            responses["confirm"] = *confirm_result.values;
+    }
+
+    out_input_responses = std::move(responses);
+    out_request_state = input_req.request_state;
+    return true;
+}
+
+nlohmann::json McpClient::SendRequestWithMrtr(
+    std::string_view method,
+    nlohmann::json params_json,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout)
+{
+    auto& cfg = options_.input_required_config;
+    int max_rounds = cfg ? cfg->max_rounds : 0;
+    auto effective_timeout = cfg ? cfg->round_timeout : timeout;
+
+    for (int round = 0; round <= max_rounds; ++round) {
+        auto future = handler_->SendRequest(method, params_json, meta, effective_timeout);
+        auto result_json = future.get();
+
+        // Check for protocol errors
+        if (result_json.contains("code") && result_json["code"].get<int32_t>() < 0) {
+            throw McpError(
+                static_cast<McpErrorCode>(result_json["code"].get<int32_t>()),
+                result_json.value("message", "request failed"));
+        }
+
+        // Check for input_required (MRTR)
+        nlohmann::json input_responses;
+        std::optional<std::string> request_state;
+        if (TryFulfillInputRequired(result_json, options_, elicitation_handler_,
+                input_responses, request_state)) {
+            // Inject input_responses for next round
+            params_json["inputResponses"] = std::move(input_responses);
+            if (request_state) params_json["requestState"] = *request_state;
+            continue;
+        }
+
+        // Complete result or non-MRTR — return raw JSON
+        return result_json;
+    }
+
+    throw McpError(McpErrorCode::InternalError,
+        "MRTR: exceeded max_rounds (" + std::to_string(max_rounds) + ")");
+}
+
+// ====================================================================
 // Tools
 // ====================================================================
-ListToolsResult McpClient::ListTools(const CacheableRequestOptions& options) {
+ListToolsResult McpClient::ListTools(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListToolsRequestParams params;
-    params.cursor = std::nullopt;
+    params.cursor = std::move(cursor);
     return SendRequest<ListToolsRequestParams, ListToolsResult>(
         methods::kListTools, params);
 }
@@ -368,6 +472,10 @@ CallToolResult McpClient::CallTool(
     meta.protocol_version = negotiation_.negotiated_version;
     meta.client_info = options_.client_info;
     if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
     if (options.meta) meta.extensions = options.meta;
 
     for (int round = 0; round <= max_rounds; ++round) {
@@ -378,18 +486,7 @@ CallToolResult McpClient::CallTool(
         if (params.input_responses) req_json["inputResponses"] = *params.input_responses;
         if (params.request_state)   req_json["requestState"] = *params.request_state;
 
-        // Add _meta (for 2026 era)
-        if (meta.protocol_version >= "2026-07-28") {
-            auto meta_json = nlohmann::json::object();
-            meta_json["io.modelcontextprotocol/protocolVersion"] = meta.protocol_version;
-            if (meta.client_info)
-                meta_json["io.modelcontextprotocol/clientInfo"] = *meta.client_info;
-            if (meta.client_capabilities)
-                meta_json["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
-            req_json["_meta"] = std::move(meta_json);
-        }
-
-        auto future = protocol_->SendRequest(
+        auto future = handler_->SendRequest(
             methods::kCallTool, req_json, meta, round_timeout);
         auto result_json = future.get();
 
@@ -444,6 +541,31 @@ CallToolResult McpClient::CallTool(
             continue;
         }
 
+        // Check for task result type (扩展任务)
+        if (auto rt = result_json.find("resultType"); rt != result_json.end()
+            && rt->get<std::string>() == "task")
+        {
+            auto task_id = result_json["taskId"].get<std::string>();
+            auto task_result = PollTaskToCompletionAsync(task_id);
+
+            if (task_result.status == "failed") {
+                throw McpError(McpErrorCode::InternalError,
+                    "Task failed: " + task_id +
+                    (task_result.error_message ? ": " + *task_result.error_message : ""));
+            }
+
+            if (task_result.status == "cancelled") {
+                throw McpError(McpErrorCode::InternalError,
+                    "Task cancelled: " + task_id);
+            }
+
+            CallToolResult result;
+            if (task_result.result) {
+                from_json(*task_result.result, result);
+            }
+            return result;
+        }
+
         // Complete result — deserialize and return
         CallToolResult result;
         from_json(result_json, result);
@@ -457,14 +579,22 @@ CallToolResult McpClient::CallTool(
 // ====================================================================
 // Resources
 // ====================================================================
-ListResourcesResult McpClient::ListResources(const CacheableRequestOptions& options) {
+ListResourcesResult McpClient::ListResources(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListResourcesRequestParams params;
+    params.cursor = std::move(cursor);
     return SendRequest<ListResourcesRequestParams, ListResourcesResult>(
         methods::kListResources, params);
 }
 
-ListResourceTemplatesResult McpClient::ListResourceTemplates(const CacheableRequestOptions& options) {
+ListResourceTemplatesResult McpClient::ListResourceTemplates(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListResourceTemplatesRequestParams params;
+    params.cursor = std::move(cursor);
     return SendRequest<ListResourceTemplatesRequestParams, ListResourceTemplatesResult>(
         methods::kListResourceTemplates, params);
 }
@@ -472,10 +602,25 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(const CacheableRequ
 ReadResourceResult McpClient::ReadResource(
     std::string_view uri, const CacheableRequestOptions& options)
 {
-    ReadResourceRequestParams params;
-    params.uri = std::string(uri);
-    return SendRequest<ReadResourceRequestParams, ReadResourceResult>(
-        methods::kReadResource, params);
+    RequestMeta meta;
+    meta.protocol_version = negotiation_.negotiated_version;
+    meta.client_info = options_.client_info;
+    if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
+    if (options.meta) meta.extensions = options.meta;
+
+    nlohmann::json req_json;
+    req_json["uri"] = std::string(uri);
+
+    auto timeout = options.read_timeout_ms
+        ? std::chrono::milliseconds(*options.read_timeout_ms)
+        : std::chrono::seconds(30);
+    auto result_json = SendRequestWithMrtr(
+        methods::kReadResource, std::move(req_json), meta, timeout);
+    return result_json.get<ReadResourceResult>();
 }
 
 EmptyResult McpClient::SubscribeResource(std::string_view uri) {
@@ -495,8 +640,12 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
 // ====================================================================
 // Prompts
 // ====================================================================
-ListPromptsResult McpClient::ListPrompts(const CacheableRequestOptions& options) {
+ListPromptsResult McpClient::ListPrompts(
+    const CacheableRequestOptions& options,
+    std::optional<std::string> cursor)
+{
     ListPromptsRequestParams params;
+    params.cursor = std::move(cursor);
     return SendRequest<ListPromptsRequestParams, ListPromptsResult>(
         methods::kListPrompts, params);
 }
@@ -506,11 +655,52 @@ GetPromptResult McpClient::GetPrompt(
     std::optional<nlohmann::json> arguments,
     const RequestOptions& options)
 {
-    GetPromptRequestParams params;
-    params.name = std::string(name);
-    params.arguments = std::move(arguments);
-    return SendRequest<GetPromptRequestParams, GetPromptResult>(
-        methods::kGetPrompt, params);
+    RequestMeta meta;
+    meta.protocol_version = negotiation_.negotiated_version;
+    meta.client_info = options_.client_info;
+    if (options_.capabilities) meta.client_capabilities = options_.capabilities;
+    if (options_.extensions) {
+        if (!meta.client_capabilities) meta.client_capabilities = ClientCapabilities{};
+        meta.client_capabilities->extensions = options_.extensions;
+    }
+    if (options.meta) meta.extensions = options.meta;
+
+    nlohmann::json req_json;
+    req_json["name"] = std::string(name);
+    if (arguments) req_json["arguments"] = *arguments;
+
+    auto timeout = options.read_timeout_ms
+        ? std::chrono::milliseconds(*options.read_timeout_ms)
+        : std::chrono::seconds(30);
+    auto result_json = SendRequestWithMrtr(
+        methods::kGetPrompt, std::move(req_json), meta, timeout);
+
+    // Check for task result type
+    if (auto rt = result_json.find("resultType"); rt != result_json.end()
+        && rt->get<std::string>() == "task")
+    {
+        auto task_id = result_json["taskId"].get<std::string>();
+        auto task_result = PollTaskToCompletionAsync(task_id);
+
+        if (task_result.status == "failed") {
+            throw McpError(McpErrorCode::InternalError,
+                "Task failed: " + task_id +
+                (task_result.error_message ? ": " + *task_result.error_message : ""));
+        }
+
+        if (task_result.status == "cancelled") {
+            throw McpError(McpErrorCode::InternalError,
+                "Task cancelled: " + task_id);
+        }
+
+        GetPromptResult result;
+        if (task_result.result) {
+            from_json(*task_result.result, result);
+        }
+        return result;
+    }
+
+    return result_json.get<GetPromptResult>();
 }
 
 // ====================================================================
@@ -547,6 +737,38 @@ CancelTaskResult McpClient::CancelTask(
 }
 
 // ====================================================================
+// PollTaskToCompletion
+// ====================================================================
+GetTaskResult McpClient::PollTaskToCompletionAsync(
+    const std::string& task_id,
+    std::chrono::milliseconds poll_interval,
+    std::chrono::seconds timeout)
+{
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto task = GetTask(task_id);
+
+        if (task.status == "completed" ||
+            task.status == "failed" ||
+            task.status == "cancelled")
+        {
+            return task;
+        }
+
+        // 检查剩余时间是否足够再睡一轮
+        if (std::chrono::steady_clock::now() + poll_interval >= deadline) {
+            break;
+        }
+
+        std::this_thread::sleep_for(poll_interval);
+    }
+
+    throw McpError(McpErrorCode::InternalError,
+        "Task polling timed out for task: " + task_id);
+}
+
+// ====================================================================
 // Completions / Ping / Discover
 // ====================================================================
 CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
@@ -556,17 +778,36 @@ CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
 
 EmptyResult McpClient::Ping() {
     nlohmann::json empty_params = nlohmann::json::object();
-    auto future = protocol_->SendRequest(methods::kPing, empty_params, {}, std::chrono::seconds(10));
+    auto future = handler_->SendRequest(methods::kPing, empty_params, {}, std::chrono::seconds(10));
     auto result_json = future.get();
     EmptyResult result;
     return result;
 }
 
 DiscoverResult McpClient::Discover() {
-    auto future = protocol_->SendRequest(
+    auto future = handler_->SendRequest(
         methods::kDiscover, nlohmann::json::object(), {}, std::chrono::seconds(30));
     auto result_json = future.get();
     return result_json.get<DiscoverResult>();
+}
+
+// ====================================================================
+// Subscriptions
+// ====================================================================
+void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
+    nlohmann::json params_json;
+    to_json(params_json, params);
+
+    auto future = handler_->SendRequest(
+        methods::kSubscribe, params_json, {}, std::chrono::seconds(30));
+    auto result_json = future.get();
+
+    if (result_json.contains("code") && result_json["code"].get<int32_t>() < 0) {
+        throw McpError(
+            static_cast<McpErrorCode>(result_json["code"].get<int32_t>()),
+            result_json.value("message", "subscriptions/listen failed"));
+    }
+
 }
 
 } // namespace mcp

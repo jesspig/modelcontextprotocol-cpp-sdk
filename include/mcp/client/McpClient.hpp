@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/protocol/Protocol.hpp>
+#include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
 #include <mcp/client/ClientHandlers.hpp>
 #include <mcp/client/McpClientTool.hpp>
@@ -19,7 +19,7 @@ public:
     // ── Factory ──
     // Create and connect. Blocks until negotiation completes.
     static std::unique_ptr<McpClient> Create(
-        std::unique_ptr<Transport> transport,
+        std::shared_ptr<ITransport> transport,
         const ClientOptions& options = {});
 
     ~McpClient();
@@ -32,15 +32,21 @@ public:
     bool IsModernProtocol() const;
 
     // ── Tools ──
-    ListToolsResult ListTools(const CacheableRequestOptions& options = {});
+    ListToolsResult ListTools(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
     CallToolResult CallTool(
         std::string_view name,
         std::optional<nlohmann::json> arguments = std::nullopt,
         const RequestOptions& options = {});
 
     // ── Resources ──
-    ListResourcesResult ListResources(const CacheableRequestOptions& options = {});
-    ListResourceTemplatesResult ListResourceTemplates(const CacheableRequestOptions& options = {});
+    ListResourcesResult ListResources(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
+    ListResourceTemplatesResult ListResourceTemplates(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
     ReadResourceResult ReadResource(
         std::string_view uri,
         const CacheableRequestOptions& options = {});
@@ -48,7 +54,9 @@ public:
     EmptyResult UnsubscribeResource(std::string_view uri);
 
     // ── Prompts ──
-    ListPromptsResult ListPrompts(const CacheableRequestOptions& options = {});
+    ListPromptsResult ListPrompts(
+        const CacheableRequestOptions& options = {},
+        std::optional<std::string> cursor = std::nullopt);
     GetPromptResult GetPrompt(
         std::string_view name,
         std::optional<nlohmann::json> arguments = std::nullopt,
@@ -66,6 +74,12 @@ public:
         std::string_view task_id,
         std::optional<std::string> reason = std::nullopt);
 
+    // 轮询任务直到完成
+    GetTaskResult PollTaskToCompletionAsync(
+        const std::string& task_id,
+        std::chrono::milliseconds poll_interval = std::chrono::milliseconds(500),
+        std::chrono::seconds timeout = std::chrono::seconds(300));
+
     // ── Ping ──
     EmptyResult Ping();
 
@@ -73,12 +87,17 @@ public:
     DiscoverResult Discover();
 
     // ── Client handlers (server-to-client: sampling, roots, elicitation) ──
+    // SetSamplingHandler is deprecated in 2026-07-28 (SEP-2577).
+    // Use SetElicitationHandler instead.
     void SetSamplingHandler(SamplingHandler handler);
     void SetRootsHandler(RootsHandler handler);
     void SetElicitationHandler(ElicitationHandler handler);
     void SetNotificationHandler(
         std::string_view method,
         ClientNotificationHandler handler);
+
+    // ── Subscriptions ──
+    void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
 
     // ── Tool cache management (对应 C# AddKnownTools / RemoveKnownTools / ClearKnownTools) ──
     void AddKnownTools(const std::vector<Tool>& tools);
@@ -90,7 +109,7 @@ public:
 
 private:
     McpClient(
-        std::unique_ptr<Transport> transport,
+        std::shared_ptr<ITransport> transport,
         ClientOptions options);
 
     // Internal helpers
@@ -104,10 +123,16 @@ private:
         TParams params,
         std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
+    // MRTR-aware request: handles input_required loop
+    nlohmann::json SendRequestWithMrtr(
+        std::string_view method,
+        nlohmann::json params_json,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout);
+
     // State
-    asio::io_context io_ctx_;
-    std::unique_ptr<Transport> transport_;
-    std::shared_ptr<Protocol> protocol_;
+    std::shared_ptr<ITransport> transport_;
+    std::shared_ptr<McpSessionHandler> handler_;
     ClientOptions options_;
 
     // Negotiation result

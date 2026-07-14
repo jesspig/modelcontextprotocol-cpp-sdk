@@ -2,6 +2,8 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/protocol/IncomingRequestMeta.hpp>
+#include <mcp/Methods.hpp>
 
 #include <asio/steady_timer.hpp>
 #include <asio/io_context.hpp>
@@ -12,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace mcp {
 
@@ -27,12 +30,13 @@ using ResponseCallback = std::function<void(nlohmann::json)>;
 
 // ── Protocol — base protocol engine ──
 // Handles: JSON-RPC framing, request/response correlation,
-//          timeout, handler dispatch, per-request _meta envelopes.
+//          timeout, handler dispatch, per-request _meta envelopes,
+//          subscription/listen management, cancelled notification handling.
 class Protocol : public std::enable_shared_from_this<Protocol> {
 public:
     Protocol(
         asio::io_context& io_ctx,
-        std::unique_ptr<Transport> transport);
+        std::shared_ptr<ITransport> transport);
 
     ~Protocol();
 
@@ -55,6 +59,20 @@ public:
         std::string_view method,
         nlohmann::json params = {});
 
+    // ── Per-request _meta extraction ──
+    IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
+
+    // ── Subscription/listen management ──
+    void AddSubscription(Subscription sub);
+    void RemoveSubscription(std::string_view id);
+    void NotifySubscribers(std::string_view notification, nlohmann::json params);
+
+    // ── MRTR result type discrimination ──
+    bool IsInputRequired(const nlohmann::json& result);
+
+    // ── Cancelled notification handling ──
+    void HandleCancelled(const JsonRpcNotification& notif);
+
     // ── Handler registration ──
     void SetRequestHandler(
         std::string_view method,
@@ -74,7 +92,7 @@ public:
     std::unique_ptr<WireCodec>& Codec();
     const std::unique_ptr<WireCodec>& Codec() const;
 
-    Transport& GetTransport();
+    ITransport& GetTransport();
     asio::io_context& IoContext();
 
 private:
@@ -86,7 +104,7 @@ private:
     void OnNotification(const JsonRpcNotification& notif);
 
     asio::io_context& io_ctx_;
-    std::unique_ptr<Transport> transport_;
+    std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
     std::string negotiated_version_;
 
@@ -101,6 +119,8 @@ private:
     int64_t next_request_id_ = 1;
     bool started_ = false;
     bool closed_ = false;
+
+    std::unordered_map<std::string, Subscription> subscriptions_;
 };
 
 } // namespace mcp

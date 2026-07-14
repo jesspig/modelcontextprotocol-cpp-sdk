@@ -20,9 +20,13 @@ struct ClientServerFixture : ::testing::Test {
     void SetUp() override {
         auto pair = InMemoryTransport::CreatePair();
 
+        // Use the transport's shared io_context so server->Run() processes
+        // async work for both client and server transports.
+        auto& io_ctx = pair.server->GetMessageChannel().IoContext();
+
         ServerOptions sopts;
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
-        server = McpServer::Create(std::move(pair.server), sopts);
+        server = McpServer::Create(pair.server, sopts, &io_ctx);
 
         // Register echo tool
         server->RegisterTool("echo",
@@ -58,17 +62,19 @@ struct ClientServerFixture : ::testing::Test {
                 TextResourceContents tc;
                 tc.uri = uri;
                 tc.text = "Hello, World!";
-                return ReadResourceResult{{ResourceContents{tc}}};
+                ReadResourceResult rr;
+                rr.contents = {ResourceContents{tc}};
+                return rr;
             });
 
-        // Start server
+        // Start server (runs the shared io_context, processing both sides)
         server_thread = std::thread([this]() { server->Run(); });
 
-        // Create client with pin mode (skips negotiation for in-memory)
+        // Create client with auto mode — discovers server info/capabilities
         ClientOptions cops;
         cops.client_info = Implementation{"TestClient", "1.0.0"};
-        cops.connect_mode = ConnectMode::Pin;
-        client = McpClient::Create(std::move(pair.client), cops);
+        cops.connect_mode = ConnectMode::Auto;
+        client = McpClient::Create(pair.client, cops);
     }
 
     void TearDown() override {
@@ -125,7 +131,8 @@ TEST_F(ClientServerFixture, CallToolNotFound) {
 
 // ── 读取资源 ──
 TEST_F(ClientServerFixture, ReadResource) {
-    auto result = client->ReadResource("hello://world");
+    ReadResourceResult result;
+    ASSERT_NO_THROW(result = client->ReadResource("hello://world"));
     ASSERT_GE(result.contents.size(), 1);
 
     auto* text = std::get_if<TextResourceContents>(&result.contents[0]);

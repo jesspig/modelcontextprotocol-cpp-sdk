@@ -111,11 +111,9 @@ public:
 
     bool HasRequestMethod(std::string_view method) const override {
         static const std::unordered_set<std::string> methods = {
-            "ping",
             "server/discover",
             "tools/list", "tools/call",
             "resources/list", "resources/read", "resources/templates/list",
-            "resources/subscribe", "resources/unsubscribe",
             "prompts/list", "prompts/get",
             "completion/complete",
             "subscriptions/listen",
@@ -134,12 +132,12 @@ public:
             "notifications/tools/list_changed",
             "notifications/prompts/list_changed",
             "notifications/subscriptions/acknowledged",
-            "notifications/task/status",
-            "notifications/task/working",
-            "notifications/task/completed",
-            "notifications/task/failed",
-            "notifications/task/cancelled",
-            "notifications/task/input_required",
+            "notifications/tasks/status",
+            "notifications/tasks/working",
+            "notifications/tasks/completed",
+            "notifications/tasks/failed",
+            "notifications/tasks/cancelled",
+            "notifications/tasks/input_required",
         };
         return notifs.count(std::string(method)) > 0;
     }
@@ -151,7 +149,7 @@ public:
         }
         // Verify _meta is present for requests that require it
         // (all client-initiated requests in 2026 era)
-        if (method != "server/discover" && method != "ping" &&
+        if (method != "server/discover" &&
             !raw.contains("_meta")) {
             return WireValidation::Invalid;
         }
@@ -205,7 +203,9 @@ public:
     nlohmann::json EncodeResult(
         std::string_view /*method*/, const nlohmann::json& result) const override {
         auto j = result;
-        j["resultType"] = "complete";
+        if (!j.contains("resultType")) {
+            j["resultType"] = "complete";
+        }
         return j;
     }
 

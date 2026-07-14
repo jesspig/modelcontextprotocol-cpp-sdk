@@ -8,7 +8,8 @@ namespace mcp {
 
 // ── Server-to-client request handlers (对应 C# McpClientHandlers) ──
 
-// Sampling (deprecated): server requests LLM sampling
+// SamplingHandler is deprecated in 2026-07-28 (SEP-2577).
+// Use ElicitationHandler instead.
 using SamplingHandler = std::function<CreateMessageResult(
     const CreateMessageRequestParams&)>;
 

@@ -48,6 +48,8 @@ struct LoggingCapability {};
 inline void to_json(nlohmann::json& j, const LoggingCapability&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json& j, LoggingCapability&) {}
 
+// Sampling is deprecated in 2026-07-28 (SEP-2577).
+// Use ElicitationCapability instead.
 struct SamplingCapability {};
 inline void to_json(nlohmann::json& j, const SamplingCapability&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json& j, SamplingCapability&) {}
@@ -85,6 +87,10 @@ struct SubscriptionsCapability {};
 inline void to_json(nlohmann::json& j, const SubscriptionsCapability&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json& j, SubscriptionsCapability&) {}
 
+struct ExtensionsCapability {};
+inline void to_json(nlohmann::json& j, const ExtensionsCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json& j, ExtensionsCapability&) {}
+
 struct ServerCapabilities {
     std::optional<ToolsCapability> tools;
     std::optional<ResourcesCapability> resources;
@@ -93,8 +99,8 @@ struct ServerCapabilities {
     std::optional<SamplingCapability> sampling;
     std::optional<RootsCapability> roots;
     std::optional<ElicitationCapability> elicitation;
-    std::optional<TasksCapability> tasks;
     std::optional<SubscriptionsCapability> subscriptions;
+    std::optional<ExtensionsCapability> extensions;
     std::optional<nlohmann::json> experimental;
 };
 inline void to_json(nlohmann::json& j, const ServerCapabilities& v) {
@@ -106,8 +112,8 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& v) {
     if (v.sampling)      j["sampling"] = *v.sampling;
     if (v.roots)         j["roots"] = *v.roots;
     if (v.elicitation)   j["elicitation"] = *v.elicitation;
-    if (v.tasks)         j["tasks"] = *v.tasks;
     if (v.subscriptions) j["subscriptions"] = *v.subscriptions;
+    if (v.extensions)    j["extensions"] = *v.extensions;
     if (v.experimental)  j["experimental"] = *v.experimental;
 }
 inline void from_json(const nlohmann::json& j, ServerCapabilities& v) {
@@ -118,8 +124,8 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& v) {
     if (auto it = j.find("sampling"); it != j.end())      v.sampling = it->get<SamplingCapability>();
     if (auto it = j.find("roots"); it != j.end())         v.roots = it->get<RootsCapability>();
     if (auto it = j.find("elicitation"); it != j.end())   v.elicitation = it->get<ElicitationCapability>();
-    if (auto it = j.find("tasks"); it != j.end())         v.tasks = it->get<TasksCapability>();
     if (auto it = j.find("subscriptions"); it != j.end()) v.subscriptions = it->get<SubscriptionsCapability>();
+    if (auto it = j.find("extensions"); it != j.end())    v.extensions = it->get<ExtensionsCapability>();
     if (auto it = j.find("experimental"); it != j.end())  v.experimental = *it;
 }
 
@@ -127,6 +133,7 @@ struct ClientCapabilities {
     std::optional<RootsCapability> roots;
     std::optional<SamplingCapability> sampling;
     std::optional<ElicitationCapability> elicitation;
+    std::optional<ExtensionsCapability> extensions;
     std::optional<nlohmann::json> experimental;
 };
 inline void to_json(nlohmann::json& j, const ClientCapabilities& v) {
@@ -134,12 +141,14 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities& v) {
     if (v.roots)       j["roots"] = *v.roots;
     if (v.sampling)    j["sampling"] = *v.sampling;
     if (v.elicitation) j["elicitation"] = *v.elicitation;
+    if (v.extensions)  j["extensions"] = *v.extensions;
     if (v.experimental) j["experimental"] = *v.experimental;
 }
 inline void from_json(const nlohmann::json& j, ClientCapabilities& v) {
     if (auto it = j.find("roots"); it != j.end())       v.roots = it->get<RootsCapability>();
     if (auto it = j.find("sampling"); it != j.end())    v.sampling = it->get<SamplingCapability>();
     if (auto it = j.find("elicitation"); it != j.end()) v.elicitation = it->get<ElicitationCapability>();
+    if (auto it = j.find("extensions"); it != j.end())  v.extensions = it->get<ExtensionsCapability>();
     if (auto it = j.find("experimental"); it != j.end()) v.experimental = *it;
 }
 

@@ -1,16 +1,18 @@
 #pragma once
 
 #include <mcp/Transport.hpp>
+#include <mcp/transport/HttpTransportMode.hpp>
+
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <queue>
 #include <string>
-#include <map>
+#include <thread>
+#include <vector>
 
 namespace mcp {
-
-enum class HttpTransportMode {
-    AutoDetect,
-    StreamableHttp,
-    Sse,
-};
 
 struct HttpClientTransportOptions {
     std::string endpoint;
@@ -20,13 +22,13 @@ struct HttpClientTransportOptions {
     std::map<std::string, std::string> additional_headers;
 };
 
-class StreamableHttpClientTransport : public ClientTransport {
+class StreamableHttpClientTransport : public IClientTransport {
 public:
     explicit StreamableHttpClientTransport(const HttpClientTransportOptions& options);
     ~StreamableHttpClientTransport() override;
 
     std::string_view Name() const override;
-    std::unique_ptr<Transport> Connect() override;
+    std::shared_ptr<ITransport> Connect() override;
 
 private:
     HttpClientTransportOptions options_;

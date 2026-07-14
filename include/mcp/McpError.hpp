@@ -36,6 +36,26 @@ public:
     using McpError::McpError;
 };
 
+// ── MissingRequiredClientCapabilityError ──
+class MissingRequiredClientCapabilityError : public McpError {
+public:
+    explicit MissingRequiredClientCapabilityError(const std::string& capability)
+        : McpError(McpErrorCode::MissingRequiredClientCapability,
+                   "missing required client capability: " + capability)
+        , capability_(capability) {}
+
+    std::string_view Capability() const noexcept { return capability_; }
+
+    nlohmann::json ToErrorData() const {
+        nlohmann::json data = nlohmann::json::object();
+        data["requiredCapabilities"] = nlohmann::json::array({capability_});
+        return data;
+    }
+
+private:
+    std::string capability_;
+};
+
 // ── SDK errors (local only) ──
 class SdkError : public std::runtime_error {
 public:

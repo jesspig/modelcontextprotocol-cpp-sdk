@@ -5,8 +5,11 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
+#include <asio/io_context.hpp>
+
 #include <iostream>
 #include <map>
+#include <memory>
 #include <string>
 
 using namespace mcp;
@@ -23,7 +26,8 @@ static const std::map<std::string, std::string> kWeatherData = {
 };
 
 int main() {
-    auto transport = std::make_unique<StdioServerTransport>();
+    asio::io_context io_ctx;
+    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
 
     ServerOptions opts;
     opts.server_info = Implementation{"WeatherServer", "1.0.0"};
@@ -31,7 +35,7 @@ int main() {
         "Get weather alerts and forecasts for US states. "
         "Call get_alerts for weather alerts, get_forecast for detailed forecasts.";
 
-    auto server = McpServer::Create(std::move(transport), opts);
+    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
 
     // 工具: 获取天气警报
     server->RegisterTool("get_alerts",

@@ -2,164 +2,36 @@
     "version": 8,
     "configurePresets": [
         {
-            "name": "gen-ninja",
-            "hidden": true,
-            "generator": "Ninja"
-        },
-        {
-            "name": "gen-vs",
-            "hidden": true,
-            "generator": "Visual Studio 17 2022",
-            "architecture": { "value": "x64", "strategy": "set" }
-        },
-        {
-            "name": "cc-msvc",
-            "hidden": true,
+            "name": "debug",
+            "displayName": "Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/debug",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "cl.exe",
-                "CMAKE_CXX_COMPILER": "cl.exe"
-            }
-        },
-        {
-            "name": "cc-clang-cl",
-            "hidden": true,
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang-cl.exe",
-                "CMAKE_CXX_COMPILER": "clang-cl.exe",
-                "CMAKE_CXX_FLAGS": "--target=x86_64-pc-windows-msvc"
-            }
-        },
-        {
-            "name": "cc-mingw",
-            "hidden": true,
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "x86_64-w64-mingw32-gcc",
-                "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++"
-            }
-        },
-        {
-            "name": "cc-gcc",
-            "hidden": true,
-            "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
-        },
-        {
-            "name": "cc-clang",
-            "hidden": true,
-            "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++"
-            }
-        },
-        {
-            "name": "build-debug",
-            "hidden": true,
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-        },
-        {
-            "name": "build-release",
-            "hidden": true,
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
-        },
-        {
-            "name": "base",
-            "hidden": true,
-            "binaryDir": "${sourceDir}/build/${presetName}",
-            "cacheVariables": {
-                "CMAKE_CXX_STANDARD": "17",
+                "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "MCP_BUILD_TESTS": "ON",
                 "MCP_BUILD_EXAMPLES": "ON"
             }
         },
         {
-            "name": "win-msvc-debug",
-            "inherits": ["base", "gen-vs", "cc-msvc", "build-debug"],
-            "displayName": "Windows MSVC Debug"
-        },
-        {
-            "name": "win-msvc-release",
-            "inherits": ["base", "gen-vs", "cc-msvc", "build-release"],
-            "displayName": "Windows MSVC Release"
-        },
-        {
-            "name": "win-clang-cl-debug",
-            "inherits": ["base", "gen-ninja", "cc-clang-cl", "build-debug"],
-            "displayName": "Windows clang-cl Debug"
-        },
-        {
-            "name": "win-clang-cl-release",
-            "inherits": ["base", "gen-ninja", "cc-clang-cl", "build-release"],
-            "displayName": "Windows clang-cl Release"
-        },
-        {
-            "name": "win-mingw-debug",
-            "inherits": ["base", "gen-ninja", "cc-mingw", "build-debug"],
-            "displayName": "Windows MinGW Debug"
-        },
-        {
-            "name": "linux-gcc-debug",
-            "inherits": ["base", "gen-ninja", "cc-gcc", "build-debug"],
-            "displayName": "Linux GCC Debug",
-            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
-        },
-        {
-            "name": "linux-gcc-release",
-            "inherits": ["base", "gen-ninja", "cc-gcc", "build-release"],
-            "displayName": "Linux GCC Release",
-            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
-        },
-        {
-            "name": "linux-clang-debug",
-            "inherits": ["base", "gen-ninja", "cc-clang", "build-debug"],
-            "displayName": "Linux Clang Debug",
-            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
-        },
-        {
-            "name": "linux-clang-release",
-            "inherits": ["base", "gen-ninja", "cc-clang", "build-release"],
-            "displayName": "Linux Clang Release",
-            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
-        },
-        {
-            "name": "debug",
-            "inherits": ["base", "gen-ninja"],
-            "displayName": "Debug",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-        },
-        {
             "name": "release",
-            "inherits": ["base", "gen-ninja"],
             "displayName": "Release",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
-        },
-        {
-            "name": "ci",
-            "inherits": ["base", "gen-ninja"],
-            "displayName": "CI",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/release",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-                "MCP_CACHE": "off"
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "MCP_BUILD_TESTS": "ON",
+                "MCP_BUILD_EXAMPLES": "ON"
             }
         }
     ],
     "buildPresets": [
-        { "name": "win-msvc-debug",      "configurePreset": "win-msvc-debug" },
-        { "name": "win-msvc-release",    "configurePreset": "win-msvc-release" },
-        { "name": "win-clang-cl-debug",  "configurePreset": "win-clang-cl-debug" },
-        { "name": "win-clang-cl-release","configurePreset": "win-clang-cl-release" },
-        { "name": "win-mingw-debug",     "configurePreset": "win-mingw-debug" },
-        { "name": "linux-gcc-debug",     "configurePreset": "linux-gcc-debug" },
-        { "name": "linux-gcc-release",   "configurePreset": "linux-gcc-release" },
-        { "name": "linux-clang-debug",   "configurePreset": "linux-clang-debug" },
-        { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
-        { "name": "debug",               "configurePreset": "debug" },
-        { "name": "release",             "configurePreset": "release" },
-        { "name": "ci",                  "configurePreset": "ci" }
+        { "name": "debug",   "configurePreset": "debug" },
+        { "name": "release", "configurePreset": "release" }
     ],
     "testPresets": [
         { "name": "debug",   "configurePreset": "debug" },
-        { "name": "release", "configurePreset": "release" },
-        { "name": "ci",      "configurePreset": "ci" }
+        { "name": "release", "configurePreset": "release" }
     ]
 }
