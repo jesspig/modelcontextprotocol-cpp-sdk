@@ -50,6 +50,8 @@ void StreamableHttpServerTransport::Start() {
 
 void StreamableHttpServerTransport::Close() {
     if (http_server_) http_server_->Stop();
+    if (channel_) channel_->Close();
+    SetDisconnected();
 }
 
 // ── ValidateMcpHeaders ──
@@ -146,14 +148,15 @@ void StreamableHttpServerTransport::HandlePost(
         resp.headers["mcp-name"] = mcp_name;
     }
 
-    // Extract Mcp-Param-* headers from request and store in meta
+    // Extract Mcp-Param-* headers from request (case-insensitive) and store in meta
     if (auto* req_ptr = std::get_if<JsonRpcRequest>(&msg)) {
         nlohmann::json meta_headers;
-        for (auto& [key, val] : req.headers) {
+        for (const auto& [key, val] : req.headers) {
+            std::string key_lower = key;
+            for (auto& c : key_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const std::string prefix = "mcp-param-";
-            if (key.compare(0, prefix.size(), prefix) == 0) {
+            if (key_lower.substr(0, prefix.size()) == prefix) {
                 auto param_name = key.substr(prefix.size());
-                // Restore original casing convention for the header name
                 meta_headers[param_name] = val;
             }
         }
@@ -166,14 +169,57 @@ void StreamableHttpServerTransport::HandlePost(
     // Check if this is a request (needs response) or notification (no response)
     bool needs_response = IsRequest(msg);
 
+    // Extract request ID before msg is moved (stateless correlation)
+    std::optional<RequestId> req_id;
+    if (needs_response && options_.stateless) {
+        if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
+            req_id = r->id;
+        }
+    }
+
     if (needs_response) {
-        // Send message to protocol and wait for response via channel
         if (channel_ && channel_->IsOpen()) {
-            channel_->Send(std::move(msg));
-            resp.status_code = 202;
-            resp.status_text = "Accepted";
-            resp.body = R"({"jsonrpc":"2.0","result":{"resultType":"complete"}})";
-            resp.headers["content-type"] = "application/json";
+            if (options_.stateless && req_id) {
+                // Stateless mode: wait for response synchronously
+                auto id_str = RequestIdToString(*req_id);
+                auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
+                auto future = promise->get_future();
+                {
+                    std::lock_guard<std::mutex> lock(pending_mutex_);
+                    pending_responses_[id_str] = promise;
+                }
+                channel_->Send(std::move(msg));
+
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                while (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    if (std::chrono::steady_clock::now() >= deadline) break;
+                    if (io_ctx_.run_one() == 0) break;
+                }
+
+                if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    auto response = future.get();
+                    nlohmann::json j = response;
+                    resp.status_code = 200;
+                    resp.status_text = "OK";
+                    resp.body = j.dump();
+                    resp.headers["content-type"] = "application/json";
+                } else {
+                    {
+                        std::lock_guard<std::mutex> lock(pending_mutex_);
+                        pending_responses_.erase(id_str);
+                    }
+                    resp.status_code = 500;
+                    resp.status_text = "Internal Server Error";
+                    resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout"}})";
+                    resp.headers["content-type"] = "application/json";
+                }
+            } else {
+                channel_->Send(std::move(msg));
+                resp.status_code = 202;
+                resp.status_text = "Accepted";
+                resp.body = R"({"jsonrpc":"2.0","result":{"resultType":"complete"}})";
+                resp.headers["content-type"] = "application/json";
+            }
         }
     } else {
         // Notification: fire-and-forget
@@ -213,24 +259,61 @@ void StreamableHttpServerTransport::HandleGet(
     resp.headers["content-type"] = "text/event-stream";
     resp.headers["cache-control"] = "no-cache";
 
-    // Send initial endpoint event
+    // Defer endpoint event — SendResponse registers the SSE client after
+    // HandleGet returns, so a deferred BroadcastSse reaches the new client.
     std::string endpoint_event = "event: endpoint\ndata: " +
         options_.endpoint + "\n\n";
-    (void)endpoint_event; // Will be sent via SSE client mechanism
+    auto self = std::static_pointer_cast<StreamableHttpServerTransport>(shared_from_this());
+    asio::post(io_ctx_, [self, event = std::move(endpoint_event)]() {
+        if (self->http_server_) {
+            self->http_server_->BroadcastSse(event);
+        }
+    });
 }
 
 // ── Send message (server-initiated notification via SSE) ──
 void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
-    // Store event
+    // Stateless mode: check for pending request-response correlation
+    if (options_.stateless) {
+        if (auto* resp = std::get_if<JsonRpcResponse>(&message)) {
+            auto id_str = RequestIdToString(resp->id);
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            auto it = pending_responses_.find(id_str);
+            if (it != pending_responses_.end()) {
+                it->second->set_value(std::move(message));
+                pending_responses_.erase(it);
+                return;
+            }
+        } else if (auto* err = std::get_if<JsonRpcErrorResponse>(&message)) {
+            if (err->id) {
+                auto id_str = RequestIdToString(*err->id);
+                std::lock_guard<std::mutex> lock(pending_mutex_);
+                auto it = pending_responses_.find(id_str);
+                if (it != pending_responses_.end()) {
+                    it->second->set_value(std::move(message));
+                    pending_responses_.erase(it);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Normal path: store event and broadcast via SSE
     auto event_data = BuildSseEvent(message);
     if (!options_.stateless) {
         event_store_->Append(session_id_, event_data);
     }
-
-    // Broadcast to SSE clients
     if (http_server_) {
         http_server_->BroadcastSse(event_data);
     }
+}
+
+// ── Convert RequestId to string for map key ──
+std::string StreamableHttpServerTransport::RequestIdToString(const RequestId& id) {
+    if (std::holds_alternative<int64_t>(id)) {
+        return std::to_string(std::get<int64_t>(id));
+    }
+    return std::get<std::string>(id);
 }
 
 // ── Build SSE event ──

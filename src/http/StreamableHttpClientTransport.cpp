@@ -103,6 +103,10 @@ public:
             std::lock_guard<std::mutex> lk(send_mutex_);
             send_cv_.notify_one();
         }
+        if (sse_request_) {
+            WinHttpCloseHandle(sse_request_);
+            sse_request_ = nullptr;
+        }
         if (sse_thread_.joinable()) sse_thread_.join();
         if (send_thread_.joinable()) send_thread_.join();
         io_ctx_->stop();
@@ -169,7 +173,28 @@ private:
                             L"Accept: application/json, text/event-stream\r\n";
         // Add MCP headers
         hdrs += L"MCP-Protocol-Version: 2026-07-28\r\n";
-        hdrs += L"Mcp-Method: tools/call\r\n";
+        try {
+            auto body_json = nlohmann::json::parse(body);
+            auto method = body_json.value("method", std::string());
+            if (!method.empty()) {
+                hdrs += L"Mcp-Method: " + ToWideStr(method) + L"\r\n";
+            }
+            // Extract primitive params as Mcp-Param-* headers for middleware routing
+            auto params = body_json.find("params");
+            if (params != body_json.end() && params->is_object()) {
+                for (auto it = params->begin(); it != params->end(); ++it) {
+                    if (it.value().is_string()) {
+                        hdrs += L"Mcp-Param-" + ToWideStr(it.key()) + L": " + ToWideStr(it.value().get<std::string>()) + L"\r\n";
+                    } else if (it.value().is_number_integer()) {
+                        hdrs += L"Mcp-Param-" + ToWideStr(it.key()) + L": " + ToWideStr(std::to_string(it.value().get<int64_t>())) + L"\r\n";
+                    } else if (it.value().is_boolean()) {
+                        hdrs += L"Mcp-Param-" + ToWideStr(it.key()) + L": " + ToWideStr(it.value().get<bool>() ? "true" : "false") + L"\r\n";
+                    }
+                }
+            }
+        } catch (...) {
+            hdrs += L"Mcp-Method: tools/call\r\n";
+        }
         for (auto& [k, v] : options_.additional_headers) {
             auto wk = ToWideStr(k);
             auto wv = ToWideStr(v);
@@ -197,13 +222,13 @@ private:
             }
 
             if (isSse && !sse_thread_.joinable()) {
-                // Start SSE reader thread using this request handle
-                // Transfer ownership by starting a reader
+                sse_request_ = hRequest;
                 sse_thread_ = std::thread([this, hRequest, hConnect, hSession]() {
                     SseReadLoop(hRequest);
                     WinHttpCloseHandle(hRequest);
                     WinHttpCloseHandle(hConnect);
                     WinHttpCloseHandle(hSession);
+                    sse_request_ = nullptr;
                 });
             } else {
                 // Drain response (single JSON response)
@@ -296,6 +321,7 @@ private:
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;
     std::atomic<bool> running_{false};
+    HINTERNET sse_request_ = nullptr;
 };
 
 } // namespace
