@@ -11,6 +11,8 @@
 
 #include <future>
 #include <memory>
+#include <atomic>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -149,6 +151,8 @@ private:
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
     void HandleDiscover(
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+    void HandleInitialize(
+        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
     void HandleSubscriptionsListen(
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
 
@@ -190,6 +194,13 @@ private:
 
     // Active subscriptions
     std::vector<Subscription> subscriptions_;
+
+    // Async tool call lifecycle management
+    std::mutex pending_async_mutex_;
+    std::vector<std::shared_future<void>> pending_async_futures_;
+
+    // Initialization state (2025-era protocol)
+    std::atomic<bool> initialized_{false};
 
     // Notification flags
     bool tools_changed_flag_{false};

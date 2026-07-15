@@ -6,6 +6,8 @@
 
 #include <thread>
 #include <set>
+#include <algorithm>
+#include <mutex>
 
 namespace mcp {
 
@@ -66,6 +68,13 @@ void McpServer::Run() {
 }
 
 void McpServer::Close() {
+    {
+        std::lock_guard<std::mutex> lock(pending_async_mutex_);
+        for (auto& fut : pending_async_futures_) {
+            fut.wait();
+        }
+        pending_async_futures_.clear();
+    }
     handler_->Close();
     io_ctx_ptr_->stop();
 }
@@ -276,10 +285,22 @@ void McpServer::WireHandlers() {
             HandleGetPrompt(req, std::move(p));
         });
 
+    // ── initialize ──
+    handler_->SetRequestHandler(methods::kInitialize,
+        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            HandleInitialize(req, std::move(p));
+        });
+
     // ── server/discover ──
     handler_->SetRequestHandler(methods::kDiscover,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleDiscover(req, std::move(p));
+        });
+
+    // ── notifications/initialized ──
+    handler_->SetNotificationHandler(notifications::kInitialized,
+        [this](const JsonRpcNotification&) {
+            initialized_ = true;
         });
 
     // ── completion/complete ──
@@ -381,7 +402,7 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts->list_changed = true;
     }
     if (options_.task_store || options_.extensions || !extensions_.empty()) {
-        capabilities_.extensions = ExtensionsCapability{};
+        capabilities_.extensions = std::map<std::string, nlohmann::json>{};
     }
 }
 
@@ -391,6 +412,11 @@ void McpServer::DeriveCapabilities() {
 void McpServer::HandleListTools(
     const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     ListToolsResult result;
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
@@ -402,6 +428,12 @@ void McpServer::HandleListTools(
 void McpServer::HandleCallTool(
     const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
+
     // Parse params
     CallToolRequestParams params;
     if (req.params) {
@@ -424,24 +456,49 @@ void McpServer::HandleCallTool(
         *this, req, std::move(params), *io_ctx_ptr_, std::move(log_fn));
 
     auto tool = it->second;
-    std::thread([tool, ctx = std::move(ctx),
-                 promise = std::move(promise)]() mutable {
-        auto result_promise = std::make_shared<std::promise<CallToolResult>>();
-        auto result_future = result_promise->get_future();
-        tool->InvokeAsync(ctx, std::move(*result_promise));
-        try {
-            auto result = result_future.get();
-            nlohmann::json j = result;
+
+    // Extension intercept
+    CallToolResult intercept_result;
+    for (auto& ext : extensions_) {
+        if (!ext->InterceptToolCall(ctx, intercept_result)) {
+            nlohmann::json j = intercept_result;
             promise.set_value(std::move(j));
-        } catch (...) {
-            promise.set_exception(std::current_exception());
+            return;
         }
-    }).detach();
+    }
+
+    auto captured_promise = std::make_shared<std::promise<nlohmann::json>>(std::move(promise));
+    auto fut = std::async(std::launch::async,
+        [tool, ctx = std::move(ctx), captured_promise]() mutable {
+            auto result_promise = std::make_shared<std::promise<CallToolResult>>();
+            auto result_future = result_promise->get_future();
+            tool->InvokeAsync(ctx, std::move(*result_promise));
+            try {
+                auto result = result_future.get();
+                nlohmann::json j = result;
+                captured_promise->set_value(std::move(j));
+            } catch (...) {
+                captured_promise->set_exception(std::current_exception());
+            }
+        });
+
+    // Store future for lifecycle management; clean up completed futures
+    std::lock_guard<std::mutex> lock(pending_async_mutex_);
+    pending_async_futures_.push_back(fut.share());
+    pending_async_futures_.erase(
+        std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
+            [](const auto& f) { return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }),
+        pending_async_futures_.end());
 }
 
 void McpServer::HandleListResources(
     const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     ListResourcesResult result;
     for (const auto& entry : resources_) {
         if (entry.is_template) continue;
@@ -457,6 +514,11 @@ void McpServer::HandleListResources(
 void McpServer::HandleListResourceTemplates(
     const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     ListResourceTemplatesResult result;
     for (const auto& entry : resources_) {
         if (!entry.is_template) continue;
@@ -472,6 +534,11 @@ void McpServer::HandleListResourceTemplates(
 void McpServer::HandleReadResource(
     const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     ReadResourceRequestParams params;
     if (req.params) {
         from_json(*req.params, params);
@@ -502,6 +569,11 @@ void McpServer::HandleReadResource(
 void McpServer::HandleListPrompts(
     const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     ListPromptsResult result;
     for (const auto& entry : prompts_) {
         Prompt p;
@@ -515,6 +587,11 @@ void McpServer::HandleListPrompts(
 void McpServer::HandleGetPrompt(
     const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     GetPromptRequestParams params;
     if (req.params) {
         from_json(*req.params, params);
@@ -546,6 +623,11 @@ void McpServer::SetCompletionHandler(CompletionHandler handler) {
 void McpServer::HandleComplete(
     const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
 {
+    if (!initialized_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return;
+    }
     CompleteRequestParams params;
     if (req.params) from_json(*req.params, params);
 
@@ -575,6 +657,43 @@ void McpServer::HandleDiscover(
         "2025-11-25",
         kLatestProtocolVersion.data()
     };
+    result.capabilities = capabilities_;
+    if (options_.server_info) {
+        result.server_info = Implementation{
+            options_.server_info->name,
+            options_.server_info->version
+        };
+    } else {
+        result.server_info = Implementation{"mcp-server", "0.1.0"};
+    }
+    if (options_.server_instructions) {
+        result.instructions = options_.server_instructions;
+    }
+    nlohmann::json j = result;
+    promise.set_value(std::move(j));
+}
+
+void McpServer::HandleInitialize(
+    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+{
+    InitializeRequestParams params;
+    if (req.params) {
+        from_json(*req.params, params);
+    }
+
+    // Store client info
+    client_capabilities_ = params.capabilities;
+    client_info_ = params.client_info;
+
+    // Negotiate protocol version
+    if (options_.protocol_version) {
+        handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
+    }
+
+    InitializeResult result;
+    result.protocol_version = handler_->NegotiatedProtocolVersion().empty()
+        ? std::string(kLatestProtocolVersion)
+        : std::string(handler_->NegotiatedProtocolVersion());
     result.capabilities = capabilities_;
     if (options_.server_info) {
         result.server_info = Implementation{
