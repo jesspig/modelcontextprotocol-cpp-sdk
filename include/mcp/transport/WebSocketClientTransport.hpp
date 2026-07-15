@@ -6,6 +6,7 @@
 #include <asio/ip/tcp.hpp>
 
 #include <memory>
+#include <queue>
 #include <string>
 
 namespace mcp {
