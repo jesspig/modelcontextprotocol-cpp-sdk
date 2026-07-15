@@ -33,7 +33,7 @@ namespace mcp {
 
 // JSON parse safety limits
 #define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-#define K_MAX_JSON_DEPTH 32
+// K_MAX_JSON_DEPTH removed — nlohmann-json v3.11.3 parse() accepts 4 args max
 
 namespace {
 
@@ -453,7 +453,7 @@ private:
                 return;
             }
             try {
-                auto j = nlohmann::json::parse(evt.data, nullptr, false, K_MAX_JSON_DEPTH);
+                auto j = nlohmann::json::parse(evt.data, nullptr, false, false);
                 JsonRpcMessage msg = j.get<JsonRpcMessage>();
                 EnqueueMessage(std::move(msg));
             } catch (const std::exception& e) {
