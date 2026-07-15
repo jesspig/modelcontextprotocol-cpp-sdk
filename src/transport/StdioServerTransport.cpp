@@ -70,16 +70,16 @@ void StdioServerTransport::ReadLoop() {
 
     while (running_) {
         char buf[4096];
-        DWORD bytes_read = 0;
 
 #ifdef _WIN32
+        DWORD bytes_read = 0;
         if (!ReadFile(hIn, buf, sizeof(buf) - 1, &bytes_read, nullptr)) {
             break;
         }
 #else
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
         if (n <= 0) break;
-        bytes_read = static_cast<DWORD>(n);
+        size_t bytes_read = static_cast<size_t>(n);
 #endif
         if (bytes_read == 0) break;
 

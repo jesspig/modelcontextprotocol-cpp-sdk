@@ -10,6 +10,7 @@
 
 namespace mcp {
 
+#ifdef _WIN32
 namespace {
 
 class StdioClientSessionTransport : public TransportBase {
@@ -134,6 +135,7 @@ private:
 };
 
 } // namespace
+#endif
 
 StdioClientTransport::StdioClientTransport(const StdioClientTransportOptions& options)
     : options_(options) {}
@@ -143,20 +145,13 @@ StdioClientTransport::~StdioClientTransport() = default;
 std::string_view StdioClientTransport::Name() const { return options_.name.empty() ? "stdio" : options_.name; }
 
 std::shared_ptr<ITransport> StdioClientTransport::Connect() {
-    // Build command line
-    std::string cmd_line;
 #ifdef _WIN32
-    cmd_line = "cmd.exe /c \"" + options_.command;
+    // Build command line
+    std::string cmd_line = "cmd.exe /c \"" + options_.command;
     for (const auto& arg : options_.arguments) {
         cmd_line += " " + arg;
     }
     cmd_line += "\"";
-#else
-    cmd_line = options_.command;
-    for (const auto& arg : options_.arguments) {
-        cmd_line += " " + arg;
-    }
-#endif
 
     // Security attributes for pipe inheritance
     SECURITY_ATTRIBUTES sa = {};
@@ -244,6 +239,9 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
 
     session->Start();
     return session;
+#else
+    return nullptr;
+#endif
 }
 
 } // namespace mcp
