@@ -52,15 +52,18 @@ inline void from_json(const nlohmann::json& j, ToolAnnotations& v) {
 struct ResourceAnnotations {
     std::optional<std::vector<std::string>> audience;
     std::optional<double> priority;
+    std::optional<std::string> last_modified;
 };
 inline void to_json(nlohmann::json& j, const ResourceAnnotations& v) {
     j = nlohmann::json::object();
-    if (v.audience) j["audience"] = *v.audience;
-    if (v.priority) j["priority"] = *v.priority;
+    if (v.audience)      j["audience"] = *v.audience;
+    if (v.priority)      j["priority"] = *v.priority;
+    if (v.last_modified) j["lastModified"] = *v.last_modified;
 }
 inline void from_json(const nlohmann::json& j, ResourceAnnotations& v) {
-    if (auto it = j.find("audience"); it != j.end()) v.audience = it->get<std::vector<std::string>>();
-    if (auto it = j.find("priority"); it != j.end()) v.priority = it->get<double>();
+    if (auto it = j.find("audience"); it != j.end())      v.audience = it->get<std::vector<std::string>>();
+    if (auto it = j.find("priority"); it != j.end())      v.priority = it->get<double>();
+    if (auto it = j.find("lastModified"); it != j.end())  v.last_modified = it->get<std::string>();
 }
 
 // ====================================================================
@@ -192,7 +195,6 @@ struct Prompt {
     std::optional<std::string> description;
     std::optional<std::vector<PromptArgument>> arguments;
     std::optional<std::vector<Icon>> icons;
-    std::optional<ResourceAnnotations> annotations;
     std::optional<nlohmann::json> meta;
 };
 inline void to_json(nlohmann::json& j, const Prompt& v) {
@@ -201,7 +203,6 @@ inline void to_json(nlohmann::json& j, const Prompt& v) {
     if (v.description) j["description"] = *v.description;
     if (v.arguments)   j["arguments"] = *v.arguments;
     if (v.icons)       j["icons"] = *v.icons;
-    if (v.annotations) j["annotations"] = *v.annotations;
     if (v.meta)        j["_meta"] = *v.meta;
 }
 inline void from_json(const nlohmann::json& j, Prompt& v) {
@@ -210,7 +211,6 @@ inline void from_json(const nlohmann::json& j, Prompt& v) {
     if (auto it = j.find("description"); it != j.end()) v.description = it->get<std::string>();
     if (auto it = j.find("arguments"); it != j.end())   v.arguments = it->get<std::vector<PromptArgument>>();
     if (auto it = j.find("icons"); it != j.end())       v.icons = it->get<std::vector<Icon>>();
-    if (auto it = j.find("annotations"); it != j.end()) v.annotations = it->get<ResourceAnnotations>();
     if (auto it = j.find("_meta"); it != j.end())       v.meta = *it;
 }
 

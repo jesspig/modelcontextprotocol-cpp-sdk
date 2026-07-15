@@ -13,6 +13,15 @@
 
 namespace mcp {
 
+// ── W3C Trace Context (SEP-414) ──
+inline constexpr std::string_view kTraceParentKey = "traceparent";
+inline constexpr std::string_view kTraceStateKey = "tracestate";
+inline constexpr std::string_view kBaggageKey = "baggage";
+
+inline constexpr std::string_view kMetaTraceParent = "traceparent";
+inline constexpr std::string_view kMetaTraceState = "tracestate";
+inline constexpr std::string_view kMetaBaggage = "baggage";
+
 using ProgressToken = std::variant<std::string, int64_t>;
 
 inline void to_json(nlohmann::json& j, const ProgressToken& pt) {
