@@ -5,36 +5,27 @@
 ```bash
 cmake --preset debug                          # Configure (Ninja, Debug)
 cmake --build --preset debug                  # Build
-ctest --preset debug --output-on-failure      # Run all 219 tests
+ctest --preset debug --output-on-failure      # Run all ~219 tests
 ctest -R WireCodec                            # Filter single suite
-ctest -R "Conformance" -V                     # Filter group with verbose
+ctest -R Conformance -V                       # Filter group with verbose
+cmake --build --preset debug --target mcp-core-tests   # Single target
 ```
 
 Presets: `debug`, `release`. Ninja generator only.
 
 ### Non-obvious build facts
 
-- **Unity (jumbo) builds ON** by default (multi-core). Override `-DMCP_UNITY_BUILD=OFF`. `mcp-client` sets `UNITY_BUILD_UNIQUE_ID ON` to avoid OAuth symbol clashes.
-- **Ninja job pools**: compile `min(mem/1500MB, cores-2)`, link `min(mem/4000MB, 2)`. Auto-computed. Override via `MCP_COMPILE_JOBS` / `MCP_LINK_JOBS`.
-- **Compiler auto-detection priority**: clang-cl (if found) → system default. sccache → ccache → none.
-- **lld-link**: auto-detected on Windows MSVC + Ninja; `/lldlink` added automatically.
-- **Out-of-source libs**: `mcp-transport` links `winhttp` on Windows only. `mcp-http` also links `winhttp` when WIN32 (StreamableHttpClientTransport).
-- **Dependencies cached per build dir** in `build/<preset>/_deps/`. Do NOT delete `build/` — re-downloading dependencies is expensive.
-- `mcp-core` is INTERFACE (header-only); changing type serialization recompiles everything.
-- **WireCodec version negotiation**: simple string comparison `version >= "2026-07-28"` — version IDs are ISO date strings.
-- **`-DMCP_WERROR=ON`**: applies `/WX` (MSVC) or `-Werror` (GCC/Clang) globally via `mcp-core INTERFACE`. Off by default.
-- **`MCP_API`** (`include/mcp/Export.hpp`): no-op in static builds; marks classes for future DLL/so export when switching to shared libraries.
-
-### PlatformIO cross-platform helpers
-
-`include/mcp/transport/detail/PlatformIO.hpp` provides OS-agnostic wrappers:
-
-- `native_handle()` — get `PipeHandle`/`ProcessHandle` for async I/O
-- `WaitForData()` — block on pipe readability (poll/PipeHandle)
-- `OpenStandardInput/Output/Error()` — cross-platform stdio handles
-- `SetThreadName()` — set thread name for debugging
-
-Implementations: `win32_platform.cpp` (WaitForSingleObject, SetThreadDescription), `posix_platform.cpp` (poll, pthread_setname_np).
+- **Unity (jumbo) builds ON** by default. Override `-DMCP_UNITY_BUILD=OFF`. `mcp-client` uses `UNITY_BUILD_UNIQUE_ID ON` to avoid OAuth symbol clashes.
+- **Ninja job pools**: compile `min(mem/1500MB, cores-2)`, link `min(mem/4000MB, 2)`. Override via `MCP_COMPILE_JOBS` / `MCP_LINK_JOBS`.
+- **Compiler auto-detection**: clang-cl (if found) → system default. sccache → ccache → none.
+- **lld-link**: auto-detected on Windows MSVC + Ninja; adds `/lldlink`.
+- **CI** (`ci.yml`) runs on `develop` branch only with `-DMCP_WERROR=ON` — treat warnings as errors. Three OS matrix: windows-2022, ubuntu-24.04, macos-15.
+- **Dependencies cached in `build/<preset>/_deps/`**. Do NOT delete `build/` — re-downloading is expensive.
+- `mcp-core` is INTERFACE (header-only). Changing type serialization recompiles everything.
+- **OAuth requires OpenSSL**: `mcp-client` and `mcp-transport` get `MCP_HAVE_OPENSSL` when OpenSSL is found. Building `mcp-client` without OpenSSL fails with `static_assert` — intentional (PKCE SHA-256 is mandatory).
+- **`StreamableHttpClientTransport.cpp` is Windows-only**: guarded via `if(WIN32)`.
+- **`McpServer::Create` / `McpClient::Create` take `shared_ptr<ITransport>`**: When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — causes silent data loss.
+- **`InMemoryTransport::CreatePair()`** returns `shared_ptr<ITransport>`, not the concrete type. Use `dynamic_cast<TransportBase*>` to access state machine.
 
 ## Architecture
 
@@ -42,12 +33,11 @@ Implementations: `win32_platform.cpp` (WaitForSingleObject, SetThreadDescription
 include/mcp/       — Public headers
 src/client/        — McpClient, OAuth, MRTR helper
 src/server/        — McpServer, Extension framework, FileTaskStore
-src/protocol/      — McpSessionHandler (engine), WireCodec, cache
+src/protocol/      — McpSessionHandler (engine), WireCodec
 src/transport/     — Stdio, SSE, InMemory, WebSocket transport impls
 src/http/          — HttpServer, EventStore, StreamableHttp*
 tests/             — unit/ (gtest), integration/, conformance/ (122 tests)
 examples/          — EchoServer, WeatherServer, SimpleClient
-cmake/             — Build modules: auto-detect compiler/hardware/cache/LTO
 ```
 
 Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
@@ -63,80 +53,80 @@ ITransport —— TransportBase (3-state: Initial→Connected→Disconnected)
   └── StreamableHttpSessionTransport (internal, via StreamableHttpClientTransport)
 
 IClientTransport (connection factory)
-  ├── StdioClientTransport
-  ├── SseClientTransport
-  ├── StreamableHttpClientTransport (Windows-only; CMake if(WIN32) + winhttp)
-  └── WebSocketClientTransport (supports wss:// with OpenSSL)
+  ├── StdioClientTransport (Win32 + POSIX via PlatformIO)
+  ├── SseClientTransport (dual WinHTTP/asio POSIX path)
+  ├── StreamableHttpClientTransport (Windows-only)
+  └── WebSocketClientTransport (wss:// guarded by MCP_HAVE_OPENSSL)
 ```
-
-New code use `ITransport`/`TransportBase`/`IClientTransport`. Old `Transport`/`ClientTransport` in `Transport.hpp` are deprecated.
 
 ### Protocol engine
 
 `McpSessionHandler` (in `mcp-protocol`) is the JSON-RPC engine:
+
 - Async message loop over `MessageChannel` (wraps `asio::experimental::channel`)
-- Request/response correlation with timeout
-- Handler dispatch via `unordered_map` (not virtual dispatch)
+- Request/response correlation with timeout; `next_request_id_` is `std::atomic<int64_t>`
+- Handler dispatch via `unordered_map`, inbound/outbound `MessageFilter` pipeline (0 by default)
 - Dual-era `WireCodec` (2025-11-25 initialize handshake / 2026-07-28 per-request `_meta`)
-- Inbound/outbound `MessageFilter` pipeline
+
+## Key protocol patterns (2026-07-28 era)
+
+- **Stateless**: `initialize`/`initialized` handshake replaced by `server/discover`. Per-request `_meta` carries `protocolVersion`, `clientInfo`, `clientCapabilities` on every C→S request.
+- **MRTR**: Server-initiated interactions (elicitation, sampling, roots) embedded as `InputRequiredResult` — not sent as separate requests on SSE. Client retries with `inputResponses` + `requestState`.
+- **Subscriptions**: `subscriptions/listen` replaces `resources/subscribe`. Opt-in to change notification types.
+- **Extensions**: Negotiated via `extensions` map (now `map<string, json>`, not empty struct) on `ClientCapabilities`/`ServerCapabilities`.
+- **Caching**: `CacheHint` with `ttlMs`/`cacheScope` on list/discover/read results.
+- **Mcp-Method header**: Dynamic (not hardcoded), derived from JSON-RPC body method field.
 
 ## Coding Style
 
-- **C++17**, `#pragma once`, 4-space indent
-- **Types/Functions**: PascalCase (`WireCodec`, `MakeWireCodec`)
-- **Constants**: `k` + PascalCase (`kLatestProtocolVersion`)
-- **Members**: snake_case + underscore (`io_ctx_`)
-- **Namespace**: flat `mcp`. Sub-namespaces for constants: `mcp::methods`, `mcp::notifications`, `mcp::headers`
-- **Compiler warnings**: `/W4` on MSVC/clang-cl, `-Wall -Wextra -Wpedantic` on Clang/GCC; `-Wno-unused-parameter` allowed
-- **Includes**: `<mcp/McpCore.hpp>` (umbrella), `<mcp/server/McpServer.hpp>`, `<mcp/transport/StdioServerTransport.hpp>`
-- No auto-formatter; follow existing file style.
+- **C++17**, `#pragma once`, 4-space indent. No auto-formatter.
+- **Types/Functions**: PascalCase (`WireCodec`, `MakeWireCodec`). Constants: `k` + PascalCase.
+- **Members**: snake_case + underscore (`io_ctx_`).
+- **Namespace**: flat `mcp`. Sub-namespaces for constants: `mcp::methods`, `mcp::notifications`.
+- **Compiler warnings**: `/W4` on MSVC/clang-cl, `-Wall -Wextra -Wpedantic` on Clang/GCC; `-Wno-unused-parameter` allowed. CI adds `-DMCP_WERROR=ON`.
+- **Includes**: `<mcp/McpCore.hpp>` (umbrella), `<mcp/server/McpServer.hpp>`, `<mcp/transport/StdioServerTransport.hpp>`.
 
-## Testing
+## Testing (Google Test, auto-fetched)
 
-**219 tests** — Google Test v1.15.2 (auto-fetched).
-
-| Suite | CMake Target | Location | Purpose |
-|-------|-------------|----------|---------|
+| Suite | Target | Location | Notes |
+|-------|--------|----------|-------|
 | `JsonRpcTest` | `mcp-core-tests` | `tests/unit/` | Message serialization + variant dispatch |
-| `McpTypesTest` | `mcp-core-tests` | `tests/unit/` | Type round-trips |
+| `McpTypesTest` | `mcp-core-tests` | `tests/unit/` | Type round-trips with annotations, icons, content variants |
 | `WireCodecTest` | `mcp-wire-codec-tests` | `tests/unit/` | Era-gating codec |
 | `McpServerTest` | `mcp-server-tests` | `tests/unit/` | Registration, capabilities |
 | `McpClientTest` | `mcp-client-tests` | `tests/unit/` | Client creation, tool cache |
 | `OAuthTest` | `mcp-oauth-tests` | `tests/unit/` | PKCE, token cache |
-| `TransportTest` | `mcp-transport-tests` | `tests/unit/` | InMemory transport, state machine, error propagation |
+| `TransportTest` | `mcp-transport-tests` | `tests/unit/` | State machine, error propagation via `dynamic_cast<TransportBase*>` |
 | `Conformance` | `mcp-conformance-tests` | `tests/conformance/` | 122 MCP spec compliance tests |
 | `Integration` | `mcp-integration-tests` | `tests/integration/` | Client-server round-trip |
 
-Run a single target: `cmake --build --preset debug --target mcp-core-tests`
-
-### Test notes
-
-- `TransportTest` uses `dynamic_cast<TransportBase*>` on `InMemoryTransport::CreatePair()` returned `ITransport` pointers to test state machine and error propagation directly.
-- `InMemoryTransport` is synchronous — messages are delivered when io_context runs (not on SendMessageAsync).
-
-## CI
-
-CI (`ci.yml`) runs on `develop` branch only — both push and PR. Docs (`docs.yml`) deploys from `master`. Examples built and tested by default in debug preset.
+- `InMemoryTransport` is synchronous — messages delivered when `io_context` runs, not on `SendMessageAsync`.
+- Werror is off by default; enable via `-DMCP_WERROR=ON` for CI-matching behavior.
 
 ## Traps
 
-- **`McpServer::Create` / `McpClient::Create` take `shared_ptr<ITransport>`**: When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — causes silent data loss.
-- **`Protocol.hpp` name collision**: `include/mcp/Protocol.hpp` redirects to `include/mcp/protocol/Protocol.hpp`. Prefer `<mcp/protocol/McpSessionHandler.hpp>`.
-- **All types in `McpTypes.hpp`**: `Result.hpp`, `Progress.hpp`, etc. were consolidated; everything lives in `McpTypes.hpp`.
-- **Don't delete `build/`**: Dependencies cached in `build/<preset>/_deps/`. Deleting forces re-download of asio, nlohmann-json, googletest.
-- **`StreamableHttpClientTransport.cpp` is Windows-only**: guarded with `#ifdef _WIN32` and CMake `if(WIN32)`. Requires `winhttp.h`.
-- **`InMemoryTransport::CreatePair()`** returns `std::shared_ptr<ITransport>`, not the concrete `InMemoryTransportImpl`. Use `dynamic_cast<TransportBase*>` to access state machine (GetState, SetOnClose, etc.).
+- **All protocol types in `McpTypes.hpp`**: Result, Progress, etc. were consolidated here. Do not create new type headers.
+- **Content annotations**: typed `Annotations` struct (not raw JSON). Has `audience`, `priority`, `lastModified`.
+- **`Prompt` has no `annotations` field** — removed per spec. Do not add it back.
+- **`ExtensionsCapability` removed**: replaced by `map<string, json>` on both `ClientCapabilities` and `ServerCapabilities`.
+- **Server guards requests with `initialized_` flag**: All handlers reject with `InvalidRequest` until `notifications/initialized` received.
+- **`McpClient` sends `notifications/initialized` after `HandshakeInitialize`**: Required by 2025-era protocol.
+- **OAuth HTTP/1.1 uses `Connection: close`**: Each token exchange opens a new TCP connection. No keep-alive.
+- **No HTTP/1.1 keep-alive**: OAuth client opens separate connections.
+- **`jsonrpc: "2.0"` validated** in all `from_json`; invalid version throws `std::runtime_error`.
+- **`JsonRpcErrorResponse::id` is `optional<RequestId>`**: Null-id errors (parse errors, invalid requests) serialize/deserialize correctly per JSON-RPC 2.0 §5.1.
+- **`Icon::mime_type` is `optional<string>`** (not required per spec).
+- **`ContentVariant` includes `ResourceLink`**: handle `type == "resource_link"` in disaptch.
+- **X-Mcp-Headers**: `ScanXMcpHeaders()` in `XMcpHeaders.hpp` scans inputSchema for `x-mcp-header` annotations.
 
-## Dependencies
-
-All fetched automatically via `FetchContent`:
+## Dependencies (auto-fetched via FetchContent)
 
 | Dep | Version | Notes |
 |-----|---------|-------|
-| asio | 1.30.2 | Header-only; manual INTERFACE target (no upstream CMakeLists.txt) |
+| asio | 1.30.2 | Header-only; manual INTERFACE target |
 | nlohmann-json | 3.11.3 | SYSTEM, shallow fetch |
 | GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Optional; OAuth PKCE + WebSocket wss:// (`MCP_HAVE_OPENSSL`) |
+| OpenSSL | system | Optional; required for OAuth PKCE |
 
 ## Commits
 

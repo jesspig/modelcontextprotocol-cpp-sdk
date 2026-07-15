@@ -1057,7 +1057,7 @@ TEST(Conformance, NotificationMetaObjectEmpty) {
 // ====================================================================
 TEST(Conformance, ExtensionsCapabilityServerRoundTrip) {
     ServerCapabilities caps;
-    caps.extensions = ExtensionsCapability{};
+    caps.extensions = std::map<std::string, nlohmann::json>{};
 
     nlohmann::json j = caps;
     EXPECT_TRUE(j.contains("extensions"));
@@ -1069,7 +1069,7 @@ TEST(Conformance, ExtensionsCapabilityServerRoundTrip) {
 
 TEST(Conformance, ExtensionsCapabilityClientRoundTrip) {
     ClientCapabilities caps;
-    caps.extensions = ExtensionsCapability{};
+    caps.extensions = std::map<std::string, nlohmann::json>{};
 
     nlohmann::json j = caps;
     EXPECT_TRUE(j.contains("extensions"));
@@ -1098,7 +1098,7 @@ TEST(Conformance, ClientCapabilitiesNoExtensions) {
 TEST(Conformance, ExtensionsCapabilityWithOtherCaps) {
     ServerCapabilities caps;
     caps.tools = ToolsCapability{};
-    caps.extensions = ExtensionsCapability{};
+    caps.extensions = std::map<std::string, nlohmann::json>{};
     caps.subscriptions = SubscriptionsCapability{};
 
     nlohmann::json j = caps;
