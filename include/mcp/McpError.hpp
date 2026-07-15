@@ -5,6 +5,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 namespace mcp {
 
@@ -18,6 +19,9 @@ public:
 
     McpErrorCode Code() const noexcept { return code_; }
     std::string_view ErrorMessage() const noexcept { return message_; }
+    std::error_code ToErrorCode() const noexcept {
+        return make_error_code(code_);
+    }
 
     static McpError FromJsonRpcError(const JsonRpcErrorResponse& err) {
         return McpError(

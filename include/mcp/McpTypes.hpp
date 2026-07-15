@@ -921,7 +921,7 @@ inline std::optional<InputRequests> ExtractInputRequests(const nlohmann::json& r
 // Sampling [deprecated] �?use Elicitation instead (SEP-2577)
 // ====================================================================
 // SamplingMessage is deprecated in 2026-07-28 (SEP-2577).
-struct SamplingMessage {
+struct [[deprecated("Sampling is deprecated in protocol version 2026-07-28 (SEP-2577)")]] SamplingMessage {
     std::string role;
     ContentVariant content;
 };
@@ -934,7 +934,7 @@ inline void from_json(const nlohmann::json& j, SamplingMessage& v) {
 }
 
 // CreateMessageRequestParams is deprecated in 2026-07-28 (SEP-2577).
-struct CreateMessageRequestParams {
+struct [[deprecated("Sampling is deprecated in protocol version 2026-07-28 (SEP-2577)")]] CreateMessageRequestParams {
     std::vector<SamplingMessage> messages;
     int64_t max_tokens;
     std::optional<std::string> stop_reason;
@@ -953,7 +953,7 @@ inline void from_json(const nlohmann::json& j, CreateMessageRequestParams& v) {
 }
 
 // CreateMessageResult is deprecated in 2026-07-28 (SEP-2577).
-struct CreateMessageResult : Result {
+struct [[deprecated("Sampling is deprecated in protocol version 2026-07-28 (SEP-2577)")]] CreateMessageResult : Result {
     std::string role;
     ContentVariant content;
     std::string model;
@@ -976,7 +976,7 @@ inline void from_json(const nlohmann::json& j, CreateMessageResult& v) {
 // ====================================================================
 // Roots [deprecated]
 // ====================================================================
-struct Root {
+struct [[deprecated("Roots is deprecated in protocol version 2026-07-28")]] Root {
     std::string uri;
     std::optional<std::string> name;
 };
@@ -989,11 +989,11 @@ inline void from_json(const nlohmann::json& j, Root& v) {
     if (auto it = j.find("name"); it != j.end()) v.name = it->get<std::string>();
 }
 
-struct ListRootsRequestParams {};
+struct [[deprecated("Roots is deprecated in protocol version 2026-07-28")]] ListRootsRequestParams {};
 inline void to_json(nlohmann::json& j, const ListRootsRequestParams&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json&, ListRootsRequestParams&) {}
 
-struct ListRootsResult : Result {
+struct [[deprecated("Roots is deprecated in protocol version 2026-07-28")]] ListRootsResult : Result {
     std::vector<Root> roots;
 };
 inline void to_json(nlohmann::json& j, const ListRootsResult& v) {
@@ -1025,7 +1025,7 @@ struct CacheableRequestOptions : RequestOptions {
 // ====================================================================
 // SetLevelRequestParams [deprecated]
 // ====================================================================
-struct SetLevelRequestParams {
+struct [[deprecated("SetLevelRequestParams is deprecated")]] SetLevelRequestParams {
     LoggingLevel level;
 };
 inline void to_json(nlohmann::json& j, const SetLevelRequestParams& v) {

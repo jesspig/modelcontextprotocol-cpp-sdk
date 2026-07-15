@@ -52,7 +52,7 @@ inline void from_json(const nlohmann::json& j, LoggingCapability&) {}
 
 // Sampling is deprecated in 2026-07-28 (SEP-2577).
 // Use ElicitationCapability instead.
-struct SamplingCapability {};
+struct [[deprecated("Sampling is deprecated in protocol version 2026-07-28 (SEP-2577)")]] SamplingCapability {};
 inline void to_json(nlohmann::json& j, const SamplingCapability&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json& j, SamplingCapability&) {}
 
