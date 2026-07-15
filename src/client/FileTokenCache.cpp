@@ -150,21 +150,36 @@ void FileTokenCache::Save() {
     j["token_type"] = tokens_->token_type;
     j["expires_at"] = tokens_->expires_at;
     j["scopes"] = tokens_->scopes;
+    auto tmp_path = cache_path_;
+    tmp_path += ".tmp";
 #ifdef _WIN32
     auto plaintext = j.dump();
     auto encrypted = ProtectData(plaintext);
-    if (encrypted.empty()) return;
-    std::ofstream file(cache_path_, std::ios::binary);
-    if (file.is_open()) {
+    if (encrypted.empty()) {
+        std::filesystem::remove(tmp_path);
+        return;
+    }
+    {
+        std::ofstream file(tmp_path, std::ios::binary);
+        if (!file.is_open()) {
+            std::filesystem::remove(tmp_path);
+            return;
+        }
         file.write(reinterpret_cast<const char*>(encrypted.data()), encrypted.size());
     }
+    std::filesystem::rename(tmp_path, cache_path_);
 #else
-    std::ofstream file(cache_path_);
-    if (file.is_open()) {
+    {
+        std::ofstream file(tmp_path);
+        if (!file.is_open()) {
+            std::filesystem::remove(tmp_path);
+            return;
+        }
         file << j.dump(2);
         file.close();
-        chmod(cache_path_.string().c_str(), 0600);
+        chmod(tmp_path.string().c_str(), 0600);
     }
+    std::filesystem::rename(tmp_path, cache_path_);
 #endif
 }
 

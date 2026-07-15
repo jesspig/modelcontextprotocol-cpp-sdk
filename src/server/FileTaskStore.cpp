@@ -124,10 +124,14 @@ void FileTaskStore::Flush() {
     for (auto& [id, state] : tasks_) {
         j["tasks"][id] = SerializeTaskState(state);
     }
-    std::ofstream file(storage_path_);
-    if (file.is_open()) {
+    auto tmp_path = storage_path_;
+    tmp_path += ".tmp";
+    {
+        std::ofstream file(tmp_path);
+        if (!file.is_open()) return;
         file << j.dump(2);
     }
+    std::filesystem::rename(tmp_path, storage_path_);
 }
 
 } // namespace mcp

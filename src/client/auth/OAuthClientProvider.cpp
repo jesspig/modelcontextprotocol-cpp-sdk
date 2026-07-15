@@ -231,6 +231,7 @@ bool OAuthClientProvider::Authenticate() {
 
 bool OAuthClientProvider::DiscoverMetadata() {
     OAuthMetadata meta;
+    meta.issuer = options_.server_url;
     meta.authorization_endpoint = options_.server_url + "/authorize";
     meta.token_endpoint = options_.server_url + "/token";
     metadata_ = std::move(meta);
@@ -239,6 +240,9 @@ bool OAuthClientProvider::DiscoverMetadata() {
 
 bool OAuthClientProvider::ValidateTokenIssuer(const nlohmann::json& response) const {
     if (!metadata_) return false;
+    if (metadata_->issuer.empty()) {
+        const_cast<OAuthMetadata&>(*metadata_).issuer = options_.server_url;
+    }
     auto it = response.find("iss");
     if (it == response.end()) {
         return true;
@@ -345,7 +349,9 @@ std::string OAuthClientProvider::GetAccessToken() {
     auto tokens = token_cache_->GetTokens();
     if (!tokens) return {};
     if (tokens->WillExpireSoon()) {
-        if (!tokens->refresh_token.empty()) RefreshTokens();
+        if (!tokens->refresh_token.empty()) {
+            if (!RefreshTokens()) return {};
+        }
         tokens = token_cache_->GetTokens();
     }
     return tokens ? tokens->access_token : std::string{};
