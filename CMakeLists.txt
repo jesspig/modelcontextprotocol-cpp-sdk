@@ -1,5 +1,4 @@
-cmake_minimum_required(VERSION 4.2)
-cmake_policy(SET CMP0156 NEW)
+cmake_minimum_required(VERSION 3.28...4.2)
 
 # ── 编译器自动探测 (project 之前) ──
 # 优先级: clang-cl (ThinLTO 支持) > 系统默认

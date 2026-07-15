@@ -1,0 +1,14 @@
+{
+  "name": "mcp-cpp-sdk-docs",
+  "version": "1.0.0",
+  "description": "MCP C++ SDK documentation",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "serve": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3"
+  }
+}
