@@ -5,8 +5,10 @@
 #include <asio/post.hpp>
 #include <nlohmann/json.hpp>
 
+#ifdef _WIN32
 #include <winhttp.h>
 #include <windows.h>
+#endif
 
 #include <atomic>
 #include <condition_variable>
@@ -17,7 +19,9 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
+#endif
 
 namespace mcp {
 
@@ -25,6 +29,7 @@ namespace mcp {
 #define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
 #define K_MAX_JSON_DEPTH 32
 
+#ifdef _WIN32
 namespace {
 
 struct UrlParts {
@@ -314,3 +319,4 @@ std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
 }
 
 } // namespace mcp
+#endif
