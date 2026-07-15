@@ -367,9 +367,10 @@ private:
         }
 #else
         try {
-            asio::io_context sse_ctx;
-            asio::ip::tcp::resolver resolver(sse_ctx);
-            sse_socket_ = std::make_shared<asio::ip::tcp::socket>(sse_ctx);
+            auto sse_ctx = std::make_shared<asio::io_context>();
+            sse_ctx_ = sse_ctx;
+            asio::ip::tcp::resolver resolver(*sse_ctx);
+            sse_socket_ = std::make_shared<asio::ip::tcp::socket>(*sse_ctx);
 
             auto endpoints = resolver.resolve(url_.host,
                                               std::to_string(url_.port));
@@ -579,8 +580,9 @@ private:
     HINTERNET post_session_ = nullptr;
     HINTERNET post_connect_ = nullptr;
 #else
-    // asio socket for SSE streaming (owned by SseReadLoop)
+    // asio socket + io_context for SSE streaming (owned by SseReadLoop)
     std::shared_ptr<asio::ip::tcp::socket> sse_socket_;
+    std::shared_ptr<asio::io_context> sse_ctx_;
 #endif
 
     // SSE reader thread + send thread + io_context runner

@@ -307,7 +307,9 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
         if (options_.inherit_environment_variables) {
             LPCH cur_env = GetEnvironmentStrings();
             if (cur_env) {
-                env_block_str = cur_env;
+                LPCH end = cur_env;
+                while (*end || *(end + 1)) ++end;
+                env_block_str = std::string(cur_env, end - cur_env + 2);
                 FreeEnvironmentStrings(cur_env);
             }
         }

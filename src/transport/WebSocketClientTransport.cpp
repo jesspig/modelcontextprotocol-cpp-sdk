@@ -232,13 +232,15 @@ void WebSocketTransport::Close() {
         write_cv_.notify_one();
     }
 
-    // Close socket — unblocks any pending reads/writes
+    // Join write thread first — ensures no concurrent access to socket_
+    if (write_thread_.joinable())
+        write_thread_.join();
+
+    // Close socket — unblocks any pending reads in ReadLoop
     asio::error_code ec;
     socket_.close(ec);
 
-    // Join threads
-    if (write_thread_.joinable())
-        write_thread_.join();
+    // Join read thread (unblocked by socket close or saw running_=false)
     if (read_thread_.joinable())
         read_thread_.join();
 
@@ -305,6 +307,13 @@ void WebSocketTransport::ReadLoop() {
                 } catch (...) {
                 }
                 running_ = false;
+                {
+                    std::lock_guard<std::mutex> lk(write_mutex_);
+                    write_cv_.notify_one();
+                }
+                if (channel_)
+                    channel_->Close();
+                SetDisconnected();
                 break;
 
             case kOpcodePing:

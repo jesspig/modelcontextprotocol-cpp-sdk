@@ -86,6 +86,11 @@ void StdioServerTransport::ReadLoop() {
             }
         }
     }
+
+    if (running_.exchange(false)) {
+        if (channel_) channel_->Close();
+        SetDisconnected();
+    }
 }
 
 } // namespace mcp
