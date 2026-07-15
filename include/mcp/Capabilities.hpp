@@ -2,7 +2,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <map>
 #include <optional>
+#include <string>
 
 namespace mcp {
 
@@ -91,6 +93,10 @@ struct ExtensionsCapability {};
 inline void to_json(nlohmann::json& j, const ExtensionsCapability&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json& j, ExtensionsCapability&) {}
 
+struct CompletionsCapability {};
+inline void to_json(nlohmann::json& j, const CompletionsCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json& j, CompletionsCapability&) {}
+
 struct ServerCapabilities {
     std::optional<ToolsCapability> tools;
     std::optional<ResourcesCapability> resources;
@@ -99,6 +105,7 @@ struct ServerCapabilities {
     std::optional<SamplingCapability> sampling;
     std::optional<RootsCapability> roots;
     std::optional<ElicitationCapability> elicitation;
+    std::optional<CompletionsCapability> completions;
     std::optional<SubscriptionsCapability> subscriptions;
     std::optional<ExtensionsCapability> extensions;
     std::optional<nlohmann::json> experimental;
@@ -112,6 +119,7 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& v) {
     if (v.sampling)      j["sampling"] = *v.sampling;
     if (v.roots)         j["roots"] = *v.roots;
     if (v.elicitation)   j["elicitation"] = *v.elicitation;
+    if (v.completions)   j["completions"] = *v.completions;
     if (v.subscriptions) j["subscriptions"] = *v.subscriptions;
     if (v.extensions)    j["extensions"] = *v.extensions;
     if (v.experimental)  j["experimental"] = *v.experimental;
@@ -124,6 +132,7 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& v) {
     if (auto it = j.find("sampling"); it != j.end())      v.sampling = it->get<SamplingCapability>();
     if (auto it = j.find("roots"); it != j.end())         v.roots = it->get<RootsCapability>();
     if (auto it = j.find("elicitation"); it != j.end())   v.elicitation = it->get<ElicitationCapability>();
+    if (auto it = j.find("completions"); it != j.end())   v.completions = it->get<CompletionsCapability>();
     if (auto it = j.find("subscriptions"); it != j.end()) v.subscriptions = it->get<SubscriptionsCapability>();
     if (auto it = j.find("extensions"); it != j.end())    v.extensions = it->get<ExtensionsCapability>();
     if (auto it = j.find("experimental"); it != j.end())  v.experimental = *it;

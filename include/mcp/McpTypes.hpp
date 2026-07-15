@@ -269,6 +269,7 @@ inline void to_json(nlohmann::json& j, const ListToolsRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, ListToolsRequestParams& v) {
     if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct CallToolRequestParams {
@@ -303,6 +304,7 @@ inline void to_json(nlohmann::json& j, const ReadResourceRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, ReadResourceRequestParams& v) {
     v.uri = j.at("uri").get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct ListResourcesRequestParams {
@@ -316,6 +318,7 @@ inline void to_json(nlohmann::json& j, const ListResourcesRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, ListResourcesRequestParams& v) {
     if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct ListResourceTemplatesRequestParams {
@@ -329,6 +332,7 @@ inline void to_json(nlohmann::json& j, const ListResourceTemplatesRequestParams&
 }
 inline void from_json(const nlohmann::json& j, ListResourceTemplatesRequestParams& v) {
     if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct SubscribeRequestParams {
@@ -341,6 +345,7 @@ inline void to_json(nlohmann::json& j, const SubscribeRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, SubscribeRequestParams& v) {
     v.uri = j.at("uri").get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct UnsubscribeRequestParams {
@@ -353,6 +358,7 @@ inline void to_json(nlohmann::json& j, const UnsubscribeRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, UnsubscribeRequestParams& v) {
     v.uri = j.at("uri").get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct ListPromptsRequestParams {
@@ -366,6 +372,7 @@ inline void to_json(nlohmann::json& j, const ListPromptsRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, ListPromptsRequestParams& v) {
     if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct GetPromptRequestParams {
@@ -381,6 +388,7 @@ inline void to_json(nlohmann::json& j, const GetPromptRequestParams& v) {
 inline void from_json(const nlohmann::json& j, GetPromptRequestParams& v) {
     v.name = j.at("name").get<std::string>();
     if (auto it = j.find("arguments"); it != j.end()) v.arguments = *it;
+    if (auto it = j.find("_meta"); it != j.end())     v.meta = it->get<RequestMeta>();
 }
 
 struct CompleteRequestParams {
@@ -395,6 +403,7 @@ inline void to_json(nlohmann::json& j, const CompleteRequestParams& v) {
 }
 inline void from_json(const nlohmann::json& j, CompleteRequestParams& v) {
     v.ref = j.at("ref"); v.argument_name = j.at("argumentName").get<std::string>(); v.argument_value = j.at("argumentValue").get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct DiscoverRequestParams {
@@ -451,6 +460,7 @@ inline void to_json(nlohmann::json& j, const SubscriptionsListenRequestParams& v
 }
 inline void from_json(const nlohmann::json& j, SubscriptionsListenRequestParams& v) {
     j.at("notifications").get_to(v.notifications);
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
 struct SubscriptionsAcknowledgedNotificationParams {
@@ -512,6 +522,7 @@ inline void from_json(const nlohmann::json& j, ListToolsResult& v) {
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
     if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct ListResourcesResult : Result {
@@ -531,6 +542,7 @@ inline void from_json(const nlohmann::json& j, ListResourcesResult& v) {
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
     if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct ListResourceTemplatesResult : Result {
@@ -550,6 +562,7 @@ inline void from_json(const nlohmann::json& j, ListResourceTemplatesResult& v) {
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
     if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct ReadResourceResult : Result {
@@ -566,6 +579,7 @@ inline void from_json(const nlohmann::json& j, ReadResourceResult& v) {
     v.contents = j.at("contents").get<decltype(v.contents)>();
     if (auto it = j.find("cacheHint"); it != j.end()) v.cache_hint = it->get<CacheHint>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())     v.meta = *it;
 }
 
 struct ListPromptsResult : Result {
@@ -585,6 +599,7 @@ inline void from_json(const nlohmann::json& j, ListPromptsResult& v) {
     if (auto it = j.find("nextCursor"); it != j.end()) v.next_cursor = it->get<std::string>();
     if (auto it = j.find("cacheHint"); it != j.end())  v.cache_hint = it->get<CacheHint>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct GetPromptResult : Result {
@@ -601,6 +616,7 @@ inline void from_json(const nlohmann::json& j, GetPromptResult& v) {
     v.messages = j.at("messages").get<decltype(v.messages)>();
     if (auto it = j.find("description"); it != j.end()) v.description = it->get<std::string>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct CompleteResult : Result {
@@ -614,6 +630,7 @@ inline void to_json(nlohmann::json& j, const CompleteResult& v) {
 inline void from_json(const nlohmann::json& j, CompleteResult& v) {
     v.completion = j.at("completion");
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct InitializeResult : Result {
@@ -634,6 +651,7 @@ inline void from_json(const nlohmann::json& j, InitializeResult& v) {
     v.server_info = j.at("serverInfo").get<Implementation>();
     if (auto it = j.find("instructions"); it != j.end()) v.instructions = it->get<std::string>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct DiscoverResult : Result {
@@ -657,6 +675,7 @@ inline void from_json(const nlohmann::json& j, DiscoverResult& v) {
     if (auto it = j.find("instructions"); it != j.end()) v.instructions = it->get<std::string>();
     if (auto it = j.find("cacheHint"); it != j.end())    v.cache_hint = it->get<CacheHint>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 struct PingResult : Result {};
@@ -951,6 +970,7 @@ inline void from_json(const nlohmann::json& j, CreateMessageResult& v) {
     v.model = j.at("model").get<std::string>();
     if (auto it = j.find("stopReason"); it != j.end()) v.stop_reason = it->get<std::string>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 // ====================================================================
@@ -984,6 +1004,7 @@ inline void to_json(nlohmann::json& j, const ListRootsResult& v) {
 inline void from_json(const nlohmann::json& j, ListRootsResult& v) {
     v.roots = j.at("roots").get<decltype(v.roots)>();
     if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
+    if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
 // ====================================================================
@@ -1039,6 +1060,7 @@ inline void from_json(const nlohmann::json& j, GetTaskResult& v) {
     if (auto it = j.find("result"); it != j.end()) v.result = *it;
     if (auto it = j.find("errorMessage"); it != j.end()) v.error_message = it->get<std::string>();
     if (auto it = j.find("inputRequired"); it != j.end()) v.input_required = *it;
+    if (auto it = j.find("_meta"); it != j.end())    v.meta = *it;
 }
 
 struct UpdateTaskResult : Result {};
