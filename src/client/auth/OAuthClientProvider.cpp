@@ -47,14 +47,14 @@ std::string GenerateCodeVerifier() {
 #ifdef MCP_HAVE_OPENSSL
     std::vector<unsigned char> random_bytes(32);
     RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size()));
-#else
-    std::vector<unsigned char> random_bytes(32);
-    std::random_device rd;
-    for (auto& b : random_bytes) b = static_cast<unsigned char>(rd());
-#endif
     return Base64UrlEncode(
         std::string_view(reinterpret_cast<const char*>(random_bytes.data()),
                          random_bytes.size()));
+#else
+    static_assert(sizeof(void*) == 0,
+        "MCP_HAVE_OPENSSL is required for OAuth PKCE support. Install OpenSSL or reconfigure.");
+    return {};
+#endif
 }
 
 std::string ComputeCodeChallenge(std::string_view code_verifier) {
@@ -69,9 +69,9 @@ std::string ComputeCodeChallenge(std::string_view code_verifier) {
     return Base64UrlEncode(
         std::string_view(reinterpret_cast<const char*>(hash.data()), hash_len));
 #else
-    // Without OpenSSL, return the raw verifier as challenge (S256 not available)
-    // This is NOT cryptographically secure — for production, install OpenSSL
-    return Base64UrlEncode(code_verifier);
+    static_assert(sizeof(void*) == 0,
+        "MCP_HAVE_OPENSSL is required for OAuth PKCE support. Install OpenSSL or reconfigure.");
+    return {};
 #endif
 }
 
@@ -152,6 +152,8 @@ nlohmann::json OAuthClientProvider::HttpPost(
         if (use_tls) {
             asio::ssl::context ctx(asio::ssl::context::tls);
             ctx.set_default_verify_paths();
+            ctx.set_verify_mode(asio::ssl::verify_peer | asio::ssl::verify_fail_if_no_peer_cert);
+            ctx.set_verify_callback(asio::ssl::host_name_verification(host));
             asio::ssl::stream<asio::ip::tcp::socket> ssl_socket(io_ctx, ctx);
             asio::connect(ssl_socket.lowest_layer(), endpoints);
             ssl_socket.handshake(asio::ssl::stream_base::client);
@@ -173,6 +175,11 @@ nlohmann::json OAuthClientProvider::HttpPost(
         } else
 #endif
         {
+#ifndef MCP_HAVE_OPENSSL
+            throw std::runtime_error(
+                "TLS is required for secure OAuth token exchange. "
+                "Install OpenSSL and reconfigure with -DMCP_HAVE_OPENSSL=ON.");
+#endif
             asio::ip::tcp::socket socket(io_ctx);
             asio::connect(socket, endpoints);
             asio::write(socket, asio::buffer(request));
