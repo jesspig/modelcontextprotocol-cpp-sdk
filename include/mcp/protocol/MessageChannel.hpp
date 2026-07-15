@@ -1,4 +1,5 @@
 #pragma once
+#include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <asio/io_context.hpp>
 #include <asio/experimental/channel.hpp>
@@ -12,7 +13,7 @@ namespace mcp {
 // ═══════════════════════════════════════════════════════════════════════
 // MessageChannel — wraps asio::experimental::channel for JsonRpcMessage
 // ═══════════════════════════════════════════════════════════════════════
-class MessageChannel {
+class MCP_API MessageChannel {
 public:
     using AsioChannel = asio::experimental::channel<void(asio::error_code, JsonRpcMessage)>;
 
@@ -56,7 +57,7 @@ private:
 // ═══════════════════════════════════════════════════════════════════════
 // ChannelReader — async iterator helper (similar to C# ChannelReader)
 // ═══════════════════════════════════════════════════════════════════════
-class ChannelReader {
+class MCP_API ChannelReader {
 public:
     explicit ChannelReader(MessageChannel& channel) : channel_(channel) {}
 

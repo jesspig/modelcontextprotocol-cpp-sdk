@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/Export.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
@@ -17,7 +18,7 @@
 namespace mcp {
 
 // ── McpServer (对应 C# McpServer) ──
-class McpServer {
+class MCP_API McpServer {
 public:
     // ── Factory ──
     // If io_ctx is provided, use it instead of creating an internal one.

@@ -7,6 +7,7 @@
 // 总包含头 — 引入所有核心类型
 
 // ── 基础 ──
+#include <mcp/Export.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/Methods.hpp>

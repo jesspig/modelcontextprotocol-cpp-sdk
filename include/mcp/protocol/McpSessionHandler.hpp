@@ -1,4 +1,5 @@
 #pragma once
+#include <mcp/Export.hpp>
 #include <mcp/protocol/McpSession.hpp>
 #include <mcp/protocol/IncomingRequestMeta.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
@@ -42,7 +43,7 @@ struct SubscriptionEntry {
 // This is the C++ equivalent of the C# McpSessionHandler class.
 // It handles all message dispatching, request/response correlation,
 // cancellation, and filter pipelines.
-class McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
+class MCP_API McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
 public:
     // Construct with transport, wire codec, and optional filter pipeline
     McpSessionHandler(

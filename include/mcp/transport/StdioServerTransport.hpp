@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/Transport.hpp>
 #include <asio/io_context.hpp>
 #include <atomic>
@@ -8,7 +10,7 @@
 
 namespace mcp {
 
-class StdioServerTransport : public TransportBase {
+class MCP_API StdioServerTransport : public TransportBase {
 public:
     explicit StdioServerTransport(asio::io_context& io_ctx);
     ~StdioServerTransport() override;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/McpTypes.hpp>
 #include <mcp/server/RequestContext.hpp>
 
@@ -10,10 +12,10 @@
 
 namespace mcp {
 
-// ── Extension — base class for pluggable MCP extensions ──
+// ── Extension �?base class for pluggable MCP extensions ──
 // Extensions can contribute tools, resources, methods, and intercept calls.
 // Mimics Python's Extension base class and SEP-2133.
-class Extension {
+class MCP_API Extension {
 public:
     virtual ~Extension() = default;
 
@@ -38,7 +40,7 @@ public:
         return true;
     }
 
-    // Tool call interceptor — can modify params, result, or reject
+    // Tool call interceptor �?can modify params, result, or reject
     // Return true to continue with the next interceptor/handler
     // Return false if the interceptor handled the call completely
     virtual bool InterceptToolCall(
@@ -46,7 +48,7 @@ public:
         CallToolResult& result) { return true; }
 };
 
-// ── ExtensionListResult — response to server/extensions/list ──
+// ── ExtensionListResult �?response to server/extensions/list ──
 struct ExtensionListResult : Result {
     std::vector<std::string> extensions;
 };

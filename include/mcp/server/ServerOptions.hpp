@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/McpTypes.hpp>
@@ -18,7 +20,7 @@ struct CacheableMethod;
 struct CacheHint;
 
 // ── ServerOptions (对应 C# McpServerOptions) ──
-struct ServerOptions {
+struct MCP_API ServerOptions {
     // Server identity
     std::optional<Implementation> server_info;
     std::optional<ServerCapabilities> capabilities;
