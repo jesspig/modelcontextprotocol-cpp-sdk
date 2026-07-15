@@ -6,6 +6,7 @@
 #include <asio/write.hpp>
 
 #ifdef MCP_HAVE_OPENSSL
+#include <asio/ssl.hpp>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #else
@@ -126,41 +127,70 @@ nlohmann::json OAuthClientProvider::HttpPost(
 
     asio::io_context io_ctx;
     asio::ip::tcp::resolver resolver(io_ctx);
-    asio::ip::tcp::socket socket(io_ctx);
+
+    bool use_tls = (url_str.substr(0, 8) == "https://");
+    std::string service = use_tls ? "443" : "80";
+
+    std::string body;
+    for (auto& [key, val] : form_data) {
+        if (!body.empty()) body += "&";
+        body += key + "=" + val;
+    }
+
+    std::string request =
+        "POST " + path + " HTTP/1.1\r\n"
+        "Host: " + host + "\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n" + body;
 
     try {
-        auto endpoints = resolver.resolve(host, "80");
-        asio::connect(socket, endpoints);
+        auto endpoints = resolver.resolve(host, service);
 
-        std::string body;
-        for (auto& [key, val] : form_data) {
-            if (!body.empty()) body += "&";
-            body += key + "=" + val;
+#ifdef MCP_HAVE_OPENSSL
+        if (use_tls) {
+            asio::ssl::context ctx(asio::ssl::context::tls);
+            ctx.set_default_verify_paths();
+            asio::ssl::stream<asio::ip::tcp::socket> ssl_socket(io_ctx, ctx);
+            asio::connect(ssl_socket.lowest_layer(), endpoints);
+            ssl_socket.handshake(asio::ssl::stream_base::client);
+            asio::write(ssl_socket, asio::buffer(request));
+
+            std::string response;
+            asio::error_code ec;
+            while (true) {
+                char buf[4096];
+                size_t len = ssl_socket.read_some(asio::buffer(buf), ec);
+                if (ec) break;
+                response.append(buf, len);
+            }
+
+            auto body_start = response.find("\r\n\r\n");
+            if (body_start == std::string::npos) return {};
+            auto json_str = response.substr(body_start + 4);
+            return nlohmann::json::parse(json_str, nullptr, false);
+        } else
+#endif
+        {
+            asio::ip::tcp::socket socket(io_ctx);
+            asio::connect(socket, endpoints);
+            asio::write(socket, asio::buffer(request));
+
+            std::string response;
+            asio::error_code ec;
+            while (true) {
+                char buf[4096];
+                size_t len = socket.read_some(asio::buffer(buf), ec);
+                if (ec) break;
+                response.append(buf, len);
+            }
+
+            auto body_start = response.find("\r\n\r\n");
+            if (body_start == std::string::npos) return {};
+            auto json_str = response.substr(body_start + 4);
+            return nlohmann::json::parse(json_str, nullptr, false);
         }
-
-        std::string request =
-            "POST " + path + " HTTP/1.1\r\n"
-            "Host: " + host + "\r\n"
-            "Content-Type: application/x-www-form-urlencoded\r\n"
-            "Content-Length: " + std::to_string(body.size()) + "\r\n"
-            "Connection: close\r\n"
-            "\r\n" + body;
-
-        asio::write(socket, asio::buffer(request));
-
-        std::string response;
-        asio::error_code ec;
-        while (true) {
-            char buf[4096];
-            size_t len = socket.read_some(asio::buffer(buf), ec);
-            if (ec) break;
-            response.append(buf, len);
-        }
-
-        auto body_start = response.find("\r\n\r\n");
-        if (body_start == std::string::npos) return {};
-        auto json_str = response.substr(body_start + 4);
-        return nlohmann::json::parse(json_str, nullptr, false);
     } catch (...) {
         return {};
     }
