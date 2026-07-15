@@ -1,6 +1,7 @@
 #pragma once
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 #include <asio/io_context.hpp>
 #include <asio/experimental/channel.hpp>
 #include <system_error>
@@ -32,7 +33,11 @@ public:
     // Send a message into the channel
     void Send(JsonRpcMessage message) {
         channel_.async_send(asio::error_code{}, std::move(message),
-            [](asio::error_code) {});
+            [](asio::error_code ec) {
+                if (ec && ec != asio::error::operation_aborted) {
+                    MCP_BUG("MessageChannel::Send failed");
+                }
+            });
     }
 
     // Close the channel
