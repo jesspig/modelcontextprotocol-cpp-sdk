@@ -27,7 +27,7 @@ inline RequestId request_id_from_json(const nlohmann::json& j) {
 struct ErrorData {
     McpErrorCode code{McpErrorCode::InternalError};
     std::string message;
-    std::optional<nlohmann::json> data;
+    std::optional<nlohmann::json> data = std::nullopt;
 };
 inline void to_json(nlohmann::json& j, const ErrorData& v) {
     j = nlohmann::json::object();
@@ -116,13 +116,17 @@ inline void from_json(const nlohmann::json& j, JsonRpcResponse& v) {
 // ── JsonRpcErrorResponse ──
 struct JsonRpcErrorResponse {
     std::string jsonrpc = "2.0";
-    RequestId id;
+    std::optional<RequestId> id;
     ErrorData error;
 };
 inline void to_json(nlohmann::json& j, const JsonRpcErrorResponse& v) {
     j = nlohmann::json::object();
     j["jsonrpc"] = v.jsonrpc;
-    std::visit([&j](const auto& val) { j["id"] = val; }, v.id);
+    if (v.id) {
+        std::visit([&j](const auto& val) { j["id"] = val; }, *v.id);
+    } else {
+        j["id"] = nullptr;
+    }
     j["error"] = v.error;
 }
 inline void from_json(const nlohmann::json& j, JsonRpcErrorResponse& v) {
@@ -130,7 +134,12 @@ inline void from_json(const nlohmann::json& j, JsonRpcErrorResponse& v) {
     if (v.jsonrpc != "2.0") {
         throw std::runtime_error("invalid JSON-RPC version: " + v.jsonrpc);
     }
-    v.id = request_id_from_json(j.at("id"));
+    auto it = j.find("id");
+    if (it != j.end() && !it->is_null()) {
+        v.id = request_id_from_json(*it);
+    } else {
+        v.id = std::nullopt;
+    }
     v.error = j.at("error").get<ErrorData>();
 }
 

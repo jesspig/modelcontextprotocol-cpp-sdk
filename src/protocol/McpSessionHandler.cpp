@@ -189,40 +189,45 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     }
 
     auto self = shared_from_this();
-    asio::post(io_ctx_, [self, req, future = std::move(future)]() mutable {
+    std::async(std::launch::async, [self, req, future = std::move(future)]() mutable {
         try {
             auto result = future.get();
-            if (self->closed_.load()) return;
+            asio::post(self->io_ctx_, [self, req, result = std::move(result)]() mutable {
+                if (self->closed_.load()) return;
 
-            // Apply outgoing filters for the response
-            JsonRpcResponse resp;
-            resp.id = req.id;
-            resp.result = self->codec_->EncodeResult(req.method, result);
+                JsonRpcResponse resp;
+                resp.id = req.id;
+                resp.result = self->codec_->EncodeResult(req.method, result);
 
-            JsonRpcMessage response_msg{std::move(resp)};
+                JsonRpcMessage response_msg{std::move(resp)};
 
-            if (self->outgoing_filters_) {
-                self->outgoing_filters_->Execute(response_msg,
-                    [self](const JsonRpcMessage& filtered) {
-                        if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
-                    });
-            } else {
-                self->transport_->SendMessageAsync(response_msg);
-            }
+                if (self->outgoing_filters_) {
+                    self->outgoing_filters_->Execute(response_msg,
+                        [self](const JsonRpcMessage& filtered) {
+                            if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
+                        });
+                } else {
+                    self->transport_->SendMessageAsync(response_msg);
+                }
+            });
         } catch (const McpError& e) {
-            if (self->closed_.load()) return;
-            JsonRpcErrorResponse err_resp;
-            err_resp.id = req.id;
-            err_resp.error.code = e.Code();
-            err_resp.error.message = e.what();
-            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            asio::post(self->io_ctx_, [self, req, e]() {
+                if (self->closed_.load()) return;
+                JsonRpcErrorResponse err_resp;
+                err_resp.id = req.id;
+                err_resp.error.code = e.Code();
+                err_resp.error.message = e.what();
+                self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            });
         } catch (const std::exception& e) {
-            if (self->closed_.load()) return;
-            JsonRpcErrorResponse err_resp;
-            err_resp.id = req.id;
-            err_resp.error.code = McpErrorCode::InternalError;
-            err_resp.error.message = std::string("internal error: ") + e.what();
-            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            asio::post(self->io_ctx_, [self, req, e]() {
+                if (self->closed_.load()) return;
+                JsonRpcErrorResponse err_resp;
+                err_resp.id = req.id;
+                err_resp.error.code = McpErrorCode::InternalError;
+                err_resp.error.message = std::string("internal error: ") + e.what();
+                self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            });
         }
     });
 }
@@ -250,7 +255,8 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
 }
 
 void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
-    auto id = GetRequestIdKey(err.id);
+    if (!err.id) return;
+    auto id = GetRequestIdKey(*err.id);
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
     if (it != pending_.end()) {
@@ -342,9 +348,10 @@ std::future<nlohmann::json> McpSessionHandler::SendRequest(
     // Apply outgoing filters for the request
     JsonRpcMessage request_msg{std::move(req)};
     if (outgoing_filters_) {
+        auto self = shared_from_this();
         outgoing_filters_->Execute(request_msg,
-            [this](const JsonRpcMessage& filtered) {
-                if (!closed_.load()) transport_->SendMessageAsync(filtered);
+            [self](const JsonRpcMessage& filtered) {
+                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
             });
     } else {
         transport_->SendMessageAsync(request_msg);
@@ -365,9 +372,10 @@ void McpSessionHandler::SendNotification(std::string_view method, nlohmann::json
 
     JsonRpcMessage msg{std::move(notif)};
     if (outgoing_filters_) {
+        auto self = shared_from_this();
         outgoing_filters_->Execute(msg,
-            [this](const JsonRpcMessage& filtered) {
-                if (!closed_.load()) transport_->SendMessageAsync(filtered);
+            [self](const JsonRpcMessage& filtered) {
+                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
             });
     } else {
         transport_->SendMessageAsync(msg);
@@ -376,9 +384,10 @@ void McpSessionHandler::SendNotification(std::string_view method, nlohmann::json
 
 void McpSessionHandler::SendMessage(JsonRpcMessage message) {
     if (outgoing_filters_) {
+        auto self = shared_from_this();
         outgoing_filters_->Execute(message,
-            [this](const JsonRpcMessage& filtered) {
-                if (!closed_.load()) transport_->SendMessageAsync(filtered);
+            [self](const JsonRpcMessage& filtered) {
+                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
             });
     } else {
         transport_->SendMessageAsync(std::move(message));

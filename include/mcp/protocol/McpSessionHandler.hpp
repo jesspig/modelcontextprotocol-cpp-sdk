@@ -121,7 +121,7 @@ private:
 
     // ── Request/response correlation ──
     static std::string GetRequestIdKey(const RequestId& rid);
-    int64_t next_request_id_ = 1;
+    std::atomic<int64_t> next_request_id_{1};
 
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
