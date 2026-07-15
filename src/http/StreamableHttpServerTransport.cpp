@@ -7,6 +7,10 @@
 
 namespace mcp {
 
+// JSON parse safety limits
+#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
+#define K_MAX_JSON_DEPTH 32
+
 StreamableHttpServerTransport::StreamableHttpServerTransport(
     asio::io_context& io_ctx,
     StreamableHttpServerOptions options)
@@ -98,7 +102,14 @@ void StreamableHttpServerTransport::HandlePost(
     JsonRpcMessage msg;
     nlohmann::json body_json;
     try {
-        body_json = nlohmann::json::parse(req.body);
+        if (req.body.size() > K_MAX_MESSAGE_SIZE) {
+            resp.status_code = 413;
+            resp.status_text = "Payload Too Large";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Message size exceeds maximum allowed size"}})";
+            resp.headers["content-type"] = "application/json";
+            return;
+        }
+        body_json = nlohmann::json::parse(req.body, nullptr, false, K_MAX_JSON_DEPTH);
         msg = body_json.get<JsonRpcMessage>();
     } catch (...) {
         resp.status_code = 400;
@@ -176,9 +187,9 @@ void StreamableHttpServerTransport::HandlePost(
     }
 
     // Check response body for x-mcp-header annotations → Mcp-Param-* headers
-    if (!resp.body.empty()) {
+    if (!resp.body.empty() && resp.body.size() <= K_MAX_MESSAGE_SIZE) {
         try {
-            auto resp_json = nlohmann::json::parse(resp.body);
+            auto resp_json = nlohmann::json::parse(resp.body, nullptr, false, K_MAX_JSON_DEPTH);
             auto meta_it = resp_json.find("_meta");
             if (meta_it != resp_json.end() && meta_it->is_object()) {
                 auto xhc_it = meta_it->find("x-mcp-header");

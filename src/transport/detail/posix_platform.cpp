@@ -3,8 +3,11 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <poll.h>
+#include <pthread.h>
 #include <cstring>
 #include <cerrno>
+#include <cstdint>
 #include <vector>
 
 namespace mcp { namespace detail {
@@ -35,6 +38,16 @@ public:
             fd_ = -1;
         }
     }
+
+    uintptr_t native_handle() const override { return (uintptr_t)fd_; }
+
+    bool WaitForData(int timeout_ms) override {
+        if (fd_ < 0) return false;
+        struct pollfd pfd;
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+        return poll(&pfd, 1, timeout_ms) > 0;
+    }
 };
 
 class PosixProcess : public ProcessHandle {
@@ -46,6 +59,7 @@ public:
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
     int WaitForExit(int timeout_ms) override;
+    uintptr_t native_handle() const override { return (uintptr_t)pid_; }
 };
 
 PosixProcess::~PosixProcess() {
@@ -249,6 +263,29 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     result.stdout_pipe = std::make_unique<PosixPipe>(stdout_pipefd[0]);
     // stderr_pipe: left null (inherited from parent, same as Win32 semantics)
     return result;
+}
+
+std::unique_ptr<PipeHandle> OpenStandardInput() {
+    int fd = dup(STDIN_FILENO);
+    return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
+}
+
+std::unique_ptr<PipeHandle> OpenStandardOutput() {
+    int fd = dup(STDOUT_FILENO);
+    return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
+}
+
+std::unique_ptr<PipeHandle> OpenStandardError() {
+    int fd = dup(STDERR_FILENO);
+    return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
+}
+
+void SetThreadName(const char* name) {
+    // POSIX limits thread names to 16 bytes including null terminator
+    char truncated[16];
+    std::strncpy(truncated, name, sizeof(truncated) - 1);
+    truncated[sizeof(truncated) - 1] = '\0';
+    pthread_setname_np(pthread_self(), truncated);
 }
 
 }} // namespace mcp::detail

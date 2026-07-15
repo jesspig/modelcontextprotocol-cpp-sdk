@@ -31,6 +31,10 @@
 
 namespace mcp {
 
+// JSON parse safety limits
+#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
+#define K_MAX_JSON_DEPTH 32
+
 namespace {
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -409,8 +413,12 @@ private:
         if (evt.event_type == "endpoint") {
             endpoint_url_ = ResolveEndpoint(server_url_, evt.data);
         } else if (evt.event_type == "message" && !evt.data.empty()) {
+            if (evt.data.size() > K_MAX_MESSAGE_SIZE) {
+                NotifyError("message size exceeds maximum allowed size");
+                return;
+            }
             try {
-                auto j = nlohmann::json::parse(evt.data);
+                auto j = nlohmann::json::parse(evt.data, nullptr, false, K_MAX_JSON_DEPTH);
                 JsonRpcMessage msg = j.get<JsonRpcMessage>();
                 EnqueueMessage(std::move(msg));
             } catch (const std::exception& e) {

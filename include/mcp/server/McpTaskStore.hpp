@@ -3,6 +3,7 @@
 #include <mcp/McpTypes.hpp>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 

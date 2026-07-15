@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -12,6 +13,7 @@ struct ProcessHandle {
     virtual bool IsRunning() = 0;
     virtual bool Terminate(int timeout_ms) = 0;
     virtual int WaitForExit(int timeout_ms) = 0;
+    virtual uintptr_t native_handle() const = 0;
 };
 
 // ── Pipe handle abstraction ──
@@ -20,6 +22,8 @@ struct PipeHandle {
     virtual size_t Read(char* buffer, size_t size) = 0;
     virtual size_t Write(const char* data, size_t size) = 0;
     virtual void Close() = 0;
+    virtual uintptr_t native_handle() const = 0;
+    virtual bool WaitForData(int timeout_ms) = 0;
 };
 
 // ── Process startup info ──
@@ -41,5 +45,10 @@ struct CreatedProcess {
 
 // ── Platform-specific factory ──
 CreatedProcess CreateProcess(const ProcessStartInfo& info);
+
+std::unique_ptr<PipeHandle> OpenStandardInput();
+std::unique_ptr<PipeHandle> OpenStandardOutput();
+std::unique_ptr<PipeHandle> OpenStandardError();
+void SetThreadName(const char* name);
 
 }} // namespace mcp::detail

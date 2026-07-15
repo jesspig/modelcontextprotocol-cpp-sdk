@@ -10,6 +10,8 @@
 #include <asio/post.hpp>
 #include <chrono>
 #include <mutex>
+#include <shared_mutex>
+#include <atomic>
 #include <unordered_map>
 #include <memory>
 #include <string>
@@ -124,13 +126,14 @@ private:
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
     bool is_server_;
-    bool running_ = false;
-    bool closed_ = false;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> closed_{false};
     std::string negotiated_version_;
 
     // Handler maps
     std::unordered_map<std::string, RequestHandler> request_handlers_;
     std::unordered_map<std::string, NotificationHandler> notif_handlers_;
+    mutable std::shared_mutex handler_mutex_;
 
     // Pending request tracking (for response/error correlation)
     std::unordered_map<std::string, std::shared_ptr<PendingRequest>> pending_;

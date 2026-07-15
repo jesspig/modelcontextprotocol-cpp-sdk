@@ -1,5 +1,6 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <windows.h>
+#include <processthreadsapi.h>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,10 @@ public:
     size_t Read(char* buffer, size_t size) override;
     size_t Write(const char* data, size_t size) override;
     void Close() override;
+    uintptr_t native_handle() const override { return (uintptr_t)handle_; }
+    bool WaitForData(int timeout_ms) override {
+        return WaitForSingleObject(handle_, timeout_ms) == WAIT_OBJECT_0;
+    }
 };
 
 class Win32Process : public ProcessHandle {
@@ -24,6 +29,7 @@ public:
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
     int WaitForExit(int timeout_ms) override;
+    uintptr_t native_handle() const override { return (uintptr_t)pi_.hProcess; }
 };
 } // anonymous namespace
 
@@ -129,6 +135,33 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     result.stdin_pipe = std::make_unique<Win32Pipe>(stdin_write);
     result.stdout_pipe = std::make_unique<Win32Pipe>(stdout_read);
     return result;
+}
+
+std::unique_ptr<PipeHandle> OpenStandardInput() {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    return std::make_unique<Win32Pipe>(h);
+}
+
+std::unique_ptr<PipeHandle> OpenStandardOutput() {
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    return std::make_unique<Win32Pipe>(h);
+}
+
+std::unique_ptr<PipeHandle> OpenStandardError() {
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    return std::make_unique<Win32Pipe>(h);
+}
+
+void SetThreadName(const char* name) {
+    typedef HRESULT(WINAPI* SetThreadDescriptionFunc)(HANDLE, PCWSTR);
+    auto set_thread_desc = (SetThreadDescriptionFunc)GetProcAddress(
+        GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
+    if (set_thread_desc) {
+        int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+        std::wstring wname(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
+        set_thread_desc(GetCurrentThread(), wname.c_str());
+    }
 }
 
 }} // namespace mcp::detail

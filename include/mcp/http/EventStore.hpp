@@ -3,6 +3,7 @@
 #include <mcp/JsonRpc.hpp>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>

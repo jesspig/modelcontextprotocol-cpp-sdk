@@ -21,6 +21,10 @@
 
 namespace mcp {
 
+// JSON parse safety limits
+#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
+#define K_MAX_JSON_DEPTH 32
+
 namespace {
 
 struct UrlParts {
@@ -207,8 +211,14 @@ private:
                 }
                 // Try to parse as JSON-RPC response and enqueue
                 if (!resp_body.empty()) {
+                    if (resp_body.size() > K_MAX_MESSAGE_SIZE) {
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        return;
+                    }
                     try {
-                        auto j = nlohmann::json::parse(resp_body);
+                        auto j = nlohmann::json::parse(resp_body, nullptr, false, K_MAX_JSON_DEPTH);
                         JsonRpcMessage msg = j.get<JsonRpcMessage>();
                         asio::post(*io_ctx_, [this, msg = std::move(msg)]() {
                             if (channel_) channel_->Send(std::move(msg));
@@ -261,8 +271,9 @@ private:
             }
         }
         if (!data.empty()) {
+            if (data.size() > K_MAX_MESSAGE_SIZE) return;
             try {
-                auto j = nlohmann::json::parse(data);
+                auto j = nlohmann::json::parse(data, nullptr, false, K_MAX_JSON_DEPTH);
                 JsonRpcMessage msg = j.get<JsonRpcMessage>();
                 asio::post(*io_ctx_, [this, msg = std::move(msg)]() {
                     if (channel_) channel_->Send(std::move(msg));

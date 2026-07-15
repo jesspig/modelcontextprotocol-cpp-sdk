@@ -16,6 +16,10 @@
 
 namespace mcp {
 
+// JSON parse safety limits
+#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
+#define K_MAX_JSON_DEPTH 32
+
 StdioServerTransport::StdioServerTransport(asio::io_context& io_ctx)
     : TransportBase(io_ctx)
 {
@@ -93,8 +97,13 @@ void StdioServerTransport::ReadLoop() {
 
             if (line.empty()) continue;
 
+            if (line.size() > K_MAX_MESSAGE_SIZE) {
+                NotifyError("message size exceeds maximum allowed size");
+                continue;
+            }
+
             try {
-                auto j = nlohmann::json::parse(line);
+                auto j = nlohmann::json::parse(line, nullptr, false, K_MAX_JSON_DEPTH);
                 JsonRpcMessage msg = j.get<JsonRpcMessage>();
                 asio::post(IoContext(), [this, msg = std::move(msg)]() {
                     if (!running_) return;

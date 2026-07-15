@@ -20,6 +20,10 @@
 
 namespace mcp {
 
+// JSON parse safety limits
+#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
+#define K_MAX_JSON_DEPTH 32
+
 namespace {
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -248,8 +252,12 @@ void WebSocketTransport::ReadLoop() {
             switch (frame.opcode) {
             case kOpcodeText: {
                 std::string text(frame.payload.begin(), frame.payload.end());
+                if (text.size() > K_MAX_MESSAGE_SIZE) {
+                    NotifyError("message size exceeds maximum allowed size");
+                    break;
+                }
                 try {
-                    auto j = nlohmann::json::parse(text);
+                    auto j = nlohmann::json::parse(text, nullptr, false, K_MAX_JSON_DEPTH);
                     auto parsed = j.get<JsonRpcMessage>();
                     asio::post(*io_ctx_,
                                [this, parsed]() mutable {
