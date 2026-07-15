@@ -5,7 +5,7 @@
 ```bash
 cmake --preset debug                          # Configure (Ninja, Debug)
 cmake --build --preset debug                  # Build
-ctest --preset debug --output-on-failure      # Run all 216 tests
+ctest --preset debug --output-on-failure      # Run all 219 tests
 ctest -R WireCodec                            # Filter single suite
 ctest -R "Conformance" -V                     # Filter group with verbose
 ```
@@ -18,10 +18,23 @@ Presets: `debug`, `release`. Ninja generator only.
 - **Ninja job pools**: compile `min(mem/1500MB, cores-2)`, link `min(mem/4000MB, 2)`. Auto-computed. Override via `MCP_COMPILE_JOBS` / `MCP_LINK_JOBS`.
 - **Compiler auto-detection priority**: clang-cl (if found) → system default. sccache → ccache → none.
 - **lld-link**: auto-detected on Windows MSVC + Ninja; `/lldlink` added automatically.
-- **Out-of-source libs**: `mcp-transport` links `winhttp` on Windows only.
+- **Out-of-source libs**: `mcp-transport` links `winhttp` on Windows only. `mcp-http` also links `winhttp` when WIN32 (StreamableHttpClientTransport).
 - **Dependencies cached per build dir** in `build/<preset>/_deps/`. Do NOT delete `build/` — re-downloading dependencies is expensive.
 - `mcp-core` is INTERFACE (header-only); changing type serialization recompiles everything.
 - **WireCodec version negotiation**: simple string comparison `version >= "2026-07-28"` — version IDs are ISO date strings.
+- **`-DMCP_WERROR=ON`**: applies `/WX` (MSVC) or `-Werror` (GCC/Clang) globally via `mcp-core INTERFACE`. Off by default.
+- **`MCP_API`** (`include/mcp/Export.hpp`): no-op in static builds; marks classes for future DLL/so export when switching to shared libraries.
+
+### PlatformIO cross-platform helpers
+
+`include/mcp/transport/detail/PlatformIO.hpp` provides OS-agnostic wrappers:
+
+- `native_handle()` — get `PipeHandle`/`ProcessHandle` for async I/O
+- `WaitForData()` — block on pipe readability (poll/PipeHandle)
+- `OpenStandardInput/Output/Error()` — cross-platform stdio handles
+- `SetThreadName()` — set thread name for debugging
+
+Implementations: `win32_platform.cpp` (WaitForSingleObject, SetThreadDescription), `posix_platform.cpp` (poll, pthread_setname_np).
 
 ## Architecture
 
@@ -46,13 +59,14 @@ ITransport —— TransportBase (3-state: Initial→Connected→Disconnected)
   ├── StdioServerTransport
   ├── InMemoryTransportImpl
   ├── StreamableHttpServerTransport (+ IStatelessTransport)
-  └── WebSocketTransport
+  ├── WebSocketTransport
+  └── StreamableHttpSessionTransport (internal, via StreamableHttpClientTransport)
 
 IClientTransport (connection factory)
   ├── StdioClientTransport
   ├── SseClientTransport
-  ├── StreamableHttpClientTransport
-  └── WebSocketClientTransport
+  ├── StreamableHttpClientTransport (Windows-only; CMake if(WIN32) + winhttp)
+  └── WebSocketClientTransport (supports wss:// with OpenSSL)
 ```
 
 New code use `ITransport`/`TransportBase`/`IClientTransport`. Old `Transport`/`ClientTransport` in `Transport.hpp` are deprecated.
@@ -79,7 +93,7 @@ New code use `ITransport`/`TransportBase`/`IClientTransport`. Old `Transport`/`C
 
 ## Testing
 
-**216 tests** — Google Test v1.15.2 (auto-fetched).
+**219 tests** — Google Test v1.15.2 (auto-fetched).
 
 | Suite | CMake Target | Location | Purpose |
 |-------|-------------|----------|---------|
@@ -89,11 +103,16 @@ New code use `ITransport`/`TransportBase`/`IClientTransport`. Old `Transport`/`C
 | `McpServerTest` | `mcp-server-tests` | `tests/unit/` | Registration, capabilities |
 | `McpClientTest` | `mcp-client-tests` | `tests/unit/` | Client creation, tool cache |
 | `OAuthTest` | `mcp-oauth-tests` | `tests/unit/` | PKCE, token cache |
-| `TransportTest` | `mcp-transport-tests` | `tests/unit/` | InMemory transport |
+| `TransportTest` | `mcp-transport-tests` | `tests/unit/` | InMemory transport, state machine, error propagation |
 | `Conformance` | `mcp-conformance-tests` | `tests/conformance/` | 122 MCP spec compliance tests |
 | `Integration` | `mcp-integration-tests` | `tests/integration/` | Client-server round-trip |
 
 Run a single target: `cmake --build --preset debug --target mcp-core-tests`
+
+### Test notes
+
+- `TransportTest` uses `dynamic_cast<TransportBase*>` on `InMemoryTransport::CreatePair()` returned `ITransport` pointers to test state machine and error propagation directly.
+- `InMemoryTransport` is synchronous — messages are delivered when io_context runs (not on SendMessageAsync).
 
 ## CI
 
@@ -105,6 +124,8 @@ CI (`ci.yml`) runs on `develop` branch only — both push and PR. Docs (`docs.ym
 - **`Protocol.hpp` name collision**: `include/mcp/Protocol.hpp` redirects to `include/mcp/protocol/Protocol.hpp`. Prefer `<mcp/protocol/McpSessionHandler.hpp>`.
 - **All types in `McpTypes.hpp`**: `Result.hpp`, `Progress.hpp`, etc. were consolidated; everything lives in `McpTypes.hpp`.
 - **Don't delete `build/`**: Dependencies cached in `build/<preset>/_deps/`. Deleting forces re-download of asio, nlohmann-json, googletest.
+- **`StreamableHttpClientTransport.cpp` is Windows-only**: guarded with `#ifdef _WIN32` and CMake `if(WIN32)`. Requires `winhttp.h`.
+- **`InMemoryTransport::CreatePair()`** returns `std::shared_ptr<ITransport>`, not the concrete `InMemoryTransportImpl`. Use `dynamic_cast<TransportBase*>` to access state machine (GetState, SetOnClose, etc.).
 
 ## Dependencies
 
@@ -115,7 +136,7 @@ All fetched automatically via `FetchContent`:
 | asio | 1.30.2 | Header-only; manual INTERFACE target (no upstream CMakeLists.txt) |
 | nlohmann-json | 3.11.3 | SYSTEM, shallow fetch |
 | GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Optional; OAuth PKCE (`MCP_HAVE_OPENSSL`) |
+| OpenSSL | system | Optional; OAuth PKCE + WebSocket wss:// (`MCP_HAVE_OPENSSL`) |
 
 ## Commits
 
