@@ -80,47 +80,6 @@ public:
     virtual std::shared_ptr<ITransport> Connect() = 0;
 };
 
-// ═══════════════════════════════════════════════════════════════════════
-// Transport — backward-compatible base class (pre-refactoring name)
-// ═══════════════════════════════════════════════════════════════════════
-// Inherits ITransport and provides the pre-refactoring interface:
-// Start(), IoContext(), NotifyClose/NotifyError helpers, callback storage.
-// New implementations should prefer ITransport or TransportBase.
-class MCP_API Transport : public ITransport {
-public:
-    virtual ~Transport() = default;
-
-    // Transport-specific additions (not part of ITransport)
-    virtual void Start() = 0;
-    virtual asio::io_context& IoContext() = 0;
-
-    // ITransport defaults
-    std::string_view SessionId() const override { return {}; }
-    bool IsStateless() const override { return false; }
-
-    // Backward-compatible inner typedef
-    using MessageChannel = mcp::MessageChannel;
-
-    // Callbacks
-    void SetOnClose(std::function<void()> cb) { on_close_ = std::move(cb); }
-    void SetOnError(std::function<void(std::string_view)> cb) { on_error_ = std::move(cb); }
-
-protected:
-    void NotifyClose() { if (on_close_) on_close_(); }
-    void NotifyError(std::string_view msg) { if (on_error_) on_error_(msg); }
-
-    std::function<void()> on_close_;
-    std::function<void(std::string_view)> on_error_;
-};
-
-// ═══════════════════════════════════════════════════════════════════════
-// ClientTransport — backward-compatible base class
-// ═══════════════════════════════════════════════════════════════════════
-class MCP_API ClientTransport : public IClientTransport {
-public:
-    ~ClientTransport() override = default;
-};
-
 // TransportBase inline implementation
 inline TransportBase::TransportBase(asio::io_context& io_ctx) : io_ctx_(io_ctx) {}
 inline TransportBase::~TransportBase() = default;

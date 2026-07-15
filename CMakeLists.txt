@@ -72,10 +72,8 @@ set_property(TARGET mcp-transport PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BA
 # ====================================================================
 add_library(mcp-protocol STATIC)
 target_sources(mcp-protocol PRIVATE
-    src/protocol/Protocol.cpp
     src/protocol/WireCodec.cpp
-    src/protocol/McpSessionHandler.cpp
-    src/protocol/ClientResponseCache.cpp)
+    src/protocol/McpSessionHandler.cpp)
 target_link_libraries(mcp-protocol PUBLIC mcp-transport)
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -104,6 +102,7 @@ target_link_libraries(mcp-client PUBLIC mcp-protocol)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
     target_compile_definitions(mcp-client PRIVATE MCP_HAVE_OPENSSL)
+    target_compile_definitions(mcp-transport PRIVATE MCP_HAVE_OPENSSL)
 endif()
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
