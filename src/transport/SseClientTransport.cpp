@@ -107,6 +107,8 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
 struct SseEvent {
     std::string event_type;
     std::string data;
+    std::string id;
+    std::optional<int> retry;
 };
 
 SseEvent ParseSseEvent(const std::string& block) {
@@ -137,6 +139,25 @@ SseEvent ParseSseEvent(const std::string& block) {
             else val.clear();
             if (!evt.data.empty()) evt.data += "\n";
             evt.data += val;
+        }
+        // id:<spaces?>value
+        else if (line.size() > 3 && line.compare(0, 3, "id:") == 0) {
+            auto val = line.substr(3);
+            auto n = val.find_first_not_of(" \t");
+            if (n != std::string::npos) val = val.substr(n);
+            else val.clear();
+            evt.id = std::move(val);
+        }
+        // retry:<spaces?>value
+        else if (line.size() > 6 && line.compare(0, 6, "retry:") == 0) {
+            auto val = line.substr(6);
+            auto n = val.find_first_not_of(" \t");
+            if (n != std::string::npos) val = val.substr(n);
+            try {
+                evt.retry = std::stoi(val);
+            } catch (...) {
+                // ignore invalid retry value
+            }
         }
     }
     return evt;
@@ -185,6 +206,7 @@ public:
         sse_thread_ = std::thread([this] { SseReadLoop(); });
         send_thread_ = std::thread([this] { SendLoop(); });
         io_thread_ = std::thread([this]() { io_ctx_->run(); });
+        SetConnected();
     }
 
     void Close() override {
@@ -202,6 +224,15 @@ public:
         if (hGetRequest_) {
             WinHttpCloseHandle(hGetRequest_);
             hGetRequest_ = nullptr;
+        }
+        // Clean up cached POST handles
+        if (post_connect_) {
+            WinHttpCloseHandle(post_connect_);
+            post_connect_ = nullptr;
+        }
+        if (post_session_) {
+            WinHttpCloseHandle(post_session_);
+            post_session_ = nullptr;
         }
         if (hConnect_) {
             WinHttpCloseHandle(hConnect_);
@@ -410,6 +441,10 @@ private:
     void DispatchSseEvent(const std::string& block) {
         auto evt = ParseSseEvent(block);
 
+        // Store last event ID for reconnection
+        if (!evt.id.empty())
+            last_event_id_ = evt.id;
+
         if (evt.event_type == "endpoint") {
             endpoint_url_ = ResolveEndpoint(server_url_, evt.data);
         } else if (evt.event_type == "message" && !evt.data.empty()) {
@@ -464,34 +499,33 @@ private:
         }
 
 #ifdef _WIN32
-        HINTERNET hSession = WinHttpOpen(
-            L"MCP-SSE-Client/1.0",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession) return;
+        // Lazily initialize cached WinHTTP handles for POST
+        if (!post_session_) {
+            post_session_ = WinHttpOpen(
+                L"MCP-SSE-Client/1.0",
+                WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                WINHTTP_NO_PROXY_NAME,
+                WINHTTP_NO_PROXY_BYPASS, 0);
+            if (!post_session_) return;
+            WinHttpSetTimeouts(post_session_, 5000, 5000, 5000, 30000);
+        }
 
         auto w_host = ToWide(ep.host.empty() ? url_.host : ep.host);
         auto w_path = ToWide(ep.path.empty() ? "/" : ep.path);
         uint16_t port = ep.port ? ep.port : url_.port;
 
-        HINTERNET hConnect = WinHttpConnect(hSession, w_host.c_str(), port, 0);
-        if (!hConnect) {
-            WinHttpCloseHandle(hSession);
-            return;
+        if (!post_connect_) {
+            post_connect_ = WinHttpConnect(post_session_, w_host.c_str(), port, 0);
+            if (!post_connect_) return;
         }
 
         DWORD flags = ((ep.scheme == "https") || (url_.scheme == "https"))
                           ? WINHTTP_FLAG_SECURE
                           : 0;
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", w_path.c_str(),
+        HINTERNET hRequest = WinHttpOpenRequest(post_connect_, L"POST", w_path.c_str(),
                                                  nullptr, WINHTTP_NO_REFERER,
                                                  WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-        if (!hRequest) {
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return;
-        }
+        if (!hRequest) return;
 
         static const wchar_t ct_hdr[] = L"Content-Type: application/json\r\n";
         WinHttpAddRequestHeaders(hRequest, ct_hdr,
@@ -516,8 +550,6 @@ private:
         }
 
         WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
 #else
         (void)ep;
         try {
@@ -535,6 +567,7 @@ private:
     std::string server_url_;
     std::string name_;
     std::string endpoint_url_;
+    std::string last_event_id_;
     UrlComponents url_;
 
 #ifdef _WIN32
@@ -542,6 +575,9 @@ private:
     HINTERNET hSession_ = nullptr;
     HINTERNET hConnect_ = nullptr;
     HINTERNET hGetRequest_ = nullptr;
+    // Cached WinHTTP handles for POST (send path)
+    HINTERNET post_session_ = nullptr;
+    HINTERNET post_connect_ = nullptr;
 #else
     // asio socket for SSE streaming (owned by SseReadLoop)
     std::shared_ptr<asio::ip::tcp::socket> sse_socket_;
