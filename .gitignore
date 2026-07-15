@@ -37,16 +37,23 @@ Release/
 x64/
 Win32/
 
-# ── FASTBuild ──
-.fastbuild-cache/
-*.fdbuildstate
+# ── Shared dependency cache ──
+.cache/
 
-# ── Dependency downloads ──
+# ── Dependency downloads (legacy, inside build dir) ──
 _deps/
 
 # ── Documentation ──
 docs/_site/
 docs/.doxygen/
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/package-lock.json
+
+
+# ── Test output artifacts ──
+Testing/
 
 # ── OS files ──
 Thumbs.db

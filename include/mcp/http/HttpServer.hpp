@@ -1,0 +1,89 @@
+#pragma once
+
+#include <mcp/JsonRpc.hpp>
+
+#include <asio/io_context.hpp>
+#include <asio/ip/tcp.hpp>
+
+#include <chrono>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace mcp {
+
+// ── HTTP request / response ──
+struct HttpRequest {
+    std::string method;      // GET, POST
+    std::string path;
+    std::unordered_map<std::string, std::string> headers;
+    std::string body;
+};
+
+struct HttpResponse {
+    int status_code{200};
+    std::string status_text{"OK"};
+    std::unordered_map<std::string, std::string> headers;
+    std::string body;
+    bool is_sse{false};  // if true, body is ignored and SSE stream is used
+};
+
+// ── HTTP handler callback ──
+using HttpHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
+
+// ── HttpServer — minimal asio-based HTTP server ──
+// Handles GET and POST. Supports SSE streaming via callback.
+class HttpServer {
+public:
+    HttpServer(asio::io_context& io_ctx, uint16_t port);
+    ~HttpServer();
+
+    // Start accepting connections
+    void Start();
+
+    // Stop the server
+    void Stop();
+
+    // Set handler for a specific path + method
+    void SetHandler(std::string_view method, std::string_view path,
+                    HttpHandler handler);
+
+    // Send SSE event to a connected SSE client
+    // (for server-initiated notifications)
+    using SseClientId = uint64_t;
+    SseClientId AddSseClient(std::function<void(std::string_view)> send_fn);
+    void RemoveSseClient(SseClientId id);
+    void BroadcastSse(std::string_view event);
+
+private:
+    void DoAccept();
+    void HandleConnection(std::shared_ptr<asio::ip::tcp::socket> socket);
+
+    // Parse HTTP request from socket
+    bool ParseRequest(std::shared_ptr<asio::ip::tcp::socket> socket,
+                      HttpRequest& req);
+
+    // Send HTTP response
+    void SendResponse(std::shared_ptr<asio::ip::tcp::socket> socket,
+                      const HttpResponse& resp);
+
+    asio::io_context& io_ctx_;
+    asio::ip::tcp::acceptor acceptor_;
+    uint16_t port_;
+    bool running_{false};
+
+    // Handlers: (method, path) → handler
+    std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;
+
+    // SSE clients
+    std::unordered_map<SseClientId, std::function<void(std::string_view)>> sse_clients_;
+    SseClientId next_sse_id_{1};
+    std::mutex sse_mutex_;
+};
+
+} // namespace mcp
