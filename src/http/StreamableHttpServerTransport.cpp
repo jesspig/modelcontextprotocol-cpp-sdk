@@ -1,5 +1,6 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/Methods.hpp>
+#include <mcp/Log.hpp>
 
 #include <asio/post.hpp>
 
@@ -114,6 +115,7 @@ void StreamableHttpServerTransport::HandlePost(
         body_json = nlohmann::json::parse(req.body, nullptr, false, false);
         msg = body_json.get<JsonRpcMessage>();
     } catch (...) {
+        MCP_LOG(Warning, "request body parse failed");
         resp.status_code = 400;
         resp.status_text = "Bad Request";
         resp.body = R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}})";
@@ -246,7 +248,7 @@ void StreamableHttpServerTransport::HandlePost(
                     }
                 }
             }
-        } catch (...) {}
+        } catch (...) { MCP_LOG(Warning, "response meta parse failed"); }
     }
 }
 

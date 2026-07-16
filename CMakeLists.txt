@@ -116,8 +116,8 @@ target_sources(mcp-http PRIVATE
     src/http/HttpServer.cpp
     src/http/EventStore.cpp
     src/http/StreamableHttpServerTransport.cpp)
+target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
 if(WIN32)
-    target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
 target_link_libraries(mcp-http PUBLIC mcp-transport)
