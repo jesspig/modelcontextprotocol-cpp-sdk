@@ -1,10 +1,13 @@
 #pragma once
 
+#include "Url.hpp"
+
 #include <asio/connect.hpp>
 #include <asio/ip/tcp.hpp>
 #include <asio/read.hpp>
 #include <asio/write.hpp>
 
+#include <sys/socket.h>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -13,41 +16,25 @@
 namespace mcp { namespace detail {
 
 inline std::string HttpGet(asio::io_context& io_ctx, const std::string& url) {
-    // Parse URL
-    auto sp = url.find("://");
-    if (sp == std::string::npos)
-        throw std::invalid_argument("Invalid URL: " + url);
-    auto scheme = url.substr(0, sp);
-    auto hs = sp + 3;
-    auto ps = url.find('/', hs);
-    std::string host, path;
-    uint16_t port = 0;
-    if (ps != std::string::npos) {
-        auto hp = url.substr(hs, ps - hs);
-        path = url.substr(ps);
-        auto col = hp.find(':');
-        if (col != std::string::npos) {
-            host = hp.substr(0, col);
-            port = static_cast<uint16_t>(std::stoul(hp.substr(col + 1)));
-        } else {
-            host = hp;
-            port = (scheme == "https") ? 443 : 80;
-        }
-    } else {
-        host = url.substr(hs);
-        path = "/";
-        port = (scheme == "https") ? 443 : 80;
-    }
+    auto u = ParseUrl(url);
 
     asio::ip::tcp::resolver resolver(io_ctx);
     asio::ip::tcp::socket socket(io_ctx);
 
-    auto endpoints = resolver.resolve(host, std::to_string(port));
+    auto endpoints = resolver.resolve(u.host, std::to_string(u.port));
     asio::connect(socket, endpoints);
 
+    {
+        struct timeval tv;
+        tv.tv_sec = 30;
+        tv.tv_usec = 0;
+        setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(socket.native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+
     std::string request =
-        "GET " + path + " HTTP/1.1\r\n"
-        "Host: " + host + "\r\n"
+        "GET " + u.path + " HTTP/1.1\r\n"
+        "Host: " + u.host + "\r\n"
         "Connection: close\r\n"
         "\r\n";
 
@@ -84,40 +71,25 @@ inline std::string HttpPost(
     const std::string& body,
     const std::string& content_type = "application/json")
 {
-    auto sp = url.find("://");
-    if (sp == std::string::npos)
-        throw std::invalid_argument("Invalid URL: " + url);
-    auto scheme = url.substr(0, sp);
-    auto hs = sp + 3;
-    auto ps = url.find('/', hs);
-    std::string host, path;
-    uint16_t port = 0;
-    if (ps != std::string::npos) {
-        auto hp = url.substr(hs, ps - hs);
-        path = url.substr(ps);
-        auto col = hp.find(':');
-        if (col != std::string::npos) {
-            host = hp.substr(0, col);
-            port = static_cast<uint16_t>(std::stoul(hp.substr(col + 1)));
-        } else {
-            host = hp;
-            port = (scheme == "https") ? 443 : 80;
-        }
-    } else {
-        host = url.substr(hs);
-        path = "/";
-        port = (scheme == "https") ? 443 : 80;
-    }
+    auto u = ParseUrl(url);
 
     asio::ip::tcp::resolver resolver(io_ctx);
     asio::ip::tcp::socket socket(io_ctx);
 
-    auto endpoints = resolver.resolve(host, std::to_string(port));
+    auto endpoints = resolver.resolve(u.host, std::to_string(u.port));
     asio::connect(socket, endpoints);
 
+    {
+        struct timeval tv;
+        tv.tv_sec = 30;
+        tv.tv_usec = 0;
+        setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(socket.native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+
     std::string request =
-        "POST " + path + " HTTP/1.1\r\n"
-        "Host: " + host + "\r\n"
+        "POST " + u.path + " HTTP/1.1\r\n"
+        "Host: " + u.host + "\r\n"
         "Content-Type: " + content_type + "\r\n"
         "Content-Length: " + std::to_string(body.size()) + "\r\n"
         "Connection: close\r\n"

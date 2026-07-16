@@ -18,6 +18,14 @@ enum class McpErrorCode : int32_t {
     ConnectionClosed = -32000,
     RequestTimeout = -32001,
     RequestCancelled = -32800,
+
+    // ── 细粒度错误子分类 ──
+    DeserializeFailed = -32002,     // 反序列化失败
+    ConnectionRefused = -32003,     // 连接被拒绝
+    TlsHandshakeFailed = -32004,    // TLS 握手失败
+    ProtocolViolation = -32005,     // 协议违规（消息格式等）
+    TaskNotFound = -32006,          // 任务未找到
+    HandlerError = -32007,          // 用户 handler 抛出异常
 };
 
 // Enable std::error_code integration
@@ -49,6 +57,12 @@ public:
             case McpErrorCode::ConnectionClosed: return "Connection closed";
             case McpErrorCode::RequestTimeout: return "Request timeout";
             case McpErrorCode::RequestCancelled: return "Request cancelled";
+            case McpErrorCode::DeserializeFailed: return "Deserialize failed";
+            case McpErrorCode::ConnectionRefused: return "Connection refused";
+            case McpErrorCode::TlsHandshakeFailed: return "TLS handshake failed";
+            case McpErrorCode::ProtocolViolation: return "Protocol violation";
+            case McpErrorCode::TaskNotFound: return "Task not found";
+            case McpErrorCode::HandlerError: return "Handler error";
             default: return "Unknown MCP error";
         }
     }
@@ -56,9 +70,16 @@ public:
         switch (static_cast<McpErrorCode>(ev)) {
             case McpErrorCode::ConnectionClosed:
             case McpErrorCode::RequestTimeout:
+            case McpErrorCode::ConnectionRefused:
+            case McpErrorCode::TlsHandshakeFailed:
                 return std::errc::connection_aborted;
             case McpErrorCode::InternalError:
+            case McpErrorCode::DeserializeFailed:
+            case McpErrorCode::ProtocolViolation:
+            case McpErrorCode::HandlerError:
                 return std::errc::io_error;
+            case McpErrorCode::TaskNotFound:
+                return std::errc::no_such_process;
             default:
                 return std::error_condition(ev, *this);
         }
