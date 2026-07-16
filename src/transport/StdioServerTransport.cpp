@@ -1,5 +1,6 @@
 #include <mcp/transport/StdioServerTransport.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 
 #include <asio/post.hpp>
 #include <nlohmann/json.hpp>
@@ -82,6 +83,7 @@ void StdioServerTransport::ReadLoop() {
                     if (channel_) channel_->Send(std::move(msg));
                 });
             } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("stdio parse error: ") + e.what());
                 NotifyError(e.what());
             }
         }

@@ -91,7 +91,6 @@ int Win32Process::WaitForExit(int timeout_ms) {
 
 // Factory implementation
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
-    // Build command line
     std::string cmd_line = "cmd.exe /c \"" + info.command;
     for (const auto& arg : info.arguments) {
         cmd_line += " " + arg;
@@ -104,11 +103,16 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     sa.lpSecurityDescriptor = nullptr;
 
     HANDLE stdout_read = nullptr, stdout_write = nullptr;
-    CreatePipe(&stdout_read, &stdout_write, &sa, 0);
+    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
+        return CreatedProcess{};
     SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
 
     HANDLE stdin_read = nullptr, stdin_write = nullptr;
-    CreatePipe(&stdin_read, &stdin_write, &sa, 0);
+    if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0)) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        return CreatedProcess{};
+    }
     SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOA si = {};
@@ -118,17 +122,44 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     si.hStdInput = stdin_read;
     si.dwFlags |= STARTF_USESTDHANDLES;
 
+    // Build environment block
+    void* env_block = nullptr;
+    std::string env_block_str;
+    if (!info.environment_variables.empty() || !info.inherit_environment) {
+        if (info.inherit_environment) {
+            LPCH cur_env = GetEnvironmentStrings();
+            if (cur_env) {
+                LPCH end = cur_env;
+                while (*end || *(end + 1)) ++end;
+                env_block_str = std::string(cur_env, end - cur_env + 2);
+                FreeEnvironmentStrings(cur_env);
+            }
+        }
+        for (const auto& [key, val] : info.environment_variables) {
+            env_block_str += key + "=" + val + '\0';
+        }
+        env_block_str += '\0';
+        env_block = static_cast<void*>(env_block_str.data());
+    }
+
     PROCESS_INFORMATION pi = {};
     std::vector<char> cmd_buf(cmd_line.begin(), cmd_line.end());
     cmd_buf.push_back('\0');
 
     LPCSTR work_dir = info.working_directory.empty() ? nullptr : info.working_directory.c_str();
 
-    CreateProcessA(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
-                   CREATE_NO_WINDOW, nullptr, work_dir, &si, &pi);
+    BOOL success = CreateProcessA(
+        nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, env_block, work_dir, &si, &pi);
 
     CloseHandle(stdin_read);
     CloseHandle(stdout_write);
+
+    if (!success) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdin_write);
+        return CreatedProcess{};
+    }
 
     CreatedProcess result;
     result.process = std::make_unique<Win32Process>(pi);

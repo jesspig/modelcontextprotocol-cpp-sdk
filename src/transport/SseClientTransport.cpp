@@ -1,4 +1,6 @@
 #include <mcp/transport/SseClientTransport.hpp>
+#include <mcp/transport/detail/Url.hpp>
+#include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/JsonRpc.hpp>
 
 #include <asio/experimental/channel.hpp>
@@ -13,6 +15,10 @@
 #include <asio/ip/tcp.hpp>
 #include <asio/read.hpp>
 #include <asio/write.hpp>
+#ifdef MCP_HAVE_OPENSSL
+#include <asio/ssl.hpp>
+#endif
+#include <sys/socket.h>
 #endif
 
 #include <atomic>
@@ -41,48 +47,12 @@ namespace {
 // URL parsing helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-struct UrlComponents {
-    std::string scheme;
-    std::string host;
-    uint16_t port = 0;
-    std::string path;
-};
-
-UrlComponents ParseUrl(const std::string& url) {
-    UrlComponents c;
-    auto scheme_pos = url.find("://");
-    if (scheme_pos == std::string::npos) return c;
-
-    c.scheme = url.substr(0, scheme_pos);
-    auto host_start = scheme_pos + 3;
-    auto path_start = url.find('/', host_start);
-
-    std::string host_port;
-    if (path_start != std::string::npos) {
-        host_port = url.substr(host_start, path_start - host_start);
-        c.path = url.substr(path_start);
-    } else {
-        host_port = url.substr(host_start);
-        c.path = "/";
-    }
-
-    auto colon = host_port.find(':');
-    if (colon != std::string::npos) {
-        c.host = host_port.substr(0, colon);
-        c.port = static_cast<uint16_t>(std::stoul(host_port.substr(colon + 1)));
-    } else {
-        c.host = host_port;
-        c.port = (c.scheme == "https") ? 443 : 80;
-    }
-    return c;
-}
-
 std::string ResolveEndpoint(const std::string& server_url, const std::string& endpoint) {
     // Already absolute
     if (endpoint.find("://") != std::string::npos)
         return endpoint;
 
-    auto srv = ParseUrl(server_url);
+    auto srv = detail::ParseUrl(server_url);
     std::string base = srv.scheme + "://" + srv.host;
     if (!((srv.scheme == "https" && srv.port == 443) ||
           (srv.scheme == "http" && srv.port == 80)))
@@ -202,7 +172,7 @@ public:
         if (running_.exchange(true))
             return;
 
-        url_ = ParseUrl(server_url_);
+        url_ = detail::ParseUrl(server_url_);
         sse_thread_ = std::thread([this] { SseReadLoop(); });
         send_thread_ = std::thread([this] { SendLoop(); });
         io_thread_ = std::thread([this]() { io_ctx_->run(); });
@@ -244,6 +214,13 @@ public:
         }
 #else
         // Close SSE socket — unblocks read_some in SseReadLoop
+#ifdef MCP_HAVE_OPENSSL
+        if (ssl_sse_socket_) {
+            asio::error_code ec;
+            ssl_sse_socket_->lowest_layer().close(ec);
+            ssl_sse_socket_.reset();
+        }
+#endif
         if (sse_socket_) {
             asio::error_code ec;
             sse_socket_->close(ec);
@@ -376,6 +353,23 @@ private:
                                               std::to_string(url_.port));
             asio::connect(*sse_socket_, endpoints);
 
+#ifdef MCP_HAVE_OPENSSL
+            if (url_.scheme == "https") {
+                ssl_sse_socket_ = std::make_unique<asio::ssl::stream<asio::ip::tcp::socket&>>(
+                    *sse_socket_, ssl_ctx_);
+                ssl_ctx_.set_default_verify_paths();
+                ssl_sse_socket_->handshake(asio::ssl::stream_base::client);
+            }
+#endif
+
+            {
+                struct timeval tv;
+                tv.tv_sec = 30;
+                tv.tv_usec = 0;
+                setsockopt(sse_socket_->native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                           &tv, sizeof(tv));
+            }
+
             std::string request =
                 "GET " + url_.path + " HTTP/1.1\r\n"
                 "Host: " + url_.host + "\r\n"
@@ -383,14 +377,25 @@ private:
                 "Connection: keep-alive\r\n"
                 "\r\n";
 
-            asio::write(*sse_socket_, asio::buffer(request));
+#ifdef MCP_HAVE_OPENSSL
+            if (ssl_sse_socket_) {
+                asio::write(*ssl_sse_socket_, asio::buffer(request));
+            } else
+#endif
+            {
+                asio::write(*sse_socket_, asio::buffer(request));
+            }
 
             // Read response headers
             asio::error_code ec;
             std::string header_buf;
             while (running_) {
                 char c = 0;
-                size_t n = sse_socket_->read_some(asio::buffer(&c, 1), ec);
+                size_t n =
+#ifdef MCP_HAVE_OPENSSL
+                    ssl_sse_socket_ ? ssl_sse_socket_->read_some(asio::buffer(&c, 1), ec) :
+#endif
+                    sse_socket_->read_some(asio::buffer(&c, 1), ec);
                 if (ec || n == 0) break;
                 header_buf += c;
                 if (header_buf.size() >= 4 &&
@@ -408,7 +413,11 @@ private:
             std::string buffer;
             while (running_) {
                 char chunk[4096];
-                size_t len = sse_socket_->read_some(asio::buffer(chunk), ec);
+                size_t len =
+#ifdef MCP_HAVE_OPENSSL
+                    ssl_sse_socket_ ? ssl_sse_socket_->read_some(asio::buffer(chunk), ec) :
+#endif
+                    sse_socket_->read_some(asio::buffer(chunk), ec);
                 if (ec) break;
 
                 buffer.append(chunk, len);
@@ -425,6 +434,9 @@ private:
                 NotifyError(std::string("SSE read error: ") + e.what());
         }
 
+#ifdef MCP_HAVE_OPENSSL
+        ssl_sse_socket_.reset();
+#endif
         sse_socket_.reset();
 #endif
 
@@ -493,10 +505,10 @@ private:
     }
 
     void DoPost(const std::string& body) {
-        auto ep = ParseUrl(endpoint_url_);
+        auto ep = detail::ParseUrl(endpoint_url_);
         if (ep.host.empty()) {
             endpoint_url_ = ResolveEndpoint(server_url_, endpoint_url_);
-            ep = ParseUrl(endpoint_url_);
+            ep = detail::ParseUrl(endpoint_url_);
         }
 
 #ifdef _WIN32
@@ -569,7 +581,7 @@ private:
     std::string name_;
     std::string endpoint_url_;
     std::string last_event_id_;
-    UrlComponents url_;
+    detail::UrlParts url_;
 
 #ifdef _WIN32
     // WinHTTP handles (owned by SseReadLoop)
@@ -581,6 +593,10 @@ private:
     HINTERNET post_connect_ = nullptr;
 #else
     // asio socket + io_context for SSE streaming (owned by SseReadLoop)
+#ifdef MCP_HAVE_OPENSSL
+    asio::ssl::context ssl_ctx_{asio::ssl::context::tlsv12_client};
+    std::unique_ptr<asio::ssl::stream<asio::ip::tcp::socket&>> ssl_sse_socket_;
+#endif
     std::shared_ptr<asio::ip::tcp::socket> sse_socket_;
     std::shared_ptr<asio::io_context> sse_ctx_;
 #endif

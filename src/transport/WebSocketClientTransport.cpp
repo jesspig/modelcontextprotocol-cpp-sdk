@@ -1,5 +1,7 @@
 #include <mcp/transport/WebSocketClientTransport.hpp>
+#include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 
 #include <asio/connect.hpp>
 #include <asio/ip/tcp.hpp>
@@ -217,9 +219,18 @@ void WebSocketTransport::Start() {
         return;
 
     SetConnected();
-    read_thread_ = std::thread([this] { ReadLoop(); });
-    write_thread_ = std::thread([this] { WriteLoop(); });
-    io_thread_ = std::thread([this] { io_ctx_->run(); });
+    read_thread_ = std::thread([this] {
+        detail::SetThreadName("mcp-worker");
+        ReadLoop();
+    });
+    write_thread_ = std::thread([this] {
+        detail::SetThreadName("mcp-worker");
+        WriteLoop();
+    });
+    io_thread_ = std::thread([this] {
+        detail::SetThreadName("mcp-worker");
+        io_ctx_->run();
+    });
 }
 
 void WebSocketTransport::Close() {
@@ -295,6 +306,7 @@ void WebSocketTransport::ReadLoop() {
                                        channel_->Send(std::move(parsed));
                                });
                 } catch (const std::exception& e) {
+                    MCP_LOG(Error, std::string("WebSocket parse error: ") + e.what());
                     NotifyError(std::string("WebSocket parse error: ") +
                                 e.what());
                 }
@@ -304,8 +316,7 @@ void WebSocketTransport::ReadLoop() {
                 // Echo close
                 try {
                     WriteFrame(socket_, kOpcodeClose, "");
-                } catch (...) {
-                }
+                } catch (...) { MCP_LOG(Warning, "WebSocket close frame write failed"); }
                 running_ = false;
                 {
                     std::lock_guard<std::mutex> lk(write_mutex_);
@@ -321,8 +332,7 @@ void WebSocketTransport::ReadLoop() {
                     WriteFrame(socket_, kOpcodePong,
                                std::string(frame.payload.begin(),
                                            frame.payload.end()));
-                } catch (...) {
-                }
+                } catch (...) { MCP_LOG(Warning, "WebSocket pong write failed"); }
                 break;
 
             case kOpcodePong:
@@ -334,11 +344,11 @@ void WebSocketTransport::ReadLoop() {
             }
         }
     } catch (const std::exception& e) {
+        MCP_LOG(Error, std::string("WebSocket read error: ") + e.what());
         if (running_)
             NotifyError(std::string("WebSocket read error: ") + e.what());
     }
 
-    // Connection lost — clean up unless we initiated the close
     if (running_.exchange(false)) {
         {
             std::lock_guard<std::mutex> lk(write_mutex_);
@@ -375,6 +385,7 @@ void WebSocketTransport::WriteLoop() {
             try {
                 WriteFrame(socket_, kOpcodeText, body);
             } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("WebSocket write error: ") + e.what());
                 if (running_) {
                     NotifyError(std::string("WebSocket write error: ") + e.what());
                     break;
@@ -386,8 +397,7 @@ void WebSocketTransport::WriteLoop() {
             if (now - last_ping_time > std::chrono::seconds(30)) {
                 try {
                     WriteFrame(socket_, kOpcodePing, "");
-                } catch (...) {
-                }
+                } catch (...) { MCP_LOG(Warning, "WebSocket ping write failed"); }
                 last_ping_time = now;
             }
         }
