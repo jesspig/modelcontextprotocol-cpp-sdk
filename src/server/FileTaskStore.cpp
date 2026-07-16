@@ -1,4 +1,5 @@
 #include <mcp/storage/FileTaskStore.hpp>
+#include <mcp/Log.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -52,9 +53,7 @@ FileTaskStore::FileTaskStore(std::filesystem::path storage_path)
                         tasks_[key] = DeserializeTaskState(val);
                     }
                 }
-            } catch (...) {
-                // Corrupted file; start fresh
-            }
+            } catch (...) { MCP_LOG(Warning, "task store parse failed"); }
         }
     }
 }

@@ -2,6 +2,7 @@
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
+#include <mcp/Log.hpp>
 #include <asio/post.hpp>
 
 #include <chrono>
@@ -398,8 +399,12 @@ void McpSessionHandler::SendMessage(JsonRpcMessage message) {
 // Meta helpers
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMeta& meta) {
-    if (meta.protocol_version < "2026-07-28")
+    if (meta.protocol_version < "2026-07-28") {
+        LogContext ctx;
+        ctx.method = "stamp-outgoing";
+        MCP_LOG_CTX(Trace, ctx, "skipped outgoing meta stamping: proto=" + meta.protocol_version);
         return;
+    }
 
     auto& meta_obj = body["_meta"];
     if (meta_obj.is_null()) {
@@ -412,11 +417,22 @@ void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMet
         meta_obj["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
     if (meta.log_level)
         meta_obj["io.modelcontextprotocol/logLevel"] = *meta.log_level;
+
+    LogContext ctx;
+    ctx.method = "stamp-outgoing";
+    MCP_LOG_CTX(Trace, ctx, "stamped outgoing _meta: proto=" + meta.protocol_version);
 }
 
 IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest& req) {
+    LogContext ctx;
+    ctx.request_id = GetRequestIdKey(req.id);
+    ctx.method = req.method;
+
     IncomingRequestMeta meta;
-    if (!req.meta) return meta;
+    if (!req.meta) {
+        MCP_LOG_CTX(Trace, ctx, "no _meta in request");
+        return meta;
+    }
 
     const auto& j = *req.meta;
 
@@ -442,6 +458,8 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     if (auto it = j.find("io.modelcontextprotocol/subscriptionId"); it != j.end())
         meta.subscription_id = it->get<std::string>();
 
+    MCP_LOG_CTX(Trace, ctx, "extracted incoming meta: proto=" + meta.protocol_version +
+        " has_client_info=" + (meta.client_info ? "yes" : "no"));
     return meta;
 }
 

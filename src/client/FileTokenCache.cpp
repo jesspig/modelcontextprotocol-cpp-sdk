@@ -1,4 +1,5 @@
 #include <mcp/storage/FileTokenCache.hpp>
+#include <mcp/Log.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -97,7 +98,7 @@ void FileTokenCache::Load() {
                 tc.scopes = json["scopes"].get<std::vector<std::string>>();
             }
             tokens_ = std::move(tc);
-        } catch (...) {}
+        } catch (...) { MCP_LOG(Warning, "token cache fallback parse failed"); }
         return;
     }
 
@@ -114,7 +115,7 @@ void FileTokenCache::Load() {
         }
         tokens_ = std::move(tc);
     } catch (...) {
-        // Corrupted file; start fresh
+        MCP_LOG(Warning, "token cache parse failed (Win32)");
     }
 #else
     std::ifstream file(cache_path_);
@@ -132,7 +133,7 @@ void FileTokenCache::Load() {
         }
         tokens_ = std::move(tc);
     } catch (...) {
-        // Corrupted file; start fresh
+        MCP_LOG(Warning, "token cache parse failed");
     }
     file.close();
     chmod(cache_path_.string().c_str(), 0600);
