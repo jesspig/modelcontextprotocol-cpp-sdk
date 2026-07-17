@@ -51,9 +51,6 @@ struct MCP_API ServerOptions {
     bool validate_tool_input{false};
     bool validate_tool_output{false};
 
-    // Extensions declaration map (SEP-2133)
-    std::optional<nlohmann::json> extensions;
-
     // Task store (enables tasks/get, tasks/update, tasks/cancel)
     std::shared_ptr<class IMcpTaskStore> task_store;
 };

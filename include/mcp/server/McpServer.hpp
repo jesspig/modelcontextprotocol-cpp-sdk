@@ -6,8 +6,6 @@
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
 #include <mcp/server/ServerHandlers.hpp>
-#include <mcp/server/Extension.hpp>
-
 
 #include <future>
 #include <memory>
@@ -70,9 +68,6 @@ public:
         const PromptOptions& /*options*/,
         std::function<GetPromptResult(const std::string& name,
             const std::optional<nlohmann::json>& args)> handler);
-
-    // ── Extension registration ──
-    void RegisterExtension(std::shared_ptr<Extension> extension);
 
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
@@ -188,9 +183,6 @@ private:
 
     // Completion handler (optional user-registered)
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
-
-    // Extensions
-    std::vector<std::shared_ptr<Extension>> extensions_;
 
     // Active subscriptions
     std::vector<Subscription> subscriptions_;

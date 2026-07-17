@@ -11,6 +11,15 @@
 
 namespace mcp {
 
+static bool RequireInitialized(bool initialized, std::promise<nlohmann::json>& p) {
+    if (!initialized) {
+        p.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+        return false;
+    }
+    return true;
+}
+
 // ====================================================================
 // Factory
 // ====================================================================
@@ -38,7 +47,7 @@ McpServer::McpServer(
         transport_, std::move(codec), true);
 
     // Detect stateless transport
-    is_stateless_ = dynamic_cast<IStatelessTransport*>(transport_.get()) != nullptr;
+    is_stateless_ = transport_->IsStateless();
 
     // Wire built-in handlers
     WireHandlers();
@@ -205,29 +214,6 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
 }
 
 // ====================================================================
-// Extension registration
-// ====================================================================
-void McpServer::RegisterExtension(std::shared_ptr<Extension> extension) {
-    extensions_.push_back(extension);
-
-    // Register tools from extension
-    for (auto& tool : extension->Tools()) {
-        RegisterTool(tool);
-    }
-
-    // Register methods from extension
-    for (auto& [method, ext_handler] : extension->Methods()) {
-        handler_->SetRequestHandler(method,
-            [ext_handler](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
-                ext_handler(req, std::move(p));
-            });
-    }
-
-    WireHandlers();
-    DeriveCapabilities();
-}
-
-// ====================================================================
 // Handlers auto-wiring
 // ====================================================================
 void McpServer::WireHandlers() {
@@ -297,6 +283,47 @@ void McpServer::WireHandlers() {
             HandleDiscover(req, std::move(p));
         });
 
+    // ── ping ──
+    handler_->SetRequestHandler(methods::kPing,
+        [this](const JsonRpcRequest&, std::promise<nlohmann::json> p) {
+            if (!RequireInitialized(initialized_, p)) return;
+            PingResult r;
+            p.set_value(nlohmann::json(r));
+        });
+
+    // ── resources/subscribe / unsubscribe (2025-era) ──
+    if (!resources_.empty()) {
+        handler_->SetRequestHandler(methods::kSubscribeResource,
+            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (!RequireInitialized(initialized_, p)) return;
+                SubscribeRequestParams params;
+                if (req.params) from_json(*req.params, params);
+                Subscription sub{params.uri, {}};
+                handler_->AddSubscription(sub);
+                EmptyResult r;
+                p.set_value(nlohmann::json(r));
+            });
+
+        handler_->SetRequestHandler(methods::kUnsubscribeResource,
+            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+                if (!RequireInitialized(initialized_, p)) return;
+                UnsubscribeRequestParams params;
+                if (req.params) from_json(*req.params, params);
+                handler_->RemoveSubscription(params.uri);
+                EmptyResult r;
+                p.set_value(nlohmann::json(r));
+            });
+    }
+
+    // ── server/extensions/list ──
+    handler_->SetRequestHandler(methods::kListExtensions,
+        [this](const JsonRpcRequest&, std::promise<nlohmann::json> p) {
+            if (!RequireInitialized(initialized_, p)) return;
+            nlohmann::json j = nlohmann::json::object();
+            j["extensions"] = nlohmann::json::array();
+            p.set_value(std::move(j));
+        });
+
     // ── notifications/initialized ──
     handler_->SetNotificationHandler(notifications::kInitialized,
         [this](const JsonRpcNotification&) {
@@ -307,16 +334,6 @@ void McpServer::WireHandlers() {
     handler_->SetRequestHandler(methods::kComplete,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
             HandleComplete(req, std::move(p));
-        });
-
-    // ── server/extensions/list ──
-    handler_->SetRequestHandler(methods::kListExtensions,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
-            ExtensionListResult r;
-            for (auto& ext : extensions_)
-                r.extensions.push_back(ext->Identifier());
-            nlohmann::json j = r;
-            p.set_value(std::move(j));
         });
 
     // ── tasks/get, tasks/update, tasks/cancel (2026+ only) ──
@@ -401,7 +418,7 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts = PromptsCapability{};
         capabilities_.prompts->list_changed = true;
     }
-    if (options_.task_store || options_.extensions || !extensions_.empty()) {
+    if (options_.task_store) {
         capabilities_.extensions = std::map<std::string, nlohmann::json>{};
     }
 }
@@ -456,16 +473,6 @@ void McpServer::HandleCallTool(
         *this, req, std::move(params), *io_ctx_ptr_, std::move(log_fn));
 
     auto tool = it->second;
-
-    // Extension intercept
-    CallToolResult intercept_result;
-    for (auto& ext : extensions_) {
-        if (!ext->InterceptToolCall(ctx, intercept_result)) {
-            nlohmann::json j = intercept_result;
-            promise.set_value(std::move(j));
-            return;
-        }
-    }
 
     auto captured_promise = std::make_shared<std::promise<nlohmann::json>>(std::move(promise));
     auto fut = std::async(std::launch::async,
