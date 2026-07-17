@@ -47,6 +47,15 @@ target_include_directories(mcp-core INTERFACE
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(mcp-core INTERFACE nlohmann_json::nlohmann_json)
 
+if(MCP_WERROR)
+    if(MSVC)
+        target_compile_options(mcp-core INTERFACE /WX)
+    else()
+        target_compile_options(mcp-core INTERFACE -Werror)
+    endif()
+    message(STATUS "[mcp] Werror enabled")
+endif()
+
 # ====================================================================
 # mcp-transport — STATIC
 # ====================================================================

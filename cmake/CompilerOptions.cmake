@@ -64,16 +64,6 @@ else()
     message(WARNING "[mcp] Unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
-# ── Werror (CI 模式) ──
-if(MCP_WERROR)
-    if(MSVC)
-        target_compile_options(mcp-core INTERFACE /WX)
-    else()
-        target_compile_options(mcp-core INTERFACE -Werror)
-    endif()
-    message(STATUS "[mcp] Werror enabled")
-endif()
-
 # ── ASIO ──
 add_compile_definitions(ASIO_STANDALONE ASIO_NO_DEPRECATED)
 

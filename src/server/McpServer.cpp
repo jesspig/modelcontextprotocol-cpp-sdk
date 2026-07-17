@@ -669,10 +669,11 @@ void McpServer::HandleDiscover(
     if (options_.server_info) {
         result.server_info = Implementation{
             options_.server_info->name,
-            options_.server_info->version
+            options_.server_info->version,
+            {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.1.0"};
+        result.server_info = Implementation{"mcp-server", "0.1.0", {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
@@ -706,10 +707,11 @@ void McpServer::HandleInitialize(
     if (options_.server_info) {
         result.server_info = Implementation{
             options_.server_info->name,
-            options_.server_info->version
+            options_.server_info->version,
+            {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.1.0"};
+        result.server_info = Implementation{"mcp-server", "0.1.0", {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;

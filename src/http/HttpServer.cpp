@@ -18,6 +18,7 @@ HttpServer::HttpServer(asio::io_context& io_ctx, uint16_t port)
     , acceptor_(io_ctx, asio::ip::tcp::endpoint(asio::ip::tcp::v6(), port))
     , port_(port)
 {
+    (void)port_;
     acceptor_.set_option(asio::ip::tcp::acceptor::reuse_address(true));
 #ifdef _WIN32
     int off = 0;

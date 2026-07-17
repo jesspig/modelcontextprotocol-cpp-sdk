@@ -130,7 +130,7 @@ private:
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
-    bool is_server_;
+    [[maybe_unused]] bool is_server_;
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::string negotiated_version_;

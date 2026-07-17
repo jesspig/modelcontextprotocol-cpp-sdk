@@ -587,7 +587,7 @@ StreamableHttpClientTransport::StreamableHttpClientTransport(
 StreamableHttpClientTransport::~StreamableHttpClientTransport() = default;
 
 std::string_view StreamableHttpClientTransport::Name() const {
-    return options_.name.empty() ? "streamable-http" : options_.name;
+    return options_.name.empty() ? std::string_view{"streamable-http"} : options_.name;
 }
 
 std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
