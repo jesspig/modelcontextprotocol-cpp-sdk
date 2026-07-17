@@ -10,11 +10,11 @@ namespace mcp {
 
 // SamplingHandler is deprecated in 2026-07-28 (SEP-2577).
 // Use ElicitationHandler instead.
-using SamplingHandler [[deprecated("Sampling is deprecated in protocol version 2026-07-28 (SEP-2577)")]] = std::function<CreateMessageResult(
+using SamplingHandler = std::function<CreateMessageResult(
     const CreateMessageRequestParams&)>;
 
 // Roots (deprecated): server requests root directory list
-using RootsHandler [[deprecated("Roots is deprecated in protocol version 2026-07-28")]] = std::function<ListRootsResult(
+using RootsHandler = std::function<ListRootsResult(
     const ListRootsRequestParams&)>;
 
 // Elicitation: server requests user input

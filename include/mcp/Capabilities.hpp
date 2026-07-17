@@ -46,15 +46,9 @@ inline void from_json(const nlohmann::json& j, PromptsCapability& v) {
         v.list_changed = it->get<bool>();
 }
 
-struct LoggingCapability {};
-inline void to_json(nlohmann::json& j, const LoggingCapability&) { j = nlohmann::json::object(); }
-inline void from_json(const nlohmann::json& j, LoggingCapability&) {}
-
-// Sampling is deprecated in 2026-07-28 (SEP-2577).
-// Use ElicitationCapability instead.
-struct [[deprecated("Sampling is deprecated in protocol version 2026-07-28 (SEP-2577)")]] SamplingCapability {};
-inline void to_json(nlohmann::json& j, const SamplingCapability&) { j = nlohmann::json::object(); }
-inline void from_json(const nlohmann::json& j, SamplingCapability&) {}
+struct SamplingCapability {};
+inline void to_json(nlohmann::json&, const SamplingCapability&) {}
+inline void from_json(const nlohmann::json&, SamplingCapability&) {}
 
 struct RootsCapability {
     std::optional<bool> list_changed;
@@ -81,17 +75,14 @@ inline void from_json(const nlohmann::json& j, ElicitationCapability& v) {
     if (auto it = j.find("url"); it != j.end())  v.url = *it;
 }
 
-struct TasksCapability {};
-inline void to_json(nlohmann::json& j, const TasksCapability&) { j = nlohmann::json::object(); }
-inline void from_json(const nlohmann::json& j, TasksCapability&) {}
+struct EmptyCapability {};
+inline void to_json(nlohmann::json& j, const EmptyCapability&) { j = nlohmann::json::object(); }
+inline void from_json(const nlohmann::json&, EmptyCapability&) {}
 
-struct SubscriptionsCapability {};
-inline void to_json(nlohmann::json& j, const SubscriptionsCapability&) { j = nlohmann::json::object(); }
-inline void from_json(const nlohmann::json& j, SubscriptionsCapability&) {}
-
-struct CompletionsCapability {};
-inline void to_json(nlohmann::json& j, const CompletionsCapability&) { j = nlohmann::json::object(); }
-inline void from_json(const nlohmann::json& j, CompletionsCapability&) {}
+using LoggingCapability = EmptyCapability;
+using TasksCapability = EmptyCapability;
+using SubscriptionsCapability = EmptyCapability;
+using CompletionsCapability = EmptyCapability;
 
 struct ServerCapabilities {
     std::optional<ToolsCapability> tools;
