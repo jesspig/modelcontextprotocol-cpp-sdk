@@ -100,6 +100,7 @@ target_sources(mcp-client PRIVATE
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
+    target_link_libraries(mcp-transport PUBLIC OpenSSL::SSL)
     target_compile_definitions(mcp-client PRIVATE MCP_HAVE_OPENSSL)
     target_compile_definitions(mcp-transport PRIVATE MCP_HAVE_OPENSSL)
 endif()

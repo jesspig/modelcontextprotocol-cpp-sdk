@@ -1,4 +1,5 @@
 #include <mcp/client/auth/OAuthClientProvider.hpp>
+#include <mcp/detail/sha256.hpp>
 
 #include <asio/connect.hpp>
 #include <asio/ip/tcp.hpp>
@@ -7,12 +8,10 @@
 
 #ifdef MCP_HAVE_OPENSSL
 #include <asio/ssl.hpp>
-#include <openssl/evp.h>
 #include <openssl/rand.h>
-#else
-#include <random>
 #endif
 
+#include <random>
 #include <sstream>
 
 namespace mcp {
@@ -47,32 +46,19 @@ std::string GenerateCodeVerifier() {
 #ifdef MCP_HAVE_OPENSSL
     std::vector<unsigned char> random_bytes(32);
     RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size()));
+#else
+    std::vector<unsigned char> random_bytes(32);
+    std::random_device rd;
+    for (auto& b : random_bytes) b = static_cast<unsigned char>(rd());
+#endif
     return Base64UrlEncode(
         std::string_view(reinterpret_cast<const char*>(random_bytes.data()),
                          random_bytes.size()));
-#else
-    static_assert(sizeof(void*) == 0,
-        "MCP_HAVE_OPENSSL is required for OAuth PKCE support. Install OpenSSL or reconfigure.");
-    return {};
-#endif
 }
 
 std::string ComputeCodeChallenge(std::string_view code_verifier) {
-#ifdef MCP_HAVE_OPENSSL
-    std::vector<unsigned char> hash(EVP_MAX_MD_SIZE);
-    unsigned int hash_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, code_verifier.data(), code_verifier.size());
-    EVP_DigestFinal_ex(ctx, hash.data(), &hash_len);
-    EVP_MD_CTX_free(ctx);
-    return Base64UrlEncode(
-        std::string_view(reinterpret_cast<const char*>(hash.data()), hash_len));
-#else
-    static_assert(sizeof(void*) == 0,
-        "MCP_HAVE_OPENSSL is required for OAuth PKCE support. Install OpenSSL or reconfigure.");
-    return {};
-#endif
+    auto hash = detail::Sha256::Hash(code_verifier);
+    return Base64UrlEncode(hash);
 }
 
 } // namespace pkce

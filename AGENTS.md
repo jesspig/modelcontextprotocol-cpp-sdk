@@ -22,7 +22,7 @@ Presets: `debug`, `release`. Ninja generator only.
 - **CI** (`ci.yml`) runs on `develop` branch only with `-DMCP_WERROR=ON`. Three OS: windows-2022, ubuntu-24.04, macos-15.
 - **Dependencies cached in `build/<preset>/_deps/`**. Do NOT delete `build/` — re-downloading is expensive.
 - **`mcp-core` is INTERFACE (header-only)**. Changing type serialization recompiles everything.
-- **OAuth requires OpenSSL**: `mcp-client` gets `MCP_HAVE_OPENSSL` when OpenSSL is found. Without it, `OAuthClientProvider.cpp` hits `static_assert` (intentional — PKCE SHA-256 is mandatory). You cannot build `mcp-client` without OpenSSL.
+- **OAuth requires OpenSSL**: `mcp-client` gets `MCP_HAVE_OPENSSL` when OpenSSL is found. Without it, PKCE uses built-in SHA-256 and TLS features are disabled. Install OpenSSL for full TLS support.
 - **`McpServer::Create` / `McpClient::Create` take `shared_ptr<ITransport>`**: When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — causes silent data loss.
 - **`InMemoryTransport::CreatePair()`** returns `shared_ptr<ITransport>`, not the concrete type. Use `dynamic_cast<TransportBase*>` to access state machine.
 - **`StreamableHttpClientTransport.cpp` now compiles on all platforms**: Win32 uses WinHTTP, POSIX uses asio native sockets.
@@ -94,15 +94,15 @@ IClientTransport (connection factory)
 | `McpTypesTest` | `mcp-core-tests` | Type round-trips with annotations, icons, content variants |
 | `WireCodecTest` | `mcp-wire-codec-tests` | Era-gating codec |
 | `McpServerTest` | `mcp-server-tests` | Registration, capabilities |
-| `McpClientTest` | `mcp-client-tests` | Requires OpenSSL to build |
-| `OAuthTest` | `mcp-oauth-tests` | PKCE, token cache; requires OpenSSL |
+| `McpClientTest` | `mcp-client-tests` | Client creation, tool cache |
+| `OAuthTest` | `mcp-oauth-tests` | PKCE, token cache; SHA-256 uses built-in fallback |
 | `TransportTest` | `mcp-transport-tests` | State machine via `dynamic_cast<TransportBase*>` |
-| `Conformance` | `mcp-conformance-tests` | MCP spec compliance; requires OpenSSL |
-| `Integration` | `mcp-integration-tests` | Client-server round-trip; requires OpenSSL |
+| `Conformance` | `mcp-conformance-tests` | 122 MCP spec compliance tests |
+| `Integration` | `mcp-integration-tests` | Client-server round-trip via InMemoryTransport |
 
 - `InMemoryTransport` is synchronous — messages delivered when `io_context` runs, not on `SendMessageAsync`.
 - Werror is off by default; enable via `-DMCP_WERROR=ON` for CI-matching behavior.
-- Tests requiring OpenSSL (`mcp-client` dependents) cannot build without it. All other 65 tests are standalone.
+- All 208 tests compile and pass without OpenSSL. TLS features (WebSocket, SSE HTTPS) require OpenSSL at build time.
 
 ## Traps
 
@@ -127,7 +127,7 @@ IClientTransport (connection factory)
 | asio | 1.30.2 | Header-only; manual INTERFACE target |
 | nlohmann-json | 3.11.3 | SYSTEM, shallow fetch |
 | GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Required for OAuth PKCE; `mcp-client` won't build without it |
+| OpenSSL | system | Optional; required for TLS (WebSocket, SSE HTTPS, OAuth). PKCE SHA-256 falls back to built-in. Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 ## Commits
 

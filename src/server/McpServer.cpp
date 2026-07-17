@@ -659,6 +659,7 @@ void McpServer::HandleComplete(
 void McpServer::HandleDiscover(
     const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
 {
+    initialized_ = true;
     DiscoverResult result;
     result.supported_versions = {
         "2025-11-25",

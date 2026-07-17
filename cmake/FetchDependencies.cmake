@@ -40,9 +40,16 @@ endif()
 cmake_policy(POP)
 
 # ====================================================================
-# OpenSSL — 用于 PKCE SHA-256 + 加密随机数 (OAuth, 可选)
+# OpenSSL — 用于 TLS (OAuth, WebSocket, SSE POSIX)
+# 可选依赖: find_package 找到即启用，找不到则使用纯 C++ SHA-256 降级
+# PKCE 所需的 SHA-256 已有纯 C++ 实现 (mcp/detail/sha256.hpp)，不依赖 OpenSSL
 # ====================================================================
 find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
+    message(STATUS "[mcp] OpenSSL found: ${OPENSSL_VERSION}")
+else()
+    message(STATUS "[mcp] OpenSSL not found — TLS features disabled, PKCE uses built-in SHA-256")
+endif()
 
 # ====================================================================
 # googletest — 单元测试 (仅在构建测试时获取)
