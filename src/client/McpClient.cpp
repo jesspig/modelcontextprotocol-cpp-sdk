@@ -206,6 +206,7 @@ void McpClient::WireClientHandlers() {
     // Roots handler (deprecated)
     handler_->SetRequestHandler(methods::kListRoots,
         [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            (void)req;
             if (!roots_handler_) {
                 ListRootsResult empty;
                 p.set_value(nlohmann::json(empty));
@@ -241,10 +242,13 @@ void McpClient::WireClientHandlers() {
         });
 
     // Notification handlers
-    for (auto& [method, notif_handler] : notif_handlers_) {
+    for (auto& notif_pair : notif_handlers_) {
+        auto method = notif_pair.first;
+        auto& notif_handler = notif_pair.second;
+        auto nh = notif_handler;
         handler_->SetNotificationHandler(method,
-            [notif_handler](const JsonRpcNotification& notif) {
-                notif_handler(notif);
+            [nh](const JsonRpcNotification& notif) {
+                nh(notif);
             });
     }
 }
@@ -450,6 +454,7 @@ ListToolsResult McpClient::ListTools(
     const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
+    (void)options;
     ListToolsRequestParams params;
     params.cursor = std::move(cursor);
     return SendRequest<ListToolsRequestParams, ListToolsResult>(
@@ -586,6 +591,7 @@ ListResourcesResult McpClient::ListResources(
     const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
+    (void)options;
     ListResourcesRequestParams params;
     params.cursor = std::move(cursor);
     return SendRequest<ListResourcesRequestParams, ListResourcesResult>(
@@ -596,6 +602,7 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
+    (void)options;
     ListResourceTemplatesRequestParams params;
     params.cursor = std::move(cursor);
     return SendRequest<ListResourceTemplatesRequestParams, ListResourceTemplatesResult>(
@@ -647,6 +654,7 @@ ListPromptsResult McpClient::ListPrompts(
     const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
+    (void)options;
     ListPromptsRequestParams params;
     params.cursor = std::move(cursor);
     return SendRequest<ListPromptsRequestParams, ListPromptsResult>(
