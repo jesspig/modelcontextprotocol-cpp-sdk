@@ -102,8 +102,9 @@ public:
     // ── Version negotiation ──
     void SetNegotiatedProtocolVersion(std::string_view version);
 
-    // ── Accessors ──
+    // ── Protocol-era gates (semantic helpers, matching C# McpProtocolVersions) ──
     std::string_view NegotiatedProtocolVersion() const { return negotiated_version_; }
+    bool IsJuly2026OrLater() const { return !negotiated_version_.empty() && negotiated_version_ >= "2026-07-28"; }
     WireCodec& GetCodec() { return *codec_; }
     ITransport& GetTransport() { return *transport_; }
     asio::io_context& IoContext() { return io_ctx_; }

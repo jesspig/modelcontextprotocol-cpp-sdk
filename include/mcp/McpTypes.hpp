@@ -406,9 +406,7 @@ inline void from_json(const nlohmann::json& j, CompleteRequestParams& v) {
     if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
-struct DiscoverRequestParams {
-    std::optional<RequestMeta> meta;
-};
+struct DiscoverRequestParams {};
 inline void to_json(nlohmann::json& j, const DiscoverRequestParams&) { j = nlohmann::json::object(); }
 inline void from_json(const nlohmann::json&, DiscoverRequestParams&) {}
 
@@ -775,9 +773,7 @@ inline void from_json(const nlohmann::json& j, CancelledNotificationParams& v) {
     if (auto it = j.find("reason"); it != j.end()) v.reason = it->get<std::string>();
 }
 
-struct InitializedNotificationParams {};
-inline void to_json(nlohmann::json&, const InitializedNotificationParams&) {}
-inline void from_json(const nlohmann::json&, InitializedNotificationParams&) {}
+
 
 // ====================================================================
 // Logging [deprecated]

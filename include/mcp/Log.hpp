@@ -97,6 +97,4 @@ inline void LogMessage(LogLevel level, const char* file, int line, const LogCont
         } \
     } while(0)
 
-#define MCP_P0(msg)       MCP_LOG_TAG(Error, "P0", msg)
 #define MCP_BUG(msg)      MCP_LOG_TAG(Error, "BUG", msg)
-#define MCP_NEEDS_REPRO(msg) MCP_LOG_TAG(Warning, "NEEDS_REPRO", msg)

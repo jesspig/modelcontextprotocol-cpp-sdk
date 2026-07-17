@@ -6,6 +6,62 @@
 namespace mcp {
 namespace {
 
+// Shared methods — supported by both 2025 and 2026 era
+inline const std::unordered_set<std::string> kCommonRequestMethods = {
+    "tools/list", "tools/call",
+    "resources/list", "resources/read", "resources/templates/list",
+    "prompts/list", "prompts/get",
+    "completion/complete",
+    "elicitation/create",
+};
+
+inline const std::unordered_set<std::string> k2025OnlyRequestMethods = {
+    "ping", "initialize",
+    "resources/subscribe", "resources/unsubscribe",
+    "logging/setLevel", "roots/list", "sampling/createMessage",
+};
+
+inline const std::unordered_set<std::string> k2026OnlyRequestMethods = {
+    "server/discover",
+    "server/extensions/list",
+    "subscriptions/listen",
+    "tasks/get", "tasks/update", "tasks/cancel",
+};
+
+inline const std::unordered_set<std::string> kCommonNotifMethods = {
+    "notifications/cancelled",
+    "notifications/progress",
+    "notifications/resources/updated",
+    "notifications/resources/list_changed",
+    "notifications/tools/list_changed",
+    "notifications/prompts/list_changed",
+    "notifications/subscriptions/acknowledged",
+};
+
+inline const std::unordered_set<std::string> k2025OnlyNotifMethods = {
+    "notifications/initialized",
+    "notifications/message",
+    "notifications/roots/list_changed",
+    "notifications/elicitation/complete",
+};
+
+inline const std::unordered_set<std::string> k2026OnlyNotifMethods = {
+    "notifications/tasks/status",
+    "notifications/tasks/working",
+    "notifications/tasks/completed",
+    "notifications/tasks/failed",
+    "notifications/tasks/cancelled",
+    "notifications/tasks/input_required",
+};
+
+inline std::unordered_set<std::string> MakeEraMethods(
+    const std::unordered_set<std::string>& common,
+    const std::unordered_set<std::string>& only) {
+    auto set = common;
+    set.insert(only.begin(), only.end());
+    return set;
+}
+
 // ====================================================================
 // rev2025-11-25 — initialization-handshake era
 // ====================================================================
@@ -14,36 +70,14 @@ public:
     static constexpr std::string_view kEra = "2025-11-25";
 
     bool HasRequestMethod(std::string_view method) const override {
-        static const std::unordered_set<std::string> methods = {
-            "ping",
-            "initialize",
-            "tools/list", "tools/call",
-            "resources/list", "resources/read", "resources/templates/list",
-            "resources/subscribe", "resources/unsubscribe",
-            "prompts/list", "prompts/get",
-            "completion/complete",
-            "logging/setLevel",
-            "roots/list",
-            "sampling/createMessage",
-            "elicitation/create",
-        };
+        static const auto methods = MakeEraMethods(
+            kCommonRequestMethods, k2025OnlyRequestMethods);
         return methods.count(std::string(method)) > 0;
     }
 
     bool HasNotificationMethod(std::string_view method) const override {
-        static const std::unordered_set<std::string> notifs = {
-            "notifications/initialized",
-            "notifications/cancelled",
-            "notifications/progress",
-            "notifications/message",
-            "notifications/resources/updated",
-            "notifications/resources/list_changed",
-            "notifications/tools/list_changed",
-            "notifications/prompts/list_changed",
-            "notifications/roots/list_changed",
-            "notifications/elicitation/complete",
-            "notifications/subscriptions/acknowledged",
-        };
+        static const auto notifs = MakeEraMethods(
+            kCommonNotifMethods, k2025OnlyNotifMethods);
         return notifs.count(std::string(method)) > 0;
     }
 
@@ -110,35 +144,14 @@ public:
         "io.modelcontextprotocol/clientCapabilities";
 
     bool HasRequestMethod(std::string_view method) const override {
-        static const std::unordered_set<std::string> methods = {
-            "server/discover",
-            "tools/list", "tools/call",
-            "resources/list", "resources/read", "resources/templates/list",
-            "prompts/list", "prompts/get",
-            "completion/complete",
-            "subscriptions/listen",
-            "elicitation/create",
-            "tasks/get", "tasks/update", "tasks/cancel",
-        };
+        static const auto methods = MakeEraMethods(
+            kCommonRequestMethods, k2026OnlyRequestMethods);
         return methods.count(std::string(method)) > 0;
     }
 
     bool HasNotificationMethod(std::string_view method) const override {
-        static const std::unordered_set<std::string> notifs = {
-            "notifications/cancelled",
-            "notifications/progress",
-            "notifications/resources/updated",
-            "notifications/resources/list_changed",
-            "notifications/tools/list_changed",
-            "notifications/prompts/list_changed",
-            "notifications/subscriptions/acknowledged",
-            "notifications/tasks/status",
-            "notifications/tasks/working",
-            "notifications/tasks/completed",
-            "notifications/tasks/failed",
-            "notifications/tasks/cancelled",
-            "notifications/tasks/input_required",
-        };
+        static const auto notifs = MakeEraMethods(
+            kCommonNotifMethods, k2026OnlyNotifMethods);
         return notifs.count(std::string(method)) > 0;
     }
 
