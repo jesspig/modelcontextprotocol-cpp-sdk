@@ -36,7 +36,7 @@ struct StreamableHttpServerOptions {
 // ── StreamableHttpServerTransport ──
 // HTTP transport implementing the MCP Streamable HTTP spec.
 // Supports both 2026-07-28 (stateless) and legacy modes.
-class StreamableHttpServerTransport : public TransportBase, public IStatelessTransport {
+class StreamableHttpServerTransport : public TransportBase {
 public:
     StreamableHttpServerTransport(
         asio::io_context& io_ctx,
