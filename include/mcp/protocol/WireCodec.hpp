@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/Export.hpp>
 #include <mcp/McpTypes.hpp>
 
 #include <memory>
@@ -17,7 +18,7 @@ enum class WireValidation {
 // ── WireCodec interface — per-era wire vocabulary ──
 // Corresponds to C# era gating in McpProtocolVersions
 // and TypeScript's WireCodec interface.
-class WireCodec {
+class MCP_API WireCodec {
 public:
     virtual ~WireCodec() = default;
 
@@ -62,6 +63,6 @@ public:
 // ── Factory ──
 // Returns the correct codec for the negotiated protocol version.
 // Falls back to 2025 codec for unknown/legacy versions.
-std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version);
+MCP_API std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version);
 
 } // namespace mcp

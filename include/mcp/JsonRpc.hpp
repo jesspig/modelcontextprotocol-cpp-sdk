@@ -27,7 +27,7 @@ inline RequestId request_id_from_json(const nlohmann::json& j) {
 struct ErrorData {
     McpErrorCode code{McpErrorCode::InternalError};
     std::string message;
-    std::optional<nlohmann::json> data;
+    std::optional<nlohmann::json> data = std::nullopt;
 };
 inline void to_json(nlohmann::json& j, const ErrorData& v) {
     j = nlohmann::json::object();
@@ -59,6 +59,9 @@ inline void to_json(nlohmann::json& j, const JsonRpcRequest& v) {
 }
 inline void from_json(const nlohmann::json& j, JsonRpcRequest& v) {
     j.at("jsonrpc").get_to(v.jsonrpc);
+    if (v.jsonrpc != "2.0") {
+        throw std::runtime_error("invalid JSON-RPC version: " + v.jsonrpc);
+    }
     v.id = request_id_from_json(j.at("id"));
     v.method = j.at("method").get<std::string>();
     if (auto it = j.find("params"); it != j.end()) v.params = *it;
@@ -81,6 +84,9 @@ inline void to_json(nlohmann::json& j, const JsonRpcNotification& v) {
 }
 inline void from_json(const nlohmann::json& j, JsonRpcNotification& v) {
     j.at("jsonrpc").get_to(v.jsonrpc);
+    if (v.jsonrpc != "2.0") {
+        throw std::runtime_error("invalid JSON-RPC version: " + v.jsonrpc);
+    }
     v.method = j.at("method").get<std::string>();
     if (auto it = j.find("params"); it != j.end()) v.params = *it;
     if (auto it = j.find("_meta"); it != j.end())  v.meta = *it;
@@ -100,6 +106,9 @@ inline void to_json(nlohmann::json& j, const JsonRpcResponse& v) {
 }
 inline void from_json(const nlohmann::json& j, JsonRpcResponse& v) {
     j.at("jsonrpc").get_to(v.jsonrpc);
+    if (v.jsonrpc != "2.0") {
+        throw std::runtime_error("invalid JSON-RPC version: " + v.jsonrpc);
+    }
     v.id = request_id_from_json(j.at("id"));
     v.result = j.at("result");
 }
@@ -107,18 +116,30 @@ inline void from_json(const nlohmann::json& j, JsonRpcResponse& v) {
 // ── JsonRpcErrorResponse ──
 struct JsonRpcErrorResponse {
     std::string jsonrpc = "2.0";
-    RequestId id;
+    std::optional<RequestId> id;
     ErrorData error;
 };
 inline void to_json(nlohmann::json& j, const JsonRpcErrorResponse& v) {
     j = nlohmann::json::object();
     j["jsonrpc"] = v.jsonrpc;
-    std::visit([&j](const auto& val) { j["id"] = val; }, v.id);
+    if (v.id) {
+        std::visit([&j](const auto& val) { j["id"] = val; }, *v.id);
+    } else {
+        j["id"] = nullptr;
+    }
     j["error"] = v.error;
 }
 inline void from_json(const nlohmann::json& j, JsonRpcErrorResponse& v) {
     j.at("jsonrpc").get_to(v.jsonrpc);
-    v.id = request_id_from_json(j.at("id"));
+    if (v.jsonrpc != "2.0") {
+        throw std::runtime_error("invalid JSON-RPC version: " + v.jsonrpc);
+    }
+    auto it = j.find("id");
+    if (it != j.end() && !it->is_null()) {
+        v.id = request_id_from_json(*it);
+    } else {
+        v.id = std::nullopt;
+    }
     v.error = j.at("error").get<ErrorData>();
 }
 
@@ -138,14 +159,25 @@ inline void from_json(const nlohmann::json& j, JsonRpcMessage& msg) {
     auto it_result = j.find("result");
     auto it_error = j.find("error");
 
+    // JSON-RPC 2.0 规范分派：
+    // 1. Request: method + id (必须同时有)
+    // 2. Notification: 只有 method，没有 id
+    // 3. Success Response: 有 result (不能同时有 method 或 error)
+    // 4. Error Response: 有 error (不能同时有 method 或 result)
     if (it_method != j.end() && it_id != j.end()) {
+        // Request with method + id
         msg = j.get<JsonRpcRequest>();
     } else if (it_method != j.end()) {
+        // Notification: method without id
         msg = j.get<JsonRpcNotification>();
-    } else if (it_result != j.end()) {
+    } else if (it_result != j.end() && it_error == j.end()) {
+        // Success response
         msg = j.get<JsonRpcResponse>();
-    } else if (it_error != j.end()) {
+    } else if (it_error != j.end() && it_result == j.end()) {
+        // Error response
         msg = j.get<JsonRpcErrorResponse>();
+    } else if (it_result != j.end() && it_error != j.end()) {
+        throw std::runtime_error("JSON-RPC message has both result and error");
     } else {
         throw std::runtime_error("unknown JSON-RPC message type");
     }

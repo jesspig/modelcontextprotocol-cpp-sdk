@@ -12,14 +12,4 @@ enum class HttpTransportMode {
     Sse
 };
 
-/// Convert HttpTransportMode to string.
-inline std::string_view HttpTransportModeToString(HttpTransportMode mode) {
-    switch (mode) {
-        case HttpTransportMode::AutoDetect: return "AutoDetect";
-        case HttpTransportMode::StreamableHttp: return "StreamableHttp";
-        case HttpTransportMode::Sse: return "Sse";
-    }
-    return "Unknown";
-}
-
 } // namespace mcp

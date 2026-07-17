@@ -23,8 +23,6 @@ inline constexpr std::string_view kGetPrompt = "prompts/get";
 
 inline constexpr std::string_view kComplete = "completion/complete";
 
-inline constexpr std::string_view kSetLoggingLevel = "logging/setLevel";
-
 inline constexpr std::string_view kListRoots = "roots/list";
 
 inline constexpr std::string_view kCreateMessage = "sampling/createMessage";
@@ -39,6 +37,8 @@ inline constexpr std::string_view kGetTask = "tasks/get";
 inline constexpr std::string_view kUpdateTask = "tasks/update";
 inline constexpr std::string_view kCancelTask = "tasks/cancel";
 
+inline constexpr std::string_view kSetLoggingLevel = "logging/setLevel";
+
 inline constexpr std::string_view kListExtensions = "server/extensions/list";
 inline constexpr std::string_view kExtensionMethodPrefix = "ext/";
 
@@ -48,30 +48,12 @@ namespace notifications {
 
 inline constexpr std::string_view kInitialized = "notifications/initialized";
 inline constexpr std::string_view kCancelled = "notifications/cancelled";
-inline constexpr std::string_view kProgress = "notifications/progress";
-
 inline constexpr std::string_view kResourceUpdated = "notifications/resources/updated";
 inline constexpr std::string_view kResourceListChanged = "notifications/resources/list_changed";
 inline constexpr std::string_view kToolListChanged = "notifications/tools/list_changed";
 inline constexpr std::string_view kPromptListChanged = "notifications/prompts/list_changed";
-inline constexpr std::string_view kRootsListChanged = "notifications/roots/list_changed";
-
 inline constexpr std::string_view kMessage = "notifications/message";
 
-inline constexpr std::string_view kElicitComplete = "notifications/elicitation/complete";
-inline constexpr std::string_view kSubscriptionAcknowledged = "notifications/subscriptions/acknowledged";
-
-inline constexpr std::string_view kTaskStatus = "notifications/tasks/status";
-inline constexpr std::string_view kTaskWorking = "notifications/tasks/working";
-inline constexpr std::string_view kTaskCompleted = "notifications/tasks/completed";
-inline constexpr std::string_view kTaskFailed = "notifications/tasks/failed";
-inline constexpr std::string_view kTaskCancelled = "notifications/tasks/cancelled";
-inline constexpr std::string_view kTaskInputRequired = "notifications/tasks/input_required";
-
 } // namespace notifications
-
-// ── 常量 ──
-inline constexpr std::string_view kSseEndpoint = "endpoint";
-inline constexpr std::string_view kSseMessage = "message";
 
 } // namespace mcp

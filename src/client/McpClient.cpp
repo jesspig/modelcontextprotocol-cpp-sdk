@@ -127,6 +127,9 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
         methods::kInitialize, nlohmann::json(params), {}, timeout);
 
     auto result = future.get();
+
+    handler.SendNotification(notifications::kInitialized, nlohmann::json::object());
+
     return result.get<InitializeResult>();
 }
 

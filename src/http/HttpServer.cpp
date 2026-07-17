@@ -4,6 +4,10 @@
 #include <asio/write.hpp>
 #include <asio/read_until.hpp>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
 #include <sstream>
 #include <thread>
 
@@ -11,10 +15,15 @@ namespace mcp {
 
 HttpServer::HttpServer(asio::io_context& io_ctx, uint16_t port)
     : io_ctx_(io_ctx)
-    , acceptor_(io_ctx, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port))
+    , acceptor_(io_ctx, asio::ip::tcp::endpoint(asio::ip::tcp::v6(), port))
     , port_(port)
 {
     acceptor_.set_option(asio::ip::tcp::acceptor::reuse_address(true));
+#ifdef _WIN32
+    int off = 0;
+    setsockopt(acceptor_.native_handle(), IPPROTO_IPV6, IPV6_V6ONLY,
+               reinterpret_cast<char*>(&off), sizeof(off));
+#endif
 }
 
 HttpServer::~HttpServer() {
@@ -150,10 +159,13 @@ void HttpServer::SendResponse(
         asio::write(*socket, asio::buffer(response));
 
         // Register SSE client for future events
-        auto id = AddSseClient([socket](std::string_view event) {
+        auto sse_id = std::make_shared<SseClientId>();
+        *sse_id = AddSseClient([this, socket, sse_id](std::string_view event) {
             try {
                 asio::write(*socket, asio::buffer(std::string(event)));
-            } catch (...) {}
+            } catch (...) {
+                RemoveSseClient(*sse_id);
+            }
         });
     }
 }
@@ -200,10 +212,20 @@ void HttpServer::RemoveSseClient(SseClientId id) {
 }
 
 void HttpServer::BroadcastSse(std::string_view event) {
-    std::lock_guard<std::mutex> lock(sse_mutex_);
-    for (auto& [id, send_fn] : sse_clients_) {
+    std::vector<SseClientId> ids;
+    std::vector<std::function<void(std::string_view)>> fns;
+    {
+        std::lock_guard<std::mutex> lock(sse_mutex_);
+        ids.reserve(sse_clients_.size());
+        fns.reserve(sse_clients_.size());
+        for (auto& [id, fn] : sse_clients_) {
+            ids.push_back(id);
+            fns.push_back(fn);
+        }
+    }
+    for (size_t i = 0; i < ids.size(); ++i) {
         try {
-            send_fn(event);
+            fns[i](event);
         } catch (...) {}
     }
 }

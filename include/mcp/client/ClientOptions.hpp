@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
 #include <mcp/McpTypes.hpp>
@@ -13,13 +15,13 @@ namespace mcp {
 
 // ── Connect mode ──
 enum class ConnectMode {
-    Auto,      // probe server/discover → fallback initialize
+    Auto,      // probe server/discover �?fallback initialize
     Legacy,    // force initialize handshake
     Pin,       // pin to specific protocol version
 };
 
 // ── ClientOptions (对应 C# McpClientOptions) ──
-struct ClientOptions {
+struct MCP_API ClientOptions {
     // Client identity
     Implementation client_info{"mcp-cpp-client", "0.1.0"};
     std::optional<ClientCapabilities> capabilities;

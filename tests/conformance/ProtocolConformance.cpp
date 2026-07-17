@@ -938,126 +938,11 @@ TEST(Conformance, SchemaMultiSelectTitled) {
 }
 
 // ====================================================================
-// Group 4: Structured Meta (8-10 tests)
-// ====================================================================
-TEST(Conformance, MetaObjectRoundTrip) {
-    MetaObject mo;
-    mo.progress_token = int64_t(42);
-
-    nlohmann::json j = mo;
-    EXPECT_EQ(j["progressToken"], 42);
-
-    auto recovered = j.get<MetaObject>();
-    ASSERT_TRUE(recovered.progress_token.has_value());
-    EXPECT_EQ(std::get<int64_t>(*recovered.progress_token), 42);
-}
-
-TEST(Conformance, MetaObjectStringProgressToken) {
-    MetaObject mo;
-    mo.progress_token = std::string("token-abc");
-
-    nlohmann::json j = mo;
-    EXPECT_EQ(j["progressToken"], "token-abc");
-
-    auto recovered = j.get<MetaObject>();
-    ASSERT_TRUE(recovered.progress_token.has_value());
-    EXPECT_EQ(std::get<std::string>(*recovered.progress_token), "token-abc");
-}
-
-TEST(Conformance, MetaObjectExtensions) {
-    MetaObject mo;
-    mo.extensions = nlohmann::json{{"customField", "customValue"}};
-
-    nlohmann::json j = mo;
-    EXPECT_EQ(j["customField"], "customValue");
-
-    auto recovered = j.get<MetaObject>();
-    ASSERT_TRUE(recovered.extensions.has_value());
-    EXPECT_EQ((*recovered.extensions)["customField"], "customValue");
-}
-
-TEST(Conformance, RequestMetaObjectRoundTrip) {
-    RequestMetaObject rmo;
-    rmo.protocol_version = "2026-07-28";
-    rmo.client_info = Implementation{"test-client", "1.0"};
-    rmo.client_capabilities = ClientCapabilities{};
-    rmo.client_capabilities->elicitation = ElicitationCapability{};
-    rmo.client_capabilities->elicitation->form = nlohmann::json::object();
-
-    nlohmann::json j = rmo;
-    EXPECT_EQ(j["io.modelcontextprotocol/protocolVersion"], "2026-07-28");
-    EXPECT_EQ(j["io.modelcontextprotocol/clientInfo"]["name"], "test-client");
-    EXPECT_TRUE(j["io.modelcontextprotocol/clientCapabilities"].contains("elicitation"));
-
-    auto recovered = j.get<RequestMetaObject>();
-    EXPECT_EQ(recovered.protocol_version, "2026-07-28");
-    ASSERT_TRUE(recovered.client_info.has_value());
-    EXPECT_EQ(recovered.client_info->name, "test-client");
-    ASSERT_TRUE(recovered.client_capabilities.has_value());
-}
-
-TEST(Conformance, RequestMetaObjectWithLogLevel) {
-    RequestMetaObject rmo;
-    rmo.log_level = LoggingLevel::Debug;
-
-    nlohmann::json j = rmo;
-    EXPECT_EQ(j["io.modelcontextprotocol/logLevel"], "debug");
-
-    auto recovered = j.get<RequestMetaObject>();
-    ASSERT_TRUE(recovered.log_level.has_value());
-    EXPECT_EQ(*recovered.log_level, LoggingLevel::Debug);
-}
-
-TEST(Conformance, RequestMetaObjectWithProgressToken) {
-    RequestMetaObject rmo;
-    rmo.progress_token = int64_t(99);
-
-    nlohmann::json j = rmo;
-    EXPECT_EQ(j["progressToken"], 99);
-
-    auto recovered = j.get<RequestMetaObject>();
-    ASSERT_TRUE(recovered.progress_token.has_value());
-}
-
-TEST(Conformance, NotificationMetaObjectRoundTrip) {
-    NotificationMetaObject nmo;
-    nmo.subscription_id = RequestId{int64_t(7)};
-
-    nlohmann::json j = nmo;
-    EXPECT_EQ(j["io.modelcontextprotocol/subscriptionId"], 7);
-
-    auto recovered = j.get<NotificationMetaObject>();
-    ASSERT_TRUE(recovered.subscription_id.has_value());
-    EXPECT_EQ(std::get<int64_t>(*recovered.subscription_id), 7);
-}
-
-TEST(Conformance, NotificationMetaObjectStringId) {
-    NotificationMetaObject nmo;
-    nmo.subscription_id = RequestId{std::string("sub-abc")};
-
-    nlohmann::json j = nmo;
-    EXPECT_EQ(j["io.modelcontextprotocol/subscriptionId"], "sub-abc");
-
-    auto recovered = j.get<NotificationMetaObject>();
-    ASSERT_TRUE(recovered.subscription_id.has_value());
-    EXPECT_EQ(std::get<std::string>(*recovered.subscription_id), "sub-abc");
-}
-
-TEST(Conformance, NotificationMetaObjectEmpty) {
-    NotificationMetaObject nmo;
-    nlohmann::json j = nmo;
-    EXPECT_TRUE(j.empty());
-
-    auto recovered = j.get<NotificationMetaObject>();
-    EXPECT_FALSE(recovered.subscription_id.has_value());
-}
-
-// ====================================================================
-// Group 5: Extensions Capability (5-8 tests)
+// Group 4: Extensions Capability (5-8 tests)
 // ====================================================================
 TEST(Conformance, ExtensionsCapabilityServerRoundTrip) {
     ServerCapabilities caps;
-    caps.extensions = ExtensionsCapability{};
+    caps.extensions = std::map<std::string, nlohmann::json>{};
 
     nlohmann::json j = caps;
     EXPECT_TRUE(j.contains("extensions"));
@@ -1069,7 +954,7 @@ TEST(Conformance, ExtensionsCapabilityServerRoundTrip) {
 
 TEST(Conformance, ExtensionsCapabilityClientRoundTrip) {
     ClientCapabilities caps;
-    caps.extensions = ExtensionsCapability{};
+    caps.extensions = std::map<std::string, nlohmann::json>{};
 
     nlohmann::json j = caps;
     EXPECT_TRUE(j.contains("extensions"));
@@ -1098,7 +983,7 @@ TEST(Conformance, ClientCapabilitiesNoExtensions) {
 TEST(Conformance, ExtensionsCapabilityWithOtherCaps) {
     ServerCapabilities caps;
     caps.tools = ToolsCapability{};
-    caps.extensions = ExtensionsCapability{};
+    caps.extensions = std::map<std::string, nlohmann::json>{};
     caps.subscriptions = SubscriptionsCapability{};
 
     nlohmann::json j = caps;

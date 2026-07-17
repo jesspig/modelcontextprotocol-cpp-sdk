@@ -1,18 +1,19 @@
 #pragma once
+#include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 #include <asio/io_context.hpp>
 #include <asio/experimental/channel.hpp>
 #include <system_error>
 #include <memory>
 #include <functional>
-#include <future>
 
 namespace mcp {
 
 // ═══════════════════════════════════════════════════════════════════════
 // MessageChannel — wraps asio::experimental::channel for JsonRpcMessage
 // ═══════════════════════════════════════════════════════════════════════
-class MessageChannel {
+class MCP_API MessageChannel {
 public:
     using AsioChannel = asio::experimental::channel<void(asio::error_code, JsonRpcMessage)>;
 
@@ -32,12 +33,11 @@ public:
     // Send a message into the channel
     void Send(JsonRpcMessage message) {
         channel_.async_send(asio::error_code{}, std::move(message),
-            [](asio::error_code) {});
-    }
-
-    // Try send without allocation
-    bool TrySend(JsonRpcMessage message) {
-        return channel_.try_send(asio::error_code{}, std::move(message));
+            [](asio::error_code ec) {
+                if (ec && ec != asio::error::operation_aborted) {
+                    MCP_BUG("MessageChannel::Send failed");
+                }
+            });
     }
 
     // Close the channel
@@ -46,40 +46,9 @@ public:
     // Check if open
     bool IsOpen() const { return channel_.is_open(); }
 
-    AsioChannel& GetAsioChannel() { return channel_; }
-
 private:
     asio::io_context& io_ctx_;
     AsioChannel channel_;
-};
-
-// ═══════════════════════════════════════════════════════════════════════
-// ChannelReader — async iterator helper (similar to C# ChannelReader)
-// ═══════════════════════════════════════════════════════════════════════
-class ChannelReader {
-public:
-    explicit ChannelReader(MessageChannel& channel) : channel_(channel) {}
-
-    // Read next message asynchronously (returns future)
-    std::future<JsonRpcMessage> ReadAsync() {
-        auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
-        auto future = promise->get_future();
-
-        channel_.AsyncReceive(
-            [promise](asio::error_code ec, JsonRpcMessage msg) {
-                if (ec) {
-                    promise->set_exception(
-                        std::make_exception_ptr(std::system_error(ec)));
-                    return;
-                }
-                promise->set_value(std::move(msg));
-            });
-
-        return future;
-    }
-
-private:
-    MessageChannel& channel_;
 };
 
 } // namespace mcp

@@ -1,4 +1,5 @@
 #pragma once
+#include <mcp/Export.hpp>
 #include <mcp/protocol/McpSession.hpp>
 #include <mcp/protocol/IncomingRequestMeta.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
@@ -10,6 +11,8 @@
 #include <asio/post.hpp>
 #include <chrono>
 #include <mutex>
+#include <shared_mutex>
+#include <atomic>
 #include <unordered_map>
 #include <memory>
 #include <string>
@@ -40,7 +43,7 @@ struct SubscriptionEntry {
 // This is the C++ equivalent of the C# McpSessionHandler class.
 // It handles all message dispatching, request/response correlation,
 // cancellation, and filter pipelines.
-class McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
+class MCP_API McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
 public:
     // Construct with transport, wire codec, and optional filter pipeline
     McpSessionHandler(
@@ -90,6 +93,9 @@ public:
         nlohmann::json params,
         std::optional<std::string> resource_uri = std::nullopt);
 
+    // ── Error helper ──
+    void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<nlohmann::json> data = std::nullopt);
+
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
 
@@ -99,8 +105,9 @@ public:
     // ── Version negotiation ──
     void SetNegotiatedProtocolVersion(std::string_view version);
 
-    // ── Accessors ──
+    // ── Protocol-era gates (semantic helpers, matching C# McpProtocolVersions) ──
     std::string_view NegotiatedProtocolVersion() const { return negotiated_version_; }
+    bool IsJuly2026OrLater() const { return !negotiated_version_.empty() && negotiated_version_ >= "2026-07-28"; }
     WireCodec& GetCodec() { return *codec_; }
     ITransport& GetTransport() { return *transport_; }
     asio::io_context& IoContext() { return io_ctx_; }
@@ -118,19 +125,20 @@ private:
 
     // ── Request/response correlation ──
     static std::string GetRequestIdKey(const RequestId& rid);
-    int64_t next_request_id_ = 1;
+    std::atomic<int64_t> next_request_id_{1};
 
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
     bool is_server_;
-    bool running_ = false;
-    bool closed_ = false;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> closed_{false};
     std::string negotiated_version_;
 
     // Handler maps
     std::unordered_map<std::string, RequestHandler> request_handlers_;
     std::unordered_map<std::string, NotificationHandler> notif_handlers_;
+    mutable std::shared_mutex handler_mutex_;
 
     // Pending request tracking (for response/error correlation)
     std::unordered_map<std::string, std::shared_ptr<PendingRequest>> pending_;

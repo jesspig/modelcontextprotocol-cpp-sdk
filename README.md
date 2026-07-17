@@ -43,7 +43,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
 | asio           | 1.30.2         | Fetched automatically        |
 | nlohmann-json  | 3.11.3         | Fetched automatically        |
-| OpenSSL        | (optional)     | Required for OAuth PKCE      |
+| OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS, OAuth). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
 

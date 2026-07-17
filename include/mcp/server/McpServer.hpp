@@ -1,15 +1,16 @@
 #pragma once
 
+#include <mcp/Export.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
 #include <mcp/server/ServerHandlers.hpp>
-#include <mcp/server/Extension.hpp>
-
 
 #include <future>
 #include <memory>
+#include <atomic>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -17,7 +18,7 @@
 namespace mcp {
 
 // ── McpServer (对应 C# McpServer) ──
-class McpServer {
+class MCP_API McpServer {
 public:
     // ── Factory ──
     // If io_ctx is provided, use it instead of creating an internal one.
@@ -67,9 +68,6 @@ public:
         const PromptOptions& /*options*/,
         std::function<GetPromptResult(const std::string& name,
             const std::optional<nlohmann::json>& args)> handler);
-
-    // ── Extension registration ──
-    void RegisterExtension(std::shared_ptr<Extension> extension);
 
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
@@ -148,6 +146,8 @@ private:
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
     void HandleDiscover(
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+    void HandleInitialize(
+        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
     void HandleSubscriptionsListen(
         const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
 
@@ -184,11 +184,15 @@ private:
     // Completion handler (optional user-registered)
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
 
-    // Extensions
-    std::vector<std::shared_ptr<Extension>> extensions_;
-
     // Active subscriptions
     std::vector<Subscription> subscriptions_;
+
+    // Async tool call lifecycle management
+    std::mutex pending_async_mutex_;
+    std::vector<std::shared_future<void>> pending_async_futures_;
+
+    // Initialization state (2025-era protocol)
+    std::atomic<bool> initialized_{false};
 
     // Notification flags
     bool tools_changed_flag_{false};

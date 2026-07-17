@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/McpTypes.hpp>
@@ -18,7 +20,7 @@ struct CacheableMethod;
 struct CacheHint;
 
 // ── ServerOptions (对应 C# McpServerOptions) ──
-struct ServerOptions {
+struct MCP_API ServerOptions {
     // Server identity
     std::optional<Implementation> server_info;
     std::optional<ServerCapabilities> capabilities;
@@ -48,9 +50,6 @@ struct ServerOptions {
     // JSON Schema validation
     bool validate_tool_input{false};
     bool validate_tool_output{false};
-
-    // Extensions declaration map (SEP-2133)
-    std::optional<nlohmann::json> extensions;
 
     // Task store (enables tasks/get, tasks/update, tasks/cancel)
     std::shared_ptr<class IMcpTaskStore> task_store;

@@ -1,4 +1,5 @@
 #include <mcp/storage/FileTaskStore.hpp>
+#include <mcp/Log.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -52,9 +53,7 @@ FileTaskStore::FileTaskStore(std::filesystem::path storage_path)
                         tasks_[key] = DeserializeTaskState(val);
                     }
                 }
-            } catch (...) {
-                // Corrupted file; start fresh
-            }
+            } catch (...) { MCP_LOG(Warning, "task store parse failed"); }
         }
     }
 }
@@ -124,10 +123,14 @@ void FileTaskStore::Flush() {
     for (auto& [id, state] : tasks_) {
         j["tasks"][id] = SerializeTaskState(state);
     }
-    std::ofstream file(storage_path_);
-    if (file.is_open()) {
+    auto tmp_path = storage_path_;
+    tmp_path += ".tmp";
+    {
+        std::ofstream file(tmp_path);
+        if (!file.is_open()) return;
         file << j.dump(2);
     }
+    std::filesystem::rename(tmp_path, storage_path_);
 }
 
 } // namespace mcp

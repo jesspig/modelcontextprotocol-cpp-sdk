@@ -6,8 +6,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <future>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace mcp {
 
@@ -33,7 +36,7 @@ struct StreamableHttpServerOptions {
 // ── StreamableHttpServerTransport ──
 // HTTP transport implementing the MCP Streamable HTTP spec.
 // Supports both 2026-07-28 (stateless) and legacy modes.
-class StreamableHttpServerTransport : public TransportBase, public IStatelessTransport {
+class StreamableHttpServerTransport : public TransportBase {
 public:
     StreamableHttpServerTransport(
         asio::io_context& io_ctx,
@@ -65,9 +68,16 @@ private:
     std::string GetMcpHeader(const HttpRequest& req,
                              std::string_view header_name) const;
 
+    // Convert RequestId to string key for response correlation
+    static std::string RequestIdToString(const RequestId& id);
+
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;
     std::shared_ptr<EventStore> event_store_;
+
+    // Stateless mode: pending request-response correlation
+    std::unordered_map<std::string, std::shared_ptr<std::promise<JsonRpcMessage>>> pending_responses_;
+    std::mutex pending_mutex_;
 };
 
 } // namespace mcp

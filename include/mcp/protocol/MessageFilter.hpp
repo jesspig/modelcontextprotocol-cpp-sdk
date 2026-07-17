@@ -57,11 +57,11 @@ public:
             return;
         }
 
-        size_t index = 0;
+        auto index = std::make_shared<size_t>(0);
         std::function<void(const JsonRpcMessage&)> execute_next;
-        execute_next = [this, &index, &execute_next, final_handler](const JsonRpcMessage& msg) {
-            if (index < filters_.size()) {
-                auto filter = filters_[index++];
+        execute_next = [this, index, &execute_next, final_handler](const JsonRpcMessage& msg) {
+            if (*index < filters_.size()) {
+                auto filter = filters_[(*index)++];
                 filter->Filter(msg, execute_next);
             } else {
                 final_handler(msg);
