@@ -5,10 +5,10 @@
 ```bash
 cmake --preset debug                          # Configure (Ninja, Debug)
 cmake --build --preset debug                  # Build
-ctest --preset debug --output-on-failure      # Run all ~219 tests
+ctest --preset debug --output-on-failure      # Run ~200+ tests
 ctest -R WireCodec                            # Filter single suite
 ctest -R Conformance -V                       # Filter group with verbose
-cmake --build --preset debug --target mcp-core-tests   # Single target
+cmake --build --preset debug --target mcp-server-tests   # Single target
 ```
 
 Presets: `debug`, `release`. Ninja generator only.
@@ -19,24 +19,24 @@ Presets: `debug`, `release`. Ninja generator only.
 - **Ninja job pools**: compile `min(mem/1500MB, cores-2)`, link `min(mem/4000MB, 2)`. Override via `MCP_COMPILE_JOBS` / `MCP_LINK_JOBS`.
 - **Compiler auto-detection**: clang-cl (if found) → system default. sccache → ccache → none.
 - **lld-link**: auto-detected on Windows MSVC + Ninja; adds `/lldlink`.
-- **CI** (`ci.yml`) runs on `develop` branch only with `-DMCP_WERROR=ON` — treat warnings as errors. Three OS matrix: windows-2022, ubuntu-24.04, macos-15.
+- **CI** (`ci.yml`) runs on `develop` branch only with `-DMCP_WERROR=ON`. Three OS: windows-2022, ubuntu-24.04, macos-15.
 - **Dependencies cached in `build/<preset>/_deps/`**. Do NOT delete `build/` — re-downloading is expensive.
-- `mcp-core` is INTERFACE (header-only). Changing type serialization recompiles everything.
-- **OAuth requires OpenSSL**: `mcp-client` and `mcp-transport` get `MCP_HAVE_OPENSSL` when OpenSSL is found. Building `mcp-client` without OpenSSL fails with `static_assert` — intentional (PKCE SHA-256 is mandatory).
-- **`StreamableHttpClientTransport.cpp` is Windows-only**: guarded via `if(WIN32)`.
+- **`mcp-core` is INTERFACE (header-only)**. Changing type serialization recompiles everything.
+- **OAuth requires OpenSSL**: `mcp-client` gets `MCP_HAVE_OPENSSL` when OpenSSL is found. Without it, `OAuthClientProvider.cpp` hits `static_assert` (intentional — PKCE SHA-256 is mandatory). You cannot build `mcp-client` without OpenSSL.
 - **`McpServer::Create` / `McpClient::Create` take `shared_ptr<ITransport>`**: When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — causes silent data loss.
 - **`InMemoryTransport::CreatePair()`** returns `shared_ptr<ITransport>`, not the concrete type. Use `dynamic_cast<TransportBase*>` to access state machine.
+- **`StreamableHttpClientTransport.cpp` now compiles on all platforms**: Win32 uses WinHTTP, POSIX uses asio native sockets.
 
 ## Architecture
 
 ```
 include/mcp/       — Public headers
-src/client/        — McpClient, OAuth, MRTR helper
-src/server/        — McpServer, Extension framework, FileTaskStore
+src/client/        — McpClient, OAuth, FileTokenCache
+src/server/        — McpServer, FileTaskStore
 src/protocol/      — McpSessionHandler (engine), WireCodec
 src/transport/     — Stdio, SSE, InMemory, WebSocket transport impls
 src/http/          — HttpServer, EventStore, StreamableHttp*
-tests/             — unit/ (gtest), integration/, conformance/ (122 tests)
+tests/             — unit/ (gtest), integration/, conformance/
 examples/          — EchoServer, WeatherServer, SimpleClient
 ```
 
@@ -48,14 +48,14 @@ Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-pr
 ITransport —— TransportBase (3-state: Initial→Connected→Disconnected)
   ├── StdioServerTransport
   ├── InMemoryTransportImpl
-  ├── StreamableHttpServerTransport (+ IStatelessTransport)
+  ├── StreamableHttpServerTransport
   ├── WebSocketTransport
   └── StreamableHttpSessionTransport (internal, via StreamableHttpClientTransport)
 
 IClientTransport (connection factory)
-  ├── StdioClientTransport (Win32 + POSIX via PlatformIO)
-  ├── SseClientTransport (dual WinHTTP/asio POSIX path)
-  ├── StreamableHttpClientTransport (Windows-only)
+  ├── StdioClientTransport (merged Win32+POSIX via PlatformIO)
+  ├── SseClientTransport (WinHTTP / asio+ssl POSIX path)
+  ├── StreamableHttpClientTransport (WinHTTP / asio POSIX path)
   └── WebSocketClientTransport (wss:// guarded by MCP_HAVE_OPENSSL)
 ```
 
@@ -65,15 +65,15 @@ IClientTransport (connection factory)
 
 - Async message loop over `MessageChannel` (wraps `asio::experimental::channel`)
 - Request/response correlation with timeout; `next_request_id_` is `std::atomic<int64_t>`
-- Handler dispatch via `unordered_map`, inbound/outbound `MessageFilter` pipeline (0 by default)
+- Handler dispatch via `unordered_map`
 - Dual-era `WireCodec` (2025-11-25 initialize handshake / 2026-07-28 per-request `_meta`)
 
 ## Key protocol patterns (2026-07-28 era)
 
 - **Stateless**: `initialize`/`initialized` handshake replaced by `server/discover`. Per-request `_meta` carries `protocolVersion`, `clientInfo`, `clientCapabilities` on every C→S request.
-- **MRTR**: Server-initiated interactions (elicitation, sampling, roots) embedded as `InputRequiredResult` — not sent as separate requests on SSE. Client retries with `inputResponses` + `requestState`.
+- **MRTR**: Server-initiated interactions (elicitation) embedded as `InputRequiredResult` — not sent as separate requests on SSE. Client retries with `inputResponses` + `requestState`.
 - **Subscriptions**: `subscriptions/listen` replaces `resources/subscribe`. Opt-in to change notification types.
-- **Extensions**: Negotiated via `extensions` map (now `map<string, json>`, not empty struct) on `ClientCapabilities`/`ServerCapabilities`.
+- **Extensions**: Negotiated via `map<string, json>` on `ClientCapabilities`/`ServerCapabilities`.
 - **Caching**: `CacheHint` with `ttlMs`/`cacheScope` on list/discover/read results.
 - **Mcp-Method header**: Dynamic (not hardcoded), derived from JSON-RPC body method field.
 
@@ -88,20 +88,21 @@ IClientTransport (connection factory)
 
 ## Testing (Google Test, auto-fetched)
 
-| Suite | Target | Location | Notes |
-|-------|--------|----------|-------|
-| `JsonRpcTest` | `mcp-core-tests` | `tests/unit/` | Message serialization + variant dispatch |
-| `McpTypesTest` | `mcp-core-tests` | `tests/unit/` | Type round-trips with annotations, icons, content variants |
-| `WireCodecTest` | `mcp-wire-codec-tests` | `tests/unit/` | Era-gating codec |
-| `McpServerTest` | `mcp-server-tests` | `tests/unit/` | Registration, capabilities |
-| `McpClientTest` | `mcp-client-tests` | `tests/unit/` | Client creation, tool cache |
-| `OAuthTest` | `mcp-oauth-tests` | `tests/unit/` | PKCE, token cache |
-| `TransportTest` | `mcp-transport-tests` | `tests/unit/` | State machine, error propagation via `dynamic_cast<TransportBase*>` |
-| `Conformance` | `mcp-conformance-tests` | `tests/conformance/` | 122 MCP spec compliance tests |
-| `Integration` | `mcp-integration-tests` | `tests/integration/` | Client-server round-trip |
+| Suite | Target | Notes |
+|-------|--------|-------|
+| `JsonRpcTest` | `mcp-core-tests` | Message serialization + variant dispatch |
+| `McpTypesTest` | `mcp-core-tests` | Type round-trips with annotations, icons, content variants |
+| `WireCodecTest` | `mcp-wire-codec-tests` | Era-gating codec |
+| `McpServerTest` | `mcp-server-tests` | Registration, capabilities |
+| `McpClientTest` | `mcp-client-tests` | Requires OpenSSL to build |
+| `OAuthTest` | `mcp-oauth-tests` | PKCE, token cache; requires OpenSSL |
+| `TransportTest` | `mcp-transport-tests` | State machine via `dynamic_cast<TransportBase*>` |
+| `Conformance` | `mcp-conformance-tests` | MCP spec compliance; requires OpenSSL |
+| `Integration` | `mcp-integration-tests` | Client-server round-trip; requires OpenSSL |
 
 - `InMemoryTransport` is synchronous — messages delivered when `io_context` runs, not on `SendMessageAsync`.
 - Werror is off by default; enable via `-DMCP_WERROR=ON` for CI-matching behavior.
+- Tests requiring OpenSSL (`mcp-client` dependents) cannot build without it. All other 65 tests are standalone.
 
 ## Traps
 
@@ -112,12 +113,12 @@ IClientTransport (connection factory)
 - **Server guards requests with `initialized_` flag**: All handlers reject with `InvalidRequest` until `notifications/initialized` received.
 - **`McpClient` sends `notifications/initialized` after `HandshakeInitialize`**: Required by 2025-era protocol.
 - **OAuth HTTP/1.1 uses `Connection: close`**: Each token exchange opens a new TCP connection. No keep-alive.
-- **No HTTP/1.1 keep-alive**: OAuth client opens separate connections.
-- **`jsonrpc: "2.0"` validated** in all `from_json`; invalid version throws `std::runtime_error`.
-- **`JsonRpcErrorResponse::id` is `optional<RequestId>`**: Null-id errors (parse errors, invalid requests) serialize/deserialize correctly per JSON-RPC 2.0 §5.1.
+- **`jsonrpc: &quot;2.0&quot;` validated** in all `from_json`; invalid version throws `std::runtime_error`.
+- **`JsonRpcErrorResponse::id` is `optional<RequestId>`**: Null-id errors serialize correctly per JSON-RPC 2.0 §5.1.
 - **`Icon::mime_type` is `optional<string>`** (not required per spec).
-- **`ContentVariant` includes `ResourceLink`**: handle `type == "resource_link"` in disaptch.
-- **X-Mcp-Headers**: `ScanXMcpHeaders()` in `XMcpHeaders.hpp` scans inputSchema for `x-mcp-header` annotations.
+- **`ContentVariant` includes `ResourceLink`**: handle `type == &quot;resource_link&quot;` in dispatch.
+- **`ErrorCodes.hpp` has fine-grained codes**: `DeserializeFailed`, `ConnectionRefused`, `TlsHandshakeFailed`, `ProtocolViolation`, `TaskNotFound`, `HandlerError` in addition to JSON-RPC standard codes. Integrates with `std::error_code`.
+- **Log levels via `MCP_LOG_LEVEL` env var**: 0=Off (default), 1=Error, 2=Warning, 3=Info, 4=Debug, 5=Trace. Use `MCP_LOG(Error, msg)`, `MCP_BUG(msg)`, or `MCP_LOG_CTX(LEVEL, ctx, msg)` macros.
 
 ## Dependencies (auto-fetched via FetchContent)
 
@@ -126,7 +127,7 @@ IClientTransport (connection factory)
 | asio | 1.30.2 | Header-only; manual INTERFACE target |
 | nlohmann-json | 3.11.3 | SYSTEM, shallow fetch |
 | GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Optional; required for OAuth PKCE |
+| OpenSSL | system | Required for OAuth PKCE; `mcp-client` won't build without it |
 
 ## Commits
 
