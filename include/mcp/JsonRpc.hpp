@@ -209,14 +209,4 @@ inline const JsonRpcErrorResponse* AsError(const JsonRpcMessage& msg) noexcept {
     return std::get_if<JsonRpcErrorResponse>(&msg);
 }
 
-// 验证消息是否携带合法的 jsonrpc 版本（不抛出异常版本）
-inline bool IsValidJsonRpcVersion(const nlohmann::json& j) noexcept {
-    try {
-        auto it = j.find("jsonrpc");
-        return it != j.end() && it->is_string() && it->get<std::string>() == "2.0";
-    } catch (...) {
-        return false;
-    }
-}
-
 } // namespace mcp
