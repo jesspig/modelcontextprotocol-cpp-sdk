@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/JsonRpc.hpp>
 #include <mcp/McpTypes.hpp>
 #include <mcp/Meta.hpp>
@@ -15,7 +17,7 @@ class McpServer;
 
 // ── RequestContext (对应 C# RequestContext<TParams>) ──
 template <typename TParams>
-class RequestContext {
+class MCP_API RequestContext {
 public:
     using LogFn = std::function<void(LoggingLevel, std::string_view)>;
 

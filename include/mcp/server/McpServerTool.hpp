@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/server/RequestContext.hpp>
@@ -10,7 +12,7 @@
 
 namespace mcp {
 
-class McpServerTool : public std::enable_shared_from_this<McpServerTool> {
+class MCP_API McpServerTool : public std::enable_shared_from_this<McpServerTool> {
 public:
     virtual ~McpServerTool() = default;
     virtual const Tool& ProtocolTool() const = 0;
@@ -27,7 +29,7 @@ public:
 };
 
 template <typename Callable>
-class McpServerToolImpl : public McpServerTool {
+class MCP_API McpServerToolImpl : public McpServerTool {
 public:
     McpServerToolImpl(
         std::string name,

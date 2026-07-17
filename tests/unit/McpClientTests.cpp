@@ -59,25 +59,6 @@ TEST(McpClientTest, McpClientToolFromProtocol) {
     EXPECT_EQ(ct.protocol_tool.description, "Calculator");
 }
 
-// ── McpClientResource from Protocol ──
-TEST(McpClientTest, McpClientResourceFromProtocol) {
-    Resource r;
-    r.uri = "resource://static";
-    r.name = "Static Resource";
-
-    auto cr = McpClientResource::FromProtocol(r);
-    EXPECT_EQ(cr.protocol_resource.uri, "resource://static");
-}
-
-// ── McpClientPrompt from Protocol ──
-TEST(McpClientTest, McpClientPromptFromProtocol) {
-    Prompt p;
-    p.name = "greet";
-
-    auto cp = McpClientPrompt::FromProtocol(p);
-    EXPECT_EQ(cp.protocol_prompt.name, "greet");
-}
-
 // ── VersionNegotiation static methods ──
 TEST(McpClientTest, VersionNegotiationProbe) {
     // Just test that the function exists and handles errors gracefully

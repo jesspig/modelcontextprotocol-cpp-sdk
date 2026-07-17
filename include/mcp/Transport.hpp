@@ -1,4 +1,5 @@
 #pragma once
+#include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
 #include <asio/io_context.hpp>
@@ -13,14 +14,9 @@
 namespace mcp {
 
 // ═══════════════════════════════════════════════════════════════════════
-// IStatelessTransport — marker for stateless transport (no session persistence)
-// ═══════════════════════════════════════════════════════════════════════
-class IStatelessTransport {};
-
-// ═══════════════════════════════════════════════════════════════════════
 // ITransport — established bidirectional session
 // ═══════════════════════════════════════════════════════════════════════
-class ITransport {
+class MCP_API ITransport {
 public:
     virtual ~ITransport() = default;
     virtual std::string_view SessionId() const = 0;
@@ -35,7 +31,7 @@ public:
 // ═══════════════════════════════════════════════════════════════════════
 enum class TransportState { Initial, Connected, Disconnected };
 
-class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase> {
+class MCP_API TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase> {
 public:
     TransportBase(asio::io_context& io_ctx);
     virtual ~TransportBase();
@@ -72,52 +68,11 @@ protected:
 // ═══════════════════════════════════════════════════════════════════════
 // IClientTransport — connection factory
 // ═══════════════════════════════════════════════════════════════════════
-class IClientTransport {
+class MCP_API IClientTransport {
 public:
     virtual ~IClientTransport() = default;
     virtual std::string_view Name() const = 0;
     virtual std::shared_ptr<ITransport> Connect() = 0;
-};
-
-// ═══════════════════════════════════════════════════════════════════════
-// Transport — backward-compatible base class (pre-refactoring name)
-// ═══════════════════════════════════════════════════════════════════════
-// Inherits ITransport and provides the pre-refactoring interface:
-// Start(), IoContext(), NotifyClose/NotifyError helpers, callback storage.
-// New implementations should prefer ITransport or TransportBase.
-class Transport : public ITransport {
-public:
-    virtual ~Transport() = default;
-
-    // Transport-specific additions (not part of ITransport)
-    virtual void Start() = 0;
-    virtual asio::io_context& IoContext() = 0;
-
-    // ITransport defaults
-    std::string_view SessionId() const override { return {}; }
-    bool IsStateless() const override { return false; }
-
-    // Backward-compatible inner typedef
-    using MessageChannel = mcp::MessageChannel;
-
-    // Callbacks
-    void SetOnClose(std::function<void()> cb) { on_close_ = std::move(cb); }
-    void SetOnError(std::function<void(std::string_view)> cb) { on_error_ = std::move(cb); }
-
-protected:
-    void NotifyClose() { if (on_close_) on_close_(); }
-    void NotifyError(std::string_view msg) { if (on_error_) on_error_(msg); }
-
-    std::function<void()> on_close_;
-    std::function<void(std::string_view)> on_error_;
-};
-
-// ═══════════════════════════════════════════════════════════════════════
-// ClientTransport — backward-compatible base class
-// ═══════════════════════════════════════════════════════════════════════
-class ClientTransport : public IClientTransport {
-public:
-    ~ClientTransport() override = default;
 };
 
 // TransportBase inline implementation

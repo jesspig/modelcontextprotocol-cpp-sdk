@@ -2,6 +2,7 @@
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
+#include <mcp/Log.hpp>
 #include <asio/post.hpp>
 
 #include <chrono>
@@ -37,15 +38,15 @@ McpSessionHandler::~McpSessionHandler() {
 // Lifecycle
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::Start() {
-    if (running_) return;
-    running_ = true;
+    if (running_.load()) return;
+    running_.store(true);
     asio::post(io_ctx_, [self = shared_from_this()]() { self->MessageLoop(); });
 }
 
 void McpSessionHandler::Close() {
-    if (closed_) return;
-    closed_ = true;
-    running_ = false;
+    if (closed_.load()) return;
+    closed_.store(true);
+    running_.store(false);
 
     // Fail all pending requests
     {
@@ -68,14 +69,14 @@ void McpSessionHandler::Close() {
 // Message loop
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::MessageLoop() {
-    if (closed_) return;
+    if (closed_.load()) return;
 
     auto& channel = transport_->GetMessageChannel();
 
     channel.AsyncReceive(
         [self = shared_from_this()](asio::error_code ec, JsonRpcMessage msg) {
-            if (ec || self->closed_) {
-                if (!self->closed_) self->Close();
+            if (ec || self->closed_.load()) {
+                if (!self->closed_.load()) self->Close();
                 return;
             }
 
@@ -83,14 +84,14 @@ void McpSessionHandler::MessageLoop() {
             if (self->incoming_filters_) {
                 self->incoming_filters_->Execute(msg,
                     [self](const JsonRpcMessage& filtered_msg) {
-                        if (!self->closed_) self->DispatchMessage(filtered_msg);
+                        if (!self->closed_.load()) self->DispatchMessage(filtered_msg);
                     });
             } else {
                 self->DispatchMessage(msg);
             }
 
             // Continue loop
-            if (!self->closed_) {
+            if (!self->closed_.load()) {
                 asio::post(self->io_ctx_,
                     [self]() { self->MessageLoop(); });
             }
@@ -115,13 +116,10 @@ void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
 // Request handling
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
+    std::shared_lock<std::shared_mutex> lock(handler_mutex_);
     auto it = request_handlers_.find(req.method);
     if (it == request_handlers_.end()) {
-        JsonRpcErrorResponse err_resp;
-        err_resp.id = req.id;
-        err_resp.error.code = McpErrorCode::MethodNotFound;
-        err_resp.error.message = "method not found: " + req.method;
-        transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+        SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
 
@@ -146,14 +144,9 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
 
         if (!has_capability) {
-            JsonRpcErrorResponse err_resp;
-            err_resp.id = req.id;
-            err_resp.error.code = McpErrorCode::MissingRequiredClientCapability;
-            err_resp.error.message = "missing required client capability: " + *required_cap;
             nlohmann::json data = nlohmann::json::object();
             data["requiredCapabilities"] = nlohmann::json::array({*required_cap});
-            err_resp.error.data = std::move(data);
-            transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            SendErrorResponse(req.id, McpErrorCode::MissingRequiredClientCapability, "missing required client capability: " + *required_cap, std::move(data));
             return;
         }
     }
@@ -163,11 +156,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         auto rs_it = req.params->find("requestState");
         if (rs_it != req.params->end() && rs_it->is_string()) {
             if (!request_state_verifier_(rs_it->get<std::string>())) {
-                JsonRpcErrorResponse err_resp;
-                err_resp.id = req.id;
-                err_resp.error.code = McpErrorCode::InvalidParams;
-                err_resp.error.message = "invalid requestState";
-                transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+                SendErrorResponse(req.id, McpErrorCode::InvalidParams, "invalid requestState");
                 return;
             }
         }
@@ -176,43 +165,53 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     auto promise = std::make_shared<std::promise<nlohmann::json>>();
     auto future = promise->get_future();
 
-    it->second(req, std::move(*promise));
+    try {
+        it->second(req, std::move(*promise));
+    } catch (const std::exception& e) {
+        SendErrorResponse(req.id, McpErrorCode::InternalError, std::string("handler error: ") + e.what());
+        return;
+    }
 
     auto self = shared_from_this();
-    asio::post(io_ctx_, [self, req, future = std::move(future)]() mutable {
+    std::async(std::launch::async, [self, req, future = std::move(future)]() mutable {
         try {
             auto result = future.get();
-            if (self->closed_) return;
+            asio::post(self->io_ctx_, [self, req, result = std::move(result)]() mutable {
+                if (self->closed_.load()) return;
 
-            // Apply outgoing filters for the response
-            JsonRpcResponse resp;
-            resp.id = req.id;
-            resp.result = self->codec_->EncodeResult(req.method, result);
+                JsonRpcResponse resp;
+                resp.id = req.id;
+                resp.result = self->codec_->EncodeResult(req.method, result);
 
-            JsonRpcMessage response_msg{std::move(resp)};
+                JsonRpcMessage response_msg{std::move(resp)};
 
-            if (self->outgoing_filters_) {
-                self->outgoing_filters_->Execute(response_msg,
-                    [self](const JsonRpcMessage& filtered) {
-                        if (!self->closed_) self->transport_->SendMessageAsync(filtered);
-                    });
-            } else {
-                self->transport_->SendMessageAsync(response_msg);
-            }
+                if (self->outgoing_filters_) {
+                    self->outgoing_filters_->Execute(response_msg,
+                        [self](const JsonRpcMessage& filtered) {
+                            if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
+                        });
+                } else {
+                    self->transport_->SendMessageAsync(response_msg);
+                }
+            });
         } catch (const McpError& e) {
-            if (self->closed_) return;
-            JsonRpcErrorResponse err_resp;
-            err_resp.id = req.id;
-            err_resp.error.code = e.Code();
-            err_resp.error.message = e.what();
-            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            asio::post(self->io_ctx_, [self, req, e]() {
+                if (self->closed_.load()) return;
+                JsonRpcErrorResponse err_resp;
+                err_resp.id = req.id;
+                err_resp.error.code = e.Code();
+                err_resp.error.message = e.what();
+                self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            });
         } catch (const std::exception& e) {
-            if (self->closed_) return;
-            JsonRpcErrorResponse err_resp;
-            err_resp.id = req.id;
-            err_resp.error.code = McpErrorCode::InternalError;
-            err_resp.error.message = std::string("internal error: ") + e.what();
-            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            asio::post(self->io_ctx_, [self, req, e]() {
+                if (self->closed_.load()) return;
+                JsonRpcErrorResponse err_resp;
+                err_resp.id = req.id;
+                err_resp.error.code = McpErrorCode::InternalError;
+                err_resp.error.message = std::string("internal error: ") + e.what();
+                self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            });
         }
     });
 }
@@ -240,7 +239,8 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
 }
 
 void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
-    auto id = GetRequestIdKey(err.id);
+    if (!err.id) return;
+    auto id = GetRequestIdKey(*err.id);
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
     if (it != pending_.end()) {
@@ -267,6 +267,7 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
         return;
     }
 
+    std::shared_lock<std::shared_mutex> lock(handler_mutex_);
     auto it = notif_handlers_.find(notif.method);
     if (it != notif_handlers_.end()) {
         it->second(notif);
@@ -331,9 +332,10 @@ std::future<nlohmann::json> McpSessionHandler::SendRequest(
     // Apply outgoing filters for the request
     JsonRpcMessage request_msg{std::move(req)};
     if (outgoing_filters_) {
+        auto self = shared_from_this();
         outgoing_filters_->Execute(request_msg,
-            [this](const JsonRpcMessage& filtered) {
-                if (!closed_) transport_->SendMessageAsync(filtered);
+            [self](const JsonRpcMessage& filtered) {
+                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
             });
     } else {
         transport_->SendMessageAsync(request_msg);
@@ -354,9 +356,10 @@ void McpSessionHandler::SendNotification(std::string_view method, nlohmann::json
 
     JsonRpcMessage msg{std::move(notif)};
     if (outgoing_filters_) {
+        auto self = shared_from_this();
         outgoing_filters_->Execute(msg,
-            [this](const JsonRpcMessage& filtered) {
-                if (!closed_) transport_->SendMessageAsync(filtered);
+            [self](const JsonRpcMessage& filtered) {
+                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
             });
     } else {
         transport_->SendMessageAsync(msg);
@@ -365,9 +368,10 @@ void McpSessionHandler::SendNotification(std::string_view method, nlohmann::json
 
 void McpSessionHandler::SendMessage(JsonRpcMessage message) {
     if (outgoing_filters_) {
+        auto self = shared_from_this();
         outgoing_filters_->Execute(message,
-            [this](const JsonRpcMessage& filtered) {
-                if (!closed_) transport_->SendMessageAsync(filtered);
+            [self](const JsonRpcMessage& filtered) {
+                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
             });
     } else {
         transport_->SendMessageAsync(std::move(message));
@@ -378,8 +382,12 @@ void McpSessionHandler::SendMessage(JsonRpcMessage message) {
 // Meta helpers
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMeta& meta) {
-    if (meta.protocol_version < "2026-07-28")
+    if (meta.protocol_version < "2026-07-28") {
+        LogContext ctx;
+        ctx.method = "stamp-outgoing";
+        MCP_LOG_CTX(Trace, ctx, "skipped outgoing meta stamping: proto=" + meta.protocol_version);
         return;
+    }
 
     auto& meta_obj = body["_meta"];
     if (meta_obj.is_null()) {
@@ -392,11 +400,22 @@ void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMet
         meta_obj["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
     if (meta.log_level)
         meta_obj["io.modelcontextprotocol/logLevel"] = *meta.log_level;
+
+    LogContext ctx;
+    ctx.method = "stamp-outgoing";
+    MCP_LOG_CTX(Trace, ctx, "stamped outgoing _meta: proto=" + meta.protocol_version);
 }
 
 IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest& req) {
+    LogContext ctx;
+    ctx.request_id = GetRequestIdKey(req.id);
+    ctx.method = req.method;
+
     IncomingRequestMeta meta;
-    if (!req.meta) return meta;
+    if (!req.meta) {
+        MCP_LOG_CTX(Trace, ctx, "no _meta in request");
+        return meta;
+    }
 
     const auto& j = *req.meta;
 
@@ -422,6 +441,8 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     if (auto it = j.find("io.modelcontextprotocol/subscriptionId"); it != j.end())
         meta.subscription_id = it->get<std::string>();
 
+    MCP_LOG_CTX(Trace, ctx, "extracted incoming meta: proto=" + meta.protocol_version +
+        " has_client_info=" + (meta.client_info ? "yes" : "no"));
     return meta;
 }
 
@@ -491,6 +512,18 @@ void McpSessionHandler::NotifySubscribers(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Error response helper
+// ═══════════════════════════════════════════════════════════════════════
+void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<nlohmann::json> data) {
+    JsonRpcErrorResponse err_resp;
+    err_resp.id = id;
+    err_resp.error.code = code;
+    err_resp.error.message = std::string(message);
+    if (data) err_resp.error.data = std::move(*data);
+    transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Cancel handling
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
@@ -532,18 +565,22 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
 // Handler registration
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SetRequestHandler(std::string_view method, RequestHandler handler) {
+    std::unique_lock<std::shared_mutex> lock(handler_mutex_);
     request_handlers_[std::string(method)] = std::move(handler);
 }
 
 void McpSessionHandler::SetNotificationHandler(std::string_view method, NotificationHandler handler) {
+    std::unique_lock<std::shared_mutex> lock(handler_mutex_);
     notif_handlers_[std::string(method)] = std::move(handler);
 }
 
 void McpSessionHandler::RemoveRequestHandler(std::string_view method) {
+    std::unique_lock<std::shared_mutex> lock(handler_mutex_);
     request_handlers_.erase(std::string(method));
 }
 
 void McpSessionHandler::RemoveNotificationHandler(std::string_view method) {
+    std::unique_lock<std::shared_mutex> lock(handler_mutex_);
     notif_handlers_.erase(std::string(method));
 }
 

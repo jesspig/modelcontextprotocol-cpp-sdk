@@ -1,5 +1,6 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <windows.h>
+#include <processthreadsapi.h>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,10 @@ public:
     size_t Read(char* buffer, size_t size) override;
     size_t Write(const char* data, size_t size) override;
     void Close() override;
+    uintptr_t native_handle() const override { return (uintptr_t)handle_; }
+    bool WaitForData(int timeout_ms) override {
+        return WaitForSingleObject(handle_, timeout_ms) == WAIT_OBJECT_0;
+    }
 };
 
 class Win32Process : public ProcessHandle {
@@ -24,6 +29,7 @@ public:
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
     int WaitForExit(int timeout_ms) override;
+    uintptr_t native_handle() const override { return (uintptr_t)pi_.hProcess; }
 };
 } // anonymous namespace
 
@@ -85,7 +91,6 @@ int Win32Process::WaitForExit(int timeout_ms) {
 
 // Factory implementation
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
-    // Build command line
     std::string cmd_line = "cmd.exe /c \"" + info.command;
     for (const auto& arg : info.arguments) {
         cmd_line += " " + arg;
@@ -98,11 +103,16 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     sa.lpSecurityDescriptor = nullptr;
 
     HANDLE stdout_read = nullptr, stdout_write = nullptr;
-    CreatePipe(&stdout_read, &stdout_write, &sa, 0);
+    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
+        return CreatedProcess{};
     SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
 
     HANDLE stdin_read = nullptr, stdin_write = nullptr;
-    CreatePipe(&stdin_read, &stdin_write, &sa, 0);
+    if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0)) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        return CreatedProcess{};
+    }
     SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOA si = {};
@@ -112,23 +122,77 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     si.hStdInput = stdin_read;
     si.dwFlags |= STARTF_USESTDHANDLES;
 
+    // Build environment block
+    void* env_block = nullptr;
+    std::string env_block_str;
+    if (!info.environment_variables.empty() || !info.inherit_environment) {
+        if (info.inherit_environment) {
+            LPCH cur_env = GetEnvironmentStrings();
+            if (cur_env) {
+                LPCH end = cur_env;
+                while (*end || *(end + 1)) ++end;
+                env_block_str = std::string(cur_env, end - cur_env + 2);
+                FreeEnvironmentStrings(cur_env);
+            }
+        }
+        for (const auto& [key, val] : info.environment_variables) {
+            env_block_str += key + "=" + val + '\0';
+        }
+        env_block_str += '\0';
+        env_block = static_cast<void*>(env_block_str.data());
+    }
+
     PROCESS_INFORMATION pi = {};
     std::vector<char> cmd_buf(cmd_line.begin(), cmd_line.end());
     cmd_buf.push_back('\0');
 
     LPCSTR work_dir = info.working_directory.empty() ? nullptr : info.working_directory.c_str();
 
-    CreateProcessA(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
-                   CREATE_NO_WINDOW, nullptr, work_dir, &si, &pi);
+    BOOL success = CreateProcessA(
+        nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, env_block, work_dir, &si, &pi);
 
     CloseHandle(stdin_read);
     CloseHandle(stdout_write);
+
+    if (!success) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdin_write);
+        return CreatedProcess{};
+    }
 
     CreatedProcess result;
     result.process = std::make_unique<Win32Process>(pi);
     result.stdin_pipe = std::make_unique<Win32Pipe>(stdin_write);
     result.stdout_pipe = std::make_unique<Win32Pipe>(stdout_read);
     return result;
+}
+
+std::unique_ptr<PipeHandle> OpenStandardInput() {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    return std::make_unique<Win32Pipe>(h);
+}
+
+std::unique_ptr<PipeHandle> OpenStandardOutput() {
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    return std::make_unique<Win32Pipe>(h);
+}
+
+std::unique_ptr<PipeHandle> OpenStandardError() {
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    return std::make_unique<Win32Pipe>(h);
+}
+
+void SetThreadName(const char* name) {
+    typedef HRESULT(WINAPI* SetThreadDescriptionFunc)(HANDLE, PCWSTR);
+    auto set_thread_desc = (SetThreadDescriptionFunc)GetProcAddress(
+        GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
+    if (set_thread_desc) {
+        int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+        std::wstring wname(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
+        set_thread_desc(GetCurrentThread(), wname.c_str());
+    }
 }
 
 }} // namespace mcp::detail

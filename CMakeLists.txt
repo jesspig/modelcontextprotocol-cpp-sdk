@@ -72,10 +72,8 @@ set_property(TARGET mcp-transport PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BA
 # ====================================================================
 add_library(mcp-protocol STATIC)
 target_sources(mcp-protocol PRIVATE
-    src/protocol/Protocol.cpp
     src/protocol/WireCodec.cpp
-    src/protocol/McpSessionHandler.cpp
-    src/protocol/ClientResponseCache.cpp)
+    src/protocol/McpSessionHandler.cpp)
 target_link_libraries(mcp-protocol PUBLIC mcp-transport)
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -97,13 +95,14 @@ set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH
 add_library(mcp-client STATIC)
 target_sources(mcp-client PRIVATE
     src/client/McpClient.cpp
-    src/client/MrtrHelper.cpp
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
+    target_link_libraries(mcp-transport PUBLIC OpenSSL::SSL)
     target_compile_definitions(mcp-client PRIVATE MCP_HAVE_OPENSSL)
+    target_compile_definitions(mcp-transport PRIVATE MCP_HAVE_OPENSSL)
 endif()
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -117,6 +116,10 @@ target_sources(mcp-http PRIVATE
     src/http/HttpServer.cpp
     src/http/EventStore.cpp
     src/http/StreamableHttpServerTransport.cpp)
+target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
+if(WIN32)
+    target_link_libraries(mcp-http PUBLIC winhttp)
+endif()
 target_link_libraries(mcp-http PUBLIC mcp-transport)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})

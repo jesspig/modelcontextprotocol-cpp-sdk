@@ -1,6 +1,9 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/Transport.hpp>
+#include <mcp/transport/detail/PlatformIO.hpp>
 #include <asio/io_context.hpp>
 #include <atomic>
 #include <memory>
@@ -8,7 +11,7 @@
 
 namespace mcp {
 
-class StdioServerTransport : public TransportBase {
+class MCP_API StdioServerTransport : public TransportBase {
 public:
     explicit StdioServerTransport(asio::io_context& io_ctx);
     ~StdioServerTransport() override;
@@ -22,6 +25,8 @@ private:
 
     std::thread read_thread_;
     std::atomic<bool> running_{false};
+    std::unique_ptr<detail::PipeHandle> stdin_pipe_;
+    std::unique_ptr<detail::PipeHandle> stdout_pipe_;
 };
 
 } // namespace mcp

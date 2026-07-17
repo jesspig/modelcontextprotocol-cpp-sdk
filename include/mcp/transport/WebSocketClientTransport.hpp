@@ -4,8 +4,13 @@
 #include <mcp/JsonRpc.hpp>
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
+#ifdef MCP_HAVE_OPENSSL
+#include <asio/ssl.hpp>
+#endif
 
+#include <chrono>
 #include <memory>
+#include <queue>
 #include <string>
 
 namespace mcp {
@@ -20,7 +25,8 @@ public:
         std::string host,
         std::string port,
         std::string path = "/",
-        std::string name = "websocket");
+        std::string name = "websocket",
+        bool use_tls = false);
 
     ~WebSocketClientTransport() override;
 
@@ -34,6 +40,7 @@ private:
     std::string port_;
     std::string path_;
     std::string name_;
+    bool use_tls_;
 };
 
 // ── WebSocketTransport ──
@@ -69,6 +76,9 @@ private:
     std::mutex write_mutex_;
     std::condition_variable write_cv_;
     std::queue<std::string> write_queue_;
+
+    // PING/PONG timeout tracking
+    std::chrono::steady_clock::time_point last_pong_time_;
 };
 
 } // namespace mcp

@@ -3,6 +3,7 @@
 #include <mcp/McpTypes.hpp>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -43,22 +44,6 @@ public:
     virtual bool CancelTask(const std::string& task_id,
                             const std::optional<std::string>& reason) = 0;
     virtual bool SetTaskStatus(const std::string& task_id, TaskStatus status) = 0;
-};
-
-// ── InMemoryTaskStore — default implementation ──
-class InMemoryTaskStore : public IMcpTaskStore {
-public:
-    TaskState CreateTask(const std::string& task_id) override;
-    std::optional<TaskState> GetTask(const std::string& task_id) override;
-    bool UpdateTask(const std::string& task_id,
-                    const std::optional<nlohmann::json>& result) override;
-    bool CancelTask(const std::string& task_id,
-                    const std::optional<std::string>& reason) override;
-    bool SetTaskStatus(const std::string& task_id, TaskStatus status) override;
-
-private:
-    std::unordered_map<std::string, TaskState> tasks_;
-    std::mutex mutex_;
 };
 
 } // namespace mcp

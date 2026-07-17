@@ -1,4 +1,5 @@
 #include <mcp/client/auth/OAuthClientProvider.hpp>
+#include <mcp/detail/sha256.hpp>
 
 #include <asio/connect.hpp>
 #include <asio/ip/tcp.hpp>
@@ -6,12 +7,11 @@
 #include <asio/write.hpp>
 
 #ifdef MCP_HAVE_OPENSSL
-#include <openssl/evp.h>
+#include <asio/ssl.hpp>
 #include <openssl/rand.h>
-#else
-#include <random>
 #endif
 
+#include <random>
 #include <sstream>
 
 namespace mcp {
@@ -57,21 +57,8 @@ std::string GenerateCodeVerifier() {
 }
 
 std::string ComputeCodeChallenge(std::string_view code_verifier) {
-#ifdef MCP_HAVE_OPENSSL
-    std::vector<unsigned char> hash(EVP_MAX_MD_SIZE);
-    unsigned int hash_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, code_verifier.data(), code_verifier.size());
-    EVP_DigestFinal_ex(ctx, hash.data(), &hash_len);
-    EVP_MD_CTX_free(ctx);
-    return Base64UrlEncode(
-        std::string_view(reinterpret_cast<const char*>(hash.data()), hash_len));
-#else
-    // Without OpenSSL, return the raw verifier as challenge (S256 not available)
-    // This is NOT cryptographically secure — for production, install OpenSSL
-    return Base64UrlEncode(code_verifier);
-#endif
+    auto hash = detail::Sha256::Hash(code_verifier);
+    return Base64UrlEncode(hash);
 }
 
 } // namespace pkce
@@ -126,41 +113,77 @@ nlohmann::json OAuthClientProvider::HttpPost(
 
     asio::io_context io_ctx;
     asio::ip::tcp::resolver resolver(io_ctx);
-    asio::ip::tcp::socket socket(io_ctx);
+
+    bool use_tls = (url_str.substr(0, 8) == "https://");
+    std::string service = use_tls ? "443" : "80";
+
+    std::string body;
+    for (auto& [key, val] : form_data) {
+        if (!body.empty()) body += "&";
+        body += key + "=" + val;
+    }
+
+    std::string request =
+        "POST " + path + " HTTP/1.1\r\n"
+        "Host: " + host + "\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n" + body;
 
     try {
-        auto endpoints = resolver.resolve(host, "80");
-        asio::connect(socket, endpoints);
+        auto endpoints = resolver.resolve(host, service);
 
-        std::string body;
-        for (auto& [key, val] : form_data) {
-            if (!body.empty()) body += "&";
-            body += key + "=" + val;
+#ifdef MCP_HAVE_OPENSSL
+        if (use_tls) {
+            asio::ssl::context ctx(asio::ssl::context::tls);
+            ctx.set_default_verify_paths();
+            ctx.set_verify_mode(asio::ssl::verify_peer | asio::ssl::verify_fail_if_no_peer_cert);
+            ctx.set_verify_callback(asio::ssl::host_name_verification(host));
+            asio::ssl::stream<asio::ip::tcp::socket> ssl_socket(io_ctx, ctx);
+            asio::connect(ssl_socket.lowest_layer(), endpoints);
+            ssl_socket.handshake(asio::ssl::stream_base::client);
+            asio::write(ssl_socket, asio::buffer(request));
+
+            std::string response;
+            asio::error_code ec;
+            while (true) {
+                char buf[4096];
+                size_t len = ssl_socket.read_some(asio::buffer(buf), ec);
+                if (ec) break;
+                response.append(buf, len);
+            }
+
+            auto body_start = response.find("\r\n\r\n");
+            if (body_start == std::string::npos) return {};
+            auto json_str = response.substr(body_start + 4);
+            return nlohmann::json::parse(json_str, nullptr, false);
+        } else
+#endif
+        {
+#ifndef MCP_HAVE_OPENSSL
+            throw std::runtime_error(
+                "TLS is required for secure OAuth token exchange. "
+                "Install OpenSSL and reconfigure with -DMCP_HAVE_OPENSSL=ON.");
+#endif
+            asio::ip::tcp::socket socket(io_ctx);
+            asio::connect(socket, endpoints);
+            asio::write(socket, asio::buffer(request));
+
+            std::string response;
+            asio::error_code ec;
+            while (true) {
+                char buf[4096];
+                size_t len = socket.read_some(asio::buffer(buf), ec);
+                if (ec) break;
+                response.append(buf, len);
+            }
+
+            auto body_start = response.find("\r\n\r\n");
+            if (body_start == std::string::npos) return {};
+            auto json_str = response.substr(body_start + 4);
+            return nlohmann::json::parse(json_str, nullptr, false);
         }
-
-        std::string request =
-            "POST " + path + " HTTP/1.1\r\n"
-            "Host: " + host + "\r\n"
-            "Content-Type: application/x-www-form-urlencoded\r\n"
-            "Content-Length: " + std::to_string(body.size()) + "\r\n"
-            "Connection: close\r\n"
-            "\r\n" + body;
-
-        asio::write(socket, asio::buffer(request));
-
-        std::string response;
-        asio::error_code ec;
-        while (true) {
-            char buf[4096];
-            size_t len = socket.read_some(asio::buffer(buf), ec);
-            if (ec) break;
-            response.append(buf, len);
-        }
-
-        auto body_start = response.find("\r\n\r\n");
-        if (body_start == std::string::npos) return {};
-        auto json_str = response.substr(body_start + 4);
-        return nlohmann::json::parse(json_str, nullptr, false);
     } catch (...) {
         return {};
     }
@@ -194,6 +217,7 @@ bool OAuthClientProvider::Authenticate() {
 
 bool OAuthClientProvider::DiscoverMetadata() {
     OAuthMetadata meta;
+    meta.issuer = options_.server_url;
     meta.authorization_endpoint = options_.server_url + "/authorize";
     meta.token_endpoint = options_.server_url + "/token";
     metadata_ = std::move(meta);
@@ -202,6 +226,9 @@ bool OAuthClientProvider::DiscoverMetadata() {
 
 bool OAuthClientProvider::ValidateTokenIssuer(const nlohmann::json& response) const {
     if (!metadata_) return false;
+    if (metadata_->issuer.empty()) {
+        const_cast<OAuthMetadata&>(*metadata_).issuer = options_.server_url;
+    }
     auto it = response.find("iss");
     if (it == response.end()) {
         return true;
@@ -308,7 +335,9 @@ std::string OAuthClientProvider::GetAccessToken() {
     auto tokens = token_cache_->GetTokens();
     if (!tokens) return {};
     if (tokens->WillExpireSoon()) {
-        if (!tokens->refresh_token.empty()) RefreshTokens();
+        if (!tokens->refresh_token.empty()) {
+            if (!RefreshTokens()) return {};
+        }
         tokens = token_cache_->GetTokens();
     }
     return tokens ? tokens->access_token : std::string{};

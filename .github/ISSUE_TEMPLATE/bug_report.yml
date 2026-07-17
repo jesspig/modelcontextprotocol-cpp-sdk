@@ -1,0 +1,70 @@
+name: Bug Report
+description: Report a bug to help us improve
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: input
+    id: version
+    attributes:
+      label: SDK Version
+      description: What version of the MCP C++ SDK are you running?
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - STDIO
+        - SSE
+        - Streamable HTTP
+        - WebSocket
+        - InMemory
+  - type: dropdown
+    id: openssl
+    attributes:
+      label: OpenSSL Available
+      options:
+        - "Yes"
+        - "No"
+  - type: textarea
+    id: describe
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of the issue
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Create server with...
+        2. Call tool...
+        3. See error...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Please copy and paste any relevant log output. This will be automatically formatted.
+      render: shell
+  - type: input
+    id: protocol
+    attributes:
+      label: Protocol Version
+      description: Negotiated protocol version (e.g., 2025-11-25, 2026-07-28)

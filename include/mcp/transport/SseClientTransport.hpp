@@ -1,11 +1,13 @@
 #pragma once
 
+#include <mcp/Export.hpp>
+
 #include <mcp/Transport.hpp>
 #include <string>
 
 namespace mcp {
 
-class SseClientTransport : public IClientTransport {
+class MCP_API SseClientTransport : public IClientTransport {
 public:
     explicit SseClientTransport(std::string_view server_url, std::string_view name = {});
     ~SseClientTransport() override;

@@ -43,7 +43,7 @@
 | C++ 编译器    | C++17   | MSVC、Clang、GCC             |
 | asio          | 1.30.2  | 自动下载                      |
 | nlohmann-json | 3.11.3  | 自动下载                      |
-| OpenSSL       | (可选)  | OAuth PKCE 必需               |
+| OpenSSL       | (可选)  | TLS 必需（WebSocket、SSE HTTPS、OAuth）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 支持平台：**Windows** (MSVC、clang-cl)、**Linux** (GCC、Clang)、**macOS** (Clang)。
 

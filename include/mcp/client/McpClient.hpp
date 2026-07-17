@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/Export.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
 #include <mcp/client/ClientHandlers.hpp>
@@ -14,7 +15,7 @@
 namespace mcp {
 
 // ── McpClient (对应 C# McpClient) ──
-class McpClient {
+class MCP_API McpClient {
 public:
     // ── Factory ──
     // Create and connect. Blocks until negotiation completes.
