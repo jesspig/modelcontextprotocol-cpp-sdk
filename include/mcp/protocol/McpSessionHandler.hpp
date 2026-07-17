@@ -93,6 +93,9 @@ public:
         nlohmann::json params,
         std::optional<std::string> resource_uri = std::nullopt);
 
+    // ── Error helper ──
+    void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<nlohmann::json> data = std::nullopt);
+
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
 

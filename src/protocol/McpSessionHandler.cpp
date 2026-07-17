@@ -119,11 +119,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     std::shared_lock<std::shared_mutex> lock(handler_mutex_);
     auto it = request_handlers_.find(req.method);
     if (it == request_handlers_.end()) {
-        JsonRpcErrorResponse err_resp;
-        err_resp.id = req.id;
-        err_resp.error.code = McpErrorCode::MethodNotFound;
-        err_resp.error.message = "method not found: " + req.method;
-        transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+        SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
 
@@ -148,14 +144,9 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
 
         if (!has_capability) {
-            JsonRpcErrorResponse err_resp;
-            err_resp.id = req.id;
-            err_resp.error.code = McpErrorCode::MissingRequiredClientCapability;
-            err_resp.error.message = "missing required client capability: " + *required_cap;
             nlohmann::json data = nlohmann::json::object();
             data["requiredCapabilities"] = nlohmann::json::array({*required_cap});
-            err_resp.error.data = std::move(data);
-            transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+            SendErrorResponse(req.id, McpErrorCode::MissingRequiredClientCapability, "missing required client capability: " + *required_cap, std::move(data));
             return;
         }
     }
@@ -165,11 +156,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         auto rs_it = req.params->find("requestState");
         if (rs_it != req.params->end() && rs_it->is_string()) {
             if (!request_state_verifier_(rs_it->get<std::string>())) {
-                JsonRpcErrorResponse err_resp;
-                err_resp.id = req.id;
-                err_resp.error.code = McpErrorCode::InvalidParams;
-                err_resp.error.message = "invalid requestState";
-                transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+                SendErrorResponse(req.id, McpErrorCode::InvalidParams, "invalid requestState");
                 return;
             }
         }
@@ -181,11 +168,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     try {
         it->second(req, std::move(*promise));
     } catch (const std::exception& e) {
-        JsonRpcErrorResponse err_resp;
-        err_resp.id = req.id;
-        err_resp.error.code = McpErrorCode::InternalError;
-        err_resp.error.message = std::string("handler error: ") + e.what();
-        transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
+        SendErrorResponse(req.id, McpErrorCode::InternalError, std::string("handler error: ") + e.what());
         return;
     }
 
@@ -526,6 +509,18 @@ void McpSessionHandler::NotifySubscribers(
 
         transport_->SendMessageAsync(JsonRpcMessage{std::move(notif)});
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Error response helper
+// ═══════════════════════════════════════════════════════════════════════
+void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<nlohmann::json> data) {
+    JsonRpcErrorResponse err_resp;
+    err_resp.id = id;
+    err_resp.error.code = code;
+    err_resp.error.message = std::string(message);
+    if (data) err_resp.error.data = std::move(*data);
+    transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
 }
 
 // ═══════════════════════════════════════════════════════════════════════

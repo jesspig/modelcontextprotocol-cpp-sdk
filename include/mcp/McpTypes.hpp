@@ -256,19 +256,39 @@ struct Result {
 };
 
 // ====================================================================
-// Request params
+// Request params — shared types matching TS/C#/Python SDK patterns
 // ====================================================================
-struct ListToolsRequestParams {
+struct PaginatedRequestParams {
     std::optional<std::string> cursor;
     std::optional<RequestMeta> meta;
 };
-inline void to_json(nlohmann::json& j, const ListToolsRequestParams& v) {
+using ListToolsRequestParams = PaginatedRequestParams;
+using ListResourcesRequestParams = PaginatedRequestParams;
+using ListResourceTemplatesRequestParams = PaginatedRequestParams;
+using ListPromptsRequestParams = PaginatedRequestParams;
+inline void to_json(nlohmann::json& j, const PaginatedRequestParams& v) {
     j = nlohmann::json::object();
     if (v.cursor) j["cursor"] = *v.cursor;
     if (v.meta)   j["_meta"] = *v.meta;
 }
-inline void from_json(const nlohmann::json& j, ListToolsRequestParams& v) {
+inline void from_json(const nlohmann::json& j, PaginatedRequestParams& v) {
     if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
+    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
+}
+
+struct ResourceRequestParams {
+    std::string uri;
+    std::optional<RequestMeta> meta;
+};
+using ReadResourceRequestParams = ResourceRequestParams;
+using SubscribeRequestParams = ResourceRequestParams;
+using UnsubscribeRequestParams = ResourceRequestParams;
+inline void to_json(nlohmann::json& j, const ResourceRequestParams& v) {
+    j = nlohmann::json{{"uri", v.uri}};
+    if (v.meta) j["_meta"] = *v.meta;
+}
+inline void from_json(const nlohmann::json& j, ResourceRequestParams& v) {
+    v.uri = j.at("uri").get<std::string>();
     if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
 }
 
@@ -276,8 +296,8 @@ struct CallToolRequestParams {
     std::string name;
     std::optional<nlohmann::json> arguments;
     std::optional<RequestMeta> meta;
-    std::optional<nlohmann::json> input_responses;  // MRTR: responses to InputRequired requests
-    std::optional<std::string> request_state;        // MRTR: opaque state from server
+    std::optional<nlohmann::json> input_responses;
+    std::optional<std::string> request_state;
 };
 inline void to_json(nlohmann::json& j, const CallToolRequestParams& v) {
     j = nlohmann::json{{"name", v.name}};
@@ -293,88 +313,6 @@ inline void from_json(const nlohmann::json& j, CallToolRequestParams& v) {
     if (auto it = j.find("inputResponses"); it != j.end()) v.input_responses = *it;
     if (auto it = j.find("requestState"); it != j.end()) v.request_state = it->get<std::string>();
 }
-
-struct ReadResourceRequestParams {
-    std::string uri;
-    std::optional<RequestMeta> meta;
-};
-inline void to_json(nlohmann::json& j, const ReadResourceRequestParams& v) {
-    j = nlohmann::json{{"uri", v.uri}};
-    if (v.meta) j["_meta"] = *v.meta;
-}
-inline void from_json(const nlohmann::json& j, ReadResourceRequestParams& v) {
-    v.uri = j.at("uri").get<std::string>();
-    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
-}
-
-struct ListResourcesRequestParams {
-    std::optional<std::string> cursor;
-    std::optional<RequestMeta> meta;
-};
-inline void to_json(nlohmann::json& j, const ListResourcesRequestParams& v) {
-    j = nlohmann::json::object();
-    if (v.cursor) j["cursor"] = *v.cursor;
-    if (v.meta)   j["_meta"] = *v.meta;
-}
-inline void from_json(const nlohmann::json& j, ListResourcesRequestParams& v) {
-    if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
-    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
-}
-
-struct ListResourceTemplatesRequestParams {
-    std::optional<std::string> cursor;
-    std::optional<RequestMeta> meta;
-};
-inline void to_json(nlohmann::json& j, const ListResourceTemplatesRequestParams& v) {
-    j = nlohmann::json::object();
-    if (v.cursor) j["cursor"] = *v.cursor;
-    if (v.meta)   j["_meta"] = *v.meta;
-}
-inline void from_json(const nlohmann::json& j, ListResourceTemplatesRequestParams& v) {
-    if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
-    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
-}
-
-struct SubscribeRequestParams {
-    std::string uri;
-    std::optional<RequestMeta> meta;
-};
-inline void to_json(nlohmann::json& j, const SubscribeRequestParams& v) {
-    j = nlohmann::json{{"uri", v.uri}};
-    if (v.meta) j["_meta"] = *v.meta;
-}
-inline void from_json(const nlohmann::json& j, SubscribeRequestParams& v) {
-    v.uri = j.at("uri").get<std::string>();
-    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
-}
-
-struct UnsubscribeRequestParams {
-    std::string uri;
-    std::optional<RequestMeta> meta;
-};
-inline void to_json(nlohmann::json& j, const UnsubscribeRequestParams& v) {
-    j = nlohmann::json{{"uri", v.uri}};
-    if (v.meta) j["_meta"] = *v.meta;
-}
-inline void from_json(const nlohmann::json& j, UnsubscribeRequestParams& v) {
-    v.uri = j.at("uri").get<std::string>();
-    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
-}
-
-struct ListPromptsRequestParams {
-    std::optional<std::string> cursor;
-    std::optional<RequestMeta> meta;
-};
-inline void to_json(nlohmann::json& j, const ListPromptsRequestParams& v) {
-    j = nlohmann::json::object();
-    if (v.cursor) j["cursor"] = *v.cursor;
-    if (v.meta)   j["_meta"] = *v.meta;
-}
-inline void from_json(const nlohmann::json& j, ListPromptsRequestParams& v) {
-    if (auto it = j.find("cursor"); it != j.end()) v.cursor = it->get<std::string>();
-    if (auto it = j.find("_meta"); it != j.end())  v.meta = it->get<RequestMeta>();
-}
-
 struct GetPromptRequestParams {
     std::string name;
     std::optional<nlohmann::json> arguments;
@@ -676,14 +614,7 @@ inline void from_json(const nlohmann::json& j, DiscoverResult& v) {
     if (auto it = j.find("_meta"); it != j.end())      v.meta = *it;
 }
 
-struct PingResult : Result {};
-inline void to_json(nlohmann::json& j, const PingResult& v) {
-    j = nlohmann::json::object();
-    j["resultType"] = v.result_type;
-}
-inline void from_json(const nlohmann::json& j, PingResult& v) {
-    if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
-}
+using PingResult = EmptyResult;
 
 // ====================================================================
 // InputRequiredResult (MRTR)
@@ -887,7 +818,6 @@ inline void from_json(const nlohmann::json& j, ElicitResultTyped<T>& v) {
     if (auto it = j.find("content"); it != j.end()) v.content = it->get<T>();
 }
 
-// ── InputRequest 工厂方法 (对应 C# InputRequest.ForElicitation) ──
 inline nlohmann::json MakeInputRequestForElicitation(const ElicitRequestParams& params) {
     nlohmann::json j;
     j["method"] = methods::kElicit;
@@ -895,18 +825,15 @@ inline nlohmann::json MakeInputRequestForElicitation(const ElicitRequestParams& 
     return j;
 }
 
-// ── InputResponse 工厂方法 (对应 C# InputResponse.FromElicitResult) ──
 inline nlohmann::json MakeInputResponseFromElicitResult(const ElicitResult& result) {
     return result;
 }
 
-// 检查 JSON 是否为 InputRequired 结果
 inline bool IsInputRequiredResult(const nlohmann::json& j) {
     auto it = j.find("resultType");
     return it != j.end() && *it == "input_required";
 }
 
-// 从 response 中提取 InputRequests
 inline std::optional<InputRequests> ExtractInputRequests(const nlohmann::json& result) {
     auto it = result.find("inputRequests");
     if (it == result.end()) return std::nullopt;
@@ -1059,23 +986,8 @@ inline void from_json(const nlohmann::json& j, GetTaskResult& v) {
     if (auto it = j.find("_meta"); it != j.end())    v.meta = *it;
 }
 
-struct UpdateTaskResult : Result {};
-inline void to_json(nlohmann::json& j, const UpdateTaskResult& v) {
-    j = nlohmann::json::object();
-    j["resultType"] = v.result_type;
-}
-inline void from_json(const nlohmann::json& j, UpdateTaskResult& v) {
-    if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
-}
-
-struct CancelTaskResult : Result {};
-inline void to_json(nlohmann::json& j, const CancelTaskResult& v) {
-    j = nlohmann::json::object();
-    j["resultType"] = v.result_type;
-}
-inline void from_json(const nlohmann::json& j, CancelTaskResult& v) {
-    if (auto it = j.find("resultType"); it != j.end()) v.result_type = it->get<ResultType>();
-}
+using UpdateTaskResult = EmptyResult;
+using CancelTaskResult = EmptyResult;
 
 struct GetTaskRequestParams {
     std::string task_id;

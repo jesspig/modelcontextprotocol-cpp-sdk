@@ -28,28 +28,22 @@ enum class LoggingLevel {
 };
 
 inline void to_json(nlohmann::json& j, LoggingLevel l) {
-    switch (l) {
-        case LoggingLevel::Debug:     j = "debug";     break;
-        case LoggingLevel::Info:      j = "info";      break;
-        case LoggingLevel::Notice:    j = "notice";    break;
-        case LoggingLevel::Warning:   j = "warning";   break;
-        case LoggingLevel::Error:     j = "error";     break;
-        case LoggingLevel::Critical:  j = "critical";  break;
-        case LoggingLevel::Alert:     j = "alert";     break;
-        case LoggingLevel::Emergency: j = "emergency"; break;
-    }
+    static const char* names[] = {"debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"};
+    auto i = static_cast<int>(l);
+    j = (i >= 0 && i < 8) ? names[i] : "debug";
 }
 inline void from_json(const nlohmann::json& j, LoggingLevel& l) {
     auto s = j.get<std::string>();
-    if (s == "debug")         l = LoggingLevel::Debug;
-    else if (s == "info")     l = LoggingLevel::Info;
-    else if (s == "notice")   l = LoggingLevel::Notice;
-    else if (s == "warning")  l = LoggingLevel::Warning;
-    else if (s == "error")    l = LoggingLevel::Error;
-    else if (s == "critical") l = LoggingLevel::Critical;
-    else if (s == "alert")    l = LoggingLevel::Alert;
-    else if (s == "emergency")l = LoggingLevel::Emergency;
-    else throw std::runtime_error("unknown LoggingLevel: " + s);
+    static const std::pair<const char*, LoggingLevel> map[] = {
+        {"debug", LoggingLevel::Debug}, {"info", LoggingLevel::Info},
+        {"notice", LoggingLevel::Notice}, {"warning", LoggingLevel::Warning},
+        {"error", LoggingLevel::Error}, {"critical", LoggingLevel::Critical},
+        {"alert", LoggingLevel::Alert}, {"emergency", LoggingLevel::Emergency},
+    };
+    for (auto& [name, level] : map) {
+        if (s == name) { l = level; return; }
+    }
+    throw std::runtime_error("unknown LoggingLevel: " + s);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
