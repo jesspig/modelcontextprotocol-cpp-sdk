@@ -15,7 +15,7 @@ namespace mcp {
 
 // ── Connect mode ──
 enum class ConnectMode {
-    Auto,      // probe server/discover �?fallback initialize
+    Auto,      // probe server/discover then fallback initialize
     Legacy,    // force initialize handshake
     Pin,       // pin to specific protocol version
 };

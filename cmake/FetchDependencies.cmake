@@ -28,7 +28,9 @@ FetchContent_Declare(asio
     SYSTEM)
 
 cmake_policy(PUSH)
-cmake_policy(SET CMP0169 OLD)
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
 FetchContent_GetProperties(asio)
 if(NOT asio_POPULATED)
     FetchContent_Populate(asio)

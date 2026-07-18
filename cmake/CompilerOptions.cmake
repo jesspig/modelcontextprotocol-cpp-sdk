@@ -2,7 +2,6 @@
 # Compiler-specific flags — auto-detected from CMAKE_CXX_COMPILER_ID
 # 优先级: Clang(clang-cl) > MSVC(cl.exe) > GCC > fallback
 # ====================================================================
-include(Platform)
 
 # ── Clang (including clang-cl on Windows) ──
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
