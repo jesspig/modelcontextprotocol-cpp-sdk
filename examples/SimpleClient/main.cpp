@@ -7,6 +7,7 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 
 #include <iostream>
+#include <thread>
 
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;

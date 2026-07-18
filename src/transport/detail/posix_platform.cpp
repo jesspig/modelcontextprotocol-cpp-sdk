@@ -164,7 +164,7 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
         // Change working directory if specified
         if (!info.working_directory.empty()) {
-            chdir(info.working_directory.c_str());
+            (void)chdir(info.working_directory.c_str());
         }
 
         // Build argv
@@ -182,8 +182,7 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         if (has_custom_env) {
             std::vector<std::string> env_strings;
             if (info.inherit_environment) {
-                extern char** environ;
-                for (char** e = environ; *e; ++e) {
+                for (char** e = ::environ; *e; ++e) {
                     env_strings.push_back(*e);
                 }
             }
