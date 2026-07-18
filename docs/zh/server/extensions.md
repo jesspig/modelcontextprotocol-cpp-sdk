@@ -1,44 +1,35 @@
 # 扩展
 
-扩展（SEP-2133）允许可插拔模块贡献工具、资源以及拦截协议调用。
+协议扩展通过 `ClientCapabilities` 和 `ServerCapabilities` 上的 `extensions` 映射进行协商。每个条目将扩展标识符映射到其配置值。
 
-## 定义扩展
+## 服务端
 
 ```cpp
-class MyExtension : public Extension {
-public:
-    std::string Identifier() const override {
-        return "com.example/my-extension";
-    }
-
-    std::vector<std::shared_ptr<McpServerTool>> Tools() override {
-        auto tool = McpServerTool::Create("my_tool",
-            [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-                CallToolResult result;
-                result.content.push_back(TextContent{"text", "来自扩展的问候"});
-                return result;
-            },
-            ToolOptions{}.Description("来自扩展的工具"));
-        return {tool};
-    }
-
-    bool InterceptToolCall(
-        const RequestContext<CallToolRequestParams>& ctx,
-        CallToolResult& result) override {
-        // 记录或修改工具调用
-        return true; // 继续处理
-    }
+ServerCapabilities caps;
+caps.extensions["io.modelcontextprotocol/tasks"] = {
+    {"supported", true},
+    {"version", "1.0.0"}
 };
 
-// 在服务端上注册
-server->RegisterExtension(std::make_shared<MyExtension>());
+auto server = McpServer::Create(transport,
+    ServerOptions{}.Capabilities(caps));
 ```
 
-## 扩展接口
+## 客户端
 
-| 方法 | 用途 |
-|--------|---------|
-| `Identifier()` | 唯一反向 DNS 名称（例如 `"io.modelcontextprotocol/tasks"`） |
-| `Tools()` | 贡献的工具实例 |
-| `Methods()` | 自定义 JSON-RPC 方法处理器 |
-| `InterceptToolCall()` | 工具调用的前置/后置处理 |
+```cpp
+ClientCapabilities caps;
+caps.extensions["io.modelcontextprotocol/tasks"] = {
+    {"supported", true}
+};
+
+auto client = McpClient::Create(transport,
+    ClientOptions{}.Capabilities(caps));
+```
+
+## 扩展约定
+
+| 字段 | 说明 |
+|-------|-------------|
+| 键 | 反向 DNS 标识符（例如 `"io.modelcontextprotocol/tasks"`） |
+| 值 | 包含扩展配置的自由格式 JSON 对象 |

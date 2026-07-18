@@ -16,7 +16,7 @@ auto oauth = std::make_shared<OAuthClientProvider>(
     "https://auth.server.com/.well-known/oauth-authorization-server",
     "client-id");
 
-client->SetOAuthProvider(oauth);
+auto client = McpClient::Create(transport, options, &io_ctx, oauth);
 ```
 
 ## Token Cache
@@ -36,8 +36,4 @@ oauth_opts.token_cache = token_cache;
 
 ## Requirements
 
-OAuth PKCE requires OpenSSL. Enable via:
-
-```bash
-cmake --preset debug -DMCP_HAVE_OPENSSL=ON
-```
+OAuth PKCE requires OpenSSL. Install it (`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`) and the build system will auto-detect it.

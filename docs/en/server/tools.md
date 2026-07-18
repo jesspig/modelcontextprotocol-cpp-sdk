@@ -46,7 +46,7 @@ result.structured_content = nlohmann::json{
 };
 ```
 
-The `structured_content` field is a 2026-07-28 protocol feature. Use `ToolOptions{}.StructuredContent(true)` to opt in.
+The `structured_content` field is a 2026-07-28 protocol feature. Set `ToolOptions{}.use_structured_content = true` to opt in.
 
 ## Input Schema
 

@@ -5,7 +5,9 @@
 ## 创建客户端
 
 ```cpp
-auto transport = std::make_shared<StdioClientTransport>("path/to/server");
+StdioClientTransportOptions transport_opts;
+transport_opts.command = "path/to/server";
+auto transport = std::make_shared<StdioClientTransport>(transport_opts);
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
@@ -20,6 +22,14 @@ auto client = McpClient::Create(transport, opts);
 | `capabilities` | `optional<ClientCapabilities>` | 声明的能力 |
 | `connect_mode` | `ConnectMode` | `Auto`（发现 → 初始化）、`Legacy`、`Pin` |
 | `initialization_timeout` | `chrono::seconds` | 握手超时 |
+| `protocol_version` | `optional<string>` | 固定到特定协议版本 |
+| `discover_probe_timeout` | `chrono::seconds` | 服务发现探测超时（默认 5s） |
+| `supported_protocol_versions` | `vector<string>` | 客户端声明的协议版本 |
+| `input_required_config` | `InputRequiredConfig` | elicitation 响应的配置 |
+| `cache_config` | `CacheConfig` | 客户端缓存配置 |
+| `extensions` | `map<string, json>` | 协议扩展声明 |
+| `enforce_strict_capabilities` | `bool` | 拒绝未知能力（默认 true） |
+| `list_max_pages` | `size_t` | 分页列表操作的最大页数（默认 10） |
 
 ## 发起请求
 

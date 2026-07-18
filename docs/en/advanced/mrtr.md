@@ -36,7 +36,7 @@ server->RegisterTool("order_item",
         // Requires user confirmation
         ElicitRequestParams confirm;
         confirm.message = "Confirm order for $" + amount + "?";
-        auto elicit_result = server.Elicit(confirm).get();
+        auto elicit_result = server->Elicit(confirm).get();
 
         CallToolResult result;
         result.content.push_back(TextContent{"text",

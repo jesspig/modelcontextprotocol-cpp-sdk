@@ -8,8 +8,6 @@
 
 - **工具**：`get_forecast` — 获取某个地点的天气预报
 - **工具**：`get_alerts` — 获取某个地区的天气预警
-- **资源**：`weather:///{location}/current` — 当前天气状况
-- **资源模板**：`weather:///{location}/forecast` — 预报数据
 
 ## 运行
 
@@ -24,6 +22,5 @@ build/debug/examples/WeatherServer/WeatherServer
 WeatherServer 演示了：
 
 1. **外部 API 集成** — 在工具处理程序中调用 HTTP 端点
-2. **资源模板** — URI 变量提取（`{location}`）
-3. **结构化内容** — 在文本响应旁返回 JSON 数据
-4. **错误处理** — 对无效位置返回结构化错误
+2. **结构化内容** — 在文本响应旁返回 JSON 数据
+3. **错误处理** — 对无效位置返回结构化错误

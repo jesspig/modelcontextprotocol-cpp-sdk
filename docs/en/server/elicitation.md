@@ -45,25 +45,12 @@ if (result.is_accepted() && result.content) {
 }
 ```
 
-## URL Mode
-
-Requests the client to navigate to a URL (out-of-band input):
-
-```cpp
-ElicitRequestParams params;
-params.mode = "url";
-params.elicitation_id = "auth-123";
-params.url = "https://auth.example.com/authorize?state=abc";
-params.message = "Please authenticate to proceed";
-auto result = server->Elicit(params);
-```
-
 ## Elicitation Result
 
 The result has a three-value action:
 
 | Action | Meaning |
 |--------|---------|
-| `accept` | User submitted the form / confirmed the URL |
+| `accept` | User submitted the form |
 | `decline` | User explicitly declined |
 | `cancel` | User dismissed without action (default) |
