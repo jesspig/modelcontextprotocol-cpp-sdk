@@ -164,7 +164,8 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
         // Change working directory if specified
         if (!info.working_directory.empty()) {
-            (void)chdir(info.working_directory.c_str());
+            if (chdir(info.working_directory.c_str()) != 0)
+                _exit(127);
         }
 
         // Build argv
@@ -182,7 +183,12 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         if (has_custom_env) {
             std::vector<std::string> env_strings;
             if (info.inherit_environment) {
+#ifdef __APPLE__
+                extern char** environ;
+                for (char** e = environ; *e; ++e) {
+#else
                 for (char** e = ::environ; *e; ++e) {
+#endif
                     env_strings.push_back(*e);
                 }
             }

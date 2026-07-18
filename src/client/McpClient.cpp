@@ -160,7 +160,6 @@ std::unique_ptr<McpClient> McpClient::Create(
     auto client = std::unique_ptr<McpClient>(
         new McpClient(std::move(transport), options));
     client->negotiation_ = client->NegotiateProtocol();
-    client->negotiated_ = true;
     return client;
 }
 
