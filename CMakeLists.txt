@@ -45,7 +45,7 @@ add_library(mcp-core INTERFACE)
 target_include_directories(mcp-core INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(mcp-core INTERFACE nlohmann_json::nlohmann_json)
+target_link_libraries(mcp-core INTERFACE nlohmann_json::nlohmann_json Threads::Threads)
 
 if(MCP_WERROR)
     if(MSVC)

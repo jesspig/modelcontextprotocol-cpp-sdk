@@ -124,32 +124,6 @@ int PosixProcess::WaitForExit(int timeout_ms) {
     return -1;
 }
 
-// Resolve command to an absolute path using PATH, or return as-is
-// if it contains a path separator or is not found.
-std::string ResolvePath(const std::string& command) {
-    if (command.find('/') != std::string::npos) {
-        return command;
-    }
-    const char* path_env = getenv("PATH");
-    if (!path_env) return command;
-
-    std::string path(path_env);
-    size_t start = 0, end;
-    while ((end = path.find(':', start)) != std::string::npos) {
-        if (end > start) {
-            std::string full = path.substr(start, end - start) + "/" + command;
-            if (access(full.c_str(), X_OK) == 0) return full;
-        }
-        start = end + 1;
-    }
-    // Last component (or the entire string if no colon)
-    if (start < path.size()) {
-        std::string full = path.substr(start) + "/" + command;
-        if (access(full.c_str(), X_OK) == 0) return full;
-    }
-    return command;
-}
-
 } // anonymous namespace
 
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
@@ -285,7 +259,11 @@ void SetThreadName(const char* name) {
     char truncated[16];
     std::strncpy(truncated, name, sizeof(truncated) - 1);
     truncated[sizeof(truncated) - 1] = '\0';
+#ifdef __APPLE__
+    pthread_setname_np(truncated);
+#else
     pthread_setname_np(pthread_self(), truncated);
+#endif
 }
 
 }} // namespace mcp::detail

@@ -64,6 +64,10 @@ else()
     message(WARNING "[mcp] Unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
+# ── Threads — required for std::thread on macOS/Clang (Unity builds) ──
+include(FindThreads)
+find_package(Threads REQUIRED)
+
 # ── ASIO ──
 add_compile_definitions(ASIO_STANDALONE ASIO_NO_DEPRECATED)
 
