@@ -34,6 +34,8 @@ server->Run();
 | `validate_tool_output` | `bool` | Enable JSON Schema output validation |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | Task persistence backend |
 | `request_state_verifier` | `function<bool(string_view)>` | HMAC/AEAD verifier for MRTR |
+| `cache_hints` | `bool` | Enable CacheHint support (default false) |
+| `input_required_config` | `InputRequiredConfig` | Configuration for MRTR/elicitation behavior |
 
 ## Lifecycle
 

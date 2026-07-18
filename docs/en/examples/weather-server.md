@@ -8,8 +8,6 @@ Source: [`examples/WeatherServer/`](https://github.com/modelcontextprotocol/cpp-
 
 - **Tool**: `get_forecast` — fetches weather forecast for a location
 - **Tool**: `get_alerts` — fetches weather alerts for a region
-- **Resource**: `weather:///{location}/current` — current conditions
-- **Resource Template**: `weather:///{location}/forecast` — forecast data
 
 ## Running
 
@@ -24,6 +22,5 @@ build/debug/examples/WeatherServer/WeatherServer
 The WeatherServer demonstrates:
 
 1. **External API integration** — calling HTTP endpoints from tool handlers
-2. **Resource templates** — URI variable extraction (`{location}`)
-3. **Structured content** — returning JSON data alongside text responses
-4. **Error handling** — returning structured errors for invalid locations
+2. **Structured content** — returning JSON data alongside text responses
+3. **Error handling** — returning structured errors for invalid locations

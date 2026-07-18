@@ -5,7 +5,9 @@ The `McpClient` class connects to MCP servers, negotiates protocol versions, and
 ## Creating a Client
 
 ```cpp
-auto transport = std::make_shared<StdioClientTransport>("path/to/server");
+StdioClientTransportOptions transport_opts;
+transport_opts.command = "path/to/server";
+auto transport = std::make_shared<StdioClientTransport>(transport_opts);
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
@@ -20,6 +22,14 @@ auto client = McpClient::Create(transport, opts);
 | `capabilities` | `optional<ClientCapabilities>` | Declared capabilities |
 | `connect_mode` | `ConnectMode` | `Auto` (discover → initialize), `Legacy`, `Pin` |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout |
+| `protocol_version` | `optional<string>` | Pin to a specific protocol version |
+| `discover_probe_timeout` | `chrono::seconds` | Server discovery probe timeout (default 5s) |
+| `supported_protocol_versions` | `vector<string>` | Protocol versions the client advertises |
+| `input_required_config` | `InputRequiredConfig` | Configuration for elicitation responses |
+| `cache_config` | `CacheConfig` | Client-side caching configuration |
+| `extensions` | `map<string, json>` | Protocol extension declarations |
+| `enforce_strict_capabilities` | `bool` | Reject unknown capabilities (default true) |
+| `list_max_pages` | `size_t` | Max pages for paginated list operations (default 10) |
 
 ## Making Requests
 

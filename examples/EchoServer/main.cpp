@@ -72,6 +72,7 @@ int main() {
         PromptOptions{}.Description("Capitalize the input text"),
         [](const std::string& name,
            const std::optional<nlohmann::json>& args) -> GetPromptResult {
+            (void)name;
             std::string text;
             if (args && args->contains("text")) {
                 text = (*args)["text"].get<std::string>();

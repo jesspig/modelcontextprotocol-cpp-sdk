@@ -131,7 +131,7 @@ StdioClientTransport::StdioClientTransport(const StdioClientTransportOptions& op
 
 StdioClientTransport::~StdioClientTransport() = default;
 
-std::string_view StdioClientTransport::Name() const { return options_.name.empty() ? "stdio" : options_.name; }
+std::string_view StdioClientTransport::Name() const { return options_.name.empty() ? std::string_view{"stdio"} : options_.name; }
 
 std::shared_ptr<ITransport> StdioClientTransport::Connect() {
     detail::ProcessStartInfo info;

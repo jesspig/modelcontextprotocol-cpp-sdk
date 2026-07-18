@@ -173,7 +173,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     }
 
     auto self = shared_from_this();
-    std::async(std::launch::async, [self, req, future = std::move(future)]() mutable {
+    [[maybe_unused]] auto _ = std::async(std::launch::async, [self, req, future = std::move(future)]() mutable {
         try {
             auto result = future.get();
             asio::post(self->io_ctx_, [self, req, result = std::move(result)]() mutable {
@@ -407,8 +407,9 @@ void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMet
 }
 
 IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest& req) {
+    auto rid_key = GetRequestIdKey(req.id);
     LogContext ctx;
-    ctx.request_id = GetRequestIdKey(req.id);
+    ctx.request_id = rid_key;
     ctx.method = req.method;
 
     IncomingRequestMeta meta;

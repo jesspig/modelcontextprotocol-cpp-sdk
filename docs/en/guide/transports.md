@@ -15,7 +15,7 @@ ITransport (session connection)
   └── TransportBase (3-state: Initial → Connected → Disconnected)
       ├── StdioServerTransport
       ├── InMemoryTransportImpl
-      ├── StreamableHttpServerTransport (+ IStatelessTransport)
+      ├── StreamableHttpServerTransport
       └── WebSocketTransport
 
 IClientTransport (connection factory)
@@ -25,8 +25,6 @@ IClientTransport (connection factory)
   └── WebSocketClientTransport
 ```
 
-New code should use `ITransport`/`TransportBase`/`IClientTransport`. The old `Transport`/`ClientTransport` in `Transport.hpp` are deprecated.
-
 ## Stateless Transport
 
-`StreamableHttpServerTransport` implements `IStatelessTransport`. When detected, the server disables MRTR (`InputRequiredResult`) — requests must carry full context via `_meta` and `requestState` (opaque token for cross-request state recovery).
+`StreamableHttpServerTransport` has `IsStateless() == true`. When detected, the server disables MRTR (`InputRequiredResult`) — requests must carry full context via `_meta` and `requestState` (opaque token for cross-request state recovery).

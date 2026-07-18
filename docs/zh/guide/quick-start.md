@@ -58,7 +58,9 @@ int main() {
 using namespace mcp;
 
 int main() {
-    auto transport = std::make_shared<StdioClientTransport>("./my-server");
+    StdioClientTransportOptions transport_opts;
+    transport_opts.command = "./my-server";
+    auto transport = std::make_shared<StdioClientTransport>(transport_opts);
 
     ClientOptions opts;
     opts.client_info = Implementation{"MyClient", "1.0.0"};

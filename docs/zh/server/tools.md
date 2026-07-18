@@ -46,7 +46,7 @@ result.structured_content = nlohmann::json{
 };
 ```
 
-`structured_content` 字段是 2026-07-28 协议特性。使用 `ToolOptions{}.StructuredContent(true)` 选择启用。
+`structured_content` 字段是 2026-07-28 协议特性。设置 `ToolOptions{}.use_structured_content = true` 以选择启用。
 
 ## 输入模式
 

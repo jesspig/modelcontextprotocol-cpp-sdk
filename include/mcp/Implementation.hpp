@@ -13,10 +13,10 @@ namespace mcp {
 struct Implementation {
     std::string name;
     std::string version;
-    std::optional<std::string> title;
-    std::vector<Icon> icons;
-    std::optional<std::string> description;
-    std::optional<std::string> website_url;
+    std::optional<std::string> title = std::nullopt;
+    std::vector<Icon> icons = {};
+    std::optional<std::string> description = std::nullopt;
+    std::optional<std::string> website_url = std::nullopt;
 };
 
 inline void to_json(nlohmann::json& j, const Implementation& v) {

@@ -1,16 +1,45 @@
 cmake_minimum_required(VERSION 3.28...4.2)
 
 # ── 编译器自动探测 (project 之前) ──
-# 优先级: clang-cl (ThinLTO 支持) > 系统默认
-if(WIN32 AND NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
-    find_program(MCP_CLANG_CL NAMES clang-cl)
-    if(MCP_CLANG_CL)
-        set(CMAKE_C_COMPILER "${MCP_CLANG_CL}")
-        set(CMAKE_CXX_COMPILER "${MCP_CLANG_CL}")
-        set(CMAKE_CXX_FLAGS "--target=x86_64-pc-windows-msvc" CACHE STRING "")
-        message(STATUS "[mcp] Auto-detected: clang-cl (${MCP_CLANG_CL})")
+# 全平台统一: Clang > 系统默认
+#   Win:   clang-cl (VS or standalone LLVM) > 系统默认
+#   Linux: clang++-N + clang-N (匹配版本) > clang++ + clang > 系统默认
+#   macOS: clang++ (Apple Clang, 系统自带) > 系统默认
+if(NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
+    if(WIN32)
+        find_program(MCP_CLANG_CL NAMES clang-cl
+            PATHS "C:/Program Files/LLVM/bin"
+                  "C:/Program Files (x86)/LLVM/bin")
+        if(MCP_CLANG_CL)
+            set(CMAKE_C_COMPILER "${MCP_CLANG_CL}")
+            set(CMAKE_CXX_COMPILER "${MCP_CLANG_CL}")
+            set(CMAKE_CXX_FLAGS "--target=x86_64-pc-windows-msvc" CACHE STRING "")
+            message(STATUS "[mcp] Auto-detected: clang-cl (${MCP_CLANG_CL})")
+        else()
+            message(STATUS "[mcp] No explicit compiler set, using system default")
+        endif()
     else()
-        message(STATUS "[mcp] No explicit compiler set, using system default")
+        # Linux/macOS: 优先 clang++-N + 匹配版本 clang-N
+        find_program(MCP_CLANGXX NAMES clang++-19 clang++-18 clang++-17 clang++-16 clang++)
+        if(MCP_CLANGXX)
+            set(CMAKE_CXX_COMPILER "${MCP_CLANGXX}")
+            get_filename_component(_cxx_name "${MCP_CLANGXX}" NAME)
+            # 提取版本后缀 (e.g. clang++-18 → 18, clang++ → 空)
+            if(_cxx_name MATCHES "^clang\\+\\+-(.+)$")
+                set(_ver "${CMAKE_MATCH_1}")
+                find_program(MCP_CLANG NAMES "clang-${_ver}" "clang")
+            else()
+                find_program(MCP_CLANG NAMES "clang")
+            endif()
+            if(MCP_CLANG)
+                set(CMAKE_C_COMPILER "${MCP_CLANG}")
+                message(STATUS "[mcp] Auto-detected: clang++ / clang (${MCP_CLANGXX}, ${MCP_CLANG})")
+            else()
+                message(STATUS "[mcp] Auto-detected: clang++ (${MCP_CLANGXX}), C compiler using system default")
+            endif()
+        else()
+            message(STATUS "[mcp] No explicit compiler set, using system default")
+        endif()
     endif()
 endif()
 
@@ -22,6 +51,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ── 模块包含 ──
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# ── 1. Ninja 探测
+#     如果 Ninja 可用但当前生成器不是 Ninja，警告用户
+find_program(MCP_NINJA NAMES ninja)
+if(MCP_NINJA AND CMAKE_GENERATOR MATCHES "Ninja")
+    message(STATUS "[mcp] Ninja: ${MCP_NINJA}")
+elseif(MCP_NINJA AND NOT CMAKE_GENERATOR MATCHES "Ninja")
+    message(WARNING "[mcp] Ninja available (${MCP_NINJA}) but generator is '${CMAKE_GENERATOR}'. "
+        "Use -G Ninja for faster builds.")
+else()
+    message(STATUS "[mcp] Ninja: not found (using ${CMAKE_GENERATOR})")
+endif()
+
 include(Platform)              # 平台/架构/CI 检测
 include(BuildOptimization)     # Unity batch + Ninja pools (CPU+memory aware)
 include(CompilerOptions)       # 编译器特定标志
@@ -30,6 +71,7 @@ include(FetchDependencies)     # FetchContent 依赖
 include(Lto)                   # ThinLTO / LTCG / IPO (Release)
 
 # ── lld-link 自动检测 (MSVC cl.exe + Ninja 时加速链接) ──
+# clang-cl 已经自带 lld，不需额外配置
 if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHES "Ninja")
     find_program(_lld_link NAMES lld-link)
     if(_lld_link)
@@ -45,7 +87,16 @@ add_library(mcp-core INTERFACE)
 target_include_directories(mcp-core INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(mcp-core INTERFACE nlohmann_json::nlohmann_json)
+target_link_libraries(mcp-core INTERFACE nlohmann_json::nlohmann_json Threads::Threads)
+
+if(MCP_WERROR)
+    if(MSVC)
+        target_compile_options(mcp-core INTERFACE /WX)
+    else()
+        target_compile_options(mcp-core INTERFACE -Werror)
+    endif()
+    message(STATUS "[mcp] Werror enabled")
+endif()
 
 # ====================================================================
 # mcp-transport — STATIC

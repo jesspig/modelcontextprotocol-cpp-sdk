@@ -45,25 +45,12 @@ if (result.is_accepted() && result.content) {
 }
 ```
 
-## URL 模式
-
-请求客户端导航到 URL（带外输入）：
-
-```cpp
-ElicitRequestParams params;
-params.mode = "url";
-params.elicitation_id = "auth-123";
-params.url = "https://auth.example.com/authorize?state=abc";
-params.message = "请进行身份验证以继续";
-auto result = server->Elicit(params);
-```
-
 ## 启发式收集结果
 
 结果有三种取值：
 
 | 动作 | 含义 |
 |--------|---------|
-| `accept` | 用户提交了表单 / 确认了 URL |
+| `accept` | 用户提交了表单 |
 | `decline` | 用户明确拒绝 |
 | `cancel` | 用户未操作直接关闭（默认） |

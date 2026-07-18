@@ -34,6 +34,8 @@ server->Run();
 | `validate_tool_output` | `bool` | 启用 JSON Schema 输出验证 |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | 任务持久化后端 |
 | `request_state_verifier` | `function<bool(string_view)>` | MRTR 的 HMAC/AEAD 验证器 |
+| `cache_hints` | `bool` | 启用 CacheHint 支持（默认 false） |
+| `input_required_config` | `InputRequiredConfig` | MRTR/elicitation 行为的配置 |
 
 ## 生命周期
 

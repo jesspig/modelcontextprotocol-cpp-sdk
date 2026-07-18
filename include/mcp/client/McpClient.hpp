@@ -138,7 +138,6 @@ private:
 
     // Negotiation result
     NegotiationResult negotiation_;
-    bool negotiated_{false};
 
     // Server-to-client handlers
     std::optional<SamplingHandler> sampling_handler_;

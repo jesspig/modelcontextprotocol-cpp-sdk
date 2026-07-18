@@ -254,7 +254,7 @@ void StreamableHttpServerTransport::HandlePost(
 
 // ── Handle GET (SSE stream) ──
 void StreamableHttpServerTransport::HandleGet(
-    const HttpRequest& req, HttpResponse& resp)
+    const HttpRequest& /*req*/, HttpResponse& resp)
 {
     // SSE stream response
     resp.is_sse = true;

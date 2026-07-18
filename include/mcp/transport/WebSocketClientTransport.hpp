@@ -8,10 +8,14 @@
 #include <asio/ssl.hpp>
 #endif
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 
 namespace mcp {
 

@@ -94,7 +94,7 @@ Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-pr
 - **mcp-core** — Header-only. All MCP protocol types (`Tool`, `Resource`, `Prompt`, `ElicitResult`, etc.), JSON-RPC message structures, error codes, capabilities, transport interfaces.
 - **mcp-transport** — Transport implementations: stdio (client/server), SSE client, WebSocket (simplified), in-memory for testing.
 - **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation, `MessageFilter` pipeline.
-- **mcp-server** — `McpServer` with tool/resource/prompt registration, `Extension` framework, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation.
+- **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation.
 - **mcp-client** — `McpClient` with server discovery, version negotiation, OAuth (PKCE/DCR), MRTR driver, tool cache, `FileTokenCache`.
 - **mcp-http** — HTTP server for Streamable HTTP mode and SSE endpoint serving.
 
@@ -152,7 +152,9 @@ int main() {
 
 using namespace mcp;
 
-auto transport = std::make_unique<StdioClientTransport>("path/to/server");
+StdioClientTransportOptions transport_opts;
+transport_opts.command = "path/to/server";
+auto transport = std::make_unique<StdioClientTransport>(transport_opts);
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
@@ -179,7 +181,7 @@ The client supports the MCP OAuth authorization flow:
 auto oauth = std::make_shared<OAuthClientProvider>(
     "https://auth.server.com/.well-known/oauth-authorization-server",
     "client-id");
-client->SetOAuthProvider(oauth);
+auto client = McpClient::Create(transport, options, &io_ctx, oauth);
 ```
 
 ## Protocol Versions

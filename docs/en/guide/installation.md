@@ -4,7 +4,7 @@
 
 | Dependency     | Minimum    | Notes                          |
 |----------------|------------|--------------------------------|
-| CMake          | 4.2        | Ninja generator required       |
+| CMake          | 3.28       | Ninja generator required       |
 | C++ Compiler   | C++17      | MSVC, Clang, GCC               |
 | asio           | 1.30.2     | Fetched automatically          |
 | nlohmann-json  | 3.11.3     | Fetched automatically          |

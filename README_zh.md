@@ -94,7 +94,7 @@ ctest --preset debug --output-on-failure
 - **mcp-core** — 头文件-only。所有 MCP 协议类型（`Tool`、`Resource`、`Prompt`、`ElicitResult` 等）、JSON-RPC 消息结构、错误码、能力声明、传输层接口。
 - **mcp-transport** — 传输层实现：stdio（客户端/服务器）、SSE 客户端、WebSocket（简化版）、进程内通信（用于测试）。
 - **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联、`MessageFilter` 管道。
-- **mcp-server** — `McpServer`，含工具/资源/提示词注册、`Extension` 框架、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit。
+- **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit。
 - **mcp-client** — `McpClient`，含服务器发现、版本协商、OAuth（PKCE/DCR）、MRTR 驱动、工具缓存、`FileTokenCache`。
 - **mcp-http** — 用于 Streamable HTTP 模式和 SSE 端点服务的 HTTP 服务器。
 
@@ -152,7 +152,9 @@ int main() {
 
 using namespace mcp;
 
-auto transport = std::make_unique<StdioClientTransport>("path/to/server");
+StdioClientTransportOptions transport_opts;
+transport_opts.command = "path/to/server";
+auto transport = std::make_unique<StdioClientTransport>(transport_opts);
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
@@ -179,7 +181,7 @@ auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
 auto oauth = std::make_shared<OAuthClientProvider>(
     "https://auth.server.com/.well-known/oauth-authorization-server",
     "client-id");
-client->SetOAuthProvider(oauth);
+auto client = McpClient::Create(transport, options, &io_ctx, oauth);
 ```
 
 ## 协议版本

@@ -105,6 +105,7 @@ TEST(McpServerTest, RegisterPrompt) {
         PromptOptions{}.Description("Greet someone"),
         [](const std::string& name,
            const std::optional<nlohmann::json>& args) -> GetPromptResult {
+            (void)name; (void)args;
             GetPromptResult r;
             PromptMessage pm;
             pm.role = "user";

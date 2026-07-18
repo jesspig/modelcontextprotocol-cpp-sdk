@@ -11,9 +11,9 @@ namespace mcp {
 
 struct Icon {
     std::string src;
-    std::optional<std::string> mime_type;
-    std::optional<std::vector<std::string>> sizes;
-    std::optional<std::string> theme;
+    std::optional<std::string> mime_type = std::nullopt;
+    std::optional<std::vector<std::string>> sizes = std::nullopt;
+    std::optional<std::string> theme = std::nullopt;
 };
 inline void to_json(nlohmann::json& j, const Icon& v) {
     j = nlohmann::json::object();

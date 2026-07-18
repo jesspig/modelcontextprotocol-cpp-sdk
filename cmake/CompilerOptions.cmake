@@ -2,7 +2,6 @@
 # Compiler-specific flags — auto-detected from CMAKE_CXX_COMPILER_ID
 # 优先级: Clang(clang-cl) > MSVC(cl.exe) > GCC > fallback
 # ====================================================================
-include(Platform)
 
 # ── Clang (including clang-cl on Windows) ──
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -19,6 +18,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         )
         add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
         add_compile_definitions(_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS)
+        add_compile_definitions(_WIN32_WINNT=0x0A00)
         message(STATUS "[mcp] clang-cl flags applied")
     else()
         add_compile_options(
@@ -45,6 +45,7 @@ elseif(MSVC)
     add_compile_definitions(
         _CRT_SECURE_NO_WARNINGS
         _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
+        _WIN32_WINNT=0x0A00
     )
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded CACHE INTERNAL "")
     message(STATUS "[mcp] MSVC flags applied")
@@ -64,15 +65,9 @@ else()
     message(WARNING "[mcp] Unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
-# ── Werror (CI 模式) ──
-if(MCP_WERROR)
-    if(MSVC)
-        target_compile_options(mcp-core INTERFACE /WX)
-    else()
-        target_compile_options(mcp-core INTERFACE -Werror)
-    endif()
-    message(STATUS "[mcp] Werror enabled")
-endif()
+# ── Threads — required for std::thread on macOS/Clang (Unity builds) ──
+include(FindThreads)
+find_package(Threads REQUIRED)
 
 # ── ASIO ──
 add_compile_definitions(ASIO_STANDALONE ASIO_NO_DEPRECATED)

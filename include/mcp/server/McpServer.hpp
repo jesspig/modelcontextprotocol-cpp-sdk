@@ -194,11 +194,6 @@ private:
     // Initialization state (2025-era protocol)
     std::atomic<bool> initialized_{false};
 
-    // Notification flags
-    bool tools_changed_flag_{false};
-    bool resources_changed_flag_{false};
-    bool prompts_changed_flag_{false};
-
     // Stateless mode (no session persistence, no MRTR)
     bool is_stateless_{false};
 };
