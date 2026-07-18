@@ -8,6 +8,9 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#endif
 #include <vector>
 
 namespace mcp { namespace detail {
@@ -184,8 +187,7 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
             std::vector<std::string> env_strings;
             if (info.inherit_environment) {
 #ifdef __APPLE__
-                extern char** environ;
-                for (char** e = environ; *e; ++e) {
+                for (char** e = *_NSGetEnviron(); *e; ++e) {
 #else
                 for (char** e = ::environ; *e; ++e) {
 #endif
