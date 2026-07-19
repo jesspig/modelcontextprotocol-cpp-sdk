@@ -24,7 +24,7 @@ Presets: `debug`, `release`. Ninja generator only.
 - **Dependencies cached in `build/<preset>/_deps/`**. Deleting `build/` is expensive.
 - **`mcp-core` is INTERFACE (header-only)**. Changing type serialization recompiles everything.
 - **Werror**: only with `-DMCP_WERROR=ON` (CI does this). Off by default for local builds.
-- **CI** (`ci.yml`) runs on `develop` branch only. Matrix: windows-2022, ubuntu-24.04, macos-15 × debug/release. All with `-DMCP_WERROR=ON`.
+- **CI** (`ci.yml`): push to `develop` + PRs targeting `develop`. Matrix: windows-2022, ubuntu-24.04, macos-15 × debug/release. All with `-DMCP_WERROR=ON`.
 
 ### Cross-platform traps
 
@@ -33,8 +33,8 @@ Presets: `debug`, `release`. Ninja generator only.
 - **GCC `warn_unused_result`**: `chdir()` return value must be checked or assigned, not `(void)`-cast. `(void)` cast only works on Clang.
 - **CMake version**: `CMP0169` guarded with `if(POLICY CMP0169)` — not available before CMake 3.30.
 - **WSL**: build directory cache is **not cross-platform**. Windows clang-cl cache (`build/debug/`) is incompatible with WSL Linux builds. Use separate build dirs or delete `build/` when switching.
-- **`McpServer::Create`/`McpClient::Create`** take `shared_ptr<ITransport>`. When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — silent data loss.
 - **`InMemoryTransport::CreatePair()`** returns `shared_ptr<ITransport>`, not concrete type. Use `dynamic_cast<TransportBase*>` to access state machine.
+- **`McpServer::Create`/`McpClient::Create`** take `shared_ptr<ITransport>`. When using `StdioServerTransport`, both must share the same `asio::io_context`. Pass `McpServer::Create(transport, opts, &io_ctx)`. Omitting creates an internal io_context — silent data loss.
 
 ### Platform-specific traps
 
@@ -112,6 +112,21 @@ IClientTransport (connection factory)
 - Handler dispatch via `unordered_map`
 - Dual-era `WireCodec` (2025-11-25 initialize handshake / 2026-07-28 per-request `_meta`)
 
+### Version negotiation gotchas
+
+- **`HandleInitialize` must echo the client's legacy version**: If the client sends `initialize(protocolVersion: "2025-11-25")`, the server MUST check if that version is in its supported legacy list and echo it back. Never return `kLatestProtocolVersion` ("2026-07-28") — the TypeScript SDK v2 client validates `result.protocolVersion` against its legacy-versions list and throws `"Server's protocol version is not supported: 2026-07-28"` if it doesn't match.
+- **Modern versions (2026-07-28+) are NEVER negotiated via `initialize`**: They can only be selected through `server/discover`. The `initialize` handshake is strictly for legacy versions.
+- When `SetNegotiatedProtocolVersion(version)` is called, it both stores the version AND recreates the `WireCodec` via `MakeWireCodec(version)`. This is critical for switching between `Rev2025Codec` (no `_meta` envelope) and `Rev2026Codec` (per-request `_meta`).
+- `HandleDiscover` returns `supported_versions = {"2025-11-25", "2026-07-28"}` but does NOT call `SetNegotiatedProtocolVersion` — the modern client drives version selection per-request via `_meta.protocolVersion`.
+
+### HttpServer CORS
+
+`HttpServer` is a minimal asio-based HTTP server for local dev/testing only (see `examples/`). Unlike other SDKs (Python/Starlette, TypeScript/Express, C#/ASP.NET Core) that have a framework middleware layer for CORS, this C++ server has no such layer — CORS is built into the server itself:
+- `HandleConnection` handles `OPTIONS` preflight with 204 + CORS headers
+- `SendResponse` adds `access-control-allow-origin: *` and `access-control-expose-headers` to all non-SSE responses
+- SSE responses already have `access-control-allow-origin: *`
+- Production deployments should put a reverse proxy in front for CORS
+
 ## Key protocol patterns (2026-07-28 era)
 
 - **Stateless**: `initialize`/`initialized` handshake replaced by `server/discover`. Per-request `_meta` carries `protocolVersion`, `clientInfo`, `clientCapabilities` on every C→S request.
@@ -134,6 +149,7 @@ IClientTransport (connection factory)
 - **`ExtensionsCapability` removed**: replaced by `map<string, json>` on both `ClientCapabilities`/`ServerCapabilities`.
 - **Server guards requests with `initialized_` flag**: All handlers reject with `InvalidRequest` until `notifications/initialized` received.
 - **`McpClient` sends `notifications/initialized` after `HandshakeInitialize`**: Required by 2025-era protocol.
+- **`McpClient` connect modes**: `ClientOptions::connect_mode` controls negotiation. `Auto` (default) probes `server/discover`, falls back to `initialize`. `Legacy` forces `initialize` only. `Pin` uses a pinned version. See `ClientOptions.hpp` and `VersionNegotiation.hpp`.
 - **`Icon::mime_type` is `optional<string>`** (not required per spec).
 - **`ContentVariant` includes `ResourceLink`**: handle `type == "resource_link"` in dispatch.
 - **`ErrorCodes.hpp`**: fine-grained codes like `DeserializeFailed`, `ConnectionRefused`, `TlsHandshakeFailed`, `ProtocolViolation`, `TaskNotFound`, `HandlerError` in addition to JSON-RPC standard codes. Integrates with `std::error_code`.
@@ -153,7 +169,7 @@ IClientTransport (connection factory)
 | `McpClientTest` | `mcp-client-tests` | Client creation, tool cache |
 | `OAuthTest` | `mcp-oauth-tests` | PKCE, token cache; SHA-256 uses built-in fallback |
 | `TransportTest` | `mcp-transport-tests` | State machine via `dynamic_cast<TransportBase*>` |
-| `Conformance` | `mcp-conformance-tests` | MCP spec compliance tests (122+) |
+| `Conformance` | `mcp-conformance-tests` | MCP spec compliance tests (113+) |
 | `Integration` | `mcp-integration-tests` | Client-server round-trip via InMemoryTransport |
 
 - `InMemoryTransport` is synchronous — messages delivered when `io_context` runs, not on `SendMessageAsync`.
