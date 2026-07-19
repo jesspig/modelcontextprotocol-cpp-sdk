@@ -137,11 +137,18 @@ void HttpServer::SendResponse(
     response += "HTTP/1.1 " + std::to_string(resp.status_code) + " " +
                 resp.status_text + "\r\n";
 
-    for (const auto& [key, val] : resp.headers) {
-        response += key + ": " + val + "\r\n";
-    }
-
     if (!resp.is_sse) {
+        // Default CORS headers for non-SSE responses.
+        // Use emplace() so user-set headers in resp.headers take priority.
+        auto resp_copy = resp;
+        resp_copy.headers.emplace("access-control-allow-origin", "*");
+        resp_copy.headers.emplace("access-control-expose-headers",
+                                  "mcp-session-id, mcp-protocol-version");
+
+        for (const auto& [key, val] : resp_copy.headers) {
+            response += key + ": " + val + "\r\n";
+        }
+
         response += "content-length: " + std::to_string(resp.body.size()) + "\r\n";
         response += "connection: close\r\n";
         response += "\r\n";
@@ -177,6 +184,23 @@ void HttpServer::HandleConnection(
 {
     HttpRequest req;
     if (!ParseRequest(socket, req)) {
+        return;
+    }
+
+    // Handle CORS preflight
+    if (req.method == "OPTIONS") {
+        HttpResponse resp;
+        resp.status_code = 204;
+        resp.status_text = "No Content";
+        resp.headers["access-control-allow-origin"] = "*";
+        resp.headers["access-control-allow-methods"] = "GET, POST, OPTIONS";
+        resp.headers["access-control-allow-headers"] =
+            "content-type, mcp-protocol-version, mcp-session-id, "
+            "mcp-method, mcp-name, authorization";
+        resp.headers["access-control-expose-headers"] =
+            "mcp-session-id, mcp-protocol-version";
+        resp.headers["access-control-max-age"] = "3600";
+        SendResponse(socket, resp);
         return;
     }
 
