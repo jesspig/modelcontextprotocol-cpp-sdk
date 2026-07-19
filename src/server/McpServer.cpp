@@ -697,12 +697,22 @@ void McpServer::HandleInitialize(
     // Negotiate protocol version
     if (options_.protocol_version) {
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
+    } else {
+        // Find a common legacy version with the client.
+        // Modern versions (2026-07-28+) are NEVER negotiated via
+        // initialize — only through server/discover.
+        std::string_view selected = "2025-11-25";
+        for (auto v : kProtocolVersions) {
+            if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
+                selected = v;
+                break;
+            }
+        }
+        handler_->SetNegotiatedProtocolVersion(selected);
     }
 
     InitializeResult result;
-    result.protocol_version = handler_->NegotiatedProtocolVersion().empty()
-        ? std::string(kLatestProtocolVersion)
-        : std::string(handler_->NegotiatedProtocolVersion());
+    result.protocol_version = std::string(handler_->NegotiatedProtocolVersion());
     result.capabilities = capabilities_;
     if (options_.server_info) {
         result.server_info = Implementation{
