@@ -1032,12 +1032,14 @@ struct ToolOptions {
     std::optional<bool> read_only_hint;
     std::optional<bool> open_world_hint;
     bool use_structured_content{false};
+    std::optional<nlohmann::json> input_schema;
     std::optional<nlohmann::json> output_schema;
     std::vector<Icon> icons;
     std::optional<nlohmann::json> meta;
 
     ToolOptions& Description(std::string_view d) { description = std::string(d); return *this; }
     ToolOptions& Title(std::string_view t) { title = std::string(t); return *this; }
+    ToolOptions& InputSchema(nlohmann::json s) { input_schema = std::move(s); return *this; }
 };
 
 struct ResourceOptions {

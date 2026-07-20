@@ -150,6 +150,7 @@ IClientTransport (connection factory)
 - **Server guards requests with `initialized_` flag**: All handlers reject with `InvalidRequest` until `notifications/initialized` received.
 - **`McpClient` sends `notifications/initialized` after `HandshakeInitialize`**: Required by 2025-era protocol.
 - **`McpClient` connect modes**: `ClientOptions::connect_mode` controls negotiation. `Auto` (default) probes `server/discover`, falls back to `initialize`. `Legacy` forces `initialize` only. `Pin` uses a pinned version. See `ClientOptions.hpp` and `VersionNegotiation.hpp`.
+- **`ToolOptions::InputSchema()` is required for tools with parameters**: Without it, `McpServerToolImpl` hardcodes an empty schema `{"type":"object","properties":{}}`. Every tool advertises itself as accepting no parameters, even if the handler validates at runtime. Use `ToolOptions{}.InputSchema({...})` to declare parameters.
 - **`Icon::mime_type` is `optional<string>`** (not required per spec).
 - **`ContentVariant` includes `ResourceLink`**: handle `type == "resource_link"` in dispatch.
 - **`ErrorCodes.hpp`**: fine-grained codes like `DeserializeFailed`, `ConnectionRefused`, `TlsHandshakeFailed`, `ProtocolViolation`, `TaskNotFound`, `HandlerError` in addition to JSON-RPC standard codes. Integrates with `std::error_code`.
