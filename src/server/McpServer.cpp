@@ -44,7 +44,9 @@ McpServer::McpServer(
     auto codec = MakeWireCodec(
         options_.protocol_version.value_or(std::string(kLatestProtocolVersion)));
     handler_ = std::make_shared<McpSessionHandler>(
-        transport_, std::move(codec), true);
+        transport_, std::move(codec), true,
+        options_.incoming_filters,
+        options_.outgoing_filters);
 
     // Detect stateless transport
     is_stateless_ = transport_->IsStateless();
@@ -63,6 +65,36 @@ McpServer::McpServer(
     // Wire request state verifier if configured
     if (options_.request_state_verifier) {
         handler_->SetRequestStateVerifier(options_.request_state_verifier);
+    }
+
+    // Wire event callbacks — chain new full-message callbacks with existing shorthands
+    if (options_.on_request || options_.on_method_called) {
+        handler_->SetOnRequestCallback(
+            [this](std::string_view method, const JsonRpcRequest& req) {
+                if (options_.on_request) options_.on_request(method, req);
+                if (options_.on_method_called) options_.on_method_called(method);
+            });
+    }
+    if (options_.on_response) {
+        handler_->SetOnResponseCallback(options_.on_response);
+    }
+    if (options_.on_error || options_.on_protocol_error) {
+        handler_->SetOnErrorCallback(
+            [this](const JsonRpcErrorResponse& err) {
+                if (options_.on_error) options_.on_error(err);
+                if (options_.on_protocol_error) options_.on_protocol_error(err.error.message);
+            });
+    }
+    if (options_.on_notification) {
+        handler_->SetOnNotificationCallback(options_.on_notification);
+    }
+    if (options_.on_transport_close || options_.on_transport_error) {
+        if (auto* tb = dynamic_cast<TransportBase*>(transport_.get())) {
+            if (options_.on_transport_close)
+                tb->SetOnClose(options_.on_transport_close);
+            if (options_.on_transport_error)
+                tb->SetOnError(options_.on_transport_error);
+        }
     }
 
     // Start the session handler
@@ -328,6 +360,9 @@ void McpServer::WireHandlers() {
     handler_->SetNotificationHandler(notifications::kInitialized,
         [this](const JsonRpcNotification&) {
             initialized_ = true;
+            if (options_.on_initialized) {
+                try { options_.on_initialized(); } catch (...) {}
+            }
         });
 
     // ── completion/complete ──
@@ -693,6 +728,10 @@ void McpServer::HandleInitialize(
     // Store client info
     client_capabilities_ = params.capabilities;
     client_info_ = params.client_info;
+
+    if (options_.on_client_connected && client_info_) {
+        options_.on_client_connected(*client_info_);
+    }
 
     // Negotiate protocol version
     if (options_.protocol_version) {

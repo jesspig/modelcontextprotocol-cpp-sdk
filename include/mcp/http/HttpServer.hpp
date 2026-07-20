@@ -36,11 +36,23 @@ struct HttpResponse {
 // ── HTTP handler callback ──
 using HttpHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
 
+// ── HttpServer options — event callbacks ──
+using HttpRequestCallback = std::function<void(const HttpRequest&)>;
+using HttpConnectCallback = std::function<void()>;
+using HttpDisconnectCallback = std::function<void()>;
+
+struct HttpServerOptions {
+    HttpRequestCallback on_request;
+    HttpConnectCallback on_connect;
+    HttpDisconnectCallback on_disconnect;
+};
+
 // ── HttpServer — minimal asio-based HTTP server ──
 // Handles GET and POST. Supports SSE streaming via callback.
 class HttpServer {
 public:
-    HttpServer(asio::io_context& io_ctx, uint16_t port);
+    HttpServer(asio::io_context& io_ctx, uint16_t port,
+               const HttpServerOptions& options = {});
     ~HttpServer();
 
     // Start accepting connections
@@ -76,6 +88,7 @@ private:
     asio::ip::tcp::acceptor acceptor_;
     uint16_t port_;
     bool running_{false};
+    HttpServerOptions options_;
 
     // Handlers: (method, path) → handler
     std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;
