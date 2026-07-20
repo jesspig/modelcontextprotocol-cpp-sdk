@@ -119,13 +119,15 @@ IClientTransport (connection factory)
 - When `SetNegotiatedProtocolVersion(version)` is called, it both stores the version AND recreates the `WireCodec` via `MakeWireCodec(version)`. This is critical for switching between `Rev2025Codec` (no `_meta` envelope) and `Rev2026Codec` (per-request `_meta`).
 - `HandleDiscover` returns `supported_versions = {"2025-11-25", "2026-07-28"}` but does NOT call `SetNegotiatedProtocolVersion` — the modern client drives version selection per-request via `_meta.protocolVersion`.
 
-### HttpServer CORS
+### HttpServer CORS + event callbacks
 
 `HttpServer` is a minimal asio-based HTTP server for local dev/testing only (see `examples/`). Unlike other SDKs (Python/Starlette, TypeScript/Express, C#/ASP.NET Core) that have a framework middleware layer for CORS, this C++ server has no such layer — CORS is built into the server itself:
 - `HandleConnection` handles `OPTIONS` preflight with 204 + CORS headers
 - `SendResponse` adds `access-control-allow-origin: *` and `access-control-expose-headers` to all non-SSE responses
 - SSE responses already have `access-control-allow-origin: *`
 - Production deployments should put a reverse proxy in front for CORS
+
+`HttpServerOptions` struct provides optional `on_request`/`on_connect`/`on_disconnect` callbacks. Pass to constructor; set defaults otherwise.
 
 ## Key protocol patterns (2026-07-28 era)
 
@@ -135,6 +137,23 @@ IClientTransport (connection factory)
 - **Extensions**: Negotiated via `map<string, json>` on `ClientCapabilities`/`ServerCapabilities`.
 - **Caching**: `CacheHint` with `ttlMs`/`cacheScope` on list/discover/read results.
 - **Mcp-Method header**: Dynamic, derived from JSON-RPC body method field.
+
+## ServerOptions event hooks
+
+`ServerOptions` exposes four layers of event callbacks, all optional:
+
+| Layer | Callbacks | Purpose |
+|-------|-----------|---------|
+| **Shorthand** | `on_method_called`, `on_protocol_error` | Quick logging — method name / error message strings only |
+| **Full message** | `on_request`, `on_response`, `on_error`, `on_notification` | Full JSON-RPC message bodies (method, params, id, error code, etc.) |
+| **Server lifecycle** | `on_client_connected`, `on_initialized` | High‑level server events |
+| **Transport** | `on_transport_close`, `on_transport_error` | Connection‑level events |
+
+Shorthand and full message callbacks are **chained** — both fire when set simultaneously.
+
+For fine‑grained interception (auth, audit, rate‑limiting, request modification), inject `FilterPipeline` via `incoming_filters` / `outgoing_filters`. Filters have access to the full `JsonRpcMessage` variant and can short‑circuit the pipeline. See `MessageFilter.hpp`.
+
+To access transport‑level `SetOnClose`/`SetOnError` not covered by `ServerOptions`, use `dynamic_cast<TransportBase*>(&server.GetSessionHandler().GetTransport())`.
 
 ## Coding Style
 
