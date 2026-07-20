@@ -8,9 +8,9 @@
 ├─────────────────────────────────────┤
 │  mcp-protocol                       │  WireCodec, McpSessionHandler
 ├─────────────────────────────────────┤
-│  mcp-transport                      │  Stdio, SSE, WebSocket, InMemory
+│  mcp-transport       mcp-http       │  Transports, Streamable HTTP, SSE
 ├─────────────────────────────────────┤
-│  mcp-core            mcp-http       │  Types, JSON-RPC, HTTP serving
+│  mcp-core                           │  Types, JSON-RPC, interfaces
 └─────────────────────────────────────┘
 ```
 
@@ -20,7 +20,7 @@ All protocol types: `Tool`, `Resource`, `Prompt`, `ElicitResult`, `CallToolResul
 
 ### mcp-transport (STATIC)
 
-Transport implementations: `StdioServerTransport`, `StdioClientTransport`, `SseClientTransport`, `InMemoryTransport`, `WebSocketClientTransport`. Platform-specific I/O in `detail/` (posix, win32).
+Transport implementations: `StdioServerTransport`, `StdioClientTransport`, `SseClientTransport`, `InMemoryTransport`, `WebSocketClientTransport`, `StreamableHttpServerTransport`, `StreamableHttpClientTransport`. Platform-specific I/O in `detail/` (posix, win32).
 
 ### mcp-protocol (STATIC)
 
@@ -36,7 +36,7 @@ JSON-RPC engine (`McpSessionHandler`): async message loop over `MessageChannel`,
 
 ### mcp-http (STATIC)
 
-HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence and replay), `StreamableHttpServerTransport`.
+HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence and replay), `StreamableHttpServerTransport`, `StreamableHttpClientTransport`.
 
 ## Dependency Graph
 

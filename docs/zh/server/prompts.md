@@ -37,10 +37,6 @@ p.description = "审查代码变更";
 p.arguments = {arg};
 ```
 
-## 列表变更通知
-
-当提示在运行时发生变更时，通知客户端：
-
-```cpp
-server->SendPromptListChanged();
-```
+::: note
+`PromptOptions` 会被注册 API 接受，但 `description` 当前不会传播到通过 `prompts/list` 暴露的协议级提示。`ListPromptsResult` 中返回的 `Prompt` 结构仅包含 `name`。
+:::
