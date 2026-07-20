@@ -2,30 +2,18 @@
 
 协议扩展通过 `ClientCapabilities` 和 `ServerCapabilities` 上的 `extensions` 映射进行协商。每个条目将扩展标识符映射到其配置值。
 
-## 服务端
+## 服务端自动推导
+
+在 `ServerOptions` 上设置 `task_store` 会自动启用扩展能力（空映射）：
 
 ```cpp
-ServerCapabilities caps;
-caps.extensions["io.modelcontextprotocol/tasks"] = {
-    {"supported", true},
-    {"version", "1.0.0"}
-};
+ServerOptions opts;
+opts.task_store = std::make_shared<FileTaskStore>("tasks.json");
 
-auto server = McpServer::Create(transport,
-    ServerOptions{}.Capabilities(caps));
+auto server = McpServer::Create(transport, opts);
 ```
 
-## 客户端
-
-```cpp
-ClientCapabilities caps;
-caps.extensions["io.modelcontextprotocol/tasks"] = {
-    {"supported", true}
-};
-
-auto client = McpClient::Create(transport,
-    ClientOptions{}.Capabilities(caps));
-```
+`ServerOptions` 上的 `capabilities` 字段已声明但当前不会被服务端消费。仅在设置了 `task_store` 时才会自动推导扩展。
 
 ## 扩展约定
 

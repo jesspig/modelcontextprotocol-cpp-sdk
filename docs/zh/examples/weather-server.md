@@ -1,13 +1,13 @@
 # 天气服务器示例
 
-一个更接近实际的 MCP 服务器，封装外部天气 API。
+一个更接近实际的 MCP 服务器，演示多工具注册和模拟天气数据。
 
 源代码：[`examples/WeatherServer/`](https://github.com/modelcontextprotocol/cpp-sdk/tree/main/examples/WeatherServer)
 
 ## 特性
 
-- **工具**：`get_forecast` — 获取某个地点的天气预报
-- **工具**：`get_alerts` — 获取某个地区的天气预警
+- **工具**：`get_alerts` — 返回某个美国州的模拟天气预警
+- **工具**：`get_forecast` — 返回带有位置参数的模拟天气预报
 
 ## 运行
 
@@ -21,6 +21,7 @@ build/debug/examples/WeatherServer/WeatherServer
 
 WeatherServer 演示了：
 
-1. **外部 API 集成** — 在工具处理程序中调用 HTTP 端点
-2. **结构化内容** — 在文本响应旁返回 JSON 数据
-3. **错误处理** — 对无效位置返回结构化错误
+1. **多工具注册** — 注册两个不同的工具（`get_alerts`、`get_forecast`），具有不同的签名和逻辑
+2. **工具参数** — 从 `CallToolRequestParams` 的 `arguments` 中读取输入值（`state`、`latitude`、`longitude`）
+3. **基于文本的响应** — 从工具处理程序返回 `TextContent` 结果
+4. **默认回退** — 在数据缺失时使用默认响应而非结构化错误

@@ -36,13 +36,6 @@ server->RegisterResourceTemplate(
     });
 ```
 
-## Resource Annotations
-
-Resource annotations control visibility and priority:
-
-```cpp
-ResourceOptions opts;
-opts.description = "Sensitive configuration";
-opts.mime_type = "application/json";
-// annotations are set indirectly through MCP protocol
-```
+::: note
+`ResourceOptions` is accepted by the registration API but `description` and `mime_type` are currently not propagated to the protocol-level resource exposed via `resources/list`. The `Resource` struct returned in `ListResourcesResult` only includes `uri` and `name`.
+:::

@@ -37,10 +37,6 @@ p.description = "Review code changes";
 p.arguments = {arg};
 ```
 
-## List Changed Notifications
-
-When prompts change at runtime, notify clients:
-
-```cpp
-server->SendPromptListChanged();
-```
+::: note
+`PromptOptions` is accepted by the registration API but `description` is currently not propagated to the protocol-level prompt exposed via `prompts/list`. The `Prompt` struct returned in `ListPromptsResult` only includes `name`.
+:::

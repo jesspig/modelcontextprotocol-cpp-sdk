@@ -45,10 +45,12 @@ public:
         if (options.use_structured_content) {
             tool_.output_schema = nlohmann::json{{"type", "object"}};
         }
-        tool_.input_schema = nlohmann::json{
-            {"type", "object"},
-            {"properties", nlohmann::json::object()}
-        };
+        tool_.input_schema = options.input_schema.has_value()
+            ? *options.input_schema
+            : nlohmann::json{
+                {"type", "object"},
+                {"properties", nlohmann::json::object()}
+            };
         if (options.read_only_hint || options.idempotent ||
             options.destructive || options.open_world_hint)
         {

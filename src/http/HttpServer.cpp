@@ -13,10 +13,12 @@
 
 namespace mcp {
 
-HttpServer::HttpServer(asio::io_context& io_ctx, uint16_t port)
+HttpServer::HttpServer(asio::io_context& io_ctx, uint16_t port,
+                       const HttpServerOptions& options)
     : io_ctx_(io_ctx)
     , acceptor_(io_ctx, asio::ip::tcp::endpoint(asio::ip::tcp::v6(), port))
     , port_(port)
+    , options_(options)
 {
     (void)port_;
     acceptor_.set_option(asio::ip::tcp::acceptor::reuse_address(true));
@@ -55,6 +57,9 @@ void HttpServer::DoAccept() {
     auto socket = std::make_shared<asio::ip::tcp::socket>(io_ctx_);
     acceptor_.async_accept(*socket, [this, socket](asio::error_code ec) {
         if (!ec) {
+            if (options_.on_connect) {
+                try { options_.on_connect(); } catch (...) {}
+            }
             HandleConnection(socket);
         }
         DoAccept();
@@ -155,6 +160,9 @@ void HttpServer::SendResponse(
         response += resp.body;
         asio::write(*socket, asio::buffer(response));
         socket->close();
+        if (options_.on_disconnect) {
+            try { options_.on_disconnect(); } catch (...) {}
+        }
     } else {
         // SSE mode: keep connection open
         response += "content-type: text/event-stream\r\n";
@@ -184,7 +192,14 @@ void HttpServer::HandleConnection(
 {
     HttpRequest req;
     if (!ParseRequest(socket, req)) {
+        if (options_.on_disconnect) {
+            try { options_.on_disconnect(); } catch (...) {}
+        }
         return;
+    }
+
+    if (options_.on_request) {
+        try { options_.on_request(req); } catch (...) {}
     }
 
     // Handle CORS preflight

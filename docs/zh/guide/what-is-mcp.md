@@ -21,7 +21,11 @@
 
 ## 协议版本
 
-SDK 支持两个协议时代：
+SDK 支持五个协议版本，分属两个时代：
 
-- **2025-11-25**（旧版）：使用 `initialize` 握手，独立的服务器到客户端请求用于采样/根目录/启发式收集。
-- **2026-07-28**（当前）：无状态 `server/discover`，每请求 `_meta` 信封，MRTR（`InputRequiredResult`），`subscriptions/listen`。
+| 时代 | 版本 | 握手方式 |
+|------|------|----------|
+| 旧版 | `2024-11-05`、`2025-03-26`、`2025-06-18`、`2025-11-25` | `initialize` |
+| 现代 | `2026-07-28` | `server/discover` |
+
+旧版使用 `initialize` 握手和独立的服务器到客户端请求（采样/根目录/启发式收集）。现代版（2026-07-28）使用无状态 `server/discover`、每请求 `_meta` 信封、MRTR（`InputRequiredResult`）和 `subscriptions/listen`。
