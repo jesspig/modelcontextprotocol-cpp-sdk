@@ -7,6 +7,7 @@
 #include <mcp/McpTypes.hpp>
 
 #include <mcp/server/McpTaskStore.hpp>
+#include <mcp/protocol/MessageFilter.hpp>
 
 #include <chrono>
 #include <memory>
@@ -50,6 +51,26 @@ struct MCP_API ServerOptions {
     // JSON Schema validation
     bool validate_tool_input{false};
     bool validate_tool_output{false};
+
+    // Event callbacks (high-level shorthand)
+    std::function<void(std::string_view method)> on_method_called;
+    std::function<void(const Implementation& client_info)> on_client_connected;
+    std::function<void()> on_initialized;
+    std::function<void(std::string_view error)> on_protocol_error;
+
+    // Full JSON-RPC message callbacks (beyond just method name / error message)
+    std::function<void(std::string_view method, const JsonRpcRequest&)> on_request;
+    std::function<void(const JsonRpcResponse&)> on_response;
+    std::function<void(const JsonRpcErrorResponse&)> on_error;
+    std::function<void(const JsonRpcNotification&)> on_notification;
+
+    // Message filter pipelines for interception (auth, audit, rate-limiting, etc.)
+    std::shared_ptr<FilterPipeline> incoming_filters;
+    std::shared_ptr<FilterPipeline> outgoing_filters;
+
+    // Transport-level events
+    std::function<void()> on_transport_close;
+    std::function<void(std::string_view)> on_transport_error;
 
     // Task store (enables tasks/get, tasks/update, tasks/cancel)
     std::shared_ptr<class IMcpTaskStore> task_store;

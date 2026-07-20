@@ -99,6 +99,12 @@ public:
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
 
+    // ── Event callbacks ──
+    void SetOnRequestCallback(std::function<void(std::string_view method, const JsonRpcRequest&)> cb);
+    void SetOnResponseCallback(std::function<void(const JsonRpcResponse&)> cb);
+    void SetOnErrorCallback(std::function<void(const JsonRpcErrorResponse&)> cb);
+    void SetOnNotificationCallback(std::function<void(const JsonRpcNotification&)> cb);
+
     // ── Request state verification (HMAC/AEAD) ──
     void SetRequestStateVerifier(std::function<bool(std::string_view)> verifier);
 
@@ -151,6 +157,12 @@ private:
     // Filter pipelines
     std::shared_ptr<FilterPipeline> incoming_filters_;
     std::shared_ptr<FilterPipeline> outgoing_filters_;
+
+    // Event callbacks
+    std::function<void(std::string_view, const JsonRpcRequest&)> on_request_cb_;
+    std::function<void(const JsonRpcResponse&)> on_response_cb_;
+    std::function<void(const JsonRpcErrorResponse&)> on_error_cb_;
+    std::function<void(const JsonRpcNotification&)> on_notification_cb_;
 
     // Request state verification callback
     std::function<bool(std::string_view)> request_state_verifier_;

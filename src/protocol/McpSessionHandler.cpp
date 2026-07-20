@@ -116,6 +116,10 @@ void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
 // Request handling
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
+    if (on_request_cb_) {
+        try { on_request_cb_(req.method, req); } catch (...) {}
+    }
+
     std::shared_lock<std::shared_mutex> lock(handler_mutex_);
     auto it = request_handlers_.find(req.method);
     if (it == request_handlers_.end()) {
@@ -226,6 +230,10 @@ std::string McpSessionHandler::GetRequestIdKey(const RequestId& rid) {
 }
 
 void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
+    if (on_response_cb_) {
+        try { on_response_cb_(resp); } catch (...) {}
+    }
+
     auto id = GetRequestIdKey(resp.id);
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
@@ -239,6 +247,10 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
 }
 
 void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
+    if (on_error_cb_) {
+        try { on_error_cb_(err); } catch (...) {}
+    }
+
     if (!err.id) return;
     auto id = GetRequestIdKey(*err.id);
     std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -261,6 +273,10 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
 // Notification handling
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
+    if (on_notification_cb_) {
+        try { on_notification_cb_(notif); } catch (...) {}
+    }
+
     // Handle protocol-level notifications first
     if (notif.method == notifications::kCancelled) {
         HandleCancelled(notif);
@@ -587,6 +603,22 @@ void McpSessionHandler::RemoveNotificationHandler(std::string_view method) {
 
 void McpSessionHandler::SetRequestStateVerifier(std::function<bool(std::string_view)> verifier) {
     request_state_verifier_ = std::move(verifier);
+}
+
+void McpSessionHandler::SetOnRequestCallback(std::function<void(std::string_view, const JsonRpcRequest&)> cb) {
+    on_request_cb_ = std::move(cb);
+}
+
+void McpSessionHandler::SetOnResponseCallback(std::function<void(const JsonRpcResponse&)> cb) {
+    on_response_cb_ = std::move(cb);
+}
+
+void McpSessionHandler::SetOnErrorCallback(std::function<void(const JsonRpcErrorResponse&)> cb) {
+    on_error_cb_ = std::move(cb);
+}
+
+void McpSessionHandler::SetOnNotificationCallback(std::function<void(const JsonRpcNotification&)> cb) {
+    on_notification_cb_ = std::move(cb);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
