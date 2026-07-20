@@ -21,15 +21,15 @@ auto client = McpClient::Create(transport, opts);
 | `client_info` | `Implementation` | Client identity |
 | `capabilities` | `optional<ClientCapabilities>` | Declared capabilities |
 | `connect_mode` | `ConnectMode` | `Auto` (discover → initialize), `Legacy`, `Pin` |
-| `initialization_timeout` | `chrono::seconds` | Handshake timeout |
-| `protocol_version` | `optional<string>` | Pin to a specific protocol version |
+| `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
+| `pin_protocol_version` | `optional<string>` | Pin to a specific protocol version (used with `Pin` mode) |
 | `discover_probe_timeout` | `chrono::seconds` | Server discovery probe timeout (default 5s) |
 | `supported_protocol_versions` | `vector<string>` | Protocol versions the client advertises |
-| `input_required_config` | `InputRequiredConfig` | Configuration for elicitation responses |
+| `input_required_config` | `InputRequiredConfig` | Configuration for MRTR elicitation responses |
 | `cache_config` | `CacheConfig` | Client-side caching configuration |
-| `extensions` | `map<string, json>` | Protocol extension declarations |
-| `enforce_strict_capabilities` | `bool` | Reject unknown capabilities (default true) |
-| `list_max_pages` | `size_t` | Max pages for paginated list operations (default 10) |
+| `extensions` | `optional<nlohmann::json>` | Protocol extension declarations |
+| `enforce_strict_capabilities` | `bool` | Reject unknown capabilities (default false) |
+| `list_max_pages` | `int` | Max pages for paginated list operations (default 64) |
 
 ## Making Requests
 

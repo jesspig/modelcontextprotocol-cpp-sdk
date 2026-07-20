@@ -36,13 +36,6 @@ server->RegisterResourceTemplate(
     });
 ```
 
-## 资源注解
-
-资源注解控制可见性和优先级：
-
-```cpp
-ResourceOptions opts;
-opts.description = "敏感配置";
-opts.mime_type = "application/json";
-// 注解通过 MCP 协议间接设置
-```
+::: note
+`ResourceOptions` 会被注册 API 接受，但 `description` 和 `mime_type` 当前不会传播到通过 `resources/list` 暴露的协议级资源。`ListResourcesResult` 中返回的 `Resource` 结构仅包含 `uri` 和 `name`。
+:::
