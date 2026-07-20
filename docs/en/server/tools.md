@@ -22,16 +22,26 @@ server->RegisterTool("get_weather",
 ## Tool with Annotations
 
 ```cpp
-server->RegisterTool("delete_file",
-    ToolOptions{}
-        .Title("Delete File")
-        .Description("Permanently delete a file by path")
-        .Destructive(true)  // marks as destructive_hint
-        .Idempotent(false),
+ToolOptions opts;
+opts.title = "Delete File";
+opts.description = "Permanently delete a file by path";
+opts.destructive = true;   // marks as destructive_hint
+opts.idempotent = false;
+
+server->RegisterTool("delete_file", opts,
     [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
         // ...
     });
 ```
+
+Available annotations via `ToolOptions`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `destructive` | `optional<bool>` | Marks the tool as destructive |
+| `idempotent` | `optional<bool>` | Calling multiple times has same effect as once |
+| `read_only_hint` | `optional<bool>` | Tool does not modify state |
+| `open_world_hint` | `optional<bool>` | Tool may interact with external systems |
 
 ## Structured Content
 
@@ -46,11 +56,11 @@ result.structured_content = nlohmann::json{
 };
 ```
 
-The `structured_content` field is a 2026-07-28 protocol feature. Set `ToolOptions{}.use_structured_content = true` to opt in.
+The `structured_content` field is a 2026-07-28 protocol feature. Set `use_structured_content = true` on `ToolOptions` to opt in, which sets `output_schema` to `{"type": "object"}`.
 
 ## Input Schema
 
-The tool's `input_schema` is a raw `nlohmann::json` field supporting full JSON Schema 2020-12:
+Set the tool's `input_schema` via `ToolOptions::InputSchema()` or directly:
 
 ```cpp
 nlohmann::json schema;
@@ -59,4 +69,10 @@ schema["properties"] = nlohmann::json::object();
 schema["properties"]["location"] = {{"type", "string"}};
 schema["properties"]["units"] = {{"type", "string"}, {"enum", {"celsius", "fahrenheit"}}};
 schema["required"] = {"location"};
+
+server->RegisterTool("get_weather",
+    ToolOptions{}.InputSchema(std::move(schema)),
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // ...
+    });
 ```

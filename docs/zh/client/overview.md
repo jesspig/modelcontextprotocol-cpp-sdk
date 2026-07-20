@@ -21,15 +21,15 @@ auto client = McpClient::Create(transport, opts);
 | `client_info` | `Implementation` | 客户端标识 |
 | `capabilities` | `optional<ClientCapabilities>` | 声明的能力 |
 | `connect_mode` | `ConnectMode` | `Auto`（发现 → 初始化）、`Legacy`、`Pin` |
-| `initialization_timeout` | `chrono::seconds` | 握手超时 |
-| `protocol_version` | `optional<string>` | 固定到特定协议版本 |
+| `initialization_timeout` | `chrono::seconds` | 握手超时（默认 60s） |
+| `pin_protocol_version` | `optional<string>` | 固定到特定协议版本（用于 `Pin` 模式） |
 | `discover_probe_timeout` | `chrono::seconds` | 服务发现探测超时（默认 5s） |
 | `supported_protocol_versions` | `vector<string>` | 客户端声明的协议版本 |
-| `input_required_config` | `InputRequiredConfig` | elicitation 响应的配置 |
+| `input_required_config` | `InputRequiredConfig` | MRTR elicitation 响应的配置 |
 | `cache_config` | `CacheConfig` | 客户端缓存配置 |
-| `extensions` | `map<string, json>` | 协议扩展声明 |
-| `enforce_strict_capabilities` | `bool` | 拒绝未知能力（默认 true） |
-| `list_max_pages` | `size_t` | 分页列表操作的最大页数（默认 10） |
+| `extensions` | `optional<nlohmann::json>` | 协议扩展声明 |
+| `enforce_strict_capabilities` | `bool` | 拒绝未知能力（默认 false） |
+| `list_max_pages` | `int` | 分页列表操作的最大页数（默认 64） |
 
 ## 发起请求
 

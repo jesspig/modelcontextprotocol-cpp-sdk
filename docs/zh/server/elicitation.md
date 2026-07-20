@@ -19,9 +19,10 @@ params.requested_schema = R"({
     "required": ["street", "city", "zip"]
 })"_json;
 
-auto result = server->Elicit(params);
-if (result.get().values) {
-    auto street = (*result.get().values)["street"];
+auto future = server->Elicit(params);
+auto result = future.get();
+if (result.values) {
+    auto street = (*result.values)["street"];
 }
 ```
 
