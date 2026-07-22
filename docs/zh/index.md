@@ -21,9 +21,9 @@ features:
   - title: 双时代 WireCodec
     details: 在 2025-11-25（旧版）和 2026-07-28（现代）协议版本之间自动版本协商。
   - title: C++17 原生
-    details: 无 GC，无臃肿框架。使用 std::variant、智能指针、asio 和 nlohmann-json 实现类型安全、零成本抽象。
+    details: 无 GC，无臃肿框架。使用 std::variant、智能指针实现类型安全、零成本抽象。
   - title: 一级就绪
-    details: 216 个测试、122 个一致性测试、OAuth PKCE、持久化存储后端、MessageFilter 管道。
+    details: 215 个测试、113 个一致性测试、OAuth PKCE、持久化存储后端、MessageFilter 管道。
   - title: 跨平台
     details: Windows（MSVC、clang-cl）、Linux（GCC、Clang）、macOS（Clang）。所有平台使用单一 CMake 预设。
 ---

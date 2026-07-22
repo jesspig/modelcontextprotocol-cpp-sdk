@@ -111,12 +111,12 @@ This gates protocol-era-specific behavior in application code.
 
 ### MessageChannel
 
-`MessageChannel` wraps `asio::experimental::channel<void(asio::error_code, JsonRpcMessage)>` providing:
+`MessageChannel` provides a bounded async message queue with backpressure, built on `std::queue`, `std::mutex`, and `std::condition_variable`:
 
-- `AsyncReceive(callback)` — async receive with completion handler
-- `Send(message)` — enqueue message for delivery
-- `Close()` — close the channel
-- `IsOpen()` — check channel state
+- `AsyncReceive(callback)` — blocks until a message arrives or channel is closed
+- `Send(message)` — blocks if buffer full (backpressure)
+- `TrySend(message)` — non-blocking send
+- `Close()` — wakes all waiters
 
 Used by `McpSessionHandler` for the async message loop.
 

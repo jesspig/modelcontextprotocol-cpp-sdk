@@ -5,12 +5,12 @@
 | Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication  |
 | Streamable HTTP | Yes    | Yes    | HTTP POST with streaming server-sent events   |
 | SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications     |
-| WebSocket       | Yes    | No     | TCP-based bidirectional (simplified RFC 6455) |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient) |
 | InMemory        | Yes    | Yes    | In-process for testing                        |
 
 ## Streamable HTTP
 
-The Streamable HTTP transport implements the MCP Streamable HTTP specification. Each session uses an internal `StreamableHttpSessionTransport` (wrapping `ITransport`) with a dedicated `asio::io_context`.
+The Streamable HTTP transport implements the MCP Streamable HTTP specification. Each session uses an internal `StreamableHttpSessionTransport` (wrapping `ITransport`) with its own message channel and background thread.
 
 **Request flow**: Client sends a JSON-RPC message via HTTP POST. The server validates `Mcp-Method` and `Mcp-Name` headers against the body (SEP-2243), echoes them back on the response, and extracts `Mcp-Param-*` headers into `_meta.x-mcp-headers`. If the response is JSON, the server responds synchronously in **stateless** mode (with pending-response correlation via `std::promise`) or returns `202 Accepted` in session mode. If the response is SSE (`text/event-stream`), the server keeps the connection open and streams events.
 
@@ -28,15 +28,18 @@ The Streamable HTTP transport implements the MCP Streamable HTTP specification. 
 ITransport (session connection)
   └── TransportBase (3-state: Initial → Connected → Disconnected)
       ├── StdioServerTransport
+      ├── StdioClientSessionTransport (internal)
       ├── InMemoryTransportImpl
+      ├── SseClientSessionTransport (internal)
+      ├── WebSocketSessionTransport (wraps hv::WebSocketClient)
       ├── StreamableHttpServerTransport
-      └── WebSocketTransport
+      └── StreamableHttpSessionTransport (internal)
 
 IClientTransport (connection factory)
-  ├── StdioClientTransport
-  ├── SseClientTransport
-  ├── StreamableHttpClientTransport
-  └── WebSocketClientTransport
+  ├── StdioClientTransport (PlatformIO)
+  ├── SseClientTransport (libhv HttpClient + requests::post)
+  ├── StreamableHttpClientTransport (libhv requests::post / WinHTTP)
+  └── WebSocketClientTransport (libhv WebSocketClient)
 ```
 
 ## Key Types

@@ -5,41 +5,34 @@
 ## 创建服务端
 
 ```cpp
-asio::io_context io_ctx;
-auto transport = std::make_shared<StdioServerTransport>(io_ctx);
+auto transport = std::make_shared<StdioServerTransport>();
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
 opts.capabilities = ServerCapabilities{};
 opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+auto server = McpServer::Create(std::move(transport), opts);
 server->Run();
 ```
 
 对于 Streamable HTTP 模式：
 
 ```cpp
-asio::io_context io_ctx;
-
 StreamableHttpServerOptions http_opts;
 http_opts.port = 3001;
 http_opts.stateless = true;  // 或 false 使用会话模式
 
-auto transport = std::make_shared<StreamableHttpServerTransport>(io_ctx, http_opts);
+auto transport = std::make_shared<StreamableHttpServerTransport>(http_opts);
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
 opts.capabilities = ServerCapabilities{};
 opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+auto server = McpServer::Create(std::move(transport), opts);
 server->Run();
 ```
-
-::: warning
-`McpServer::Create` 必须与传输层共享同一个 `asio::io_context`。将 io_context 作为第三个参数传入。
-:::
 
 ## ServerOptions
 

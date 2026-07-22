@@ -14,9 +14,9 @@
 └─────────────────────────────────────┘
 ```
 
-### mcp-core (header-only INTERFACE)
+### mcp-core (STATIC)
 
-All protocol types: `Tool`, `Resource`, `Prompt`, `ElicitResult`, `CallToolResult`, JSON-RPC message structures (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcNotification`, `JsonRpcErrorResponse`), error codes, capability declarations, transport interfaces (`ITransport`, `IClientTransport`).
+Core protocol types and JSON infrastructure: `JsonValue` (recursive `std::variant`-based JSON), `JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcNotification`, `JsonRpcErrorResponse`, error codes, capability declarations (`ClientCapabilities`, `ServerCapabilities`), content types (`TextContent`, `ImageContent`, `EmbeddedResource`, `ResourceLink`), transport interfaces (`ITransport`, `IClientTransport`).
 
 ### mcp-transport (STATIC)
 
@@ -41,17 +41,18 @@ HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event pers
 ## Dependency Graph
 
 ```
-mcp-core (INTERFACE)
-  └── nlohmann_json
+mcp-core (STATIC)
+  ├── simdjson  (JSON parsing, internal)
+  └── libhv     (HTTP/WebSocket, via mcp-transport)
 
 mcp-transport (STATIC)
-  └── mcp-core + asio
+  └── mcp-core + libhv
 
 mcp-protocol (STATIC)
   └── mcp-transport
 
 mcp-http (STATIC)
-  └── mcp-transport
+  └── mcp-transport + libhv
 
 mcp-server (STATIC)
   └── mcp-protocol

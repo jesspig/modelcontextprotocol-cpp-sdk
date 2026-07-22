@@ -6,8 +6,8 @@
 |----------------|------------|--------------------------------|
 | CMake          | 3.28       | Ninja generator required       |
 | C++ Compiler   | C++17      | MSVC, Clang, GCC               |
-| asio           | 1.30.2     | Fetched automatically          |
-| nlohmann-json  | 3.11.3     | Fetched automatically          |
+| simdjson       | 3.12.3     | Fetched automatically          |
+| libhv          | 1.3.4      | Fetched automatically          |
 | OpenSSL        | (optional) | Required for OAuth PKCE        |
 
 ## Consume via FetchContent
@@ -28,7 +28,7 @@ Available library targets:
 
 | Target          | Type       | Description                          |
 |-----------------|------------|--------------------------------------|
-| mcp-core        | INTERFACE  | Header-only protocol types           |
+| mcp-core        | STATIC     | Core protocol types                  |
 | mcp-transport   | STATIC     | Transport implementations            |
 | mcp-protocol    | STATIC     | JSON-RPC engine, WireCodec           |
 | mcp-http        | STATIC     | HTTP/SSE server transport            |

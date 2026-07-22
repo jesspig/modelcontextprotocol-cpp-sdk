@@ -8,9 +8,11 @@
 server->RegisterTool("get_weather",
     ToolOptions{}.Description("获取某个位置的当前天气"),
     [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-        auto location = ctx.Params().arguments
-            ? ctx.Params().arguments->value("location", "")
-            : "";
+        std::string location;
+        if (ctx.Params().arguments) {
+            auto* v = ctx.Params().arguments->Find("location");
+            if (v) location = v->GetString();
+        }
 
         CallToolResult result;
         result.content.push_back(
@@ -50,10 +52,10 @@ server->RegisterTool("delete_file", opts,
 ```cpp
 CallToolResult result;
 result.content.push_back(TextContent{"text", "已处理。"});
-result.structured_content = nlohmann::json{
-    {"records_updated", 42},
-    {"duration_ms", 153}
-};
+result.structured_content = JsonValue::Parse(R"({
+    "records_updated": 42,
+    "duration_ms": 153
+})");
 ```
 
 `structured_content` 字段是 2026-07-28 协议特性。在 `ToolOptions` 上设置 `use_structured_content = true` 以选择启用，这会设置 `output_schema` 为 `{"type": "object"}`。
@@ -63,12 +65,14 @@ result.structured_content = nlohmann::json{
 通过 `ToolOptions::InputSchema()` 或直接设置工具的 `input_schema`：
 
 ```cpp
-nlohmann::json schema;
-schema["type"] = "object";
-schema["properties"] = nlohmann::json::object();
-schema["properties"]["location"] = {{"type", "string"}};
-schema["properties"]["units"] = {{"type", "string"}, {"enum", {"celsius", "fahrenheit"}}};
-schema["required"] = {"location"};
+auto schema = JsonValue::Parse(R"({
+    "type": "object",
+    "properties": {
+        "location": {"type": "string"},
+        "units": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+    },
+    "required": ["location"]
+})");
 
 server->RegisterTool("get_weather",
     ToolOptions{}.InputSchema(std::move(schema)),

@@ -9,7 +9,7 @@
 ```cpp
 ElicitRequestParams params;
 params.message = "请提供您的收货地址";
-params.requested_schema = R"({
+params.requested_schema = JsonValue::Parse(R"({
     "type": "object",
     "properties": {
         "street": {"type": "string"},
@@ -17,7 +17,7 @@ params.requested_schema = R"({
         "zip": {"type": "string"}
     },
     "required": ["street", "city", "zip"]
-})"_json;
+})");
 
 auto future = server->Elicit(params);
 auto result = future.get();
@@ -36,7 +36,6 @@ struct AddressForm {
     std::string city;
     std::string zip_code;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AddressForm, street, city, zip_code)
 
 auto future = server->Elicit<AddressForm>("请提供您的收货地址");
 auto result = future.get();

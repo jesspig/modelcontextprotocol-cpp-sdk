@@ -9,14 +9,18 @@ server->RegisterPrompt(
     "code_review",
     PromptOptions{}.Description("审查代码变更"),
     [](const std::string& name,
-       const std::optional<nlohmann::json>& args) -> GetPromptResult {
+       const std::optional<JsonValue>& args) -> GetPromptResult {
         GetPromptResult result;
 
+        std::string diff;
+        if (args) {
+            auto* v = args->Find("diff");
+            if (v) diff = v->GetString();
+        }
         PromptMessage msg;
         msg.role = "user";
         msg.content = TextContent{"text",
-            "请审查以下代码变更：\n" +
-            (args ? args->value("diff", "") : "")};
+            "请审查以下代码变更：\n" + diff};
         result.messages.push_back(msg);
 
         return result;

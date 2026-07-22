@@ -27,7 +27,7 @@ auto client = McpClient::Create(transport, opts);
 | `supported_protocol_versions` | `vector<string>` | Protocol versions the client advertises |
 | `input_required_config` | `InputRequiredConfig` | Configuration for MRTR elicitation responses |
 | `cache_config` | `CacheConfig` | Client-side caching configuration |
-| `extensions` | `optional<nlohmann::json>` | Protocol extension declarations |
+| `extensions` | `optional<JsonValue>` | Protocol extension declarations |
 | `enforce_strict_capabilities` | `bool` | Reject unknown capabilities (default false) |
 | `list_max_pages` | `int` | Max pages for paginated list operations (default 64) |
 
@@ -39,14 +39,14 @@ auto tools = client->ListTools();
 
 // Call a tool
 auto result = client->CallTool("echo",
-    nlohmann::json{{"text", "Hello"}});
+    JsonValue(JsonValue::Object{{"text", "Hello"}}));
 
 // Read a resource
 auto resource = client->ReadResource("file:///config.json");
 
 // Get a prompt
 auto prompt = client->GetPrompt("code_review",
-    nlohmann::json{{"diff", "..."}});
+    JsonValue(JsonValue::Object{{"diff", "..."}}));
 
 // Complete a prompt/resource reference
 auto completion = client->Complete(params);
@@ -64,7 +64,7 @@ client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         // Prompt user for input, return result
         ElicitResult result;
-        result.values = nlohmann::json{{"name", "Alice"}};
+        result.values = JsonValue(JsonValue::Object{{"name", "Alice"}});
         return result;
     });
 
