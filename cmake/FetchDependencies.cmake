@@ -44,6 +44,20 @@ FetchContent_Declare(libhv
 set(WITH_OPENSSL ${MCP_OPENSSL_FOUND} CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_UNITTEST OFF CACHE BOOL "" FORCE)
+# libhv 的 file(INSTALL ...) 在 configure 时会打印 ~90 行 "Up-to-date"
+# 在 MakeAvailable 前打补丁移除这两行
+FetchContent_GetProperties(libhv)
+if(NOT libhv_POPULATED)
+    cmake_policy(PUSH)
+    if(POLICY CMP0169)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(libhv)
+    cmake_policy(POP)
+    file(READ "${libhv_SOURCE_DIR}/CMakeLists.txt" _hv_cmake)
+    string(REGEX REPLACE "\nfile\\(INSTALL \\$\\{LIBHV_HEADERS\\} DESTINATION [^\n]+\\)" "" _hv_cmake "${_hv_cmake}")
+    file(WRITE "${libhv_SOURCE_DIR}/CMakeLists.txt" "${_hv_cmake}")
+endif()
 FetchContent_MakeAvailable(libhv)
 
 # ====================================================================

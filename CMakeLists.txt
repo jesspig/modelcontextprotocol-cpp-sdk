@@ -81,19 +81,29 @@ if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHE
 endif()
 
 # ====================================================================
-# mcp-core — INTERFACE, header-only
+# mcp-core — STATIC
 # ====================================================================
-add_library(mcp-core INTERFACE)
-target_include_directories(mcp-core INTERFACE
+add_library(mcp-core STATIC)
+target_sources(mcp-core PRIVATE
+    src/core/JsonValue.cpp
+    src/core/JsonRpc.cpp
+    src/core/McpTypes.cpp
+    src/core/Content.cpp
+    src/core/Capabilities.cpp)
+target_include_directories(mcp-core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(mcp-core INTERFACE Threads::Threads)
+target_include_directories(mcp-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mcp-core PUBLIC Threads::Threads)
+target_link_libraries(mcp-core PRIVATE simdjson)
+set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
+set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
 if(MCP_WERROR)
     if(MSVC)
-        target_compile_options(mcp-core INTERFACE /WX)
+        target_compile_options(mcp-core PUBLIC /WX)
     else()
-        target_compile_options(mcp-core INTERFACE -Werror)
+        target_compile_options(mcp-core PUBLIC -Werror)
     endif()
     message(STATUS "[mcp] Werror enabled")
 endif()
@@ -113,8 +123,8 @@ else()
 endif()
 target_link_libraries(mcp-transport PUBLIC mcp-core)
 # TODO: SseClientTransport + WebSocketClientTransport need libhv migration
-set_property(TARGET mcp-transport PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
-set_property(TARGET mcp-transport PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
+# Unity disabled: win32_platform.cpp has namespace mismatch with LTO
+set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
 # mcp-protocol — STATIC
@@ -145,8 +155,9 @@ set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH
 # ====================================================================
 add_library(mcp-client STATIC)
 target_sources(mcp-client PRIVATE
+    src/client/McpClient.cpp
+    src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
-# TODO: McpClient.cpp + OAuthClientProvider.cpp need JsonValue migration and libhv
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
 target_include_directories(mcp-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(OpenSSL_FOUND)

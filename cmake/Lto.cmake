@@ -12,10 +12,17 @@ set(MCP_LTO "OFF" CACHE INTERNAL "")
 
 # ── Clang (including clang-cl on Windows): ThinLTO ──
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options($<$<CONFIG:Release>:-flto=thin>)
-    add_link_options($<$<CONFIG:Release>:-flto=thin>)
-    set(MCP_LTO "ON (ThinLTO)" CACHE INTERNAL "")
-    message(STATUS "[mcp] LTO: thin (Clang ThinLTO, Release only)")
+    if(WIN32)
+        # clang-cl on Windows: use MSVC-style LTCG
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        set(MCP_LTO "ON (LTCG via clang-cl)" CACHE INTERNAL "")
+        message(STATUS "[mcp] LTO: LTCG (clang-cl, Release only)")
+    else()
+        add_compile_options($<$<CONFIG:Release>:-flto=thin>)
+        add_link_options($<$<CONFIG:Release>:-flto=thin>)
+        set(MCP_LTO "ON (ThinLTO)" CACHE INTERNAL "")
+        message(STATUS "[mcp] LTO: thin (Clang ThinLTO, Release only)")
+    endif()
     return()
 endif()
 
