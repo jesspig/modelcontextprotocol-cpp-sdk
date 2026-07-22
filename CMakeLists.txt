@@ -115,15 +115,15 @@ add_library(mcp-transport STATIC)
 target_sources(mcp-transport PRIVATE
     src/transport/StdioServerTransport.cpp
     src/transport/StdioClientTransport.cpp
-    src/transport/InMemoryTransport.cpp)
+    src/transport/InMemoryTransport.cpp
+    src/transport/SseClientTransport.cpp
+    src/transport/WebSocketClientTransport.cpp)
 if(WIN32)
     target_sources(mcp-transport PRIVATE src/transport/detail/win32_platform.cpp)
 else()
     target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
 endif()
-target_link_libraries(mcp-transport PUBLIC mcp-core)
-# TODO: SseClientTransport + WebSocketClientTransport need libhv migration
-# Unity disabled: win32_platform.cpp has namespace mismatch with LTO
+target_link_libraries(mcp-transport PUBLIC mcp-core hv_static)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
@@ -182,7 +182,7 @@ target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
-target_link_libraries(mcp-http PUBLIC mcp-transport)
+target_link_libraries(mcp-http PUBLIC mcp-transport hv_static)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 

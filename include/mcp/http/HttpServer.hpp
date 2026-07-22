@@ -44,8 +44,9 @@ struct HttpServerOptions {
     HttpDisconnectCallback on_disconnect;
 };
 
-// ── HttpServer — minimal HTTP server (TODO: libhv migration) ──
+// ── HttpServer — minimal HTTP server ──
 // Handles GET and POST. Supports SSE streaming via callback.
+struct HttpServerImpl;
 class HttpServer {
 public:
     HttpServer(uint16_t port,
@@ -81,6 +82,8 @@ private:
     std::unordered_map<SseClientId, std::function<void(std::string_view)>> sse_clients_;
     SseClientId next_sse_id_{1};
     std::mutex sse_mutex_;
+
+    std::unique_ptr<HttpServerImpl> impl_;
 };
 
 } // namespace mcp

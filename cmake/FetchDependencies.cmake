@@ -59,6 +59,10 @@ if(NOT libhv_POPULATED)
     file(WRITE "${libhv_SOURCE_DIR}/CMakeLists.txt" "${_hv_cmake}")
 endif()
 FetchContent_MakeAvailable(libhv)
+# Ensure the subdirectory is added (CMake 4.x may skip it for already-populated content)
+if(NOT TARGET hv_static)
+    add_subdirectory("${libhv_SOURCE_DIR}" "${libhv_BINARY_DIR}")
+endif()
 
 # ====================================================================
 # googletest — 单元测试
