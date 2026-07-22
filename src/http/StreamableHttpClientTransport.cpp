@@ -11,12 +11,6 @@
 // Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
-// TODO(libhv): replace POSIX asio socket code with libhv
-// #else
-// #include <asio/connect.hpp>
-// #include <asio/ip/tcp.hpp>
-// #include <asio/read.hpp>
-// #include <asio/write.hpp>
 #endif
 
 #include <atomic>
@@ -294,22 +288,20 @@ private:
 } // namespace
 
 // ═══════════════════════════════════════════════════════════════════════
-// POSIX implementation — TODO(libhv): migrate to libhv
+// POSIX implementation using libhv
 // ═══════════════════════════════════════════════════════════════════════
 #else
-#error "POSIX StreamableHttpClientTransport requires libhv migration. See MCP_NO_ASIO."
+#include <hv/requests.h>
+
 namespace {
 
 class StreamableHttpSessionTransport : public TransportBase {
 public:
-    StreamableHttpSessionTransport(
-        std::shared_ptr<asio::io_context> io_ctx,
+    explicit StreamableHttpSessionTransport(
         HttpClientTransportOptions options)
-        : TransportBase(*io_ctx)
-        , io_ctx_(std::move(io_ctx))
-        , options_(std::move(options))
+        : options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(*io_ctx_, 64);
+        channel_ = std::make_unique<MessageChannel>(64);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -317,24 +309,21 @@ public:
     void Start() {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] { SendLoop(); });
-        io_thread_ = std::thread([this]() { io_ctx_->run(); });
+        SetConnected();
     }
 
     void Close() override {
         if (!running_.exchange(false)) return;
         { std::lock_guard<std::mutex> lk(send_mutex_); send_cv_.notify_one(); }
-        if (sse_thread_.joinable()) sse_thread_.join();
         if (send_thread_.joinable()) send_thread_.join();
-        io_ctx_->stop();
-        if (io_thread_.joinable()) io_thread_.join();
         if (channel_) channel_->Close();
         SetDisconnected();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
-        nlohmann::json j = message;
-        { std::lock_guard<std::mutex> lk(send_mutex_); send_queue_.push(j.dump()); }
+        auto body = SerializeMessage(message);
+        { std::lock_guard<std::mutex> lk(send_mutex_); send_queue_.push(std::move(body)); }
         send_cv_.notify_one();
     }
 
@@ -342,17 +331,85 @@ private:
     void SendLoop() {
         while (running_) {
             std::string body;
-            { std::unique_lock<std::mutex> lk(send_mutex_); send_cv_.wait(lk, [this]{ return !send_queue_.empty() || !running_; });
-              if (!running_) break; body = std::move(send_queue_.front()); send_queue_.pop(); }
-            // TODO(libhv): DoPost(body);
+            {
+                std::unique_lock<std::mutex> lk(send_mutex_);
+                send_cv_.wait(lk, [this]{ return !send_queue_.empty() || !running_; });
+                if (!running_) break;
+                body = std::move(send_queue_.front());
+                send_queue_.pop();
+            }
+            DoPost(body);
         }
     }
 
-    std::shared_ptr<asio::io_context> io_ctx_;
+    void DoPost(const std::string& body) {
+        http_headers headers;
+        headers["Content-Type"] = "application/json";
+        headers["Accept"] = "application/json, text/event-stream";
+        try {
+            auto jv = JsonValue::Parse(body);
+            if (auto* m = jv.Find("method"); m && m->IsString())
+                headers["Mcp-Method"] = m->GetString();
+        } catch (...) {
+            headers["Mcp-Method"] = "unknown";
+        }
+        for (auto& [k, v] : options_.additional_headers)
+            headers[k] = v;
+
+        auto resp = requests::post(options_.endpoint.c_str(), body, headers);
+        if (!resp) {
+            MCP_LOG(Error, "HTTP POST failed");
+            return;
+        }
+
+        auto ct = resp->GetHeader("Content-Type");
+        if (ct.find("text/event-stream") != std::string::npos) {
+            auto sse_data = resp->body;
+            size_t pos;
+            while ((pos = sse_data.find("\n\n")) != std::string::npos) {
+                std::string block = sse_data.substr(0, pos);
+                sse_data.erase(0, pos + 2);
+                DispatchSseBlock(block);
+            }
+        } else {
+            if (resp->body.empty()) return;
+            if (resp->body.size() > K_MAX_MESSAGE_SIZE) return;
+            try {
+                JsonRpcMessage msg = DeserializeMessage(resp->body);
+                if (channel_) channel_->Send(std::move(msg));
+            } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("HTTP response parse failed: ") + e.what());
+            }
+        }
+    }
+
+    void DispatchSseBlock(const std::string& block) {
+        std::string data;
+        std::istringstream ss(block);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.compare(0, 5, "data:") == 0) {
+                auto val = line.substr(5);
+                auto n = val.find_first_not_of(" \t");
+                if (n != std::string::npos) val = val.substr(n);
+                if (!data.empty()) data += "\n";
+                data += val;
+            }
+        }
+        if (!data.empty()) {
+            if (data.size() > K_MAX_MESSAGE_SIZE) return;
+            try {
+                JsonRpcMessage msg = DeserializeMessage(data);
+                if (channel_) channel_->Send(std::move(msg));
+            } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("SSE parse failed: ") + e.what());
+            }
+        }
+    }
+
     HttpClientTransportOptions options_;
     std::thread send_thread_;
-    std::thread sse_thread_;
-    std::thread io_thread_;
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;
@@ -377,8 +434,9 @@ std::string_view StreamableHttpClientTransport::Name() const {
 }
 
 std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
-    // TODO(libhv): create session with libhv event loop
-    return nullptr;
+    auto session = std::make_shared<StreamableHttpSessionTransport>(options_);
+    session->Start();
+    return session;
 }
 
 } // namespace mcp
