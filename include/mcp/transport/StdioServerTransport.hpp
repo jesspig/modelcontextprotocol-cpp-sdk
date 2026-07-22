@@ -4,7 +4,6 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
-#include <asio/io_context.hpp>
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -13,7 +12,7 @@ namespace mcp {
 
 class MCP_API StdioServerTransport : public TransportBase {
 public:
-    explicit StdioServerTransport(asio::io_context& io_ctx);
+    StdioServerTransport();
     ~StdioServerTransport() override;
 
     void Start();

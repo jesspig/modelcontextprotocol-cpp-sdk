@@ -1,8 +1,7 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/McpError.hpp>
 
-#include <asio/post.hpp>
-#include <asio/steady_timer.hpp>
+// asio removed
 
 #include <thread>
 

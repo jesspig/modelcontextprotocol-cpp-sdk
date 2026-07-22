@@ -6,6 +6,41 @@
 namespace mcp {
 namespace {
 
+// ── Conversion helpers ──
+JsonValue ImplementationToJson(const Implementation& v) {
+    JsonValue j(JsonValue::object_tag);
+    j["name"] = JsonValue(v.name);
+    j["version"] = JsonValue(v.version);
+    if (v.title)       j["title"] = JsonValue(*v.title);
+    if (v.description) j["description"] = JsonValue(*v.description);
+    if (v.website_url) j["websiteUrl"] = JsonValue(*v.website_url);
+    return j;
+}
+
+Implementation ImplementationFromJson(const JsonValue& j) {
+    Implementation v;
+    v.name = j.At("name").GetString();
+    v.version = j.At("version").GetString();
+    if (auto* t = j.Find("title"))       v.title = t->GetString();
+    if (auto* d = j.Find("description")) v.description = d->GetString();
+    if (auto* w = j.Find("websiteUrl"))  v.website_url = w->GetString();
+    return v;
+}
+
+JsonValue ClientCapabilitiesToJson(const ClientCapabilities& v) {
+    JsonValue j(JsonValue::object_tag);
+    if (v.roots)     { JsonValue sub(JsonValue::object_tag); j["roots"] = std::move(sub); }
+    if (v.sampling)  { JsonValue sub(JsonValue::object_tag); j["sampling"] = std::move(sub); }
+    return j;
+}
+
+ClientCapabilities ClientCapabilitiesFromJson(const JsonValue& j) {
+    ClientCapabilities v;
+    if (j.Find("roots"))    v.roots = RootsCapability{};
+    if (j.Find("sampling")) v.sampling = SamplingCapability{};
+    return v;
+}
+
 // Shared methods — supported by both 2025 and 2026 era
 inline const std::unordered_set<std::string> kCommonRequestMethods = {
     "tools/list", "tools/call",
@@ -82,48 +117,41 @@ public:
     }
 
     WireValidation ValidateRequest(
-        std::string_view /*method*/, const nlohmann::json& /*raw*/) const override {
-        // 2025-era: no structural validation beyond JSON-RPC
+        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
         return WireValidation::Ok;
     }
 
     WireValidation ValidateResponse(
-        std::string_view /*method*/, const nlohmann::json& /*raw*/) const override {
+        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
         return WireValidation::Ok;
     }
 
     WireValidation ValidateNotification(
-        std::string_view /*method*/, const nlohmann::json& /*raw*/) const override {
+        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
         return WireValidation::Ok;
     }
 
     void StampOutgoingRequest(
-        nlohmann::json& /*request_body*/,
+        JsonValue& /*request_body*/,
         const RequestMeta& /*meta*/) const override {
-        // 2025-era: no per-request _meta envelope;
-        // client info and capabilities are negotiated during initialize
     }
 
     std::optional<RequestMeta> ExtractIncomingMeta(
-        const nlohmann::json& /*request_body*/) const override {
-        // 2025-era: _meta may exist but is not protocol-mandated
+        const JsonValue& /*request_body*/) const override {
         return std::nullopt;
     }
 
-    nlohmann::json DecodeResult(
-        std::string_view /*method*/, const nlohmann::json& raw) const override {
-        // 2025-era: result is identity — no resultType field expected
+    JsonValue DecodeResult(
+        std::string_view /*method*/, const JsonValue& raw) const override {
         return raw;
     }
 
-    nlohmann::json EncodeResult(
-        std::string_view /*method*/, const nlohmann::json& result) const override {
-        // 2025-era: identity encoding
+    JsonValue EncodeResult(
+        std::string_view /*method*/, const JsonValue& result) const override {
         return result;
     }
 
     int32_t EncodeErrorCode(int32_t code) const override {
-        // 2025-era: identity mapping
         return code;
     }
 
@@ -156,77 +184,71 @@ public:
     }
 
     WireValidation ValidateRequest(
-        std::string_view method, const nlohmann::json& raw) const override {
+        std::string_view method, const JsonValue& raw) const override {
         if (!HasRequestMethod(method)) {
             return WireValidation::NotInEra;
         }
-        // Verify _meta is present for requests that require it
-        // (all client-initiated requests in 2026 era)
         if (method != "server/discover" &&
-            !raw.contains("_meta")) {
+            !raw.Contains("_meta")) {
             return WireValidation::Invalid;
         }
         return WireValidation::Ok;
     }
 
     WireValidation ValidateResponse(
-        std::string_view /*method*/, const nlohmann::json& /*raw*/) const override {
+        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
         return WireValidation::Ok;
     }
 
     WireValidation ValidateNotification(
-        std::string_view /*method*/, const nlohmann::json& /*raw*/) const override {
+        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
         return WireValidation::Ok;
     }
 
     void StampOutgoingRequest(
-        nlohmann::json& body,
+        JsonValue& body,
         const RequestMeta& meta) const override {
-        body["_meta"] = nlohmann::json::object();
-        body["_meta"][kProtocolVersionKey] = meta.protocol_version;
+        JsonValue meta_obj(JsonValue::object_tag);
+        meta_obj[kProtocolVersionKey] = JsonValue(meta.protocol_version);
         if (meta.client_info) {
-            body["_meta"][kClientInfoKey] = *meta.client_info;
+            meta_obj[kClientInfoKey] = ImplementationToJson(*meta.client_info);
         }
         if (meta.client_capabilities) {
-            body["_meta"][kClientCapabilitiesKey] = *meta.client_capabilities;
+            meta_obj[kClientCapabilitiesKey] = ClientCapabilitiesToJson(*meta.client_capabilities);
         }
+        body["_meta"] = std::move(meta_obj);
     }
 
     std::optional<RequestMeta> ExtractIncomingMeta(
-        const nlohmann::json& body) const override {
-        auto it = body.find("_meta");
-        if (it == body.end()) return std::nullopt;
+        const JsonValue& body) const override {
+        auto* m = body.Find("_meta");
+        if (!m) return std::nullopt;
 
-        const auto& m = *it;
         RequestMeta meta;
-        if (auto v = m.find(kProtocolVersionKey); v != m.end())
-            meta.protocol_version = v->get<std::string>();
-        if (auto v = m.find(kClientInfoKey); v != m.end())
-            meta.client_info = v->get<Implementation>();
-        if (auto v = m.find(kClientCapabilitiesKey); v != m.end())
-            meta.client_capabilities = v->get<ClientCapabilities>();
+        if (auto* v = m->Find(kProtocolVersionKey))
+            meta.protocol_version = v->GetString();
+        if (auto* v = m->Find(kClientInfoKey))
+            meta.client_info = ImplementationFromJson(*v);
+        if (auto* v = m->Find(kClientCapabilitiesKey))
+            meta.client_capabilities = ClientCapabilitiesFromJson(*v);
         return meta;
     }
 
-    nlohmann::json DecodeResult(
-        std::string_view /*method*/, const nlohmann::json& raw) const override {
+    JsonValue DecodeResult(
+        std::string_view /*method*/, const JsonValue& raw) const override {
         return raw;
     }
 
-    nlohmann::json EncodeResult(
-        std::string_view /*method*/, const nlohmann::json& result) const override {
-        auto j = result;
-        if (!j.contains("resultType")) {
-            j["resultType"] = "complete";
+    JsonValue EncodeResult(
+        std::string_view /*method*/, const JsonValue& result) const override {
+        JsonValue j = result;
+        if (!j.Contains("resultType")) {
+            j["resultType"] = JsonValue("complete");
         }
         return j;
     }
 
     int32_t EncodeErrorCode(int32_t code) const override {
-        // 2026-era: SEP-2164 renumbers error codes
-        // HeaderMismatch: -32001 → -32020
-        // MissingRequiredClientCapability: -32003 → -32021
-        // UnsupportedProtocolVersion: -32004 → -32022
         switch (code) {
             case -32001: return -32020;
             case -32003: return -32021;
@@ -245,8 +267,6 @@ std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version) {
     if (protocol_version >= "2026-07-28") {
         return std::make_unique<Rev2026Codec>();
     }
-    // Legacy versions (2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25)
-    // and unknown versions fall back to 2025 codec
     return std::make_unique<Rev2025Codec>();
 }
 

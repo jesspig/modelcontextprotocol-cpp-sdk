@@ -4,6 +4,7 @@
 
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
+#include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>
 
 #include <chrono>
@@ -55,7 +56,7 @@ struct MCP_API ClientOptions {
     std::optional<CacheConfig> cache_config;
 
     // Extensions declaration map
-    std::optional<nlohmann::json> extensions;
+    std::optional<JsonValue> extensions;
 
     // Other
     bool enforce_strict_capabilities{false};

@@ -2,9 +2,6 @@
 
 #include <mcp/JsonRpc.hpp>
 
-#include <asio/io_context.hpp>
-#include <asio/ip/tcp.hpp>
-
 #include <chrono>
 #include <functional>
 #include <map>
@@ -47,11 +44,11 @@ struct HttpServerOptions {
     HttpDisconnectCallback on_disconnect;
 };
 
-// ── HttpServer — minimal asio-based HTTP server ──
+// ── HttpServer — minimal HTTP server (TODO: libhv migration) ──
 // Handles GET and POST. Supports SSE streaming via callback.
 class HttpServer {
 public:
-    HttpServer(asio::io_context& io_ctx, uint16_t port,
+    HttpServer(uint16_t port,
                const HttpServerOptions& options = {});
     ~HttpServer();
 
@@ -73,19 +70,6 @@ public:
     void BroadcastSse(std::string_view event);
 
 private:
-    void DoAccept();
-    void HandleConnection(std::shared_ptr<asio::ip::tcp::socket> socket);
-
-    // Parse HTTP request from socket
-    bool ParseRequest(std::shared_ptr<asio::ip::tcp::socket> socket,
-                      HttpRequest& req);
-
-    // Send HTTP response
-    void SendResponse(std::shared_ptr<asio::ip::tcp::socket> socket,
-                      const HttpResponse& resp);
-
-    asio::io_context& io_ctx_;
-    asio::ip::tcp::acceptor acceptor_;
     uint16_t port_;
     bool running_{false};
     HttpServerOptions options_;

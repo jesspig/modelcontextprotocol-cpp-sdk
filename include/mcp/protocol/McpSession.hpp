@@ -5,6 +5,7 @@
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
+#include <mcp/JsonValue.hpp>
 #include <memory>
 #include <string_view>
 #include <functional>
@@ -37,16 +38,16 @@ public:
 
     // ── Send ──
     // Send request and wait for response (future-based)
-    virtual std::future<nlohmann::json> SendRequestAsync(
+    virtual std::future<JsonValue> SendRequestAsync(
         std::string_view method,
-        nlohmann::json params,
+        JsonValue params,
         const RequestMeta& meta = {},
         std::chrono::milliseconds timeout = std::chrono::seconds(30)) = 0;
 
     // Send notification (fire-and-forget)
     virtual void SendNotificationAsync(
         std::string_view method,
-        nlohmann::json params = {}) = 0;
+        JsonValue params = {}) = 0;
 
     // Send any JSON-RPC message
     virtual void SendMessageAsync(JsonRpcMessage message) = 0;
@@ -58,7 +59,6 @@ public:
 
     // ── Accessors ──
     virtual ITransport& GetTransport() = 0;
-    virtual asio::io_context& IoContext() = 0;
 
     // ── Version helpers ──
     bool IsJuly2026OrLater() const {

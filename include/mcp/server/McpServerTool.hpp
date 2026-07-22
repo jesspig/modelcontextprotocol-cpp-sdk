@@ -43,14 +43,18 @@ public:
         if (options.icons.size()) tool_.icons = std::move(options.icons);
         if (options.meta) tool_.meta = std::move(options.meta);
         if (options.use_structured_content) {
-            tool_.output_schema = nlohmann::json{{"type", "object"}};
+            JsonValue::Object os;
+            os["type"] = JsonValue("object");
+            tool_.output_schema = JsonValue(std::move(os));
         }
-        tool_.input_schema = options.input_schema.has_value()
-            ? *options.input_schema
-            : nlohmann::json{
-                {"type", "object"},
-                {"properties", nlohmann::json::object()}
-            };
+        if (options.input_schema.has_value()) {
+            tool_.input_schema = *options.input_schema;
+        } else {
+            JsonValue::Object is;
+            is["type"] = JsonValue("object");
+            is["properties"] = JsonValue(JsonValue::object_tag);
+            tool_.input_schema = JsonValue(std::move(is));
+        }
         if (options.read_only_hint || options.idempotent ||
             options.destructive || options.open_world_hint)
         {

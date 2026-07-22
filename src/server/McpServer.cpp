@@ -1,8 +1,7 @@
+#include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/McpError.hpp>
-
-#include <asio/post.hpp>
-#include <asio/signal_set.hpp>
+#include <detail/JsonSerialize_fwd.hpp>
 
 #include <thread>
 #include <set>
@@ -11,7 +10,7 @@
 
 namespace mcp {
 
-static bool RequireInitialized(bool initialized, std::promise<nlohmann::json>& p) {
+static bool RequireInitialized(bool initialized, std::promise<JsonValue>& p) {
     if (!initialized) {
         p.set_exception(std::make_exception_ptr(
             McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
@@ -25,20 +24,16 @@ static bool RequireInitialized(bool initialized, std::promise<nlohmann::json>& p
 // ====================================================================
 std::unique_ptr<McpServer> McpServer::Create(
     std::shared_ptr<ITransport> transport,
-    const ServerOptions& options,
-    asio::io_context* io_ctx)
+    const ServerOptions& options)
 {
     return std::unique_ptr<McpServer>(
-        new McpServer(std::move(transport), options, io_ctx));
+        new McpServer(std::move(transport), options));
 }
 
 McpServer::McpServer(
     std::shared_ptr<ITransport> transport,
-    ServerOptions options,
-    asio::io_context* external_io_ctx)
-    : io_ctx_owner_(external_io_ctx ? nullptr : std::make_unique<asio::io_context>())
-    , io_ctx_ptr_(external_io_ctx ? external_io_ctx : io_ctx_owner_.get())
-    , transport_(std::move(transport))
+    ServerOptions options)
+    : transport_(std::move(transport))
     , options_(std::move(options))
 {
     auto codec = MakeWireCodec(
@@ -105,7 +100,7 @@ McpServer::McpServer(
 // Lifecycle
 // ====================================================================
 void McpServer::Run() {
-    io_ctx_ptr_->run();
+    // TODO: implement blocking run loop
 }
 
 void McpServer::Close() {
@@ -117,7 +112,6 @@ void McpServer::Close() {
         pending_async_futures_.clear();
     }
     handler_->Close();
-    io_ctx_ptr_->stop();
 }
 
 // ====================================================================
@@ -176,7 +170,7 @@ void McpServer::RegisterPrompt(
     const PromptOptions& /*opts*/,
     std::function<GetPromptResult(
         const std::string&,
-        const std::optional<nlohmann::json>&)> handler)
+        const std::optional<JsonValue>&)> handler)
 {
     PromptEntry entry;
     entry.name = std::string(name);
@@ -191,24 +185,24 @@ void McpServer::RegisterPrompt(
 // ====================================================================
 void McpServer::SendToolListChanged() {
     handler_->SendNotification(
-        notifications::kToolListChanged, nlohmann::json::object());
+        notifications::kToolListChanged, JsonValue(JsonValue::object_tag));
 }
 
 void McpServer::SendResourceListChanged() {
     handler_->SendNotification(
-        notifications::kResourceListChanged, nlohmann::json::object());
+        notifications::kResourceListChanged, JsonValue(JsonValue::object_tag));
 }
 
 void McpServer::SendPromptListChanged() {
     handler_->SendNotification(
-        notifications::kPromptListChanged, nlohmann::json::object());
+        notifications::kPromptListChanged, JsonValue(JsonValue::object_tag));
 }
 
 void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
-    nlohmann::json params;
-    params["level"] = level;
-    params["data"] = data;
-    params["logger"] = "mcp-server";
+    JsonValue params(JsonValue::object_tag);
+    params["level"] = JsonValue(static_cast<int64_t>(level));
+    params["data"] = JsonValue(std::string(data));
+    params["logger"] = JsonValue("mcp-server");
     handler_->SendNotification(notifications::kMessage, std::move(params));
 }
 
@@ -228,18 +222,17 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
         ? std::string(kLatestProtocolVersion) : std::string(vers);
 
     auto future = handler_->SendRequest(
-        methods::kElicit, nlohmann::json(params), meta, std::chrono::seconds(600));
+        methods::kElicit, SerializeElicitRequestParams(params), meta, std::chrono::seconds(600));
 
-    // Wrap response
     auto result_future = std::async(std::launch::async, [future = std::move(future)]() mutable {
-        auto json = future.get();
-        // Check for errors
-        if (json.contains("code") && json["code"].get<int32_t>() < 0) {
+        auto jv = future.get();
+        if (auto* c = jv.Find("code"); c && c->IsInt() && c->GetInt() < 0) {
+            auto msg = jv.Find("message");
             throw McpError(
-                static_cast<McpErrorCode>(json["code"].get<int32_t>()),
-                json.value("message", "elicitation failed"));
+                static_cast<McpErrorCode>(c->GetInt()),
+                msg ? msg->GetString() : std::string("elicitation failed"));
         }
-        return json.get<ElicitResult>();
+        return DeserializeElicitResult(jv);
     });
 
     return result_future;
@@ -252,14 +245,14 @@ void McpServer::WireHandlers() {
     // ── tools/list ──
     if (!tools_.empty()) {
         handler_->SetRequestHandler(methods::kListTools,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 HandleListTools(req, std::move(p));
             });
     }
 
     // ── tools/call ──
     handler_->SetRequestHandler(methods::kCallTool,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleCallTool(req, std::move(p));
         });
 
@@ -267,7 +260,7 @@ void McpServer::WireHandlers() {
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return !r.is_template; })) {
         handler_->SetRequestHandler(methods::kListResources,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 HandleListResources(req, std::move(p));
             });
     }
@@ -276,7 +269,7 @@ void McpServer::WireHandlers() {
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return r.is_template; })) {
         handler_->SetRequestHandler(methods::kListResourceTemplates,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 HandleListResourceTemplates(req, std::move(p));
             });
     }
@@ -284,7 +277,7 @@ void McpServer::WireHandlers() {
     // ── resources/read ──
     if (!resources_.empty()) {
         handler_->SetRequestHandler(methods::kReadResource,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 HandleReadResource(req, std::move(p));
             });
     }
@@ -292,67 +285,67 @@ void McpServer::WireHandlers() {
     // ── prompts/list ──
     if (!prompts_.empty()) {
         handler_->SetRequestHandler(methods::kListPrompts,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 HandleListPrompts(req, std::move(p));
             });
     }
 
     // ── prompts/get ──
     handler_->SetRequestHandler(methods::kGetPrompt,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleGetPrompt(req, std::move(p));
         });
 
     // ── initialize ──
     handler_->SetRequestHandler(methods::kInitialize,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleInitialize(req, std::move(p));
         });
 
     // ── server/discover ──
     handler_->SetRequestHandler(methods::kDiscover,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleDiscover(req, std::move(p));
         });
 
     // ── ping ──
     handler_->SetRequestHandler(methods::kPing,
-        [this](const JsonRpcRequest&, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
             if (!RequireInitialized(initialized_, p)) return;
             PingResult r;
-            p.set_value(nlohmann::json(r));
+            p.set_value(SerializeEmptyResult(r));
         });
 
     // ── resources/subscribe / unsubscribe (2025-era) ──
     if (!resources_.empty()) {
         handler_->SetRequestHandler(methods::kSubscribeResource,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 if (!RequireInitialized(initialized_, p)) return;
                 SubscribeRequestParams params;
-                if (req.params) from_json(*req.params, params);
+                if (req.params) params = DeserializeResourceRequestParams(*req.params);
                 Subscription sub{params.uri, {}};
                 handler_->AddSubscription(sub);
                 EmptyResult r;
-                p.set_value(nlohmann::json(r));
+                p.set_value(SerializeEmptyResult(r));
             });
 
         handler_->SetRequestHandler(methods::kUnsubscribeResource,
-            [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 if (!RequireInitialized(initialized_, p)) return;
                 UnsubscribeRequestParams params;
-                if (req.params) from_json(*req.params, params);
+                if (req.params) params = DeserializeResourceRequestParams(*req.params);
                 handler_->RemoveSubscription(params.uri);
                 EmptyResult r;
-                p.set_value(nlohmann::json(r));
+                p.set_value(SerializeEmptyResult(r));
             });
     }
 
     // ── server/extensions/list ──
     handler_->SetRequestHandler(methods::kListExtensions,
-        [this](const JsonRpcRequest&, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
             if (!RequireInitialized(initialized_, p)) return;
-            nlohmann::json j = nlohmann::json::object();
-            j["extensions"] = nlohmann::json::array();
+            JsonValue j(JsonValue::object_tag);
+            j["extensions"] = JsonValue(JsonValue::array_tag);
             p.set_value(std::move(j));
         });
 
@@ -367,7 +360,7 @@ void McpServer::WireHandlers() {
 
     // ── completion/complete ──
     handler_->SetRequestHandler(methods::kComplete,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleComplete(req, std::move(p));
         });
 
@@ -375,14 +368,14 @@ void McpServer::WireHandlers() {
     auto& store = options_.task_store;
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
-            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound, "tasks/get not available in this protocol version")));
                     return;
                 }
                 GetTaskRequestParams params;
-                if (req.params) from_json(*req.params, params);
+                if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
                 if (!task) {
                     p.set_exception(std::make_exception_ptr(
@@ -396,42 +389,45 @@ void McpServer::WireHandlers() {
                 r.result = task->result;
                 r.error_message = task->error_message;
                 r.input_required = task->input_required;
-                nlohmann::json j = r;
-                p.set_value(std::move(j));
+                p.set_value(SerializeGetTaskResult(r));
             });
 
         handler_->SetRequestHandler(methods::kUpdateTask,
-            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound, "tasks/update not available in this protocol version")));
                     return;
                 }
                 UpdateTaskRequestParams params;
-                if (req.params) from_json(*req.params, params);
+                if (req.params) params = DeserializeUpdateTaskRequestParams(*req.params);
                 store->UpdateTask(params.task_id, params.result);
                 UpdateTaskResult r;
-                p.set_value(nlohmann::json(r));
+                (void)r;
+                // TODO: SerializeUpdateTaskResult
+                p.set_value(JsonValue(JsonValue::object_tag));
             });
 
         handler_->SetRequestHandler(methods::kCancelTask,
-            [this, store](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+            [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound, "tasks/cancel not available in this protocol version")));
                     return;
                 }
                 CancelTaskRequestParams params;
-                if (req.params) from_json(*req.params, params);
+                if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
                 store->CancelTask(params.task_id, params.reason);
                 CancelTaskResult r;
-                p.set_value(nlohmann::json(r));
+                (void)r;
+                // TODO: SerializeCancelTaskResult
+                p.set_value(JsonValue(JsonValue::object_tag));
             });
     }
 
     // ── subscriptions/listen (2026 era only) ──
     handler_->SetRequestHandler(methods::kSubscribe,
-        [this](const JsonRpcRequest& req, std::promise<nlohmann::json> p) {
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleSubscriptionsListen(req, std::move(p));
         });
 }
@@ -454,7 +450,7 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts->list_changed = true;
     }
     if (options_.task_store) {
-        capabilities_.extensions = std::map<std::string, nlohmann::json>{};
+        capabilities_.extensions = std::map<std::string, JsonValue>{};
     }
 }
 
@@ -462,7 +458,7 @@ void McpServer::DeriveCapabilities() {
 // Handler implementations
 // ====================================================================
 void McpServer::HandleListTools(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -473,12 +469,11 @@ void McpServer::HandleListTools(
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
-    nlohmann::json j = result;
-    promise.set_value(std::move(j));
+    promise.set_value(SerializeListToolsResult(result));
 }
 
 void McpServer::HandleCallTool(
-    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -489,7 +484,7 @@ void McpServer::HandleCallTool(
     // Parse params
     CallToolRequestParams params;
     if (req.params) {
-        from_json(*req.params, params);
+        params = DeserializeCallToolRequestParams(*req.params);
     }
 
     auto it = tools_.find(params.name);
@@ -505,11 +500,11 @@ void McpServer::HandleCallTool(
         SendLoggingMessage(level, data);
     };
     auto ctx = RequestContext<CallToolRequestParams>(
-        *this, req, std::move(params), *io_ctx_ptr_, std::move(log_fn));
+        *this, req, std::move(params), std::move(log_fn));
 
     auto tool = it->second;
 
-    auto captured_promise = std::make_shared<std::promise<nlohmann::json>>(std::move(promise));
+    auto captured_promise = std::make_shared<std::promise<JsonValue>>(std::move(promise));
     auto fut = std::async(std::launch::async,
         [tool, ctx = std::move(ctx), captured_promise]() mutable {
             auto result_promise = std::make_shared<std::promise<CallToolResult>>();
@@ -517,8 +512,7 @@ void McpServer::HandleCallTool(
             tool->InvokeAsync(ctx, std::move(*result_promise));
             try {
                 auto result = result_future.get();
-                nlohmann::json j = result;
-                captured_promise->set_value(std::move(j));
+                captured_promise->set_value(SerializeCallToolResult(result));
             } catch (...) {
                 captured_promise->set_exception(std::current_exception());
             }
@@ -534,7 +528,7 @@ void McpServer::HandleCallTool(
 }
 
 void McpServer::HandleListResources(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -549,12 +543,11 @@ void McpServer::HandleListResources(
         r.name = entry.name;
         result.resources.push_back(std::move(r));
     }
-    nlohmann::json j = result;
-    promise.set_value(std::move(j));
+    promise.set_value(SerializeListResourcesResult(result));
 }
 
 void McpServer::HandleListResourceTemplates(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -569,12 +562,11 @@ void McpServer::HandleListResourceTemplates(
         rt.name = entry.name;
         result.resource_templates.push_back(std::move(rt));
     }
-    nlohmann::json j = result;
-    promise.set_value(std::move(j));
+    promise.set_value(SerializeListResourceTemplatesResult(result));
 }
 
 void McpServer::HandleReadResource(
-    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -583,7 +575,7 @@ void McpServer::HandleReadResource(
     }
     ReadResourceRequestParams params;
     if (req.params) {
-        from_json(*req.params, params);
+        params = DeserializeResourceRequestParams(*req.params);
     }
 
     for (const auto& entry : resources_) {
@@ -591,8 +583,7 @@ void McpServer::HandleReadResource(
         if (entry.uri_pattern == params.uri) {
             try {
                 auto result = entry.handler(params.uri);
-                nlohmann::json j = result;
-                promise.set_value(std::move(j));
+promise.set_value(SerializeReadResourceResult(result));
                 return;
             } catch (const McpError&) {
                 throw;
@@ -609,7 +600,7 @@ void McpServer::HandleReadResource(
 }
 
 void McpServer::HandleListPrompts(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -622,12 +613,11 @@ void McpServer::HandleListPrompts(
         p.name = entry.name;
         result.prompts.push_back(std::move(p));
     }
-    nlohmann::json j = result;
-    promise.set_value(std::move(j));
+    promise.set_value(SerializeListPromptsResult(result));
 }
 
 void McpServer::HandleGetPrompt(
-    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -636,15 +626,14 @@ void McpServer::HandleGetPrompt(
     }
     GetPromptRequestParams params;
     if (req.params) {
-        from_json(*req.params, params);
+        params = DeserializeGetPromptRequestParams(*req.params);
     }
 
     for (const auto& entry : prompts_) {
         if (entry.name == params.name) {
             try {
                 auto result = entry.handler(params.name, params.arguments);
-                nlohmann::json j = result;
-                promise.set_value(std::move(j));
+                promise.set_value(SerializeGetPromptResult(result));
                 return;
             } catch (...) {
                 promise.set_exception(std::current_exception());
@@ -663,7 +652,7 @@ void McpServer::SetCompletionHandler(CompletionHandler handler) {
 }
 
 void McpServer::HandleComplete(
-    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -671,13 +660,12 @@ void McpServer::HandleComplete(
         return;
     }
     CompleteRequestParams params;
-    if (req.params) from_json(*req.params, params);
+    if (req.params) params = DeserializeCompleteRequestParams(*req.params);
 
     if (completion_handler_) {
         try {
             auto result = completion_handler_(params);
-            nlohmann::json j = result;
-            promise.set_value(std::move(j));
+                promise.set_value(SerializeCompleteResult(result));
             return;
         } catch (...) {
             promise.set_exception(std::current_exception());
@@ -686,13 +674,14 @@ void McpServer::HandleComplete(
     }
 
     CompleteResult result;
-    result.completion = nlohmann::json{{"values", nlohmann::json::array()}};
-    nlohmann::json j = result;
+    result.completion = JsonValue(JsonValue::object_tag);
+    result.completion["values"] = JsonValue(JsonValue::array_tag);
+    auto j = SerializeCompleteResult(result);
     promise.set_value(std::move(j));
 }
 
 void McpServer::HandleDiscover(
-    const JsonRpcRequest& /*req*/, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
     initialized_ = true;
     DiscoverResult result;
@@ -713,16 +702,15 @@ void McpServer::HandleDiscover(
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }
-    nlohmann::json j = result;
-    promise.set_value(std::move(j));
+    promise.set_value(SerializeDiscoverResult(result));
 }
 
 void McpServer::HandleInitialize(
-    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     InitializeRequestParams params;
     if (req.params) {
-        from_json(*req.params, params);
+        params = DeserializeInitializeRequestParams(*req.params);
     }
 
     // Store client info
@@ -765,12 +753,11 @@ void McpServer::HandleInitialize(
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }
-    nlohmann::json j = result;
-    promise.set_value(std::move(j));
+    promise.set_value(SerializeInitializeResult(result));
 }
 
 void McpServer::HandleSubscriptionsListen(
-    const JsonRpcRequest& req, std::promise<nlohmann::json> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
         promise.set_exception(std::make_exception_ptr(
@@ -780,7 +767,7 @@ void McpServer::HandleSubscriptionsListen(
     }
 
     SubscriptionsListenRequestParams params;
-    if (req.params) from_json(*req.params, params);
+    if (req.params) params = DeserializeSubscriptionsListenRequestParams(*req.params);
 
     auto meta = handler_->ExtractIncomingMeta(req);
 
@@ -797,7 +784,7 @@ void McpServer::HandleSubscriptionsListen(
 
     handler_->AddSubscriptionEntry(std::move(entry));
 
-    nlohmann::json result = nlohmann::json::object();
+    JsonValue result = JsonValue(JsonValue::object_tag);
     promise.set_value(std::move(result));
 }
 

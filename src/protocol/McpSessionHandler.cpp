@@ -3,14 +3,60 @@
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
-#include <asio/post.hpp>
 
 #include <chrono>
 #include <cstdint>
 #include <string>
 #include <system_error>
+#include <thread>
 
 namespace mcp {
+
+namespace {
+
+JsonValue ImplToJson(const Implementation& v) {
+    JsonValue j(JsonValue::object_tag);
+    j["name"] = JsonValue(v.name);
+    j["version"] = JsonValue(v.version);
+    if (v.title)       j["title"] = JsonValue(*v.title);
+    if (v.description) j["description"] = JsonValue(*v.description);
+    if (v.website_url) j["websiteUrl"] = JsonValue(*v.website_url);
+    return j;
+}
+Implementation ImplFromJson(const JsonValue& j) {
+    Implementation v;
+    v.name = j.At("name").GetString();
+    v.version = j.At("version").GetString();
+    if (auto* t = j.Find("title"))       v.title = t->GetString();
+    if (auto* d = j.Find("description")) v.description = d->GetString();
+    if (auto* w = j.Find("websiteUrl"))  v.website_url = w->GetString();
+    return v;
+}
+JsonValue CapsToJson(const ClientCapabilities& v) {
+    JsonValue j(JsonValue::object_tag);
+    if (v.roots)     { JsonValue sub(JsonValue::object_tag); j["roots"] = std::move(sub); }
+    if (v.sampling)  { JsonValue sub(JsonValue::object_tag); j["sampling"] = std::move(sub); }
+    return j;
+}
+ClientCapabilities CapsFromJson(const JsonValue& j) {
+    ClientCapabilities v;
+    if (j.Find("roots"))    v.roots = RootsCapability{};
+    if (j.Find("sampling")) v.sampling = SamplingCapability{};
+    return v;
+}
+JsonValue LogLevelToJson(LoggingLevel l) {
+    static const char* names[] = {"debug","info","notice","warning","error","critical","alert","emergency"};
+    auto i = static_cast<int>(l);
+    return JsonValue((i >= 0 && i < 8) ? names[i] : "debug");
+}
+LoggingLevel LogLevelFromJson(const JsonValue& j) {
+    auto s = j.GetString();
+    static const char* names[] = {"debug","info","notice","warning","error","critical","alert","emergency"};
+    for (int i = 0; i < 8; ++i) { if (s == names[i]) return static_cast<LoggingLevel>(i); }
+    return LoggingLevel::Debug;
+}
+
+} // anonymous namespace
 
 // ═══════════════════════════════════════════════════════════════════════
 // Construction
@@ -26,7 +72,6 @@ McpSessionHandler::McpSessionHandler(
     , is_server_(is_server)
     , incoming_filters_(std::move(incoming_filters))
     , outgoing_filters_(std::move(outgoing_filters))
-    , io_ctx_(transport_->GetMessageChannel().IoContext())
 {
 }
 
@@ -40,7 +85,15 @@ McpSessionHandler::~McpSessionHandler() {
 void McpSessionHandler::Start() {
     if (running_.load()) return;
     running_.store(true);
-    asio::post(io_ctx_, [self = shared_from_this()]() { self->MessageLoop(); });
+
+    auto self = shared_from_this();
+    message_loop_thread_ = std::thread([self]() { self->MessageLoop(); });
+    timeout_thread_ = std::thread([this]() {
+        while (running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            CheckTimeouts();
+        }
+    });
 }
 
 void McpSessionHandler::Close() {
@@ -48,10 +101,16 @@ void McpSessionHandler::Close() {
     closed_.store(true);
     running_.store(false);
 
+    // Wake up message loop by closing the channel
+    transport_->GetMessageChannel().Close();
+
+    if (message_loop_thread_.joinable()) message_loop_thread_.join();
+    if (timeout_thread_.joinable()) timeout_thread_.join();
+
     // Fail all pending requests
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        nlohmann::json err;
+        JsonValue err(JsonValue::object_tag);
         err["code"] = static_cast<int32_t>(McpErrorCode::ConnectionClosed);
         err["message"] = "connection closed";
         for (auto& [id, pending] : pending_) {
@@ -69,33 +128,41 @@ void McpSessionHandler::Close() {
 // Message loop
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::MessageLoop() {
-    if (closed_.load()) return;
-
     auto& channel = transport_->GetMessageChannel();
-
-    channel.AsyncReceive(
-        [self = shared_from_this()](asio::error_code ec, JsonRpcMessage msg) {
-            if (ec || self->closed_.load()) {
-                if (!self->closed_.load()) self->Close();
-                return;
-            }
-
-            // Apply incoming filters if present
-            if (self->incoming_filters_) {
-                self->incoming_filters_->Execute(msg,
-                    [self](const JsonRpcMessage& filtered_msg) {
-                        if (!self->closed_.load()) self->DispatchMessage(filtered_msg);
-                    });
-            } else {
-                self->DispatchMessage(msg);
-            }
-
-            // Continue loop
-            if (!self->closed_.load()) {
-                asio::post(self->io_ctx_,
-                    [self]() { self->MessageLoop(); });
-            }
+    while (!closed_.load()) {
+        std::error_code ec;
+        JsonRpcMessage msg;
+        channel.AsyncReceive([&](std::error_code recv_ec, JsonRpcMessage recv_msg) {
+            ec = recv_ec;
+            msg = std::move(recv_msg);
         });
+        if (ec || closed_.load()) break;
+        CheckTimeouts();
+        if (incoming_filters_) {
+            incoming_filters_->Execute(msg,
+                [this](const JsonRpcMessage& filtered_msg) {
+                    if (!closed_.load()) DispatchMessage(filtered_msg);
+                });
+        } else {
+            DispatchMessage(msg);
+        }
+    }
+}
+
+void McpSessionHandler::CheckTimeouts() {
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    for (auto it = pending_.begin(); it != pending_.end(); ) {
+        if (now >= it->second->deadline) {
+            JsonValue err(JsonValue::object_tag);
+            err["code"] = static_cast<int32_t>(McpErrorCode::RequestTimeout);
+            err["message"] = "request timed out";
+            try { it->second->callback(err); } catch (...) {}
+            it = pending_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -148,8 +215,10 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
 
         if (!has_capability) {
-            nlohmann::json data = nlohmann::json::object();
-            data["requiredCapabilities"] = nlohmann::json::array({*required_cap});
+            JsonValue data(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            arr.PushBack(JsonValue(*required_cap));
+            data["requiredCapabilities"] = std::move(arr);
             SendErrorResponse(req.id, McpErrorCode::MissingRequiredClientCapability, "missing required client capability: " + *required_cap, std::move(data));
             return;
         }
@@ -157,16 +226,16 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
 
     // ── Request state verification (HMAC/AEAD) ──
     if (request_state_verifier_ && req.params) {
-        auto rs_it = req.params->find("requestState");
-        if (rs_it != req.params->end() && rs_it->is_string()) {
-            if (!request_state_verifier_(rs_it->get<std::string>())) {
+        auto* rs = req.params->Find("requestState");
+        if (rs && rs->IsString()) {
+            if (!request_state_verifier_(rs->GetString())) {
                 SendErrorResponse(req.id, McpErrorCode::InvalidParams, "invalid requestState");
                 return;
             }
         }
     }
 
-    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto promise = std::make_shared<std::promise<JsonValue>>();
     auto future = promise->get_future();
 
     try {
@@ -180,42 +249,36 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     [[maybe_unused]] auto _ = std::async(std::launch::async, [self, req, future = std::move(future)]() mutable {
         try {
             auto result = future.get();
-            asio::post(self->io_ctx_, [self, req, result = std::move(result)]() mutable {
-                if (self->closed_.load()) return;
+            if (self->closed_.load()) return;
 
-                JsonRpcResponse resp;
-                resp.id = req.id;
-                resp.result = self->codec_->EncodeResult(req.method, result);
+            JsonRpcResponse resp;
+            resp.id = req.id;
+            resp.result = self->codec_->EncodeResult(req.method, result);
 
-                JsonRpcMessage response_msg{std::move(resp)};
+            JsonRpcMessage response_msg{std::move(resp)};
 
-                if (self->outgoing_filters_) {
-                    self->outgoing_filters_->Execute(response_msg,
-                        [self](const JsonRpcMessage& filtered) {
-                            if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
-                        });
-                } else {
-                    self->transport_->SendMessageAsync(response_msg);
-                }
-            });
+            if (self->outgoing_filters_) {
+                self->outgoing_filters_->Execute(response_msg,
+                    [self](const JsonRpcMessage& filtered) {
+                        if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
+                    });
+            } else {
+                self->transport_->SendMessageAsync(response_msg);
+            }
         } catch (const McpError& e) {
-            asio::post(self->io_ctx_, [self, req, e]() {
-                if (self->closed_.load()) return;
-                JsonRpcErrorResponse err_resp;
-                err_resp.id = req.id;
-                err_resp.error.code = e.Code();
-                err_resp.error.message = e.what();
-                self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
-            });
+            if (self->closed_.load()) return;
+            JsonRpcErrorResponse err_resp;
+            err_resp.id = req.id;
+            err_resp.error.code = e.Code();
+            err_resp.error.message = e.what();
+            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
         } catch (const std::exception& e) {
-            asio::post(self->io_ctx_, [self, req, e]() {
-                if (self->closed_.load()) return;
-                JsonRpcErrorResponse err_resp;
-                err_resp.id = req.id;
-                err_resp.error.code = McpErrorCode::InternalError;
-                err_resp.error.message = std::string("internal error: ") + e.what();
-                self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
-            });
+            if (self->closed_.load()) return;
+            JsonRpcErrorResponse err_resp;
+            err_resp.id = req.id;
+            err_resp.error.code = McpErrorCode::InternalError;
+            err_resp.error.message = std::string("internal error: ") + e.what();
+            self->transport_->SendMessageAsync(JsonRpcMessage{std::move(err_resp)});
         }
     });
 }
@@ -238,8 +301,6 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
     if (it != pending_.end()) {
-        if (it->second && it->second->timer)
-            it->second->timer->cancel();
         if (it->second)
             it->second->callback(resp.result);
         pending_.erase(it);
@@ -256,10 +317,8 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(id);
     if (it != pending_.end()) {
-        if (it->second && it->second->timer)
-            it->second->timer->cancel();
         if (it->second) {
-            nlohmann::json error_json;
+            JsonValue error_json(JsonValue::object_tag);
             error_json["code"] = static_cast<int32_t>(err.error.code);
             error_json["message"] = err.error.message;
             if (err.error.data) error_json["data"] = *err.error.data;
@@ -293,13 +352,13 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
 // ═══════════════════════════════════════════════════════════════════════
 // Send request (with timeout)
 // ═══════════════════════════════════════════════════════════════════════
-std::future<nlohmann::json> McpSessionHandler::SendRequest(
+std::future<JsonValue> McpSessionHandler::SendRequest(
     std::string_view method,
-    nlohmann::json params,
+    JsonValue params,
     const RequestMeta& meta,
     std::chrono::milliseconds timeout)
 {
-    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto promise = std::make_shared<std::promise<JsonValue>>();
     auto future = promise->get_future();
 
     auto id = next_request_id_++;
@@ -309,36 +368,18 @@ std::future<nlohmann::json> McpSessionHandler::SendRequest(
     req.method = std::string(method);
     req.params = std::move(params);
 
-    // Ensure params exists for meta stamping
-    if (!req.params) req.params = nlohmann::json::object();
+    // Ensure params is an object for meta stamping
+    if (req.params->IsNull()) *req.params = JsonValue(JsonValue::object_tag);
 
     // Stamp _meta for 2026 era
     StampOutgoingMeta(*req.params, meta);
 
     // Register pending request
     auto pending = std::make_shared<PendingRequest>();
-    pending->callback = [promise](nlohmann::json result) {
+    pending->callback = [promise](JsonValue result) {
         promise->set_value(std::move(result));
     };
-
-    if (timeout.count() > 0) {
-        pending->timer = std::make_shared<asio::steady_timer>(io_ctx_);
-        pending->timer->expires_after(timeout);
-        auto self = shared_from_this();
-        pending->timer->async_wait(
-            [self, id, promise](asio::error_code ec) {
-                if (ec) return;
-                std::lock_guard<std::mutex> lock(self->pending_mutex_);
-                auto it = self->pending_.find(std::to_string(id));
-                if (it != self->pending_.end()) {
-                    nlohmann::json err;
-                    err["code"] = static_cast<int32_t>(McpErrorCode::RequestTimeout);
-                    err["message"] = "request timed out";
-                    it->second->callback(std::move(err));
-                    self->pending_.erase(it);
-                }
-            });
-    }
+    pending->deadline = std::chrono::steady_clock::now() + timeout;
 
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -363,10 +404,10 @@ std::future<nlohmann::json> McpSessionHandler::SendRequest(
 // ═══════════════════════════════════════════════════════════════════════
 // Send notification
 // ═══════════════════════════════════════════════════════════════════════
-void McpSessionHandler::SendNotification(std::string_view method, nlohmann::json params) {
+void McpSessionHandler::SendNotification(std::string_view method, JsonValue params) {
     JsonRpcNotification notif;
     notif.method = std::string(method);
-    if (!params.is_null() && !params.empty()) {
+    if (!params.IsNull() && !params.Empty()) {
         notif.params = std::move(params);
     }
 
@@ -397,7 +438,7 @@ void McpSessionHandler::SendMessage(JsonRpcMessage message) {
 // ═══════════════════════════════════════════════════════════════════════
 // Meta helpers
 // ═══════════════════════════════════════════════════════════════════════
-void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMeta& meta) {
+void McpSessionHandler::StampOutgoingMeta(JsonValue& body, const RequestMeta& meta) {
     if (meta.protocol_version < "2026-07-28") {
         LogContext ctx;
         ctx.method = "stamp-outgoing";
@@ -405,17 +446,15 @@ void McpSessionHandler::StampOutgoingMeta(nlohmann::json& body, const RequestMet
         return;
     }
 
-    auto& meta_obj = body["_meta"];
-    if (meta_obj.is_null()) {
-        meta_obj = nlohmann::json::object();
-    }
-    meta_obj["io.modelcontextprotocol/protocolVersion"] = meta.protocol_version;
+    JsonValue meta_obj(JsonValue::object_tag);
+    meta_obj["io.modelcontextprotocol/protocolVersion"] = JsonValue(meta.protocol_version);
     if (meta.client_info)
-        meta_obj["io.modelcontextprotocol/clientInfo"] = *meta.client_info;
-    if (meta.client_capabilities)
-        meta_obj["io.modelcontextprotocol/clientCapabilities"] = *meta.client_capabilities;
-    if (meta.log_level)
-        meta_obj["io.modelcontextprotocol/logLevel"] = *meta.log_level;
+        meta_obj["io.modelcontextprotocol/clientInfo"] = ImplToJson(*meta.client_info);
+        if (meta.client_capabilities)
+            meta_obj["io.modelcontextprotocol/clientCapabilities"] = CapsToJson(*meta.client_capabilities);
+        if (meta.log_level)
+            meta_obj["io.modelcontextprotocol/logLevel"] = LogLevelToJson(*meta.log_level);
+    body["_meta"] = std::move(meta_obj);
 
     LogContext ctx;
     ctx.method = "stamp-outgoing";
@@ -437,26 +476,25 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     const auto& j = *req.meta;
 
     auto get_str = [&](const std::string& key) -> std::string {
-        auto it = j.find(key);
-        return (it != j.end()) ? it->get<std::string>() : "";
+        auto* it = j.Find(key);
+        return it ? it->GetString() : "";
     };
 
     meta.protocol_version = get_str("io.modelcontextprotocol/protocolVersion");
-    if (auto it = j.find("io.modelcontextprotocol/clientInfo"); it != j.end())
-        meta.client_info = it->get<Implementation>();
-    if (auto it = j.find("io.modelcontextprotocol/clientCapabilities"); it != j.end())
-        meta.client_capabilities = it->get<ClientCapabilities>();
-    if (auto it = j.find("io.modelcontextprotocol/logLevel"); it != j.end())
-        meta.log_level = it->get<LoggingLevel>();
-    if (auto it = j.find("progressToken"); it != j.end()) {
-        const auto& val = *it;
-        if (val.is_string())
-            meta.progress_token = val.get<std::string>();
+    if (auto* it = j.Find("io.modelcontextprotocol/clientInfo"))
+        meta.client_info = ImplFromJson(*it);
+        if (auto it = j.Find("io.modelcontextprotocol/clientCapabilities"); it)
+            meta.client_capabilities = CapsFromJson(*it);
+        if (auto it = j.Find("io.modelcontextprotocol/logLevel"); it)
+            meta.log_level = LogLevelFromJson(*it);
+    if (auto* pt = j.Find("progressToken")) {
+        if (pt->IsString())
+            meta.progress_token = pt->GetString();
         else
-            meta.progress_token = val.get<int64_t>();
+            meta.progress_token = pt->GetInt();
     }
-    if (auto it = j.find("io.modelcontextprotocol/subscriptionId"); it != j.end())
-        meta.subscription_id = it->get<std::string>();
+    if (auto* sid = j.Find("io.modelcontextprotocol/subscriptionId"))
+        meta.subscription_id = sid->GetString();
 
     MCP_LOG_CTX(Trace, ctx, "extracted incoming meta: proto=" + meta.protocol_version +
         " has_client_info=" + (meta.client_info ? "yes" : "no"));
@@ -488,7 +526,7 @@ void McpSessionHandler::RemoveSubscription(std::string_view id) {
 
 void McpSessionHandler::NotifySubscribers(
     std::string_view notification_type,
-    nlohmann::json params,
+    JsonValue params,
     std::optional<std::string> resource_uri)
 {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
@@ -520,8 +558,8 @@ void McpSessionHandler::NotifySubscribers(
         notif.method = std::string(notification_type);
         notif.params = params;
 
-        nlohmann::json meta = nlohmann::json::object();
-        meta["io.modelcontextprotocol/subscriptionId"] = id;
+        JsonValue meta(JsonValue::object_tag);
+        meta["io.modelcontextprotocol/subscriptionId"] = JsonValue(id);
         notif.meta = std::move(meta);
 
         transport_->SendMessageAsync(JsonRpcMessage{std::move(notif)});
@@ -531,7 +569,7 @@ void McpSessionHandler::NotifySubscribers(
 // ═══════════════════════════════════════════════════════════════════════
 // Error response helper
 // ═══════════════════════════════════════════════════════════════════════
-void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<nlohmann::json> data) {
+void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data) {
     JsonRpcErrorResponse err_resp;
     err_resp.id = id;
     err_resp.error.code = code;
@@ -546,20 +584,19 @@ void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code
 void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     if (!notif.params) return;
 
-    auto& p = *notif.params;
-    auto req_id_it = p.find("requestId");
-    if (req_id_it == p.end()) return;
+    auto* req_id_val = notif.params->Find("requestId");
+    if (!req_id_val) return;
 
     std::string reason;
-    auto reason_it = p.find("reason");
-    if (reason_it != p.end() && reason_it->is_string())
-        reason = reason_it->get<std::string>();
+    auto* reason_val = notif.params->Find("reason");
+    if (reason_val && reason_val->IsString())
+        reason = reason_val->GetString();
 
     std::string target_id_key;
-    if (req_id_it->is_number_integer()) {
-        target_id_key = std::to_string(req_id_it->get<int64_t>());
-    } else if (req_id_it->is_string()) {
-        target_id_key = req_id_it->get<std::string>();
+    if (req_id_val->IsInt()) {
+        target_id_key = std::to_string(req_id_val->GetInt());
+    } else if (req_id_val->IsString()) {
+        target_id_key = req_id_val->GetString();
     } else {
         return;
     }
@@ -567,12 +604,14 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     std::lock_guard<std::mutex> lock(pending_mutex_);
     auto it = pending_.find(target_id_key);
     if (it != pending_.end() && it->second) {
-        if (it->second->timer) it->second->timer->cancel();
-        nlohmann::json err;
+        JsonValue err(JsonValue::object_tag);
         err["code"] = static_cast<int32_t>(McpErrorCode::RequestCancelled);
         err["message"] = "request cancelled";
-        if (!reason.empty())
-            err["data"]["reason"] = reason;
+        if (!reason.empty()) {
+            JsonValue data(JsonValue::object_tag);
+            data["reason"] = JsonValue(reason);
+            err["data"] = std::move(data);
+        }
         it->second->callback(std::move(err));
         pending_.erase(it);
     }

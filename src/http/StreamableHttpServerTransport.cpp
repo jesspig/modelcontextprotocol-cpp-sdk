@@ -2,22 +2,19 @@
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
 
-#include <asio/post.hpp>
+// TODO(libhv): full rewrite with libhv
 
 #include <sstream>
 
 namespace mcp {
 
-// JSON parse safety limits
-#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-// K_MAX_JSON_DEPTH removed — nlohmann-json v3.11.3 parse() accepts 4 args max
+#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
-    asio::io_context& io_ctx,
     StreamableHttpServerOptions options)
-    : TransportBase(io_ctx)
+    : TransportBase()
     , options_(std::move(options))
-    , http_server_(std::make_unique<HttpServer>(io_ctx, options_.port))
+    , http_server_(std::make_unique<HttpServer>(options_.port))
     , event_store_(options_.event_store
         ? options_.event_store
         : std::make_shared<EventStore>())
@@ -25,7 +22,7 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     session_id_ = "srv-" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count());
 
-    channel_ = std::make_unique<MessageChannel>(io_ctx, 64);
+    channel_ = std::make_unique<MessageChannel>(64);
 
     // Wire HTTP handlers
     http_server_->SetHandler("POST", options_.endpoint,
@@ -59,11 +56,11 @@ void StreamableHttpServerTransport::Close() {
 bool StreamableHttpServerTransport::ValidateMcpHeaders(
     const std::string& method_header,
     const std::string& name_header,
-    const nlohmann::json& body,
+    const JsonValue& body,
     std::string& error_out)
 {
-    // Validate Mcp-Method header matches body method field
-    auto body_method = body.value("method", "");
+    auto* method_val = body.Find("method");
+    std::string body_method = method_val && method_val->IsString() ? method_val->GetString() : "";
     if (!method_header.empty() && !body_method.empty() &&
         method_header != body_method)
     {
@@ -72,15 +69,13 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
         return false;
     }
 
-    // Validate Mcp-Name header matches body params name
     if (!name_header.empty()) {
-        auto params_it = body.find("params");
+        auto* params = body.Find("params");
         std::string body_name;
-        if (params_it != body.end() && params_it->is_object()) {
-            // Check params.name (tools/call, prompts/get) and params.uri (resources/read)
-            body_name = params_it->value("name", "");
+        if (params && params->IsObject()) {
+            if (auto* n = params->Find("name")) body_name = n->GetString();
             if (body_name.empty())
-                body_name = params_it->value("uri", "");
+                if (auto* u = params->Find("uri")) body_name = u->GetString();
         }
         if (!body_name.empty() && name_header != body_name) {
             error_out = "Mcp-Name header '" + name_header +
@@ -103,7 +98,7 @@ void StreamableHttpServerTransport::HandlePost(
 
     // Parse JSON-RPC message from body
     JsonRpcMessage msg;
-    nlohmann::json body_json;
+    JsonValue body_jv;
     try {
         if (req.body.size() > K_MAX_MESSAGE_SIZE) {
             resp.status_code = 413;
@@ -112,8 +107,9 @@ void StreamableHttpServerTransport::HandlePost(
             resp.headers["content-type"] = "application/json";
             return;
         }
-        body_json = nlohmann::json::parse(req.body, nullptr, false, false);
-        msg = body_json.get<JsonRpcMessage>();
+        body_jv = JsonValue::Parse(req.body);
+        if (body_jv.IsNull()) throw std::runtime_error("parse failed");
+        msg = DeserializeMessage(req.body);
     } catch (...) {
         MCP_LOG(Warning, "request body parse failed");
         resp.status_code = 400;
@@ -125,14 +121,18 @@ void StreamableHttpServerTransport::HandlePost(
 
     // Validate MCP headers match body
     std::string header_error;
-    if (!ValidateMcpHeaders(mcp_method, mcp_name, body_json, header_error)) {
+    if (!ValidateMcpHeaders(mcp_method, mcp_name, body_jv, header_error)) {
         resp.status_code = 400;
         resp.status_text = "Bad Request";
-        nlohmann::json err;
-        err["jsonrpc"] = "2.0";
-        err["error"]["code"] = static_cast<int32_t>(McpErrorCode::HeaderMismatch);
-        err["error"]["message"] = header_error;
-        resp.body = err.dump();
+        JsonValue::Object err_obj;
+        err_obj["jsonrpc"] = JsonValue("2.0");
+        {
+            JsonValue::Object err_err;
+            err_err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::HeaderMismatch));
+            err_err["message"] = JsonValue(header_error);
+            err_obj["error"] = JsonValue(std::move(err_err));
+        }
+        resp.body = JsonValue(std::move(err_obj)).Dump();
         resp.headers["content-type"] = "application/json";
         return;
     }
@@ -152,20 +152,20 @@ void StreamableHttpServerTransport::HandlePost(
 
     // Extract Mcp-Param-* headers from request (case-insensitive) and store in meta
     if (auto* req_ptr = std::get_if<JsonRpcRequest>(&msg)) {
-        nlohmann::json meta_headers;
+        JsonValue::Object meta_headers_obj;
         for (const auto& [key, val] : req.headers) {
             std::string key_lower = key;
             for (auto& c : key_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const std::string prefix = "mcp-param-";
             if (key_lower.substr(0, prefix.size()) == prefix) {
                 auto param_name = key.substr(prefix.size());
-                meta_headers[param_name] = val;
+                meta_headers_obj[param_name] = JsonValue(val);
             }
         }
-        if (!meta_headers.empty()) {
-            if (!req_ptr->meta) req_ptr->meta = nlohmann::json::object();
-            (*req_ptr->meta)["x-mcp-headers"] = std::move(meta_headers);
-        }
+            if (!meta_headers_obj.empty()) {
+                if (!req_ptr->meta) req_ptr->meta = JsonValue(JsonValue::object_tag);
+                (*req_ptr->meta)["x-mcp-headers"] = JsonValue(std::move(meta_headers_obj));
+            }
     }
 
     // Check if this is a request (needs response) or notification (no response)
@@ -193,17 +193,17 @@ void StreamableHttpServerTransport::HandlePost(
                 channel_->Send(std::move(msg));
 
                 auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                // TODO(libhv): replace io_ctx_.run_one() with proper event loop
                 while (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
                     if (std::chrono::steady_clock::now() >= deadline) break;
-                    if (io_ctx_.run_one() == 0) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
 
                 if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     auto response = future.get();
-                    nlohmann::json j = response;
+                    resp.body = SerializeMessage(response);
                     resp.status_code = 200;
                     resp.status_text = "OK";
-                    resp.body = j.dump();
                     resp.headers["content-type"] = "application/json";
                 } else {
                     {
@@ -237,14 +237,15 @@ void StreamableHttpServerTransport::HandlePost(
     // Check response body for x-mcp-header annotations → Mcp-Param-* headers
     if (!resp.body.empty() && resp.body.size() <= K_MAX_MESSAGE_SIZE) {
         try {
-            auto resp_json = nlohmann::json::parse(resp.body, nullptr, false, false);
-            auto meta_it = resp_json.find("_meta");
-            if (meta_it != resp_json.end() && meta_it->is_object()) {
-                auto xhc_it = meta_it->find("x-mcp-header");
-                if (xhc_it != meta_it->end() && xhc_it->is_object()) {
-                    for (auto& [hk, hv] : xhc_it->items()) {
-                        resp.headers["mcp-param-" + hk] = hv.is_string()
-                            ? hv.get<std::string>() : hv.dump();
+            auto resp_jv = JsonValue::Parse(resp.body);
+            if (!resp_jv.IsNull()) {
+                auto* meta = resp_jv.Find("_meta");
+                if (meta && meta->IsObject()) {
+                    auto* xhc = meta->Find("x-mcp-header");
+                    if (xhc && xhc->IsObject()) {
+                        for (const auto& [hk, hv] : *xhc) {
+                            resp.headers["mcp-param-" + hk] = hv.IsString() ? hv.GetString() : hv.Dump();
+                        }
                     }
                 }
             }
@@ -266,11 +267,10 @@ void StreamableHttpServerTransport::HandleGet(
     std::string endpoint_event = "event: endpoint\ndata: " +
         options_.endpoint + "\n\n";
     auto self = std::static_pointer_cast<StreamableHttpServerTransport>(shared_from_this());
-    asio::post(io_ctx_, [self, event = std::move(endpoint_event)]() {
-        if (self->http_server_) {
-            self->http_server_->BroadcastSse(event);
-        }
-    });
+    // TODO(libhv): replace asio::post with direct invocation or thread pool
+    if (self->http_server_) {
+        self->http_server_->BroadcastSse(endpoint_event);
+    }
 }
 
 // ── Send message (server-initiated notification via SSE) ──
@@ -322,8 +322,7 @@ std::string StreamableHttpServerTransport::RequestIdToString(const RequestId& id
 std::string StreamableHttpServerTransport::BuildSseEvent(
     const JsonRpcMessage& msg)
 {
-    nlohmann::json j = msg;
-    std::string data = "event: message\ndata: " + j.dump() + "\n\n";
+    std::string data = "event: message\ndata: " + SerializeMessage(msg) + "\n\n";
     return data;
 }
 

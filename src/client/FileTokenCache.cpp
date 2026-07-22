@@ -1,3 +1,4 @@
+#include <mcp/JsonValue.hpp>
 #include <mcp/storage/FileTokenCache.hpp>
 #include <mcp/Log.hpp>
 
@@ -87,15 +88,17 @@ void FileTokenCache::Load() {
         std::ifstream plain_file(cache_path_);
         if (!plain_file.is_open()) return;
         try {
-            auto json = nlohmann::json::parse(plain_file, nullptr, false);
-            if (json.is_discarded()) return;
+            std::string content((std::istreambuf_iterator<char>(plain_file)), std::istreambuf_iterator<char>());
+            auto json = JsonValue::Parse(content);
+            if (json.IsNull()) return;
             TokenContainer tc;
-            tc.access_token = json.value("access_token", "");
-            tc.refresh_token = json.value("refresh_token", "");
-            tc.token_type = json.value("token_type", "Bearer");
-            tc.expires_at = json.value("expires_at", 0LL);
-            if (json.contains("scopes")) {
-                tc.scopes = json["scopes"].get<std::vector<std::string>>();
+            if (auto* v = json.Find("access_token")) tc.access_token = v->GetString();
+            if (auto* v = json.Find("refresh_token")) tc.refresh_token = v->GetString();
+            if (auto* v = json.Find("token_type")) tc.token_type = v->GetString();
+            if (auto* v = json.Find("expires_at")) tc.expires_at = v->GetInt();
+            if (auto* v = json.Find("scopes"); v && v->IsArray()) {
+                for (const auto& s : v->GetArray())
+                    tc.scopes.push_back(s.GetString());
             }
             tokens_ = std::move(tc);
         } catch (...) { MCP_LOG(Warning, "token cache fallback parse failed"); }
@@ -103,15 +106,16 @@ void FileTokenCache::Load() {
     }
 
     try {
-        auto json = nlohmann::json::parse(json_str, nullptr, false);
-        if (json.is_discarded()) return;
+        auto json = JsonValue::Parse(json_str);
+        if (json.IsNull()) return;
         TokenContainer tc;
-        tc.access_token = json.value("access_token", "");
-        tc.refresh_token = json.value("refresh_token", "");
-        tc.token_type = json.value("token_type", "Bearer");
-        tc.expires_at = json.value("expires_at", 0LL);
-        if (json.contains("scopes")) {
-            tc.scopes = json["scopes"].get<std::vector<std::string>>();
+        if (auto* v = json.Find("access_token")) tc.access_token = v->GetString();
+        if (auto* v = json.Find("refresh_token")) tc.refresh_token = v->GetString();
+        if (auto* v = json.Find("token_type")) tc.token_type = v->GetString();
+        if (auto* v = json.Find("expires_at")) tc.expires_at = v->GetInt();
+        if (auto* v = json.Find("scopes"); v && v->IsArray()) {
+            for (const auto& s : v->GetArray())
+                tc.scopes.push_back(s.GetString());
         }
         tokens_ = std::move(tc);
     } catch (...) {
@@ -121,15 +125,17 @@ void FileTokenCache::Load() {
     std::ifstream file(cache_path_);
     if (!file.is_open()) return;
     try {
-        auto json = nlohmann::json::parse(file, nullptr, false);
-        if (json.is_discarded()) return;
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        auto json = JsonValue::Parse(content);
+        if (json.IsNull()) return;
         TokenContainer tc;
-        tc.access_token = json.value("access_token", "");
-        tc.refresh_token = json.value("refresh_token", "");
-        tc.token_type = json.value("token_type", "Bearer");
-        tc.expires_at = json.value("expires_at", 0LL);
-        if (json.contains("scopes")) {
-            tc.scopes = json["scopes"].get<std::vector<std::string>>();
+        if (auto* v = json.Find("access_token")) tc.access_token = v->GetString();
+        if (auto* v = json.Find("refresh_token")) tc.refresh_token = v->GetString();
+        if (auto* v = json.Find("token_type")) tc.token_type = v->GetString();
+        if (auto* v = json.Find("expires_at")) tc.expires_at = v->GetInt();
+        if (auto* v = json.Find("scopes"); v && v->IsArray()) {
+            for (const auto& s : v->GetArray())
+                tc.scopes.push_back(s.GetString());
         }
         tokens_ = std::move(tc);
     } catch (...) {
@@ -145,16 +151,22 @@ void FileTokenCache::Save() {
         std::filesystem::remove(cache_path_);
         return;
     }
-    nlohmann::json j;
-    j["access_token"] = tokens_->access_token;
-    j["refresh_token"] = tokens_->refresh_token;
-    j["token_type"] = tokens_->token_type;
-    j["expires_at"] = tokens_->expires_at;
-    j["scopes"] = tokens_->scopes;
+    JsonValue::Object obj;
+    obj["access_token"] = JsonValue(tokens_->access_token);
+    obj["refresh_token"] = JsonValue(tokens_->refresh_token);
+    obj["token_type"] = JsonValue(tokens_->token_type);
+    obj["expires_at"] = JsonValue(static_cast<int64_t>(tokens_->expires_at));
+    {
+        JsonValue::Array scopes_arr;
+        for (const auto& s : tokens_->scopes)
+            scopes_arr.push_back(JsonValue(s));
+        obj["scopes"] = JsonValue(std::move(scopes_arr));
+    }
+    auto dump_str = JsonValue(std::move(obj)).Dump(2);
     auto tmp_path = cache_path_;
     tmp_path += ".tmp";
 #ifdef _WIN32
-    auto plaintext = j.dump();
+    auto plaintext = dump_str;
     auto encrypted = ProtectData(plaintext);
     if (encrypted.empty()) {
         std::filesystem::remove(tmp_path);
@@ -176,7 +188,7 @@ void FileTokenCache::Save() {
             std::filesystem::remove(tmp_path);
             return;
         }
-        file << j.dump(2);
+        file << dump_str;
         file.close();
         chmod(tmp_path.string().c_str(), 0600);
     }
