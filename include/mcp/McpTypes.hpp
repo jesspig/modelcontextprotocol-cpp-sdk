@@ -451,4 +451,128 @@ struct PromptOptions {
     PromptOptions& Title(std::string_view t) { title = std::string(t); return *this; }
 };
 
+// ── Serialization ──
+JsonValue SerializeToolAnnotations(const ToolAnnotations& v);
+ToolAnnotations DeserializeToolAnnotations(const JsonValue& j);
+JsonValue SerializeResourceAnnotations(const ResourceAnnotations& v);
+ResourceAnnotations DeserializeResourceAnnotations(const JsonValue& j);
+
+JsonValue SerializeResult(const Result& v);
+Result DeserializeResult(const JsonValue& j);
+JsonValue SerializeEmptyResult(const EmptyResult& v);
+EmptyResult DeserializeEmptyResult(const JsonValue& j);
+JsonValue SerializeTool(const Tool& v);
+Tool DeserializeTool(const JsonValue& j);
+JsonValue SerializeResource(const Resource& v);
+Resource DeserializeResource(const JsonValue& j);
+JsonValue SerializeResourceTemplate(const ResourceTemplate& v);
+ResourceTemplate DeserializeResourceTemplate(const JsonValue& j);
+JsonValue SerializePromptArgument(const PromptArgument& v);
+PromptArgument DeserializePromptArgument(const JsonValue& j);
+JsonValue SerializePrompt(const Prompt& v);
+Prompt DeserializePrompt(const JsonValue& j);
+JsonValue SerializePromptMessage(const PromptMessage& v);
+PromptMessage DeserializePromptMessage(const JsonValue& j);
+JsonValue SerializePagination(const Pagination& v);
+Pagination DeserializePagination(const JsonValue& j);
+
+JsonValue SerializePaginatedRequestParams(const PaginatedRequestParams& v);
+PaginatedRequestParams DeserializePaginatedRequestParams(const JsonValue& j);
+JsonValue SerializeResourceRequestParams(const ResourceRequestParams& v);
+ResourceRequestParams DeserializeResourceRequestParams(const JsonValue& j);
+JsonValue SerializeCallToolRequestParams(const CallToolRequestParams& v);
+CallToolRequestParams DeserializeCallToolRequestParams(const JsonValue& j);
+JsonValue SerializeGetPromptRequestParams(const GetPromptRequestParams& v);
+GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j);
+JsonValue SerializeCompleteRequestParams(const CompleteRequestParams& v);
+CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j);
+JsonValue SerializeDiscoverRequestParams(const DiscoverRequestParams& v);
+DiscoverRequestParams DeserializeDiscoverRequestParams(const JsonValue& j);
+JsonValue SerializeInitializeRequestParams(const InitializeRequestParams& v);
+InitializeRequestParams DeserializeInitializeRequestParams(const JsonValue& j);
+
+JsonValue SerializeSubscriptionFilter(const SubscriptionFilter& v);
+SubscriptionFilter DeserializeSubscriptionFilter(const JsonValue& j);
+JsonValue SerializeSubscriptionsListenRequestParams(const SubscriptionsListenRequestParams& v);
+SubscriptionsListenRequestParams DeserializeSubscriptionsListenRequestParams(const JsonValue& j);
+JsonValue SerializeSubscriptionsAcknowledgedNotificationParams(const SubscriptionsAcknowledgedNotificationParams& v);
+SubscriptionsAcknowledgedNotificationParams DeserializeSubscriptionsAcknowledgedNotificationParams(const JsonValue& j);
+
+JsonValue SerializeCallToolResult(const CallToolResult& v);
+CallToolResult DeserializeCallToolResult(const JsonValue& j);
+JsonValue SerializeListToolsResult(const ListToolsResult& v);
+ListToolsResult DeserializeListToolsResult(const JsonValue& j);
+JsonValue SerializeListResourcesResult(const ListResourcesResult& v);
+ListResourcesResult DeserializeListResourcesResult(const JsonValue& j);
+JsonValue SerializeListResourceTemplatesResult(const ListResourceTemplatesResult& v);
+ListResourceTemplatesResult DeserializeListResourceTemplatesResult(const JsonValue& j);
+JsonValue SerializeReadResourceResult(const ReadResourceResult& v);
+ReadResourceResult DeserializeReadResourceResult(const JsonValue& j);
+JsonValue SerializeListPromptsResult(const ListPromptsResult& v);
+ListPromptsResult DeserializeListPromptsResult(const JsonValue& j);
+JsonValue SerializeGetPromptResult(const GetPromptResult& v);
+GetPromptResult DeserializeGetPromptResult(const JsonValue& j);
+JsonValue SerializeCompleteResult(const CompleteResult& v);
+CompleteResult DeserializeCompleteResult(const JsonValue& j);
+JsonValue SerializeInitializeResult(const InitializeResult& v);
+InitializeResult DeserializeInitializeResult(const JsonValue& j);
+JsonValue SerializeDiscoverResult(const DiscoverResult& v);
+DiscoverResult DeserializeDiscoverResult(const JsonValue& j);
+
+JsonValue SerializeInputRequestElicit(const InputRequestElicit& v);
+InputRequestElicit DeserializeInputRequestElicit(const JsonValue& j);
+JsonValue SerializeInputRequests(const InputRequests& v);
+InputRequests DeserializeInputRequests(const JsonValue& j);
+JsonValue SerializeInputRequiredResult(const InputRequiredResult& v);
+InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j);
+
+JsonValue SerializeProgressNotificationParams(const ProgressNotificationParams& v);
+ProgressNotificationParams DeserializeProgressNotificationParams(const JsonValue& j);
+JsonValue SerializeCancelledNotificationParams(const CancelledNotificationParams& v);
+CancelledNotificationParams DeserializeCancelledNotificationParams(const JsonValue& j);
+JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotificationParams& v);
+LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(const JsonValue& j);
+
+JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v);
+ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j);
+JsonValue SerializeElicitResult(const ElicitResult& v);
+ElicitResult DeserializeElicitResult(const JsonValue& j);
+
+JsonValue SerializeSamplingMessage(const SamplingMessage& v);
+SamplingMessage DeserializeSamplingMessage(const JsonValue& j);
+JsonValue SerializeCreateMessageRequestParams(const CreateMessageRequestParams& v);
+CreateMessageRequestParams DeserializeCreateMessageRequestParams(const JsonValue& j);
+JsonValue SerializeCreateMessageResult(const CreateMessageResult& v);
+CreateMessageResult DeserializeCreateMessageResult(const JsonValue& j);
+
+JsonValue SerializeRoot(const Root& v);
+Root DeserializeRoot(const JsonValue& j);
+JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams& v);
+ListRootsRequestParams DeserializeListRootsRequestParams(const JsonValue& j);
+JsonValue SerializeListRootsResult(const ListRootsResult& v);
+ListRootsResult DeserializeListRootsResult(const JsonValue& j);
+
+JsonValue SerializeSetLevelRequestParams(const SetLevelRequestParams& v);
+SetLevelRequestParams DeserializeSetLevelRequestParams(const JsonValue& j);
+
+JsonValue SerializeGetTaskResult(const GetTaskResult& v);
+GetTaskResult DeserializeGetTaskResult(const JsonValue& j);
+JsonValue SerializeGetTaskRequestParams(const GetTaskRequestParams& v);
+GetTaskRequestParams DeserializeGetTaskRequestParams(const JsonValue& j);
+JsonValue SerializeUpdateTaskRequestParams(const UpdateTaskRequestParams& v);
+UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j);
+JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v);
+CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j);
+
+JsonValue SerializeRequestOptions(const RequestOptions& v);
+RequestOptions DeserializeRequestOptions(const JsonValue& j);
+JsonValue SerializeCacheableRequestOptions(const CacheableRequestOptions& v);
+CacheableRequestOptions DeserializeCacheableRequestOptions(const JsonValue& j);
+JsonValue SerializeToolOptions(const ToolOptions& v);
+ToolOptions DeserializeToolOptions(const JsonValue& j);
+JsonValue SerializeResourceOptions(const ResourceOptions& v);
+ResourceOptions DeserializeResourceOptions(const JsonValue& j);
+JsonValue SerializePromptOptions(const PromptOptions& v);
+PromptOptions DeserializePromptOptions(const JsonValue& j);
+
 } // namespace mcp

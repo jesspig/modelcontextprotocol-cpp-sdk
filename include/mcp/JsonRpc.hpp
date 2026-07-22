@@ -90,4 +90,8 @@ inline const JsonRpcErrorResponse* AsError(const JsonRpcMessage& msg) noexcept {
     return std::get_if<JsonRpcErrorResponse>(&msg);
 }
 
+// ── RequestId serialization (implemented in JsonRpc.cpp) ──
+JsonValue RequestIdToJson(const RequestId& id);
+RequestId RequestIdFromJson(const JsonValue& j);
+
 } // namespace mcp

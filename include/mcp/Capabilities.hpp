@@ -61,4 +61,24 @@ struct ClientCapabilities {
     std::optional<JsonValue> experimental;
 };
 
+// ── Serialization ──
+JsonValue SerializeToolsCapability(const ToolsCapability& v);
+ToolsCapability DeserializeToolsCapability(const JsonValue& j);
+JsonValue SerializeResourcesCapability(const ResourcesCapability& v);
+ResourcesCapability DeserializeResourcesCapability(const JsonValue& j);
+JsonValue SerializePromptsCapability(const PromptsCapability& v);
+PromptsCapability DeserializePromptsCapability(const JsonValue& j);
+JsonValue SerializeSamplingCapability(const SamplingCapability& v);
+SamplingCapability DeserializeSamplingCapability(const JsonValue& j);
+JsonValue SerializeRootsCapability(const RootsCapability& v);
+RootsCapability DeserializeRootsCapability(const JsonValue& j);
+JsonValue SerializeElicitationCapability(const ElicitationCapability& v);
+ElicitationCapability DeserializeElicitationCapability(const JsonValue& j);
+JsonValue SerializeEmptyCapability(const EmptyCapability& v);
+EmptyCapability DeserializeEmptyCapability(const JsonValue& j);
+JsonValue SerializeServerCapabilities(const ServerCapabilities& v);
+ServerCapabilities DeserializeServerCapabilities(const JsonValue& j);
+JsonValue SerializeClientCapabilities(const ClientCapabilities& v);
+ClientCapabilities DeserializeClientCapabilities(const JsonValue& j);
+
 } // namespace mcp

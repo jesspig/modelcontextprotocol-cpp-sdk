@@ -12,6 +12,40 @@ namespace mcp::detail {
 
 using namespace simdjson;
 
+static JsonValue FromDomElement(const dom::element& el) {
+    switch (el.type()) {
+    case dom::element_type::NULL_VALUE:
+        return JsonValue(nullptr);
+    case dom::element_type::BOOL:
+        return JsonValue(bool(el));
+    case dom::element_type::INT64:
+        return JsonValue(int64_t(el));
+    case dom::element_type::UINT64:
+        return JsonValue(int64_t(uint64_t(el)));
+    case dom::element_type::DOUBLE:
+        return JsonValue(double(el));
+    case dom::element_type::STRING: {
+        std::string_view sv(el);
+        return JsonValue(std::string(sv));
+    }
+    case dom::element_type::ARRAY: {
+        JsonValue::Array arr;
+        for (auto child : dom::array(el)) {
+            arr.push_back(FromDomElement(child));
+        }
+        return JsonValue(std::move(arr));
+    }
+    case dom::element_type::OBJECT: {
+        JsonValue::Object obj;
+        for (auto [key, value] : dom::object(el)) {
+            obj.emplace(std::string(key), FromDomElement(value));
+        }
+        return JsonValue(std::move(obj));
+    }
+    }
+    return JsonValue(nullptr);
+}
+
 JsonValue FromSimdJsonValue(ondemand::value val) {
     // Try each type in order
     {
@@ -78,15 +112,13 @@ JsonValue FromSimdJsonValue(ondemand::value val) {
 }
 
 JsonValue ParseJsonString(std::string_view json) {
-    ondemand::parser parser;
-    auto padded = padded_string(json.data(), json.size());
-    ondemand::document doc;
-    auto error = parser.iterate(padded).get(doc);
+    dom::parser parser;
+    dom::element doc;
+    auto error = parser.parse(json).get(doc);
     if (error) {
         throw std::runtime_error("JSON parse error");
     }
-    ondemand::value val = doc.get_value();
-    return FromSimdJsonValue(val);
+    return FromDomElement(doc);
 }
 
 // ── Hand-written JSON serializer ──

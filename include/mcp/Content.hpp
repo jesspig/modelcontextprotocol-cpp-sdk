@@ -79,4 +79,49 @@ struct ResourceLink {
 
 using ContentVariant = std::variant<TextContent, ImageContent, AudioContent, EmbeddedResource, ResourceLink>;
 
+// ── Forward declarations for types defined in Meta.hpp / Implementation.hpp ──
+struct Implementation;
+enum class LoggingLevel;
+struct CacheHint;
+struct RequestMeta;
+
+// ── Serialization ──
+JsonValue SerializeIcon(const Icon& v);
+Icon DeserializeIcon(const JsonValue& j);
+
+JsonValue SerializeAnnotations(const Annotations& v);
+Annotations DeserializeAnnotations(const JsonValue& j);
+
+JsonValue SerializeTextResourceContents(const TextResourceContents& v);
+TextResourceContents DeserializeTextResourceContents(const JsonValue& j);
+JsonValue SerializeBlobResourceContents(const BlobResourceContents& v);
+BlobResourceContents DeserializeBlobResourceContents(const JsonValue& j);
+JsonValue SerializeResourceContents(const ResourceContents& rc);
+ResourceContents DeserializeResourceContents(const JsonValue& j);
+
+JsonValue SerializeTextContent(const TextContent& v);
+TextContent DeserializeTextContent(const JsonValue& j);
+JsonValue SerializeImageContent(const ImageContent& v);
+ImageContent DeserializeImageContent(const JsonValue& j);
+JsonValue SerializeAudioContent(const AudioContent& v);
+AudioContent DeserializeAudioContent(const JsonValue& j);
+JsonValue SerializeEmbeddedResource(const EmbeddedResource& v);
+EmbeddedResource DeserializeEmbeddedResource(const JsonValue& j);
+JsonValue SerializeResourceLink(const ResourceLink& v);
+ResourceLink DeserializeResourceLink(const JsonValue& j);
+JsonValue SerializeContentVariant(const ContentVariant& content);
+ContentVariant DeserializeContentVariant(const JsonValue& j);
+
+JsonValue SerializeImplementation(const Implementation& v);
+Implementation DeserializeImplementation(const JsonValue& j);
+
+JsonValue SerializeProgressToken(const std::variant<std::string, int64_t>& pt);
+std::variant<std::string, int64_t> DeserializeProgressToken(const JsonValue& j);
+JsonValue SerializeLoggingLevel(LoggingLevel l);
+LoggingLevel DeserializeLoggingLevel(const JsonValue& j);
+JsonValue SerializeCacheHint(const CacheHint& v);
+CacheHint DeserializeCacheHint(const JsonValue& j);
+JsonValue SerializeRequestMeta(const RequestMeta& v);
+RequestMeta DeserializeRequestMeta(const JsonValue& j);
+
 } // namespace mcp
