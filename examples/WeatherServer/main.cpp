@@ -5,8 +5,6 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
-#include <asio/io_context.hpp>
-
 #include <iostream>
 #include <map>
 #include <memory>
@@ -26,8 +24,7 @@ static const std::map<std::string, std::string> kWeatherData = {
 };
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+    auto transport = std::make_unique<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"WeatherServer", "1.0.0"};
@@ -35,7 +32,7 @@ int main() {
         "Get weather alerts and forecasts for US states. "
         "Call get_alerts for weather alerts, get_forecast for detailed forecasts.";
 
-    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+    auto server = McpServer::Create(std::move(transport), opts);
 
     // 工具: 获取天气警报
     server->RegisterTool("get_alerts",
@@ -44,8 +41,8 @@ int main() {
             [](const Ctx& ctx) -> CallToolResult {
                 auto& params = ctx.Params();
                 std::string state;
-                if (params.arguments && params.arguments->contains("state")) {
-                    state = (*params.arguments)["state"].get<std::string>();
+                if (params.arguments && params.arguments->Contains("state")) {
+                    state = (*params.arguments)["state"].GetString();
                 }
                 CallToolResult result;
                 auto it = kWeatherData.find(state);
@@ -64,9 +61,12 @@ int main() {
                 std::string state;
                 double latitude = 0, longitude = 0;
                 if (params.arguments) {
-                    state = params.arguments->value("state", "");
-                    latitude = params.arguments->value("latitude", 0.0);
-                    longitude = params.arguments->value("longitude", 0.0);
+                    if (auto* v = params.arguments->Find("state"); v && v->IsString())
+                        state = v->GetString();
+                    if (auto* v = params.arguments->Find("latitude"); v && v->IsNumber())
+                        latitude = v->IsDouble() ? v->GetDouble() : static_cast<double>(v->GetInt());
+                    if (auto* v = params.arguments->Find("longitude"); v && v->IsNumber())
+                        longitude = v->IsDouble() ? v->GetDouble() : static_cast<double>(v->GetInt());
                 }
                 CallToolResult result;
                 std::string forecast = "Forecast for " + state +
