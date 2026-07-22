@@ -10,15 +10,20 @@ TEST(McpTypesTest, ToolRoundTrip) {
     t.name = "test_tool";
     t.title = "Test Tool";
     t.description = "A test tool";
-    t.input_schema = nlohmann::json{
-        {"type", "object"},
-        {"properties", {{"text", {{"type", "string"}}}}}
-    };
+    t.input_schema = JsonValue(JsonValue::object_tag);
+    t.input_schema["type"] = "object";
+    {
+        auto props = JsonValue(JsonValue::object_tag);
+        auto text_prop = JsonValue(JsonValue::object_tag);
+        text_prop["type"] = "string";
+        props["text"] = text_prop;
+        t.input_schema["properties"] = props;
+    }
     t.annotations = ToolAnnotations{};
     t.annotations->read_only_hint = true;
 
-    nlohmann::json j = t;
-    auto t2 = j.get<Tool>();
+    auto jv = SerializeTool(t);
+    auto t2 = DeserializeTool(jv);
 
     EXPECT_EQ(t.name, t2.name);
     EXPECT_EQ(t.title, t2.title);
@@ -33,8 +38,8 @@ TEST(McpTypesTest, ResourceRoundTrip) {
     r.uri = "file:///data";
     r.name = "Data File";
 
-    nlohmann::json j = r;
-    auto r2 = j.get<Resource>();
+    auto jv = SerializeResource(r);
+    auto r2 = DeserializeResource(jv);
 
     EXPECT_EQ(r.uri, r2.uri);
     EXPECT_EQ(r.name, r2.name);
@@ -51,8 +56,8 @@ TEST(McpTypesTest, PromptRoundTrip) {
     arg.required = true;
     p.arguments = {arg};
 
-    nlohmann::json j = p;
-    auto p2 = j.get<Prompt>();
+    auto jv = SerializePrompt(p);
+    auto p2 = DeserializePrompt(jv);
 
     EXPECT_EQ(p.name, p2.name);
     ASSERT_TRUE(p2.arguments.has_value());
@@ -66,8 +71,8 @@ TEST(McpTypesTest, ImplementationRoundTrip) {
     impl.name = "test-server";
     impl.version = "1.0.0";
 
-    nlohmann::json j = impl;
-    auto impl2 = j.get<Implementation>();
+    auto jv = SerializeImplementation(impl);
+    auto impl2 = DeserializeImplementation(jv);
 
     EXPECT_EQ(impl.name, impl2.name);
     EXPECT_EQ(impl.version, impl2.version);
@@ -79,8 +84,8 @@ TEST(McpTypesTest, CallToolResultRoundTrip) {
     r.content = {TextContent{"text", "Hello!"}};
     r.is_error = false;
 
-    nlohmann::json j = r;
-    auto r2 = j.get<CallToolResult>();
+    auto jv = SerializeCallToolResult(r);
+    auto r2 = DeserializeCallToolResult(jv);
 
     ASSERT_EQ(r2.content.size(), 1);
     auto* text = std::get_if<TextContent>(&r2.content[0]);
@@ -94,8 +99,8 @@ TEST(McpTypesTest, CallToolResultWithError) {
     CallToolResult r;
     r.is_error = true;
 
-    nlohmann::json j = r;
-    auto r2 = j.get<CallToolResult>();
+    auto jv = SerializeCallToolResult(r);
+    auto r2 = DeserializeCallToolResult(jv);
 
     EXPECT_TRUE(r2.is_error);
 }
@@ -108,8 +113,8 @@ TEST(McpTypesTest, ListToolsResultRoundTrip) {
     r.tools = {t};
     r.next_cursor = "cursor123";
 
-    nlohmann::json j = r;
-    auto r2 = j.get<ListToolsResult>();
+    auto jv = SerializeListToolsResult(r);
+    auto r2 = DeserializeListToolsResult(jv);
 
     ASSERT_EQ(r2.tools.size(), 1);
     EXPECT_EQ(r2.tools[0].name, "tool1");
@@ -119,31 +124,31 @@ TEST(McpTypesTest, ListToolsResultRoundTrip) {
 // ── Content variants ──
 TEST(McpTypesTest, TextContentRoundTrip) {
     TextContent tc{"text", "Hello world", "text/plain"};
-    nlohmann::json j = tc;
-    auto tc2 = j.get<TextContent>();
+    auto jv = SerializeTextContent(tc);
+    auto tc2 = DeserializeTextContent(jv);
     EXPECT_EQ(tc.text, tc2.text);
 }
 
 TEST(McpTypesTest, ContentVariantTextRoundTrip) {
     ContentVariant cv = TextContent{"text", "Hello"};
-    nlohmann::json j = cv;
-    auto cv2 = j.get<ContentVariant>();
+    auto jv = SerializeContentVariant(cv);
+    auto cv2 = DeserializeContentVariant(jv);
     EXPECT_TRUE(std::holds_alternative<TextContent>(cv2));
     EXPECT_EQ(std::get<TextContent>(cv2).text, "Hello");
 }
 
 TEST(McpTypesTest, ContentVariantImageRoundTrip) {
     ContentVariant cv = ImageContent{"image", "base64data", "image/png"};
-    nlohmann::json j = cv;
-    auto cv2 = j.get<ContentVariant>();
+    auto jv = SerializeContentVariant(cv);
+    auto cv2 = DeserializeContentVariant(jv);
     EXPECT_TRUE(std::holds_alternative<ImageContent>(cv2));
     EXPECT_EQ(std::get<ImageContent>(cv2).mime_type, "image/png");
 }
 
 TEST(McpTypesTest, ContentVariantAudioRoundTrip) {
     ContentVariant cv = AudioContent{"audio", "base64data", "audio/wav"};
-    nlohmann::json j = cv;
-    auto cv2 = j.get<ContentVariant>();
+    auto jv = SerializeContentVariant(cv);
+    auto cv2 = DeserializeContentVariant(jv);
     EXPECT_TRUE(std::holds_alternative<AudioContent>(cv2));
 }
 
@@ -153,8 +158,8 @@ TEST(McpTypesTest, ServerCapabilitiesRoundTrip) {
     caps.tools = ToolsCapability{true};
     caps.resources = ResourcesCapability{true, true};
 
-    nlohmann::json j = caps;
-    auto caps2 = j.get<ServerCapabilities>();
+    auto jv = SerializeServerCapabilities(caps);
+    auto caps2 = DeserializeServerCapabilities(jv);
 
     EXPECT_TRUE(caps2.tools.has_value());
     EXPECT_TRUE(caps2.tools->list_changed.value_or(false));
@@ -165,10 +170,10 @@ TEST(McpTypesTest, ServerCapabilitiesRoundTrip) {
 TEST(McpTypesTest, ClientCapabilitiesRoundTrip) {
     ClientCapabilities caps;
     caps.elicitation = ElicitationCapability{};
-    caps.elicitation->form = nlohmann::json::object();
+    caps.elicitation->form = JsonValue(JsonValue::object_tag);
 
-    nlohmann::json j = caps;
-    auto caps2 = j.get<ClientCapabilities>();
+    auto jv = SerializeClientCapabilities(caps);
+    auto caps2 = DeserializeClientCapabilities(jv);
 
     EXPECT_TRUE(caps2.elicitation.has_value());
 }
@@ -181,8 +186,8 @@ TEST(McpTypesTest, DiscoverResultRoundTrip) {
     r.capabilities.tools = ToolsCapability{};
     r.server_info = Implementation{"my-server", "1.0.0"};
 
-    nlohmann::json j = r;
-    auto r2 = j.get<DiscoverResult>();
+    auto jv = SerializeDiscoverResult(r);
+    auto r2 = DeserializeDiscoverResult(jv);
 
     ASSERT_EQ(r2.supported_versions.size(), 2);
     EXPECT_EQ(r2.supported_versions[1], "2026-07-28");
@@ -197,8 +202,8 @@ TEST(McpTypesTest, InitializeResultRoundTrip) {
     r.capabilities.tools = ToolsCapability{};
     r.server_info = Implementation{"server", "1.0.0"};
 
-    nlohmann::json j = r;
-    auto r2 = j.get<InitializeResult>();
+    auto jv = SerializeInitializeResult(r);
+    auto r2 = DeserializeInitializeResult(jv);
 
     EXPECT_EQ(r2.protocol_version, "2026-07-28");
 }
@@ -211,8 +216,8 @@ TEST(McpTypesTest, GetPromptResultRoundTrip) {
     pm.content = TextContent{"text", "Hello"};
     r.messages = {pm};
 
-    nlohmann::json j = r;
-    auto r2 = j.get<GetPromptResult>();
+    auto jv = SerializeGetPromptResult(r);
+    auto r2 = DeserializeGetPromptResult(jv);
 
     ASSERT_EQ(r2.messages.size(), 1);
     EXPECT_EQ(r2.messages[0].role, "user");
@@ -226,8 +231,8 @@ TEST(McpTypesTest, TextResourceContentsRoundTrip) {
     r.text = "content";
     auto rc = ResourceContents(r);
 
-    nlohmann::json j = rc;
-    auto rc2 = j.get<ResourceContents>();
+    auto jv = SerializeResourceContents(rc);
+    auto rc2 = DeserializeResourceContents(jv);
     EXPECT_TRUE(std::holds_alternative<TextResourceContents>(rc2));
     EXPECT_EQ(std::get<TextResourceContents>(rc2).text, "content");
 }
@@ -240,8 +245,8 @@ TEST(McpTypesTest, ReadResourceResultRoundTrip) {
     trc.text = "Hello";
     r.contents = {ResourceContents(trc)};
 
-    nlohmann::json j = r;
-    auto r2 = j.get<ReadResourceResult>();
+    auto jv = SerializeReadResourceResult(r);
+    auto r2 = DeserializeReadResourceResult(jv);
 
     ASSERT_EQ(r2.contents.size(), 1);
     auto* rc = std::get_if<TextResourceContents>(&r2.contents[0]);
@@ -251,10 +256,10 @@ TEST(McpTypesTest, ReadResourceResultRoundTrip) {
 
 // ── LoggingLevel ──
 TEST(McpTypesTest, LoggingLevelRoundTrip) {
-    nlohmann::json j = LoggingLevel::Warning;
-    EXPECT_EQ(j.get<std::string>(), "warning");
+    auto jv = SerializeLoggingLevel(LoggingLevel::Warning);
+    EXPECT_EQ(jv.GetString(), "warning");
 
-    auto l = j.get<LoggingLevel>();
+    auto l = DeserializeLoggingLevel(jv);
     EXPECT_EQ(l, LoggingLevel::Warning);
 }
 
@@ -264,8 +269,8 @@ TEST(McpTypesTest, RequestMetaRoundTrip) {
     m.protocol_version = "2026-07-28";
     m.client_info = Implementation{"client", "1.0"};
 
-    nlohmann::json j = m;
-    auto m2 = j.get<RequestMeta>();
+    auto jv = SerializeRequestMeta(m);
+    auto m2 = DeserializeRequestMeta(jv);
 
     EXPECT_EQ(m2.protocol_version, "2026-07-28");
     EXPECT_TRUE(m2.client_info.has_value());
@@ -276,13 +281,17 @@ TEST(McpTypesTest, RequestMetaRoundTrip) {
 TEST(McpTypesTest, CallToolRequestParamsRoundTrip) {
     CallToolRequestParams p;
     p.name = "echo";
-    p.arguments = nlohmann::json{{"text", "hello"}};
+    {
+        auto args = JsonValue(JsonValue::object_tag);
+        args["text"] = "hello";
+        p.arguments = args;
+    }
 
-    nlohmann::json j = p;
-    auto p2 = j.get<CallToolRequestParams>();
+    auto jv = SerializeCallToolRequestParams(p);
+    auto p2 = DeserializeCallToolRequestParams(jv);
 
     EXPECT_EQ(p2.name, "echo");
-    EXPECT_EQ((*p2.arguments)["text"], "hello");
+    EXPECT_EQ((*p2.arguments)["text"].GetString(), "hello");
 }
 
 // ── EmbeddedResource ──
@@ -293,8 +302,8 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
     EmbeddedResource er;
     er.resource = ResourceContents(trc);
 
-    nlohmann::json j = er;
-    auto er2 = j.get<EmbeddedResource>();
+    auto jv = SerializeEmbeddedResource(er);
+    auto er2 = DeserializeEmbeddedResource(jv);
 
     auto* rc = std::get_if<TextResourceContents>(&er2.resource);
     ASSERT_NE(rc, nullptr);
@@ -304,18 +313,27 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
 // ── EmptyResult ──
 TEST(McpTypesTest, EmptyResultSerializes) {
     EmptyResult r;
-    nlohmann::json j = r;
-    auto r2 = j.get<EmptyResult>();
+    auto jv = SerializeEmptyResult(r);
+    auto r2 = DeserializeEmptyResult(jv);
     SUCCEED();
 }
 
 // ── CompleteResult ──
 TEST(McpTypesTest, CompleteResultRoundTrip) {
     CompleteResult r;
-    r.completion = {{"values", {"hello", "help"}}};
-    nlohmann::json j = r;
-    auto r2 = j.get<CompleteResult>();
-    EXPECT_EQ(r2.completion["values"].size(), 2);
+    {
+        auto completion = JsonValue(JsonValue::object_tag);
+        auto values = JsonValue(JsonValue::array_tag);
+        values.PushBack(JsonValue("hello"));
+        values.PushBack(JsonValue("help"));
+        completion["values"] = values;
+        r.completion = completion;
+    }
+
+    auto jv = SerializeCompleteResult(r);
+    auto r2 = DeserializeCompleteResult(jv);
+
+    EXPECT_EQ(r2.completion["values"].Size(), 2);
 }
 
 // ── ResourceTemplate ──
@@ -323,15 +341,15 @@ TEST(McpTypesTest, ResourceTemplateRoundTrip) {
     ResourceTemplate rt;
     rt.uri_template = "file:///{path}";
     rt.name = "Dynamic Files";
-    nlohmann::json j = rt;
-    auto rt2 = j.get<ResourceTemplate>();
+    auto jv = SerializeResourceTemplate(rt);
+    auto rt2 = DeserializeResourceTemplate(jv);
     EXPECT_EQ(rt2.uri_template, "file:///{path}");
 }
 
 // ── Icon ──
 TEST(McpTypesTest, IconRoundTrip) {
     Icon ic{"https://example.com/icon.svg", "image/svg+xml", std::vector<std::string>{"any"}};
-    nlohmann::json j = ic;
-    auto ic2 = j.get<Icon>();
+    auto jv = SerializeIcon(ic);
+    auto ic2 = DeserializeIcon(jv);
     EXPECT_EQ(ic2.src, "https://example.com/icon.svg");
 }

@@ -104,7 +104,7 @@ TEST(McpServerTest, RegisterPrompt) {
     server->RegisterPrompt("greet",
         PromptOptions{}.Description("Greet someone"),
         [](const std::string& name,
-           const std::optional<nlohmann::json>& args) -> GetPromptResult {
+           const std::optional<JsonValue>& args) -> GetPromptResult {
             (void)name; (void)args;
             GetPromptResult r;
             PromptMessage pm;
