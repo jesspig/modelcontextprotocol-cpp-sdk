@@ -26,6 +26,15 @@ struct ToolAnnotations {
 };
 
 // ====================================================================
+// ToolExecution
+// ====================================================================
+enum class ToolExecutionMode { Auto, Manual, Task };
+struct ToolExecution {
+    ToolExecutionMode mode{ToolExecutionMode::Auto};
+    std::optional<std::string> human_use;
+};
+
+// ====================================================================
 // ResourceAnnotations
 // ====================================================================
 struct ResourceAnnotations {
@@ -46,6 +55,7 @@ struct Tool {
     std::optional<ToolAnnotations> annotations;
     std::vector<Icon> icons;
     std::optional<JsonValue> meta;
+    std::optional<ToolExecution> execution;
 };
 
 // ====================================================================
@@ -454,6 +464,8 @@ struct PromptOptions {
 // ── Serialization ──
 JsonValue SerializeToolAnnotations(const ToolAnnotations& v);
 ToolAnnotations DeserializeToolAnnotations(const JsonValue& j);
+JsonValue SerializeToolExecution(const ToolExecution& v);
+ToolExecution DeserializeToolExecution(const JsonValue& j);
 JsonValue SerializeResourceAnnotations(const ResourceAnnotations& v);
 ResourceAnnotations DeserializeResourceAnnotations(const JsonValue& j);
 

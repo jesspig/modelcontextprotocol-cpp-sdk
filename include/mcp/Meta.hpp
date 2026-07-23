@@ -28,6 +28,9 @@ struct RequestMeta {
     std::optional<ClientCapabilities> client_capabilities;
     std::optional<LoggingLevel> log_level;
     std::optional<JsonValue> extensions;
+    std::optional<std::string> traceparent;
+    std::optional<std::string> tracestate;
+    std::optional<std::string> baggage;
 };
 
 // ═══════════════════════════════════════════════════════════════════════

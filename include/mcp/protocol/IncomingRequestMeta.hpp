@@ -22,6 +22,9 @@ struct IncomingRequestMeta {
     std::optional<LoggingLevel> log_level;
     std::optional<ProgressToken> progress_token;
     std::optional<std::string> subscription_id;
+    std::optional<std::string> traceparent;
+    std::optional<std::string> tracestate;
+    std::optional<std::string> baggage;
 };
 
 // ═══════════════════════════════════════════════════════════════════════

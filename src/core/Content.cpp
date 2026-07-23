@@ -362,6 +362,9 @@ JsonValue SerializeRequestMeta(const RequestMeta& v) {
     if (v.extensions) {
         for (const auto& [k, val] : v.extensions->GetObject()) obj[k] = val;
     }
+    if (v.traceparent) obj["traceparent"] = JsonValue(*v.traceparent);
+    if (v.tracestate) obj["tracestate"] = JsonValue(*v.tracestate);
+    if (v.baggage) obj["baggage"] = JsonValue(*v.baggage);
     return obj;
 }
 
@@ -378,6 +381,9 @@ RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     auto* ll = j.Find("io.modelcontextprotocol/logLevel");
     if (ll) v.log_level = DeserializeLoggingLevel(*ll);
     // ponytail: extensions skipped in deserialize (old code didn't read them back either)
+    if (auto* tp = j.Find("traceparent")) v.traceparent = tp->GetString();
+    if (auto* ts = j.Find("tracestate")) v.tracestate = ts->GetString();
+    if (auto* bg = j.Find("baggage")) v.baggage = bg->GetString();
     return v;
 }
 
