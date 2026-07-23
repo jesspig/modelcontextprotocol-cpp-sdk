@@ -71,7 +71,7 @@ Shorthand callbacks (`on_method_called`, `on_protocol_error`) and full-message c
 
 1. **Construction**: `McpServer::Create` — creates the session handler, wires handlers, starts message loop
 2. **Registration**: Register tools, resources, prompts, extensions
-3. **Run**: `server->Run()` — blocks on `io_context.run()`
+3. **Run**: `server->Run()` — blocks on the internal message channel
 4. **Shutdown**: `server->Close()` — cancels pending requests, closes transport
 
 ## Capability Derivation

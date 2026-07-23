@@ -41,8 +41,8 @@
 |---------------|---------|-------------------------------|
 | CMake         | 3.28    | 生成器：推荐 Ninja            |
 | C++ 编译器    | C++17   | MSVC、Clang、GCC             |
-| asio          | 1.30.2  | 自动下载                      |
-| nlohmann-json | 3.11.3  | 自动下载                      |
+| libhv         | 1.3.4   | 自动下载                      |
+| simdjson      | 3.12.3  | 自动下载                      |
 | OpenSSL       | (可选)  | TLS 必需（WebSocket、SSE HTTPS、OAuth）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 支持平台：**Windows** (MSVC、clang-cl)、**Linux** (GCC、Clang)、**macOS** (Clang)。
@@ -63,7 +63,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-可用库目标：`mcp-core`（头文件-only）、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`。
+可用库目标：`mcp-core`、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`。所有库均为静态库。
 
 ## 快速开始
 
@@ -89,9 +89,9 @@ ctest --preset debug --output-on-failure
 └─────────────────────────────────────┘
 ```
 
-库依赖链：`mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。
+库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。所有库均为静态库。
 
-- **mcp-core** — 头文件-only。所有 MCP 协议类型（`Tool`、`Resource`、`Prompt`、`ElicitResult` 等）、JSON-RPC 消息结构、错误码、能力声明、传输层接口。
+- **mcp-core** — 核心类型、JSON-RPC 消息结构、错误码、能力声明、传输层接口。
 - **mcp-transport** — 传输层实现：stdio（客户端/服务器）、SSE 客户端、WebSocket（简化版）、进程内通信（用于测试）。
 - **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联、`MessageFilter` 管道。
 - **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit。
@@ -115,25 +115,25 @@ ctest --preset debug --output-on-failure
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
 
-    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+    auto server = McpServer::Create(transport, opts);
 
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo input text back"),
         [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            std::string text;
+            if (ctx.Params().arguments) {
+                auto* v = ctx.Params().arguments->Find("text");
+                if (v) text = v->GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -154,18 +154,20 @@ using namespace mcp;
 
 StdioClientTransportOptions transport_opts;
 transport_opts.command = "path/to/server";
-auto transport = std::make_unique<StdioClientTransport>(transport_opts);
+auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+auto transport = factory->Connect();
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
-auto client = McpClient::Create(std::move(transport), opts);
+auto client = McpClient::Create(transport, opts);
 
 auto tools = client->ListTools();
 for (const auto& tool : tools.tools) {
     std::cout << tool.name << "\n";
 }
 
-auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
+auto result = client->CallTool("echo",
+    JsonValue::FromObject({{"text", "Hello, MCP!"}}));
 ```
 
 ## OAuth 支持
@@ -178,10 +180,13 @@ auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
 - 可插拔 Token 缓存（`ITokenCache`），内置持久化 `FileTokenCache`
 
 ```cpp
-auto oauth = std::make_shared<OAuthClientProvider>(
-    "https://auth.server.com/.well-known/oauth-authorization-server",
-    "client-id");
-auto client = McpClient::Create(transport, options, &io_ctx, oauth);
+OAuthClientOptions oauth_opts;
+oauth_opts.server_url = "https://auth.server.com/.well-known/oauth-authorization-server";
+oauth_opts.client_id = "client-id";
+oauth_opts.redirect_uri = "http://localhost:3000/callback";
+
+OAuthClientProvider auth(oauth_opts);
+auth.Authenticate();
 ```
 
 ## 协议版本

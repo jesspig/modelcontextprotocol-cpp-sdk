@@ -41,8 +41,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 |----------------|----------------|------------------------------|
 | CMake          | 3.28           | Generator: Ninja recommended |
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
-| asio           | 1.30.2         | Fetched automatically        |
-| nlohmann-json  | 3.11.3         | Fetched automatically        |
+| libhv          | 1.3.4          | Fetched automatically        |
+| simdjson       | 3.12.3         | Fetched automatically        |
 | OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS, OAuth). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
@@ -63,7 +63,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Available library targets: `mcp-core` (header-only), `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`.
+Available library targets: `mcp-core`, `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`. All libraries are static.
 
 ## Quick Start
 
@@ -89,9 +89,9 @@ Configure presets: `debug`, `release`. Ninja generator required.
 └─────────────────────────────────────┘
 ```
 
-Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
+Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All libraries are static.
 
-- **mcp-core** — Header-only. All MCP protocol types (`Tool`, `Resource`, `Prompt`, `ElicitResult`, etc.), JSON-RPC message structures, error codes, capabilities, transport interfaces.
+- **mcp-core** — Core types, JSON-RPC message structures, error codes, capabilities, transport interfaces.
 - **mcp-transport** — Transport implementations: stdio (client/server), SSE client, WebSocket (simplified), in-memory for testing.
 - **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation, `MessageFilter` pipeline.
 - **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation.
@@ -115,25 +115,25 @@ Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-pr
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
 
-    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+    auto server = McpServer::Create(transport, opts);
 
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo input text back"),
         [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            std::string text;
+            if (ctx.Params().arguments) {
+                auto* v = ctx.Params().arguments->Find("text");
+                if (v) text = v->GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -154,18 +154,20 @@ using namespace mcp;
 
 StdioClientTransportOptions transport_opts;
 transport_opts.command = "path/to/server";
-auto transport = std::make_unique<StdioClientTransport>(transport_opts);
+auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+auto transport = factory->Connect();
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
-auto client = McpClient::Create(std::move(transport), opts);
+auto client = McpClient::Create(transport, opts);
 
 auto tools = client->ListTools();
 for (const auto& tool : tools.tools) {
     std::cout << tool.name << "\n";
 }
 
-auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
+auto result = client->CallTool("echo",
+    JsonValue::FromObject({{"text", "Hello, MCP!"}}));
 ```
 
 ## OAuth Support
@@ -178,10 +180,13 @@ The client supports the MCP OAuth authorization flow:
 - Pluggable token cache (`ITokenCache`), persistent `FileTokenCache` included
 
 ```cpp
-auto oauth = std::make_shared<OAuthClientProvider>(
-    "https://auth.server.com/.well-known/oauth-authorization-server",
-    "client-id");
-auto client = McpClient::Create(transport, options, &io_ctx, oauth);
+OAuthClientOptions oauth_opts;
+oauth_opts.server_url = "https://auth.server.com/.well-known/oauth-authorization-server";
+oauth_opts.client_id = "client-id";
+oauth_opts.redirect_uri = "http://localhost:3000/callback";
+
+OAuthClientProvider auth(oauth_opts);
+auth.Authenticate();
 ```
 
 ## Protocol Versions
