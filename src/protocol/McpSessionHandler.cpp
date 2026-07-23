@@ -495,6 +495,9 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     }
     if (auto* sid = j.Find("io.modelcontextprotocol/subscriptionId"))
         meta.subscription_id = sid->GetString();
+    if (auto* v = j.Find("traceparent")) meta.traceparent = v->GetString();
+    if (auto* v = j.Find("tracestate")) meta.tracestate = v->GetString();
+    if (auto* v = j.Find("baggage")) meta.baggage = v->GetString();
 
     MCP_LOG_CTX(Trace, ctx, "extracted incoming meta: proto=" + meta.protocol_version +
         " has_client_info=" + (meta.client_info ? "yes" : "no"));

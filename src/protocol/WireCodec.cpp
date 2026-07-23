@@ -231,6 +231,9 @@ public:
             meta.client_info = ImplementationFromJson(*v);
         if (auto* v = m->Find(kClientCapabilitiesKey))
             meta.client_capabilities = ClientCapabilitiesFromJson(*v);
+        if (auto* v = m->Find("traceparent")) meta.traceparent = v->GetString();
+        if (auto* v = m->Find("tracestate")) meta.tracestate = v->GetString();
+        if (auto* v = m->Find("baggage")) meta.baggage = v->GetString();
         return meta;
     }
 
