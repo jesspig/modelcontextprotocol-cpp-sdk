@@ -94,13 +94,17 @@ McpServer::McpServer(
 
     // Start the session handler
     handler_->Start();
+
+    // Mark as running for Run() loop
+    running_ = true;
 }
 
 // ====================================================================
 // Lifecycle
 // ====================================================================
 void McpServer::Run() {
-    // TODO: implement blocking run loop
+    std::unique_lock<std::mutex> lock(run_mutex_);
+    run_cv_.wait(lock, [this] { return !running_; });
 }
 
 void McpServer::Close() {
@@ -112,6 +116,11 @@ void McpServer::Close() {
         pending_async_futures_.clear();
     }
     handler_->Close();
+    {
+        std::lock_guard<std::mutex> lock(run_mutex_);
+        running_ = false;
+    }
+    run_cv_.notify_one();
 }
 
 // ====================================================================
@@ -403,9 +412,7 @@ void McpServer::WireHandlers() {
                 if (req.params) params = DeserializeUpdateTaskRequestParams(*req.params);
                 store->UpdateTask(params.task_id, params.result);
                 UpdateTaskResult r;
-                (void)r;
-                // TODO: SerializeUpdateTaskResult
-                p.set_value(JsonValue(JsonValue::object_tag));
+                p.set_value(SerializeEmptyResult(r));
             });
 
         handler_->SetRequestHandler(methods::kCancelTask,
@@ -419,9 +426,7 @@ void McpServer::WireHandlers() {
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
                 store->CancelTask(params.task_id, params.reason);
                 CancelTaskResult r;
-                (void)r;
-                // TODO: SerializeCancelTaskResult
-                p.set_value(JsonValue(JsonValue::object_tag));
+                p.set_value(SerializeEmptyResult(r));
             });
     }
 

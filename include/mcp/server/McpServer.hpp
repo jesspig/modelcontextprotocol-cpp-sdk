@@ -8,6 +8,7 @@
 #include <mcp/server/RequestContext.hpp>
 #include <mcp/server/ServerHandlers.hpp>
 
+#include <condition_variable>
 #include <future>
 #include <memory>
 #include <atomic>
@@ -185,6 +186,11 @@ private:
 
     // Stateless mode (no session persistence, no MRTR)
     bool is_stateless_{false};
+
+    // Run loop synchronization
+    std::mutex run_mutex_;
+    std::condition_variable run_cv_;
+    bool running_{false};
 };
 
 } // namespace mcp
