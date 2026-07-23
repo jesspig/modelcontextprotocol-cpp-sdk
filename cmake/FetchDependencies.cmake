@@ -20,6 +20,8 @@ FetchContent_Declare(simdjson
 set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
 set(SIMDJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(simdjson)
+# Suppress warnings from simdjson headers (e.g. unused parameter in fallback path)
+target_include_directories(simdjson SYSTEM INTERFACE "$<BUILD_INTERFACE:${simdjson_SOURCE_DIR}/include>")
 
 # ====================================================================
 # OpenSSL — 提前探测，影响 libhv 的 TLS 选项
