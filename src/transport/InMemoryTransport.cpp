@@ -1,3 +1,5 @@
+// InMemoryTransport.cpp — in-memory transport pair implementation
+
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/protocol/MessageChannel.hpp>

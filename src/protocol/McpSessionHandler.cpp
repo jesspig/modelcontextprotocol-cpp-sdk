@@ -1,3 +1,5 @@
+// McpSessionHandler.cpp
+// Implementation of the JSON-RPC session handler
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/McpError.hpp>

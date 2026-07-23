@@ -1,4 +1,6 @@
 #pragma once
+// McpSessionHandler.hpp
+// Internal JSON-RPC engine for message dispatch, request/response correlation, and filter pipelines
 #include <mcp/Export.hpp>
 #include <mcp/protocol/McpSession.hpp>
 #include <mcp/protocol/IncomingRequestMeta.hpp>

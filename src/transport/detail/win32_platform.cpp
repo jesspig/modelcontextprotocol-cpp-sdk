@@ -1,3 +1,5 @@
+// win32_platform.cpp — Win32 process and pipe implementations
+
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <windows.h>
 #include <processthreadsapi.h>

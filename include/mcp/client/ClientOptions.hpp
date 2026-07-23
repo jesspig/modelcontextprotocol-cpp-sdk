@@ -1,5 +1,6 @@
 #pragma once
-
+// ClientOptions.hpp
+// Client connection options and configuration
 #include <mcp/Export.hpp>
 
 #include <mcp/Capabilities.hpp>

@@ -1,3 +1,5 @@
+// McpTaskStore.hpp - Task lifecycle management interface
+
 #pragma once
 
 #include <mcp/JsonValue.hpp>

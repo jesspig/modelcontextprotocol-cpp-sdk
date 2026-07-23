@@ -1,3 +1,5 @@
+// McpClientTests — unit tests for McpClient creation, options, and tool conversion
+
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/server/McpServer.hpp>

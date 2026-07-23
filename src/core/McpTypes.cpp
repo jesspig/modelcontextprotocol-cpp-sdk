@@ -1,3 +1,5 @@
+// McpTypes.cpp — Protocol data model serialization/deserialization
+
 #include <mcp/McpTypes.hpp>
 #include <detail/JsonSerializer.hpp>
 

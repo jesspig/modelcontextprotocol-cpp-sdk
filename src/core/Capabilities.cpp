@@ -1,3 +1,5 @@
+// Capabilities.cpp — Capability serialization/deserialization implementations
+
 #include <mcp/Capabilities.hpp>
 #include <detail/JsonSerializer.hpp>
 

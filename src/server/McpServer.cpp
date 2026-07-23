@@ -1,3 +1,5 @@
+// McpServer.cpp - MCP server implementation: lifecycle, handler wiring, and primitive registration
+
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/McpError.hpp>

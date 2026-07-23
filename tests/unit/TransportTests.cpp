@@ -1,3 +1,5 @@
+// TransportTests — unit tests for InMemoryTransport creation, move, and state machine
+
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -5,7 +7,7 @@
 
 using namespace mcp;
 
-// InMemoryTransport 创建和基本功能验证
+// InMemoryTransport creation and basic functionality
 TEST(TransportTest, InMemoryCreate) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -64,7 +66,7 @@ TEST(TransportTest, TransportBaseErrorPropagation) {
     EXPECT_EQ(tb->GetState(), TransportState::Disconnected);
 }
 
-// 验证消息收发不掉崩溃（异步交付由 io_context 驱动，此处仅测无崩溃）
+// Verify message send/receive does not crash (asynchronous delivery driven by stdio)
 TEST(TransportTest, InMemoryMessageSendNoCrash) {
     auto pair = InMemoryTransport::CreatePair();
 

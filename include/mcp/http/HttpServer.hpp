@@ -1,3 +1,5 @@
+// HttpServer.hpp - Minimal HTTP server with SSE streaming support (libhv PIMPL)
+
 #pragma once
 
 #include <mcp/JsonRpc.hpp>

@@ -1,3 +1,5 @@
+// WireCodec.cpp
+// Per-era WireCodec implementations (2025-11-25 and 2026-07-28)
 #include <mcp/protocol/WireCodec.hpp>
 
 #include <cstdint>

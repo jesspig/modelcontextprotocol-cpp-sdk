@@ -1,4 +1,6 @@
 #pragma once
+// McpSession.hpp
+// Abstract base class for both client and server sessions
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/ProtocolVersion.hpp>

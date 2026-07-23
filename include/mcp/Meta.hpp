@@ -1,5 +1,7 @@
 #pragma once
 
+// Meta.hpp — Request metadata, logging levels, progress tokens, cache hints
+
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
 #include <mcp/JsonRpc.hpp>

@@ -1,4 +1,5 @@
 #pragma once
+// InMemoryTransport.hpp — in-memory transport pair for testing
 
 #include <mcp/Export.hpp>
 

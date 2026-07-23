@@ -1,5 +1,6 @@
 #pragma once
-
+// McpClient.hpp
+// MCP client implementation for connecting to MCP servers
 #include <mcp/Export.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
@@ -71,7 +72,7 @@ public:
         std::string_view task_id,
         std::optional<std::string> reason = std::nullopt);
 
-    // 轮询任务直到完成
+    // Poll task until completion
     GetTaskResult PollTaskToCompletionAsync(
         const std::string& task_id,
         std::chrono::milliseconds poll_interval = std::chrono::milliseconds(500),

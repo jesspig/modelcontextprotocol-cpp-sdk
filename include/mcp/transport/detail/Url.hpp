@@ -1,4 +1,5 @@
 #pragma once
+// Url.hpp — URL parsing utilities
 
 #include <string>
 #include <cstdint>

@@ -1,3 +1,5 @@
+// StdioClientTransport.cpp — stdio client transport implementation
+
 #include <mcp/transport/StdioClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/JsonRpc.hpp>

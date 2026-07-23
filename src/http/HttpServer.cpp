@@ -1,3 +1,5 @@
+// HttpServer.cpp - HTTP server implementation (libhv PIMPL)
+
 #include <mcp/http/HttpServer.hpp>
 
 #include <hv/HttpService.h>

@@ -1,3 +1,5 @@
+// FileTaskStore.hpp - Task store persisted to JSON file
+
 #pragma once
 
 #include <mcp/JsonValue.hpp>

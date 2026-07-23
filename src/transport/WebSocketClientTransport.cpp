@@ -1,3 +1,5 @@
+// WebSocketClientTransport.cpp — WebSocket client transport implementation
+
 #include <mcp/transport/WebSocketClientTransport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>

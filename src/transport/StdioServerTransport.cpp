@@ -1,3 +1,5 @@
+// StdioServerTransport.cpp — stdio server transport implementation
+
 #include <mcp/transport/StdioServerTransport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>

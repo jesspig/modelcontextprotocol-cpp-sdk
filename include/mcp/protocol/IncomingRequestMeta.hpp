@@ -1,4 +1,6 @@
 #pragma once
+// IncomingRequestMeta.hpp
+// Extracted _meta fields from incoming 2026-era requests and support types
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>

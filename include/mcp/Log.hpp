@@ -1,5 +1,7 @@
 #pragma once
 
+// Log.hpp — Logging utilities with level-based filtering
+
 #include <cstdio>
 #include <cstdlib>
 #include <string>

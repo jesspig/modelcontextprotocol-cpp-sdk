@@ -1,5 +1,7 @@
 #pragma once
 
+// McpTypes.hpp — Full MCP protocol data model types
+
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
@@ -128,7 +130,7 @@ struct Result {
 };
 
 // ====================================================================
-// Request params — shared types matching TS/C#/Python SDK patterns
+// Request params — shared types matching TS/C#/Python SDK patterns.
 // ====================================================================
 struct PaginatedRequestParams {
     std::optional<std::string> cursor;
@@ -295,7 +297,7 @@ struct CancelledNotificationParams {
 };
 
 // ====================================================================
-// Logging [deprecated]
+// Logging [deprecated].
 // ====================================================================
 struct LoggingMessageNotificationParams {
     LoggingLevel level;
@@ -331,7 +333,7 @@ bool IsInputRequiredResult(const JsonValue& j);
 std::optional<InputRequests> ExtractInputRequests(const JsonValue& result);
 
 // ====================================================================
-// Sampling [deprecated] — use Elicitation instead (SEP-2577)
+// Sampling [deprecated] — use Elicitation instead (SEP-2577).
 // ====================================================================
 struct SamplingMessage {
     std::string role;
@@ -353,7 +355,7 @@ struct CreateMessageResult : Result {
 };
 
 // ====================================================================
-// Roots [deprecated]
+// Roots [deprecated].
 // ====================================================================
 struct Root {
     std::string uri;
@@ -382,7 +384,7 @@ struct CacheableRequestOptions : RequestOptions {
 };
 
 // ====================================================================
-// SetLevelRequestParams [deprecated]
+// SetLevelRequestParams [deprecated].
 // ====================================================================
 struct SetLevelRequestParams {
     LoggingLevel level;
@@ -418,7 +420,7 @@ struct CancelTaskRequestParams {
 };
 
 // ====================================================================
-// Options — registration helpers (替换 Tool.hpp/Resource.hpp/Prompt.hpp 的替代)
+// Options — registration helpers (replaces Tool.hpp/Resource.hpp/Prompt.hpp)
 // ====================================================================
 struct ToolOptions {
     std::optional<std::string> name;

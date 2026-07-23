@@ -1,5 +1,6 @@
 #pragma once
-
+// McpClientTool.hpp
+// Client-side tool representation wrapping protocol Tool with metadata
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>
 

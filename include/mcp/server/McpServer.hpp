@@ -1,3 +1,5 @@
+// McpServer.hpp - MCP Server class definition
+
 #pragma once
 
 #include <mcp/Export.hpp>
@@ -67,7 +69,7 @@ public:
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
 
-    // Elicit (server→client) - typed convenience removed; use the raw Elicit with explicit schema
+    // Elicit (server→client) — typed convenience removed; use raw Elicit with explicit schema
 
     // ── Completion handler ──
     using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;

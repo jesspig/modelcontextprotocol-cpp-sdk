@@ -1,3 +1,5 @@
+// FileTokenCache.hpp - OAuth token cache persisted to file
+
 #pragma once
 
 #include <mcp/client/auth/TokenCache.hpp>

@@ -1,4 +1,6 @@
 #pragma once
+// MessageFilter.hpp
+// Filter pipeline for intercepting incoming and outgoing JSON-RPC messages
 #include <mcp/JsonRpc.hpp>
 #include <memory>
 #include <functional>

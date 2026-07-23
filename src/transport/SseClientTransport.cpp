@@ -1,3 +1,5 @@
+// SseClientTransport.cpp — SSE client transport implementation
+
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/detail/Url.hpp>
 #include <mcp/JsonRpc.hpp>

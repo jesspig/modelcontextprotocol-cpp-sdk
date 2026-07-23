@@ -1,5 +1,6 @@
 #pragma once
-
+// ClientHandlers.hpp
+// Server-to-client request handler type aliases
 #include <mcp/McpTypes.hpp>
 
 #include <functional>

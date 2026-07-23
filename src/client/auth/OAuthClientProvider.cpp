@@ -1,3 +1,5 @@
+// OAuthClientProvider.cpp
+// OAuth PKCE flow, token refresh, and metadata discovery implementation
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/detail/sha256.hpp>

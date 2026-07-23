@@ -1,4 +1,6 @@
 #pragma once
+// Transport.hpp — transport abstraction layer: ITransport, TransportBase, IClientTransport
+
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/protocol/MessageChannel.hpp>

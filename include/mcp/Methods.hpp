@@ -1,5 +1,7 @@
 #pragma once
 
+// Methods.hpp — MCP method and notification name constants
+
 #include <string_view>
 
 namespace mcp {

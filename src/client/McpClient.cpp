@@ -1,3 +1,5 @@
+// McpClient.cpp
+// McpClient and VersionNegotiation implementation
 #include <mcp/client/McpClient.hpp>
 #include <mcp/McpError.hpp>
 

@@ -1,3 +1,5 @@
+// RequestContext.hpp - Request context with params, logging, and per-request log level
+
 #pragma once
 
 #include <mcp/Export.hpp>

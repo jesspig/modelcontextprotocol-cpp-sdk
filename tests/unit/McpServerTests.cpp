@@ -1,3 +1,5 @@
+// McpServerTests — unit tests for McpServer creation, tool/resource/prompt registration
+
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 

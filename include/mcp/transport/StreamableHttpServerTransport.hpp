@@ -1,4 +1,5 @@
 #pragma once
+// StreamableHttpServerTransport.hpp — HTTP server transport implementing the MCP Streamable HTTP spec
 
 #include <mcp/Transport.hpp>
 #include <mcp/http/HttpServer.hpp>

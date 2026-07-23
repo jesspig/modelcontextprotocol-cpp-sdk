@@ -1,8 +1,8 @@
+// StreamableHttpServerTransport.cpp - Streamable HTTP server transport implementation
+
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
-
-// TODO(libhv): full rewrite with libhv
 
 #include <sstream>
 

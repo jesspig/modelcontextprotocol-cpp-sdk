@@ -1,3 +1,5 @@
+// sha256.hpp - Minimal SHA-256 implementation (FIPS 180-4, no OpenSSL required)
+
 #pragma once
 
 #include <array>

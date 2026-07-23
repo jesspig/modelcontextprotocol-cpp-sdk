@@ -1,3 +1,5 @@
+// McpTypesTests — unit tests for MCP type serialization/deserialization round-trips
+
 #include <mcp/McpTypes.hpp>
 
 #include <gtest/gtest.h>

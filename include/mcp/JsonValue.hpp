@@ -1,5 +1,7 @@
 #pragma once
 
+// JsonValue.hpp — Recursive JSON value type (public API)
+
 #include <cstdint>
 #include <map>
 #include <optional>
