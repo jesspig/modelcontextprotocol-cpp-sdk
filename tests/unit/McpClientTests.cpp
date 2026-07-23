@@ -66,18 +66,12 @@ TEST(McpClientTest, VersionNegotiationProbe) {
     SUCCEED();
 }
 
-// ── Tool cache management ──
-TEST(McpClientTest, AddKnownTools) {
+// ── Client lifecycle ──
+TEST(McpClientTest, CreateAndClose) {
     auto pair = InMemoryTransport::CreatePair();
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     auto client = McpClient::Create(std::move(pair.client), opts);
-
-    Tool t;
-    t.name = "cached_tool";
-    client->AddKnownTools({t});
-
-    client->RemoveKnownTools({"cached_tool"});
-    client->ClearKnownTools();
+    ASSERT_NE(client, nullptr);
     client->Close();
 }

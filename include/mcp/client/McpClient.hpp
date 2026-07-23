@@ -34,7 +34,6 @@ public:
 
     // ── Tools ──
     ListToolsResult ListTools(
-        const CacheableRequestOptions& options = {},
         std::optional<std::string> cursor = std::nullopt);
     CallToolResult CallTool(
         std::string_view name,
@@ -43,10 +42,8 @@ public:
 
     // ── Resources ──
     ListResourcesResult ListResources(
-        const CacheableRequestOptions& options = {},
         std::optional<std::string> cursor = std::nullopt);
     ListResourceTemplatesResult ListResourceTemplates(
-        const CacheableRequestOptions& options = {},
         std::optional<std::string> cursor = std::nullopt);
     ReadResourceResult ReadResource(
         std::string_view uri,
@@ -56,7 +53,6 @@ public:
 
     // ── Prompts ──
     ListPromptsResult ListPrompts(
-        const CacheableRequestOptions& options = {},
         std::optional<std::string> cursor = std::nullopt);
     GetPromptResult GetPrompt(
         std::string_view name,
@@ -82,6 +78,7 @@ public:
         std::chrono::seconds timeout = std::chrono::seconds(300));
 
     // ── Ping ──
+    [[deprecated("Ping is deprecated in 2026-07-28 protocol version")]]
     EmptyResult Ping();
 
     // ── Discover (re-negotiate) ──
@@ -90,20 +87,20 @@ public:
     // ── Client handlers (server-to-client: sampling, roots, elicitation) ──
     // SetSamplingHandler is deprecated in 2026-07-28 (SEP-2577).
     // Use SetElicitationHandler instead.
+    [[deprecated("Use SetElicitationHandler instead (SEP-2577)")]]
     void SetSamplingHandler(SamplingHandler handler);
+    [[deprecated("Roots are deprecated in 2026-07-28 (SEP-2577)")]]
     void SetRootsHandler(RootsHandler handler);
     void SetElicitationHandler(ElicitationHandler handler);
     void SetNotificationHandler(
         std::string_view method,
         ClientNotificationHandler handler);
 
+    // ── Logging handler (server→client logging notifications) ──
+    void SetLoggingHandler(std::function<void(const LoggingMessageNotificationParams&)> handler);
+
     // ── Subscriptions ──
     void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
-
-    // ── Tool cache management (对应 C# AddKnownTools / RemoveKnownTools / ClearKnownTools) ──
-    void AddKnownTools(const std::vector<Tool>& tools);
-    void RemoveKnownTools(const std::vector<std::string>& names);
-    void ClearKnownTools();
 
     // ── Close ──
     void Close();
@@ -116,13 +113,6 @@ private:
     // Internal helpers
     void WireClientHandlers();
     NegotiationResult NegotiateProtocol();
-
-    // Request sending helpers
-    template <typename TParams, typename TResult>
-    TResult SendRequest(
-        std::string_view method,
-        TParams params,
-        std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
     // MRTR-aware request: handles input_required loop
     JsonValue SendRequestWithMrtr(
@@ -144,9 +134,9 @@ private:
     std::optional<RootsHandler> roots_handler_;
     std::optional<ElicitationHandler> elicitation_handler_;
     std::vector<std::pair<std::string, ClientNotificationHandler>> notif_handlers_;
+    std::optional<std::function<void(const LoggingMessageNotificationParams&)>> logging_handler_;
 
-    // Known tool cache (for client-side tool metadata)
-    std::unordered_map<std::string, McpClientTool> known_tools_;
+
 };
 
 } // namespace mcp

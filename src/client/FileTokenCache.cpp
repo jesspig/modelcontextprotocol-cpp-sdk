@@ -196,4 +196,67 @@ void FileTokenCache::Save() {
 #endif
 }
 
+std::optional<OAuthTokenResponse> FileTokenCache::LoadTokenResponse() {
+    auto resp_path = cache_path_;
+    resp_path += ".token_response";
+    if (!std::filesystem::exists(resp_path)) return std::nullopt;
+
+    std::ifstream file(resp_path);
+    if (!file.is_open()) return std::nullopt;
+    try {
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        auto json = JsonValue::Parse(content);
+        if (json.IsNull()) {
+            MCP_LOG(Error, "token response cache: invalid JSON");
+            return std::nullopt;
+        }
+        OAuthTokenResponse resp;
+        if (auto* v = json.Find("access_token")) resp.access_token = v->GetString();
+        if (auto* v = json.Find("refresh_token")) resp.refresh_token = v->GetString();
+        if (auto* v = json.Find("expires_in")) resp.expires_in = v->GetInt();
+        if (auto* v = json.Find("token_type")) resp.token_type = v->GetString();
+        if (auto* v = json.Find("scope")) resp.scope = v->GetString();
+        return resp;
+    } catch (...) {
+        MCP_LOG(Error, "token response cache parse failed");
+        return std::nullopt;
+    }
+}
+
+std::optional<ClientRegistrationInfo> FileTokenCache::LoadClientRegistration() {
+    auto reg_path = cache_path_;
+    reg_path += ".client_registration";
+    if (!std::filesystem::exists(reg_path)) return std::nullopt;
+
+    std::ifstream file(reg_path);
+    if (!file.is_open()) return std::nullopt;
+    try {
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        auto json = JsonValue::Parse(content);
+        if (json.IsNull()) {
+            MCP_LOG(Error, "client registration cache: invalid JSON");
+            return std::nullopt;
+        }
+        ClientRegistrationInfo info;
+        if (auto* v = json.Find("client_id")) info.client_id = v->GetString();
+        if (auto* v = json.Find("client_secret")) info.client_secret = v->GetString();
+        if (auto* v = json.Find("grant_types")) {
+            if (v->IsArray()) {
+                for (const auto& item : v->GetArray())
+                    if (item.IsString()) info.grant_types.push_back(item.GetString());
+            }
+        }
+        if (auto* v = json.Find("redirect_uris")) {
+            if (v->IsArray()) {
+                for (const auto& item : v->GetArray())
+                    if (item.IsString()) info.redirect_uris.push_back(item.GetString());
+            }
+        }
+        return info;
+    } catch (...) {
+        MCP_LOG(Error, "client registration cache parse failed");
+        return std::nullopt;
+    }
+}
+
 } // namespace mcp

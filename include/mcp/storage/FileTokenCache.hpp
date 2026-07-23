@@ -19,6 +19,10 @@ public:
     std::optional<TokenContainer> GetTokens() override;
     void ClearTokens() override;
 
+    // Load persisted OAuth data (returns nullopt on missing/corrupt file)
+    std::optional<OAuthTokenResponse> LoadTokenResponse();
+    std::optional<ClientRegistrationInfo> LoadClientRegistration();
+
 private:
     void Load();
     void Save();
