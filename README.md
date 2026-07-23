@@ -3,7 +3,6 @@
 > **中文版文档**：[README_zh.md](README_zh.md)
 
 C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), providing both client and server libraries for building MCP-based AI tooling integrations.
-[![MCP](https://badge.mcpx.dev/?type=plugin&plugin_id=github.com/jesspig/GodotMind&logo=true)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)
