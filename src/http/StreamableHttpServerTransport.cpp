@@ -121,7 +121,7 @@ void StreamableHttpServerTransport::HandlePost(
 
     // Validate MCP headers match body
     std::string header_error;
-    if (!ValidateMcpHeaders(mcp_method, mcp_name, body_jv, header_error)) {
+    if (!ValidateMcpHeaders(mcp_method.value_or(""), mcp_name.value_or(""), body_jv, header_error)) {
         resp.status_code = 400;
         resp.status_text = "Bad Request";
         JsonValue::Object err_obj;
@@ -138,16 +138,16 @@ void StreamableHttpServerTransport::HandlePost(
     }
 
     // Set MCP protocol version in response
-    if (!proto_ver.empty()) {
-        resp.headers["mcp-protocol-version"] = proto_ver;
+    if (proto_ver.has_value()) {
+        resp.headers["mcp-protocol-version"] = proto_ver.value();
     }
 
     // Echo Mcp-Method and Mcp-Name headers in response (SEP-2243)
-    if (!mcp_method.empty()) {
-        resp.headers["mcp-method"] = mcp_method;
+    if (mcp_method.has_value()) {
+        resp.headers["mcp-method"] = mcp_method.value();
     }
-    if (!mcp_name.empty()) {
-        resp.headers["mcp-name"] = mcp_name;
+    if (mcp_name.has_value()) {
+        resp.headers["mcp-name"] = mcp_name.value();
     }
 
     // Extract Mcp-Param-* headers from request (case-insensitive) and store in meta
@@ -319,14 +319,14 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
 }
 
 // ── Header helper ──
-std::string StreamableHttpServerTransport::GetMcpHeader(
+std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(
     const HttpRequest& req, std::string_view header_name) const
 {
     auto key = std::string(header_name);
     for (auto& c : key) c = std::tolower(c);
     auto it = req.headers.find(key);
-    if (it != req.headers.end()) return it->second;
-    return {};
+    if (it != req.headers.end()) return std::optional<std::string>(it->second);
+    return std::nullopt;
 }
 
 } // namespace mcp

@@ -9,6 +9,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -64,8 +65,8 @@ private:
     std::string BuildSseEvent(const JsonRpcMessage& msg);
 
     // Parse MCP headers from request
-    std::string GetMcpHeader(const HttpRequest& req,
-                             std::string_view header_name) const;
+    std::optional<std::string> GetMcpHeader(const HttpRequest& req,
+                                            std::string_view header_name) const;
 
     // Convert RequestId to string key for response correlation
     static std::string RequestIdToString(const RequestId& id);
