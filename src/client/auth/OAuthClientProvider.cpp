@@ -2,20 +2,38 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/detail/sha256.hpp>
 
-// TODO(libhv): replace asio-based HTTP helper with libhv or OS socket calls
-// #include <asio/connect.hpp>
-// #include <asio/ip/tcp.hpp>
-// #include <asio/read.hpp>
-// #include <asio/write.hpp>
-// #ifdef MCP_HAVE_OPENSSL
-// #include <asio/ssl.hpp>
-// #endif
+#include <hv/requests.h>
 
 #include <chrono>
 #include <openssl/rand.h>
 
 #include <random>
 #include <sstream>
+
+namespace {
+
+std::string UrlEncode(std::string_view input) {
+    std::string result;
+    result.reserve(input.size() * 3);
+    for (unsigned char c : input) {
+        if (('0' <= c && c <= '9') ||
+            ('A' <= c && c <= 'Z') ||
+            ('a' <= c && c <= 'z') ||
+            c == '-' || c == '_' || c == '.' || c == '~')
+        {
+            result += static_cast<char>(c);
+        } else if (c == ' ') {
+            result += '+';
+        } else {
+            result += '%';
+            result += "0123456789ABCDEF"[c >> 4];
+            result += "0123456789ABCDEF"[c & 0xF];
+        }
+    }
+    return result;
+}
+
+} // anonymous namespace
 
 namespace mcp {
 
@@ -99,15 +117,26 @@ void InMemoryTokenCache::ClearTokens() {
 }
 
 // ====================================================================
-// HTTP helper — TODO(libhv): replace with libhv HTTP client
+// HTTP helper
 // ====================================================================
 JsonValue OAuthClientProvider::HttpPost(
     std::string_view url_str,
     const std::map<std::string, std::string>& form_data)
 {
-    (void)url_str; (void)form_data;
-    // TODO(libhv): implement HTTP POST using libhv or OS sockets
-    return JsonValue(JsonValue::object_tag);
+    std::string body;
+    for (auto it = form_data.begin(); it != form_data.end(); ++it) {
+        if (it != form_data.begin()) body += '&';
+        body += UrlEncode(it->first) + '=' + UrlEncode(it->second);
+    }
+
+    http_headers headers;
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+
+    auto resp = requests::post(std::string(url_str).c_str(), body, headers);
+    if (!resp || resp->status_code < 200 || resp->status_code >= 300)
+        return JsonValue();
+
+    return JsonValue::Parse(resp->body);
 }
 
 // ====================================================================
@@ -137,6 +166,12 @@ bool OAuthClientProvider::Authenticate() {
 }
 
 bool OAuthClientProvider::DiscoverMetadata() {
+    // Try RFC 8414 well-known discovery first, fall back to hardcoded URLs
+    if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
+        metadata_ = std::move(discovered);
+        return true;
+    }
+
     OAuthMetadata meta;
     meta.issuer = options_.server_url;
     meta.authorization_endpoint = options_.server_url + "/authorize";
@@ -297,6 +332,45 @@ bool OAuthClientProvider::StepUpAuthorization(
 std::optional<OAuthMetadata> OAuthMetadata::Discover(
     std::string_view server_url)
 {
+    std::string url(server_url);
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    std::string metadata_url = url + "/.well-known/oauth-authorization-server";
+
+    auto resp = requests::get(metadata_url.c_str());
+    if (resp && resp->status_code >= 200 && resp->status_code < 300) {
+        auto json = JsonValue::Parse(resp->body);
+        if (json.IsObject()) {
+            OAuthMetadata meta;
+            if (auto* v = json.Find("issuer"))
+                meta.issuer = v->GetString();
+            if (auto* v = json.Find("authorization_endpoint"))
+                meta.authorization_endpoint = v->GetString();
+            if (auto* v = json.Find("token_endpoint"))
+                meta.token_endpoint = v->GetString();
+            if (auto* v = json.Find("revocation_endpoint"))
+                meta.revocation_endpoint = v->GetString();
+            if (auto* v = json.Find("registration_endpoint"))
+                meta.registration_endpoint = v->GetString();
+            if (auto* v = json.Find("jwks_uri"))
+                meta.jwks_uri = v->GetString();
+
+            auto extract_vec = [&](const char* key, std::vector<std::string>& vec) {
+                if (auto* v = json.Find(key)) {
+                    if (v->IsArray()) {
+                        for (const auto& item : v->GetArray())
+                            if (item.IsString()) vec.push_back(item.GetString());
+                    }
+                }
+            };
+            extract_vec("scopes_supported", meta.scopes_supported);
+            extract_vec("response_types_supported", meta.response_types_supported);
+            extract_vec("grant_types_supported", meta.grant_types_supported);
+            extract_vec("code_challenge_methods_supported", meta.code_challenge_methods_supported);
+
+            return meta;
+        }
+    }
+
     OAuthMetadata meta;
     meta.issuer = std::string(server_url);
     meta.authorization_endpoint = std::string(server_url) + "/authorize";
@@ -305,13 +379,50 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
 }
 
 std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
-    std::string_view, std::string_view redirect_uri, std::string_view client_name)
+    std::string_view registration_endpoint,
+    std::string_view redirect_uri,
+    std::string_view client_name)
 {
+    JsonValue obj(JsonValue::object_tag);
+    {
+        JsonValue::Array uris;
+        uris.push_back(JsonValue(std::string(redirect_uri)));
+        obj["redirect_uris"] = JsonValue(std::move(uris));
+    }
+    obj["client_name"] = JsonValue(std::string(client_name));
+
+    auto body = JsonValue(std::move(obj)).Dump();
+
+    http_headers headers;
+    headers["Content-Type"] = "application/json";
+
+    auto resp = requests::post(
+        std::string(registration_endpoint).c_str(), body, headers);
+    if (!resp || resp->status_code < 200 || resp->status_code >= 300)
+        return std::nullopt;
+
+    auto json = JsonValue::Parse(resp->body);
+    if (json.IsNull()) return std::nullopt;
+
     ClientRegistrationInfo info;
-    info.client_id = std::string(client_name) + "-" +
-        std::to_string(std::chrono::system_clock::now()
-            .time_since_epoch().count());
-    info.redirect_uris = {std::string(redirect_uri)};
+    if (auto* v = json.Find("client_id"))
+        info.client_id = v->GetString();
+    if (auto* v = json.Find("client_secret"))
+        info.client_secret = v->GetString();
+    if (auto* v = json.Find("grant_types")) {
+        if (v->IsArray()) {
+            for (const auto& item : v->GetArray())
+                if (item.IsString()) info.grant_types.push_back(item.GetString());
+        }
+    }
+    if (auto* v = json.Find("redirect_uris")) {
+        if (v->IsArray()) {
+            for (const auto& item : v->GetArray())
+                if (item.IsString()) info.redirect_uris.push_back(item.GetString());
+        }
+    }
+
+    if (info.client_id.empty()) return std::nullopt;
     return info;
 }
 
