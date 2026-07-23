@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/Export.hpp>
+#include <mcp/JsonValue.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
@@ -21,19 +22,13 @@ namespace mcp {
 class MCP_API McpServer {
 public:
     // ── Factory ──
-    // If io_ctx is provided, use it instead of creating an internal one.
-    // This is required for transports (e.g., StdioServerTransport) that need
-    // to share the same io_context with the protocol.
     static std::unique_ptr<McpServer> Create(
         std::shared_ptr<ITransport> transport,
-        const ServerOptions& options = {},
-        asio::io_context* io_ctx = nullptr);
+        const ServerOptions& options = {});
 
     virtual ~McpServer() = default;
 
     // ── Lifecycle ──
-    // Start processing messages. Blocks until Close() or transport closes.
-    // Internally calls io_context.run().
     void Run();
     void Close();
 
@@ -67,7 +62,7 @@ public:
         std::string_view name,
         const PromptOptions& /*options*/,
         std::function<GetPromptResult(const std::string& name,
-            const std::optional<nlohmann::json>& args)> handler);
+            const std::optional<JsonValue>& args)> handler);
 
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
@@ -76,7 +71,7 @@ public:
     template <typename T>
     std::future<ElicitResultTyped<T>> Elicit(
         std::string_view message,
-        std::optional<nlohmann::json> extra_meta = std::nullopt)
+        std::optional<JsonValue> extra_meta = std::nullopt)
     {
         ElicitRequestParams params;
         params.message = std::string(message);
@@ -113,15 +108,13 @@ public:
     const ServerCapabilities& GetCapabilities() const;
     bool IsMrtrSupported() const;
 
-    // ── Internal access (for RequestContext) ──
+    // ── Internal access ──
     McpSessionHandler& GetSessionHandler() { return *handler_; }
-    asio::io_context& IoContext() { return *io_ctx_ptr_; }
 
 private:
     McpServer(
         std::shared_ptr<ITransport> transport,
-        ServerOptions options,
-        asio::io_context* external_io_ctx);
+        ServerOptions options);
 
     // ── Auto-wire handlers from registered tools/resources/prompts ──
     void WireHandlers();
@@ -129,33 +122,29 @@ private:
 
     // ── Internal handler implementations ──
     void HandleListTools(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleCallTool(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleListResources(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleListResourceTemplates(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleReadResource(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleListPrompts(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleGetPrompt(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleComplete(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleDiscover(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleInitialize(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleSubscriptionsListen(
-        const JsonRpcRequest& req, std::promise<nlohmann::json> promise);
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
 
     // ── State ──
-    // io_ctx_ptr_ owns the io_context if created internally; otherwise
-    // it references an external io_context. io_ctx_ is always valid.
-    std::unique_ptr<asio::io_context> io_ctx_owner_;
-    asio::io_context* io_ctx_ptr_;
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
     ServerOptions options_;
@@ -173,7 +162,7 @@ private:
     std::vector<ResourceEntry> resources_;
     struct PromptEntry {
         std::string name;
-        std::function<GetPromptResult(const std::string&, const std::optional<nlohmann::json>&)> handler;
+        std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)> handler;
     };
     std::vector<PromptEntry> prompts_;
 

@@ -1,25 +1,10 @@
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/detail/Url.hpp>
-#include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/JsonRpc.hpp>
 
-#include <asio/experimental/channel.hpp>
-#include <asio/post.hpp>
-
-#ifdef _WIN32
-#include <winhttp.h>
-#include <windows.h>
-#else
-#include <mcp/transport/detail/http_client.hpp>
-#include <asio/connect.hpp>
-#include <asio/ip/tcp.hpp>
-#include <asio/read.hpp>
-#include <asio/write.hpp>
-#ifdef MCP_HAVE_OPENSSL
-#include <asio/ssl.hpp>
-#endif
-#include <sys/socket.h>
-#endif
+#include <hv/HttpClient.h>
+#include <hv/requests.h>
+#include <hv/hlog.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -31,24 +16,13 @@
 #include <thread>
 #include <vector>
 
-#ifdef _WIN32
-#pragma comment(lib, "winhttp.lib")
-#endif
-
 namespace mcp {
 
-// JSON parse safety limits
 #define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-// K_MAX_JSON_DEPTH removed — nlohmann-json v3.11.3 parse() accepts 4 args max
 
 namespace {
 
-// ═══════════════════════════════════════════════════════════════════════
-// URL parsing helpers
-// ═══════════════════════════════════════════════════════════════════════
-
 std::string ResolveEndpoint(const std::string& server_url, const std::string& endpoint) {
-    // Already absolute
     if (endpoint.find("://") != std::string::npos)
         return endpoint;
 
@@ -70,10 +44,6 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
     return base + "/" + endpoint;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// SSE event parsing
-// ═══════════════════════════════════════════════════════════════════════
-
 struct SseEvent {
     std::string event_type;
     std::string data;
@@ -93,7 +63,6 @@ SseEvent ParseSseEvent(const std::string& block) {
         if (line.empty())
             continue;
 
-        // event:<spaces?>value
         if (line.size() > 6 && line.compare(0, 6, "event:") == 0) {
             auto val = line.substr(6);
             auto n = val.find_first_not_of(" \t");
@@ -101,7 +70,6 @@ SseEvent ParseSseEvent(const std::string& block) {
             else val.clear();
             evt.event_type = std::move(val);
         }
-        // data:<spaces?>value
         else if (line.size() > 5 && line.compare(0, 5, "data:") == 0) {
             auto val = line.substr(5);
             auto n = val.find_first_not_of(" \t");
@@ -110,7 +78,6 @@ SseEvent ParseSseEvent(const std::string& block) {
             if (!evt.data.empty()) evt.data += "\n";
             evt.data += val;
         }
-        // id:<spaces?>value
         else if (line.size() > 3 && line.compare(0, 3, "id:") == 0) {
             auto val = line.substr(3);
             auto n = val.find_first_not_of(" \t");
@@ -118,7 +85,6 @@ SseEvent ParseSseEvent(const std::string& block) {
             else val.clear();
             evt.id = std::move(val);
         }
-        // retry:<spaces?>value
         else if (line.size() > 6 && line.compare(0, 6, "retry:") == 0) {
             auto val = line.substr(6);
             auto n = val.find_first_not_of(" \t");
@@ -126,42 +92,20 @@ SseEvent ParseSseEvent(const std::string& block) {
             try {
                 evt.retry = std::stoi(val);
             } catch (...) {
-                // ignore invalid retry value
             }
         }
     }
     return evt;
 }
 
-#ifdef _WIN32
-// Widen a UTF-8 string for WinAPI
-std::wstring ToWide(const std::string& s) {
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
-                                  static_cast<int>(s.size()), nullptr, 0);
-    if (len <= 0) return {};
-    std::wstring w(static_cast<size_t>(len), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
-                        static_cast<int>(s.size()), &w[0], len);
-    return w;
-}
-#endif
-
-// ═══════════════════════════════════════════════════════════════════════
-// SseClientSessionTransport  (anonymous namespace)
-// ═══════════════════════════════════════════════════════════════════════
-
 class SseClientSessionTransport final : public TransportBase {
 public:
-    SseClientSessionTransport(std::shared_ptr<asio::io_context> io_ctx,
-                              std::string server_url,
-                              std::string name)
-        : TransportBase(*io_ctx)
-        , io_ctx_(std::move(io_ctx))
+    SseClientSessionTransport(std::string server_url, std::string name)
+        : TransportBase()
         , server_url_(std::move(server_url))
         , name_(std::move(name))
+        , http_client_(std::make_unique<hv::HttpClient>())
     {
-        channel_ = std::make_unique<MessageChannel>(*io_ctx_, 64);
     }
 
     ~SseClientSessionTransport() override {
@@ -175,7 +119,6 @@ public:
         url_ = detail::ParseUrl(server_url_);
         sse_thread_ = std::thread([this] { SseReadLoop(); });
         send_thread_ = std::thread([this] { SendLoop(); });
-        io_thread_ = std::thread([this]() { io_ctx_->run(); });
         SetConnected();
     }
 
@@ -183,60 +126,18 @@ public:
         if (!running_.exchange(false))
             return;
 
-        // Wake send thread
         {
             std::lock_guard<std::mutex> lock(send_mutex_);
             send_cv_.notify_one();
         }
 
-#ifdef _WIN32
-        // Abort GET request — unblocks WinHttpReadData in SseReadLoop
-        if (hGetRequest_) {
-            WinHttpCloseHandle(hGetRequest_);
-            hGetRequest_ = nullptr;
-        }
-        // Clean up cached POST handles
-        if (post_connect_) {
-            WinHttpCloseHandle(post_connect_);
-            post_connect_ = nullptr;
-        }
-        if (post_session_) {
-            WinHttpCloseHandle(post_session_);
-            post_session_ = nullptr;
-        }
-        if (hConnect_) {
-            WinHttpCloseHandle(hConnect_);
-            hConnect_ = nullptr;
-        }
-        if (hSession_) {
-            WinHttpCloseHandle(hSession_);
-            hSession_ = nullptr;
-        }
-#else
-        // Close SSE socket — unblocks read_some in SseReadLoop
-#ifdef MCP_HAVE_OPENSSL
-        if (ssl_sse_socket_) {
-            asio::error_code ec;
-            ssl_sse_socket_->lowest_layer().close(ec);
-            ssl_sse_socket_.reset();
-        }
-#endif
-        if (sse_socket_) {
-            asio::error_code ec;
-            sse_socket_->close(ec);
-            sse_socket_.reset();
-        }
-#endif
+        if (http_client_)
+            http_client_->close();
 
-        // Join threads
         if (send_thread_.joinable())
             send_thread_.join();
         if (sse_thread_.joinable())
             sse_thread_.join();
-
-        io_ctx_->stop();
-        if (io_thread_.joinable())
-            io_thread_.join();
 
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -246,8 +147,7 @@ public:
         if (!running_)
             return;
 
-        nlohmann::json j = message;
-        std::string body = j.dump();
+        std::string body = SerializeMessage(message);
 
         {
             std::lock_guard<std::mutex> lock(send_mutex_);
@@ -257,190 +157,29 @@ public:
     }
 
 private:
-    // ── SSE read thread ──
-
     void SseReadLoop() {
-#ifdef _WIN32
-        hSession_ = WinHttpOpen(L"MCP-SSE-Client/1.0",
-                                WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                WINHTTP_NO_PROXY_NAME,
-                                WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession_) {
-            NotifyError("WinHttpOpen failed");
-            running_ = false;
-            return;
-        }
+        HttpRequest req;
+        req.method = HTTP_GET;
+        req.url = server_url_;
+        req.headers["Accept"] = "text/event-stream";
 
-        WinHttpSetTimeouts(hSession_, 5000, 5000, 5000, 30000);
-
-        auto w_host = ToWide(url_.host);
-        auto w_path = ToWide(url_.path);
-        if (w_host.empty()) {
-            NotifyError("Invalid server URL: host empty");
-            running_ = false;
-            return;
-        }
-
-        hConnect_ = WinHttpConnect(hSession_, w_host.c_str(), url_.port, 0);
-        if (!hConnect_) {
-            NotifyError("WinHttpConnect failed");
-            running_ = false;
-            return;
-        }
-
-        DWORD flags = (url_.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
-        hGetRequest_ = WinHttpOpenRequest(hConnect_, L"GET", w_path.c_str(),
-                                          nullptr, WINHTTP_NO_REFERER,
-                                          WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-        if (!hGetRequest_) {
-            NotifyError("WinHttpOpenRequest(GET) failed");
-            running_ = false;
-            return;
-        }
-
-        static const wchar_t accept_hdr[] = L"Accept: text/event-stream\r\n";
-        WinHttpAddRequestHeaders(hGetRequest_, accept_hdr,
-                                 static_cast<DWORD>(wcslen(accept_hdr)),
-                                 WINHTTP_ADDREQ_FLAG_ADD);
-
-        if (!WinHttpSendRequest(hGetRequest_, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
-        {
-            NotifyError("WinHttpSendRequest(GET) failed");
-            running_ = false;
-            return;
-        }
-
-        if (!WinHttpReceiveResponse(hGetRequest_, nullptr)) {
-            NotifyError("WinHttpReceiveResponse(GET) failed");
-            running_ = false;
-            return;
-        }
-
-        // Read SSE stream
-        std::string buffer;
-        while (running_) {
-            char chunk[4096];
-            DWORD read = 0;
-
-            if (!WinHttpReadData(hGetRequest_, chunk, sizeof(chunk), &read)) {
-                if (running_)
-                    NotifyError("WinHttpReadData failed");
-                break;
-            }
-            if (read == 0)
-                break;  // graceful close
-
-            buffer.append(chunk, read);
-
-            // Extract complete SSE blocks delimited by \n\n
-            size_t pos;
-            while ((pos = buffer.find("\n\n")) != std::string::npos) {
-                auto block = buffer.substr(0, pos);
-                buffer.erase(0, pos + 2);
-
-                DispatchSseEvent(block);
-            }
-        }
-#else
-        try {
-            auto sse_ctx = std::make_shared<asio::io_context>();
-            sse_ctx_ = sse_ctx;
-            asio::ip::tcp::resolver resolver(*sse_ctx);
-            sse_socket_ = std::make_shared<asio::ip::tcp::socket>(*sse_ctx);
-
-            auto endpoints = resolver.resolve(url_.host,
-                                              std::to_string(url_.port));
-            asio::connect(*sse_socket_, endpoints);
-
-#ifdef MCP_HAVE_OPENSSL
-            if (url_.scheme == "https") {
-                ssl_sse_socket_ = std::make_unique<asio::ssl::stream<asio::ip::tcp::socket&>>(
-                    *sse_socket_, ssl_ctx_);
-                ssl_ctx_.set_default_verify_paths();
-                ssl_sse_socket_->handshake(asio::ssl::stream_base::client);
-            }
-#endif
-
-            {
-                struct timeval tv;
-                tv.tv_sec = 30;
-                tv.tv_usec = 0;
-                setsockopt(sse_socket_->native_handle(), SOL_SOCKET, SO_RCVTIMEO,
-                           &tv, sizeof(tv));
-            }
-
-            std::string request =
-                "GET " + url_.path + " HTTP/1.1\r\n"
-                "Host: " + url_.host + "\r\n"
-                "Accept: text/event-stream\r\n"
-                "Connection: keep-alive\r\n"
-                "\r\n";
-
-#ifdef MCP_HAVE_OPENSSL
-            if (ssl_sse_socket_) {
-                asio::write(*ssl_sse_socket_, asio::buffer(request));
-            } else
-#endif
-            {
-                asio::write(*sse_socket_, asio::buffer(request));
-            }
-
-            // Read response headers
-            asio::error_code ec;
-            std::string header_buf;
-            while (running_) {
-                char c = 0;
-                size_t n =
-#ifdef MCP_HAVE_OPENSSL
-                    ssl_sse_socket_ ? ssl_sse_socket_->read_some(asio::buffer(&c, 1), ec) :
-#endif
-                    sse_socket_->read_some(asio::buffer(&c, 1), ec);
-                if (ec || n == 0) break;
-                header_buf += c;
-                if (header_buf.size() >= 4 &&
-                    header_buf.substr(header_buf.size() - 4) == "\r\n\r\n")
-                    break;
-            }
-
-            if (!running_) {
-                sse_socket_->close(ec);
-                sse_socket_.reset();
-                return;
-            }
-
-            // Read SSE stream
-            std::string buffer;
-            while (running_) {
-                char chunk[4096];
-                size_t len =
-#ifdef MCP_HAVE_OPENSSL
-                    ssl_sse_socket_ ? ssl_sse_socket_->read_some(asio::buffer(chunk), ec) :
-#endif
-                    sse_socket_->read_some(asio::buffer(chunk), ec);
-                if (ec) break;
-
-                buffer.append(chunk, len);
+        req.http_cb = [this](HttpMessage* /*msg*/, http_parser_state state,
+                             const char* data, size_t size) {
+            if (state == HP_BODY && data && size) {
+                sse_buffer_.append(data, size);
 
                 size_t pos;
-                while ((pos = buffer.find("\n\n")) != std::string::npos) {
-                    auto block = buffer.substr(0, pos);
-                    buffer.erase(0, pos + 2);
+                while ((pos = sse_buffer_.find("\n\n")) != std::string::npos) {
+                    auto block = sse_buffer_.substr(0, pos);
+                    sse_buffer_.erase(0, pos + 2);
                     DispatchSseEvent(block);
                 }
             }
-        } catch (const std::exception& e) {
-            if (running_)
-                NotifyError(std::string("SSE read error: ") + e.what());
-        }
+        };
 
-#ifdef MCP_HAVE_OPENSSL
-        ssl_sse_socket_.reset();
-#endif
-        sse_socket_.reset();
-#endif
+        HttpResponse resp;
+        http_client_->send(&req, &resp);
 
-        // Connection lost — notify unless we initiated the close
         if (running_.exchange(false)) {
             {
                 std::lock_guard<std::mutex> lk(send_mutex_);
@@ -454,7 +193,6 @@ private:
     void DispatchSseEvent(const std::string& block) {
         auto evt = ParseSseEvent(block);
 
-        // Store last event ID for reconnection
         if (!evt.id.empty())
             last_event_id_ = evt.id;
 
@@ -466,24 +204,13 @@ private:
                 return;
             }
             try {
-                auto j = nlohmann::json::parse(evt.data, nullptr, false, false);
-                JsonRpcMessage msg = j.get<JsonRpcMessage>();
-                EnqueueMessage(std::move(msg));
+                JsonRpcMessage msg = DeserializeMessage(evt.data);
+                WriteMessage(std::move(msg));
             } catch (const std::exception& e) {
                 NotifyError(std::string("SSE parse error: ") + e.what());
             }
         }
-        // Other event types are silently ignored
     }
-
-    void EnqueueMessage(JsonRpcMessage msg) {
-        asio::post(*io_ctx_, [this, msg = std::move(msg)]() mutable {
-            if (!running_) return;
-            if (channel_) channel_->Send(std::move(msg));
-        });
-    }
-
-    // ── Send thread ──
 
     void SendLoop() {
         while (running_) {
@@ -505,119 +232,30 @@ private:
     }
 
     void DoPost(const std::string& body) {
-        auto ep = detail::ParseUrl(endpoint_url_);
-        if (ep.host.empty()) {
-            endpoint_url_ = ResolveEndpoint(server_url_, endpoint_url_);
-            ep = detail::ParseUrl(endpoint_url_);
-        }
-
-#ifdef _WIN32
-        // Lazily initialize cached WinHTTP handles for POST
-        if (!post_session_) {
-            post_session_ = WinHttpOpen(
-                L"MCP-SSE-Client/1.0",
-                WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                WINHTTP_NO_PROXY_NAME,
-                WINHTTP_NO_PROXY_BYPASS, 0);
-            if (!post_session_) return;
-            WinHttpSetTimeouts(post_session_, 5000, 5000, 5000, 30000);
-        }
-
-        auto w_host = ToWide(ep.host.empty() ? url_.host : ep.host);
-        auto w_path = ToWide(ep.path.empty() ? "/" : ep.path);
-        uint16_t port = ep.port ? ep.port : url_.port;
-
-        if (!post_connect_) {
-            post_connect_ = WinHttpConnect(post_session_, w_host.c_str(), port, 0);
-            if (!post_connect_) return;
-        }
-
-        DWORD flags = ((ep.scheme == "https") || (url_.scheme == "https"))
-                          ? WINHTTP_FLAG_SECURE
-                          : 0;
-        HINTERNET hRequest = WinHttpOpenRequest(post_connect_, L"POST", w_path.c_str(),
-                                                 nullptr, WINHTTP_NO_REFERER,
-                                                 WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-        if (!hRequest) return;
-
-        static const wchar_t ct_hdr[] = L"Content-Type: application/json\r\n";
-        WinHttpAddRequestHeaders(hRequest, ct_hdr,
-                                 static_cast<DWORD>(wcslen(ct_hdr)),
-                                 WINHTTP_ADDREQ_FLAG_ADD);
-
-        BOOL sent = WinHttpSendRequest(
-            hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            const_cast<char*>(body.data()),
-            static_cast<DWORD>(body.size()),
-            static_cast<DWORD>(body.size()), 0);
-
-        if (sent && WinHttpReceiveResponse(hRequest, nullptr)) {
-            // Drain response body
-            char discard[1024];
-            DWORD read = 0;
-            while (WinHttpReadData(hRequest, discard, sizeof(discard), &read) &&
-                   read > 0)
-            {
-                read = 0;
-            }
-        }
-
-        WinHttpCloseHandle(hRequest);
-#else
-        (void)ep;
-        try {
-            asio::io_context tmp_ctx;
-            detail::HttpPost(tmp_ctx, endpoint_url_, body);
-        } catch (...) {
-            // Silently ignore (matches WinHTTP behavior)
-        }
-#endif
+        if (endpoint_url_.empty()) return;
+        http_headers headers;
+        headers["Content-Type"] = "application/json";
+        requests::post(endpoint_url_.c_str(), body, headers);
     }
 
-    // ── Members ──
-
-    std::shared_ptr<asio::io_context> io_ctx_;
+    std::unique_ptr<hv::HttpClient> http_client_;
     std::string server_url_;
     std::string name_;
     std::string endpoint_url_;
     std::string last_event_id_;
     detail::UrlParts url_;
+    std::string sse_buffer_;
 
-#ifdef _WIN32
-    // WinHTTP handles (owned by SseReadLoop)
-    HINTERNET hSession_ = nullptr;
-    HINTERNET hConnect_ = nullptr;
-    HINTERNET hGetRequest_ = nullptr;
-    // Cached WinHTTP handles for POST (send path)
-    HINTERNET post_session_ = nullptr;
-    HINTERNET post_connect_ = nullptr;
-#else
-    // asio socket + io_context for SSE streaming (owned by SseReadLoop)
-#ifdef MCP_HAVE_OPENSSL
-    asio::ssl::context ssl_ctx_{asio::ssl::context::tlsv12_client};
-    std::unique_ptr<asio::ssl::stream<asio::ip::tcp::socket&>> ssl_sse_socket_;
-#endif
-    std::shared_ptr<asio::ip::tcp::socket> sse_socket_;
-    std::shared_ptr<asio::io_context> sse_ctx_;
-#endif
-
-    // SSE reader thread + send thread + io_context runner
     std::thread sse_thread_;
     std::thread send_thread_;
-    std::thread io_thread_;
     std::atomic<bool> running_{false};
 
-    // Send queue (producer: SendMessageAsync / consumer: SendLoop)
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;
 };
 
 } // namespace
-
-// ═══════════════════════════════════════════════════════════════════════
-// SseClientTransport
-// ═══════════════════════════════════════════════════════════════════════
 
 SseClientTransport::SseClientTransport(std::string_view server_url, std::string_view name)
     : server_url_(server_url)
@@ -630,9 +268,7 @@ SseClientTransport::~SseClientTransport() = default;
 std::string_view SseClientTransport::Name() const { return name_; }
 
 std::shared_ptr<ITransport> SseClientTransport::Connect() {
-    auto io_ctx = std::make_shared<asio::io_context>();
-    auto session = std::make_shared<SseClientSessionTransport>(std::move(io_ctx),
-                                                               server_url_, name_);
+    auto session = std::make_shared<SseClientSessionTransport>(server_url_, name_);
     session->Start();
     return session;
 }

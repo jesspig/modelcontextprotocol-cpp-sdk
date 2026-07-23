@@ -5,41 +5,34 @@ The `McpServer` class exposes capabilities (tools, resources, prompts) to connec
 ## Creating a Server
 
 ```cpp
-asio::io_context io_ctx;
-auto transport = std::make_shared<StdioServerTransport>(io_ctx);
+auto transport = std::make_shared<StdioServerTransport>();
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
 opts.capabilities = ServerCapabilities{};
 opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+auto server = McpServer::Create(std::move(transport), opts);
 server->Run();
 ```
 
 For Streamable HTTP mode:
 
 ```cpp
-asio::io_context io_ctx;
-
 StreamableHttpServerOptions http_opts;
 http_opts.port = 3001;
 http_opts.stateless = true;  // or false for session mode
 
-auto transport = std::make_shared<StreamableHttpServerTransport>(io_ctx, http_opts);
+auto transport = std::make_shared<StreamableHttpServerTransport>(http_opts);
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
 opts.capabilities = ServerCapabilities{};
 opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+auto server = McpServer::Create(std::move(transport), opts);
 server->Run();
 ```
-
-::: warning
-`McpServer::Create` must share the same `asio::io_context` as the transport. Pass io_context as the third argument.
-:::
 
 ## ServerOptions
 

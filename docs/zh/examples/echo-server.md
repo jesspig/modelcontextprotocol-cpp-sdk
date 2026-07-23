@@ -23,28 +23,27 @@ build/debug/examples/EchoServer/EchoServer
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
-asio::io_context io_ctx;
-auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+auto transport = std::make_unique<StdioServerTransport>();
 
 ServerOptions opts;
 opts.server_info = Implementation{"EchoServer", "1.0.0"};
 opts.server_instructions = "An echo server — sends back what you send.";
 
-auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+auto server = McpServer::Create(std::move(transport), opts);
 
 // 工具 — 回显输入文本
 server->RegisterTool("echo",
     ToolOptions{}.Description("Echo the input text back"),
     std::function<CallToolResult(const Ctx&)>(
         [](const Ctx& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            std::string text;
+            if (ctx.Params().arguments && ctx.Params().arguments->Contains("text")) {
+                text = (*ctx.Params().arguments)["text"].GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -79,10 +78,10 @@ server->RegisterResourceTemplate("echo-template", "echo://{text}",
 server->RegisterPrompt("capitalize",
     PromptOptions{}.Description("Capitalize the input text"),
     [](const std::string& name,
-       const std::optional<nlohmann::json>& args) -> GetPromptResult {
+       const std::optional<JsonValue>& args) -> GetPromptResult {
         std::string text;
-        if (args && args->contains("text"))
-            text = (*args)["text"].get<std::string>();
+        if (args && args->Contains("text"))
+            text = (*args)["text"].GetString();
         for (auto& c : text) c = static_cast<char>(std::toupper(c));
         GetPromptResult r;
         r.messages = {PromptMessage{"user", TextContent{"text", text}}};

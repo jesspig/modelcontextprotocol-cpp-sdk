@@ -5,8 +5,6 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
-#include <asio/io_context.hpp>
-
 #include <iostream>
 #include <memory>
 #include <string>
@@ -16,15 +14,14 @@ using Ctx = RequestContext<CallToolRequestParams>;
 
 int main() {
     // 创建 stdio 传输
-    asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+    auto transport = std::make_unique<StdioServerTransport>();
 
     // 创建服务器
     ServerOptions opts;
     opts.server_info = Implementation{"EchoServer", "1.0.0"};
     opts.server_instructions = "An echo server — sends back what you send.";
 
-    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+    auto server = McpServer::Create(std::move(transport), opts);
 
     // 注册 echo 工具
     server->RegisterTool("echo",
@@ -33,8 +30,8 @@ int main() {
             [](const Ctx& ctx) -> CallToolResult {
                 auto& params = ctx.Params();
                 std::string text;
-                if (params.arguments && params.arguments->contains("text")) {
-                    text = (*params.arguments)["text"].get<std::string>();
+                if (params.arguments && params.arguments->Contains("text")) {
+                    text = (*params.arguments)["text"].GetString();
                 }
                 CallToolResult result;
                 result.content.push_back(TextContent{"text", text});
@@ -71,11 +68,11 @@ int main() {
     server->RegisterPrompt("capitalize",
         PromptOptions{}.Description("Capitalize the input text"),
         [](const std::string& name,
-           const std::optional<nlohmann::json>& args) -> GetPromptResult {
+           const std::optional<JsonValue>& args) -> GetPromptResult {
             (void)name;
             std::string text;
-            if (args && args->contains("text")) {
-                text = (*args)["text"].get<std::string>();
+            if (args && args->Contains("text")) {
+                text = (*args)["text"].GetString();
             }
             // Capitalize
             for (auto& c : text) c = static_cast<char>(std::toupper(c));

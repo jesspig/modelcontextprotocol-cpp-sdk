@@ -2,14 +2,12 @@
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
-#include <asio/io_context.hpp>
 #include <memory>
 #include <string_view>
 #include <functional>
 #include <atomic>
 #include <system_error>
 #include <exception>
-#include <mutex>
 
 namespace mcp {
 
@@ -33,7 +31,7 @@ enum class TransportState { Initial, Connected, Disconnected };
 
 class MCP_API TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase> {
 public:
-    TransportBase(asio::io_context& io_ctx);
+    TransportBase();
     virtual ~TransportBase();
 
     // ITransport
@@ -50,14 +48,11 @@ public:
     void SetOnClose(std::function<void()> cb) { on_close_ = std::move(cb); }
     void SetOnError(std::function<void(std::string_view)> cb) { on_error_ = std::move(cb); }
 
-    asio::io_context& IoContext() { return io_ctx_; }
-
 protected:
     void NotifyClose();
     void NotifyError(std::string_view msg);
     void WriteMessage(JsonRpcMessage message);
 
-    asio::io_context& io_ctx_;
     std::unique_ptr<MessageChannel> channel_;
     std::string session_id_;
     std::atomic<int> state_{0}; // 0=Initial, 1=Connected, 2=Disconnected
@@ -76,7 +71,9 @@ public:
 };
 
 // TransportBase inline implementation
-inline TransportBase::TransportBase(asio::io_context& io_ctx) : io_ctx_(io_ctx) {}
+inline TransportBase::TransportBase() {
+    channel_ = std::make_unique<MessageChannel>(64);
+}
 inline TransportBase::~TransportBase() = default;
 
 inline void TransportBase::SetConnected() { state_ = static_cast<int>(TransportState::Connected); }

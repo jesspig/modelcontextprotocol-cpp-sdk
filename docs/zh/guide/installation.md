@@ -6,8 +6,8 @@
 |----------------|------------|--------------------------------|
 | CMake          | 3.28       | 需要 Ninja 生成器               |
 | C++ 编译器      | C++17      | MSVC、Clang、GCC               |
-| asio           | 1.30.2     | 自动拉取                        |
-| nlohmann-json  | 3.11.3     | 自动拉取                        |
+| simdjson       | 3.12.3     | 自动拉取                        |
+| libhv          | 1.3.4      | 自动拉取                        |
 | OpenSSL        | （可选）     | OAuth PKCE 所需                |
 
 ## 通过 FetchContent 引用
@@ -28,7 +28,7 @@ target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 
 | 目标             | 类型        | 说明                                |
 |-----------------|------------|--------------------------------------|
-| mcp-core        | INTERFACE  | 仅头文件的协议类型                     |
+| mcp-core        | STATIC     | 核心协议类型                         |
 | mcp-transport   | STATIC     | 传输层实现                           |
 | mcp-protocol    | STATIC     | JSON-RPC 引擎、WireCodec             |
 | mcp-http        | STATIC     | HTTP/SSE 服务器传输                  |

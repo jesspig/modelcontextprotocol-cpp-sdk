@@ -7,12 +7,13 @@
 #include <mcp/JsonRpc.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
-#include <asio/steady_timer.hpp>
-#include <asio/post.hpp>
+#include <mcp/JsonValue.hpp>
+
 #include <chrono>
 #include <mutex>
 #include <shared_mutex>
 #include <atomic>
+#include <thread>
 #include <unordered_map>
 #include <memory>
 #include <string>
@@ -25,9 +26,9 @@ class ITransport;
 class MessageChannel;
 
 // Handler type aliases
-using RequestHandler = std::function<void(const JsonRpcRequest&, std::promise<nlohmann::json>)>;
+using RequestHandler = std::function<void(const JsonRpcRequest&, std::promise<JsonValue>)>;
 using NotificationHandler = std::function<void(const JsonRpcNotification&)>;
-using ResponseCallback = std::function<void(nlohmann::json)>;
+using ResponseCallback = std::function<void(JsonValue)>;
 
 // Enhanced subscription entry with 2026-era filter support
 struct SubscriptionEntry {
@@ -61,13 +62,13 @@ public:
     bool IsRunning() const { return running_; }
 
     // ── Send ──
-    std::future<nlohmann::json> SendRequest(
+    std::future<JsonValue> SendRequest(
         std::string_view method,
-        nlohmann::json params,
+        JsonValue params,
         const RequestMeta& meta = {},
         std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
-    void SendNotification(std::string_view method, nlohmann::json params = {});
+    void SendNotification(std::string_view method, JsonValue params = {});
     void SendMessage(JsonRpcMessage message);
 
     // ── Handler registration ──
@@ -81,7 +82,7 @@ public:
     void SetClientCapabilities(ClientCapabilities caps);
 
     // ── Meta helpers (2026-era) ──
-    void StampOutgoingMeta(nlohmann::json& body, const RequestMeta& meta);
+    void StampOutgoingMeta(JsonValue& body, const RequestMeta& meta);
     IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
 
     // ── Subscription management ──
@@ -90,11 +91,11 @@ public:
     void RemoveSubscription(std::string_view id);
     void NotifySubscribers(
         std::string_view notification_type,
-        nlohmann::json params,
+        JsonValue params,
         std::optional<std::string> resource_uri = std::nullopt);
 
     // ── Error helper ──
-    void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<nlohmann::json> data = std::nullopt);
+    void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data = std::nullopt);
 
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
@@ -116,7 +117,6 @@ public:
     bool IsJuly2026OrLater() const { return !negotiated_version_.empty() && negotiated_version_ >= "2026-07-28"; }
     WireCodec& GetCodec() { return *codec_; }
     ITransport& GetTransport() { return *transport_; }
-    asio::io_context& IoContext() { return io_ctx_; }
 
 private:
     // ── Message loop ──
@@ -133,6 +133,9 @@ private:
     static std::string GetRequestIdKey(const RequestId& rid);
     std::atomic<int64_t> next_request_id_{1};
 
+    // ── Internal ──
+    void CheckTimeouts();
+
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
@@ -140,6 +143,10 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::string negotiated_version_;
+
+    // Threads
+    std::thread message_loop_thread_;
+    std::thread timeout_thread_;
 
     // Handler maps
     std::unordered_map<std::string, RequestHandler> request_handlers_;
@@ -169,8 +176,6 @@ private:
 
     // Client capabilities (2025-era, set from initialize)
     std::optional<ClientCapabilities> client_capabilities_;
-
-    asio::io_context& io_ctx_;
 };
 
 } // namespace mcp

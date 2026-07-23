@@ -20,25 +20,25 @@ Presets: `debug`, `release`. Ninja generator only.
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_shared<StdioServerTransport>(io_ctx);
+    auto transport = std::make_unique<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
 
-    auto server = McpServer::Create(transport, opts, &io_ctx);
+    auto server = McpServer::Create(std::move(transport), opts);
 
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo input text back"),
         [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            auto& params = ctx.Params();
+            std::string text;
+            if (params.arguments && params.arguments->Contains("text")) {
+                text = (*params.arguments)["text"].GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -71,19 +71,9 @@ int main() {
     for (const auto& tool : tools.tools)
         std::cout << tool.name << "\n";
 
-    auto result = client->CallTool("echo",
-        nlohmann::json{{"text", "Hello, MCP!"}});
+    JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
+    auto result = client->CallTool("echo", args);
     return 0;
 }
 ```
 
-## Important Caveat
-
-When using `McpServer::Create` or `McpClient::Create` with a transport, both must share the same `asio::io_context`. Always pass the io_context as the third argument:
-
-```cpp
-auto transport = std::make_shared<StdioServerTransport>(io_ctx);
-auto server = McpServer::Create(transport, opts, &io_ctx);
-```
-
-Omitting the io_context argument creates an internal one, causing silent data loss on the transport channel.

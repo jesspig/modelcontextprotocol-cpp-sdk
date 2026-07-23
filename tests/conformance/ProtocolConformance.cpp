@@ -12,37 +12,31 @@ TEST(Conformance, JsonRpcRequestRoundTrip) {
     JsonRpcRequest req;
     req.id = RequestId{int64_t(1)};
     req.method = "tools/list";
-    req.params = nlohmann::json::object();
+    req.params = JsonValue(JsonValue::object_tag);
 
-    nlohmann::json j = req;
-    auto recovered = j.get<JsonRpcRequest>();
-
-    EXPECT_EQ(recovered.jsonrpc, "2.0");
-    EXPECT_EQ(recovered.id, req.id);
-    EXPECT_EQ(recovered.method, "tools/list");
-    EXPECT_TRUE(recovered.params->empty());
+    auto json_str = SerializeMessage(JsonRpcMessage(req));
+    EXPECT_NE(json_str.find("\"method\":\"tools/list\""), std::string::npos);
+    EXPECT_NE(json_str.find("\"jsonrpc\":\"2.0\""), std::string::npos);
 }
 
 TEST(Conformance, JsonRpcNotificationRoundTrip) {
     JsonRpcNotification notif;
     notif.method = "notifications/initialized";
 
-    nlohmann::json j = notif;
-    EXPECT_FALSE(j.contains("id"));
-
-    auto recovered = j.get<JsonRpcNotification>();
-    EXPECT_EQ(recovered.method, "notifications/initialized");
+    auto json_str = SerializeMessage(JsonRpcMessage(notif));
+    EXPECT_EQ(json_str.find("\"id\""), std::string::npos);
+    EXPECT_NE(json_str.find("\"method\":\"notifications/initialized\""), std::string::npos);
 }
 
 TEST(Conformance, JsonRpcResponseRoundTrip) {
     JsonRpcResponse resp;
     resp.id = RequestId{int64_t(42)};
-    resp.result = {{"ok", true}};
+    resp.result = JsonValue(JsonValue::object_tag);
+    resp.result["ok"] = true;
 
-    nlohmann::json j = resp;
-    auto recovered = j.get<JsonRpcResponse>();
-    EXPECT_EQ(recovered.id, resp.id);
-    EXPECT_EQ(recovered.result["ok"], true);
+    auto json_str = SerializeMessage(JsonRpcMessage(resp));
+    EXPECT_NE(json_str.find("\"id\":42"), std::string::npos);
+    EXPECT_NE(json_str.find("\"ok\":true"), std::string::npos);
 }
 
 TEST(Conformance, JsonRpcErrorResponseRoundTrip) {
@@ -50,32 +44,31 @@ TEST(Conformance, JsonRpcErrorResponseRoundTrip) {
     err.id = RequestId{std::string("req-1")};
     err.error = {McpErrorCode::InvalidRequest, "bad request"};
 
-    nlohmann::json j = err;
-    auto recovered = j.get<JsonRpcErrorResponse>();
-    EXPECT_EQ(recovered.error.code, McpErrorCode::InvalidRequest);
-    EXPECT_EQ(recovered.error.message, "bad request");
+    auto json_str = SerializeMessage(JsonRpcMessage(err));
+    EXPECT_NE(json_str.find("\"code\":-32600"), std::string::npos);
+    EXPECT_NE(json_str.find("\"message\":\"bad request\""), std::string::npos);
 }
 
 TEST(Conformance, JsonRpcMessageVariantDispatch) {
-    nlohmann::json j = {
-        {"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"},
-        {"params", nlohmann::json::object()}
-    };
-    auto msg = j.get<JsonRpcMessage>();
-    EXPECT_TRUE(IsRequest(msg));
+    JsonRpcRequest req;
+    req.id = RequestId{int64_t(1)};
+    req.method = "ping";
+    req.params = JsonValue(JsonValue::object_tag);
+    EXPECT_TRUE(IsRequest(JsonRpcMessage(req)));
 
-    j = {{"jsonrpc", "2.0"}, {"id", 1}, {"result", {}}};
-    msg = j.get<JsonRpcMessage>();
-    EXPECT_TRUE(IsResponse(msg));
+    JsonRpcResponse resp;
+    resp.id = RequestId{int64_t(1)};
+    resp.result = JsonValue(JsonValue::object_tag);
+    EXPECT_TRUE(IsResponse(JsonRpcMessage(resp)));
 
-    j = {{"jsonrpc", "2.0"}, {"id", 1},
-         {"error", {{"code", -32601}, {"message", "not found"}}}};
-    msg = j.get<JsonRpcMessage>();
-    EXPECT_TRUE(IsError(msg));
+    JsonRpcErrorResponse err;
+    err.id = RequestId{int64_t(1)};
+    err.error = {McpErrorCode::MethodNotFound, "not found"};
+    EXPECT_TRUE(IsError(JsonRpcMessage(err)));
 
-    j = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
-    msg = j.get<JsonRpcMessage>();
-    EXPECT_TRUE(IsNotification(msg));
+    JsonRpcNotification notif;
+    notif.method = "notifications/initialized";
+    EXPECT_TRUE(IsNotification(JsonRpcMessage(notif)));
 }
 
 // ====================================================================
@@ -100,7 +93,8 @@ TEST(Conformance, WireCodec2026Methods) {
 
 TEST(Conformance, WireCodec2026ValidatesMetaRequirement) {
     auto codec = MakeWireCodec("2026-07-28");
-    nlohmann::json body = {{"name", "test"}};
+    JsonValue body(JsonValue::object_tag);
+    body["name"] = "test";
 
     EXPECT_EQ(codec->ValidateRequest("tools/call", body),
               WireValidation::Invalid);
@@ -110,33 +104,34 @@ TEST(Conformance, WireCodec2026ValidatesMetaRequirement) {
 
 TEST(Conformance, WireCodec2025StampIsNoop) {
     auto codec = MakeWireCodec("2025-11-25");
-    nlohmann::json body = nlohmann::json::object();
+    JsonValue body(JsonValue::object_tag);
     RequestMeta meta;
     meta.protocol_version = "2025-11-25";
     codec->StampOutgoingRequest(body, meta);
-    EXPECT_TRUE(body.empty());
+    EXPECT_TRUE(body.Empty());
 }
 
 TEST(Conformance, WireCodec2026StampAddsMeta) {
     auto codec = MakeWireCodec("2026-07-28");
-    nlohmann::json body = nlohmann::json::object();
+    JsonValue body(JsonValue::object_tag);
     RequestMeta meta;
     meta.protocol_version = "2026-07-28";
     meta.client_info = Implementation{"test", "1.0"};
     codec->StampOutgoingRequest(body, meta);
 
-    ASSERT_TRUE(body.contains("_meta"));
-    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/protocolVersion"],
+    ASSERT_TRUE(body.Contains("_meta"));
+    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/protocolVersion"].GetString(),
               "2026-07-28");
-    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/clientInfo"]["name"],
+    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/clientInfo"]["name"].GetString(),
               "test");
 }
 
 TEST(Conformance, WireCodec2026EncodeResult) {
     auto codec = MakeWireCodec("2026-07-28");
-    nlohmann::json result = {{"content", nlohmann::json::array()}};
+    JsonValue result(JsonValue::object_tag);
+    result["content"] = JsonValue(JsonValue::array_tag);
     auto encoded = codec->EncodeResult("tools/call", result);
-    EXPECT_EQ(encoded["resultType"], "complete");
+    EXPECT_EQ(encoded["resultType"].GetString(), "complete");
 }
 
 TEST(Conformance, WireCodecUnknownVersionFallsBack) {
@@ -154,8 +149,8 @@ TEST(Conformance, DiscoverResultRoundTrip) {
     r.capabilities.tools = ToolsCapability{};
     r.server_info = Implementation{"server", "1.0.0"};
 
-    nlohmann::json j = r;
-    auto recovered = j.get<DiscoverResult>();
+    auto jv = SerializeDiscoverResult(r);
+    auto recovered = DeserializeDiscoverResult(jv);
 
     ASSERT_EQ(recovered.supported_versions.size(), 2);
     EXPECT_EQ(recovered.supported_versions[1], "2026-07-28");
@@ -169,8 +164,8 @@ TEST(Conformance, InitializeResultRoundTrip) {
     r.capabilities.tools = ToolsCapability{};
     r.server_info = Implementation{"server", "1.0"};
 
-    nlohmann::json j = r;
-    auto recovered = j.get<InitializeResult>();
+    auto jv = SerializeInitializeResult(r);
+    auto recovered = DeserializeInitializeResult(jv);
 
     EXPECT_EQ(recovered.protocol_version, "2026-07-28");
     EXPECT_TRUE(recovered.capabilities.tools.has_value());
@@ -178,9 +173,9 @@ TEST(Conformance, InitializeResultRoundTrip) {
 
 TEST(Conformance, DiscoverRequestSerialization) {
     DiscoverRequestParams params;
-    nlohmann::json j = params;
-    EXPECT_TRUE(j.is_object());
-    EXPECT_TRUE(j.empty());
+    auto jv = SerializeDiscoverRequestParams(params);
+    EXPECT_TRUE(jv.IsObject());
+    EXPECT_TRUE(jv.Empty());
 }
 
 TEST(Conformance, InitializeRequestSerialization) {
@@ -189,9 +184,9 @@ TEST(Conformance, InitializeRequestSerialization) {
     params.capabilities = ClientCapabilities{};
     params.client_info = Implementation{"client", "1.0"};
 
-    nlohmann::json j = params;
-    EXPECT_EQ(j["protocolVersion"], "2026-07-28");
-    EXPECT_EQ(j["clientInfo"]["name"], "client");
+    auto jv = SerializeInitializeRequestParams(params);
+    EXPECT_EQ(jv["protocolVersion"].GetString(), "2026-07-28");
+    EXPECT_EQ(jv["clientInfo"]["name"].GetString(), "client");
 }
 
 // ====================================================================
@@ -216,21 +211,27 @@ TEST(Conformance, McpSpecificErrorCodes) {
 
 TEST(Conformance, ErrorCodeRoundTrip) {
     ErrorData ed{McpErrorCode::MethodNotFound, "method not found"};
-    nlohmann::json j = ed;
-    auto recovered = j.get<ErrorData>();
-    EXPECT_EQ(recovered.code, McpErrorCode::MethodNotFound);
-    EXPECT_EQ(recovered.message, "method not found");
+    JsonRpcErrorResponse err;
+    err.id = RequestId{int64_t(1)};
+    err.error = ed;
+    auto json_str = SerializeMessage(JsonRpcMessage(err));
+    EXPECT_NE(json_str.find("\"code\":-32601"), std::string::npos);
+    EXPECT_NE(json_str.find("\"message\":\"method not found\""), std::string::npos);
 }
 
 TEST(Conformance, ErrorCodeWithData) {
     ErrorData ed;
     ed.code = McpErrorCode::InvalidParams;
     ed.message = "bad param";
-    ed.data = nlohmann::json{{"param", "x"}};
-    nlohmann::json j = ed;
-    auto recovered = j.get<ErrorData>();
-    ASSERT_TRUE(recovered.data.has_value());
-    EXPECT_EQ((*recovered.data)["param"], "x");
+    ed.data = JsonValue(JsonValue::object_tag);
+    (*ed.data)["param"] = "x";
+
+    JsonRpcErrorResponse err;
+    err.id = RequestId{int64_t(1)};
+    err.error = ed;
+    auto json_str = SerializeMessage(JsonRpcMessage(err));
+    EXPECT_NE(json_str.find("\"code\":-32602"), std::string::npos);
+    EXPECT_NE(json_str.find("\"param\":\"x\""), std::string::npos);
 }
 
 TEST(Conformance, WireCodec2026ErrorRemapping) {
@@ -248,31 +249,33 @@ TEST(Conformance, ToolSerialization) {
     Tool t;
     t.name = "echo";
     t.description = "Echo input back";
-    t.input_schema = {{"type", "object"}, {"properties", nlohmann::json::object()}};
+    t.input_schema = JsonValue(JsonValue::object_tag);
+    t.input_schema["type"] = "object";
+    t.input_schema["properties"] = JsonValue(JsonValue::object_tag);
 
-    nlohmann::json j = t;
-    EXPECT_EQ(j["name"], "echo");
-    EXPECT_EQ(j["description"], "Echo input back");
-    EXPECT_EQ(j["inputSchema"]["type"], "object");
+    auto jv = SerializeTool(t);
+    EXPECT_EQ(jv["name"].GetString(), "echo");
+    EXPECT_EQ(jv["description"].GetString(), "Echo input back");
+    EXPECT_EQ(jv["inputSchema"]["type"].GetString(), "object");
 
-    auto recovered = j.get<Tool>();
+    auto recovered = DeserializeTool(jv);
     EXPECT_EQ(recovered.name, "echo");
 }
 
 TEST(Conformance, ToolWithAnnotations) {
     Tool t;
     t.name = "read-only-tool";
-    t.input_schema = nlohmann::json::object();
+    t.input_schema = JsonValue(JsonValue::object_tag);
     t.annotations = ToolAnnotations{};
     t.annotations->read_only_hint = true;
     t.annotations->idempotent_hint = true;
 
-    nlohmann::json j = t;
-    EXPECT_EQ(j["annotations"]["readOnlyHint"], true);
-    EXPECT_EQ(j["annotations"]["idempotentHint"], true);
-    EXPECT_FALSE(j["annotations"].contains("openWorldHint"));
+    auto jv = SerializeTool(t);
+    EXPECT_EQ(jv["annotations"]["readOnlyHint"].GetBool(), true);
+    EXPECT_EQ(jv["annotations"]["idempotentHint"].GetBool(), true);
+    EXPECT_FALSE(jv["annotations"].Contains("openWorldHint"));
 
-    auto recovered = j.get<Tool>();
+    auto recovered = DeserializeTool(jv);
     ASSERT_TRUE(recovered.annotations.has_value());
     EXPECT_TRUE(recovered.annotations->read_only_hint.value_or(false));
 }
@@ -280,12 +283,12 @@ TEST(Conformance, ToolWithAnnotations) {
 TEST(Conformance, ToolWithIcons) {
     Tool t;
     t.name = "icon-tool";
-    t.input_schema = nlohmann::json::object();
+    t.input_schema = JsonValue(JsonValue::object_tag);
     t.icons = {Icon{"https://example.com/icon.svg", "image/svg+xml"}};
 
-    nlohmann::json j = t;
-    ASSERT_TRUE(j.contains("icons"));
-    EXPECT_EQ(j["icons"][0]["src"], "https://example.com/icon.svg");
+    auto jv = SerializeTool(t);
+    ASSERT_TRUE(jv.Contains("icons"));
+    EXPECT_EQ(jv["icons"][0]["src"].GetString(), "https://example.com/icon.svg");
 }
 
 TEST(Conformance, ResourceSerialization) {
@@ -294,12 +297,12 @@ TEST(Conformance, ResourceSerialization) {
     r.name = "Data";
     r.mime_type = "text/plain";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["uri"], "file:///data.txt");
-    EXPECT_EQ(j["name"], "Data");
-    EXPECT_EQ(j["mimeType"], "text/plain");
+    auto jv = SerializeResource(r);
+    EXPECT_EQ(jv["uri"].GetString(), "file:///data.txt");
+    EXPECT_EQ(jv["name"].GetString(), "Data");
+    EXPECT_EQ(jv["mimeType"].GetString(), "text/plain");
 
-    auto recovered = j.get<Resource>();
+    auto recovered = DeserializeResource(jv);
     EXPECT_EQ(recovered.uri, "file:///data.txt");
     EXPECT_EQ(recovered.name, "Data");
 }
@@ -309,10 +312,10 @@ TEST(Conformance, ResourceTemplateSerialization) {
     rt.uri_template = "file:///{path}";
     rt.name = "Dynamic Files";
 
-    nlohmann::json j = rt;
-    EXPECT_EQ(j["uriTemplate"], "file:///{path}");
+    auto jv = SerializeResourceTemplate(rt);
+    EXPECT_EQ(jv["uriTemplate"].GetString(), "file:///{path}");
 
-    auto recovered = j.get<ResourceTemplate>();
+    auto recovered = DeserializeResourceTemplate(jv);
     EXPECT_EQ(recovered.uri_template, "file:///{path}");
 }
 
@@ -327,13 +330,13 @@ TEST(Conformance, PromptSerialization) {
     arg.required = true;
     p.arguments = {arg};
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["name"], "greet");
-    ASSERT_TRUE(j.contains("arguments"));
-    EXPECT_EQ(j["arguments"][0]["name"], "name");
-    EXPECT_EQ(j["arguments"][0]["required"], true);
+    auto jv = SerializePrompt(p);
+    EXPECT_EQ(jv["name"].GetString(), "greet");
+    ASSERT_TRUE(jv.Contains("arguments"));
+    EXPECT_EQ(jv["arguments"][0]["name"].GetString(), "name");
+    EXPECT_EQ(jv["arguments"][0]["required"].GetBool(), true);
 
-    auto recovered = j.get<Prompt>();
+    auto recovered = DeserializePrompt(jv);
     EXPECT_EQ(recovered.name, "greet");
     ASSERT_TRUE(recovered.arguments.has_value());
     EXPECT_TRUE(recovered.arguments->at(0).required.value_or(false));
@@ -344,12 +347,12 @@ TEST(Conformance, PromptMessageSerialization) {
     pm.role = "user";
     pm.content = TextContent{"text", "Hello"};
 
-    nlohmann::json j = pm;
-    EXPECT_EQ(j["role"], "user");
-    EXPECT_EQ(j["content"]["type"], "text");
-    EXPECT_EQ(j["content"]["text"], "Hello");
+    auto jv = SerializePromptMessage(pm);
+    EXPECT_EQ(jv["role"].GetString(), "user");
+    EXPECT_EQ(jv["content"]["type"].GetString(), "text");
+    EXPECT_EQ(jv["content"]["text"].GetString(), "Hello");
 
-    auto recovered = j.get<PromptMessage>();
+    auto recovered = DeserializePromptMessage(jv);
     EXPECT_EQ(recovered.role, "user");
     EXPECT_TRUE(std::holds_alternative<TextContent>(recovered.content));
 }
@@ -359,21 +362,21 @@ TEST(Conformance, PromptMessageSerialization) {
 // ====================================================================
 TEST(Conformance, ContentVariantText) {
     ContentVariant cv = TextContent{"text", "hello"};
-    nlohmann::json j = cv;
-    EXPECT_EQ(j["type"], "text");
-    EXPECT_EQ(j["text"], "hello");
+    auto jv = SerializeContentVariant(cv);
+    EXPECT_EQ(jv["type"].GetString(), "text");
+    EXPECT_EQ(jv["text"].GetString(), "hello");
 }
 
 TEST(Conformance, ContentVariantImage) {
     ContentVariant cv = ImageContent{"image", "base64data", "image/png"};
-    nlohmann::json j = cv;
-    EXPECT_EQ(j["type"], "image");
+    auto jv = SerializeContentVariant(cv);
+    EXPECT_EQ(jv["type"].GetString(), "image");
 }
 
 TEST(Conformance, ContentVariantAudio) {
     ContentVariant cv = AudioContent{"audio", "base64data", "audio/wav"};
-    nlohmann::json j = cv;
-    EXPECT_EQ(j["type"], "audio");
+    auto jv = SerializeContentVariant(cv);
+    EXPECT_EQ(jv["type"].GetString(), "audio");
 }
 
 TEST(Conformance, ContentVariantEmbeddedResource) {
@@ -384,9 +387,9 @@ TEST(Conformance, ContentVariantEmbeddedResource) {
     er.resource = ResourceContents(trc);
 
     ContentVariant cv = er;
-    nlohmann::json j = cv;
-    EXPECT_EQ(j["type"], "resource");
-    EXPECT_EQ(j["resource"]["text"], "embedded");
+    auto jv = SerializeContentVariant(cv);
+    EXPECT_EQ(jv["type"].GetString(), "resource");
+    EXPECT_EQ(jv["resource"]["text"].GetString(), "embedded");
 }
 
 // ====================================================================
@@ -397,8 +400,8 @@ TEST(Conformance, ImplementationRoundTrip) {
     impl.name = "test-server";
     impl.version = "1.0.0";
 
-    nlohmann::json j = impl;
-    auto recovered = j.get<Implementation>();
+    auto jv = SerializeImplementation(impl);
+    auto recovered = DeserializeImplementation(jv);
     EXPECT_EQ(recovered.name, "test-server");
     EXPECT_EQ(recovered.version, "1.0.0");
 }
@@ -427,11 +430,11 @@ TEST(Conformance, ListToolsResultWithCursor) {
     ListToolsResult r;
     r.tools = {Tool{}};
     r.tools[0].name = "t1";
-    r.tools[0].input_schema = nlohmann::json::object();
+    r.tools[0].input_schema = JsonValue(JsonValue::object_tag);
     r.next_cursor = "next-page";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["nextCursor"], "next-page");
+    auto jv = SerializeListToolsResult(r);
+    EXPECT_EQ(jv["nextCursor"].GetString(), "next-page");
 }
 
 TEST(Conformance, ListResourcesResultRoundTrip) {
@@ -441,8 +444,8 @@ TEST(Conformance, ListResourcesResultRoundTrip) {
     res.name = "A";
     r.resources = {res};
 
-    nlohmann::json j = r;
-    auto recovered = j.get<ListResourcesResult>();
+    auto jv = SerializeListResourcesResult(r);
+    auto recovered = DeserializeListResourcesResult(jv);
     ASSERT_EQ(recovered.resources.size(), 1);
     EXPECT_EQ(recovered.resources[0].name, "A");
 }
@@ -453,8 +456,8 @@ TEST(Conformance, ListPromptsResultRoundTrip) {
     p.name = "test-prompt";
     r.prompts = {p};
 
-    nlohmann::json j = r;
-    auto recovered = j.get<ListPromptsResult>();
+    auto jv = SerializeListPromptsResult(r);
+    auto recovered = DeserializeListPromptsResult(jv);
     ASSERT_EQ(recovered.prompts.size(), 1);
     EXPECT_EQ(recovered.prompts[0].name, "test-prompt");
 }
@@ -468,13 +471,13 @@ TEST(Conformance, ServerCapabilitiesRoundTrip) {
     caps.resources = ResourcesCapability{true, false};
     caps.prompts = PromptsCapability{};
 
-    nlohmann::json j = caps;
-    EXPECT_TRUE(j["tools"]["listChanged"]);
-    EXPECT_TRUE(j["resources"]["subscribe"]);
-    EXPECT_FALSE(j["resources"]["listChanged"]);
-    EXPECT_TRUE(j["prompts"].is_object());
+    auto jv = SerializeServerCapabilities(caps);
+    EXPECT_TRUE(jv["tools"]["listChanged"].GetBool());
+    EXPECT_TRUE(jv["resources"]["subscribe"].GetBool());
+    EXPECT_FALSE(jv["resources"]["listChanged"].GetBool());
+    EXPECT_TRUE(jv["prompts"].IsObject());
 
-    auto recovered = j.get<ServerCapabilities>();
+    auto recovered = DeserializeServerCapabilities(jv);
     EXPECT_TRUE(recovered.tools.has_value());
     EXPECT_TRUE(recovered.resources.has_value());
 }
@@ -483,13 +486,13 @@ TEST(Conformance, ClientCapabilitiesRoundTrip) {
     ClientCapabilities caps;
     caps.roots = RootsCapability{};
     caps.elicitation = ElicitationCapability{};
-    caps.elicitation->form = nlohmann::json::object();
+    caps.elicitation->form = JsonValue(JsonValue::object_tag);
 
-    nlohmann::json j = caps;
-    EXPECT_TRUE(j.contains("roots"));
-    EXPECT_TRUE(j.contains("elicitation"));
+    auto jv = SerializeClientCapabilities(caps);
+    EXPECT_TRUE(jv.Contains("roots"));
+    EXPECT_TRUE(jv.Contains("elicitation"));
 
-    auto recovered = j.get<ClientCapabilities>();
+    auto recovered = DeserializeClientCapabilities(jv);
     EXPECT_TRUE(recovered.roots.has_value());
     EXPECT_TRUE(recovered.elicitation.has_value());
 }
@@ -500,16 +503,17 @@ TEST(Conformance, ClientCapabilitiesRoundTrip) {
 TEST(Conformance, CallToolResultWithStructuredContent) {
     CallToolResult r;
     r.content = {TextContent{"text", "result"}};
-    r.structured_content = nlohmann::json{{"key", "value"}};
+    r.structured_content = JsonValue(JsonValue::object_tag);
+    (*r.structured_content)["key"] = "value";
     r.is_error = false;
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["structuredContent"]["key"], "value");
-    EXPECT_EQ(j["isError"], false);
+    auto jv = SerializeCallToolResult(r);
+    EXPECT_EQ(jv["structuredContent"]["key"].GetString(), "value");
+    EXPECT_FALSE(jv["isError"].GetBool());
 
-    auto recovered = j.get<CallToolResult>();
+    auto recovered = DeserializeCallToolResult(jv);
     EXPECT_TRUE(recovered.structured_content.has_value());
-    EXPECT_EQ((*recovered.structured_content)["key"], "value");
+    EXPECT_EQ((*recovered.structured_content)["key"].GetString(), "value");
 }
 
 // ====================================================================
@@ -522,11 +526,11 @@ TEST(Conformance, RequestMetaFullRoundTrip) {
     m.client_capabilities = ClientCapabilities{};
     m.client_capabilities->roots = RootsCapability{};
 
-    nlohmann::json j = m;
-    EXPECT_EQ(j["io.modelcontextprotocol/protocolVersion"], "2026-07-28");
-    EXPECT_EQ(j["io.modelcontextprotocol/clientInfo"]["name"], "client");
+    auto jv = SerializeRequestMeta(m);
+    EXPECT_EQ(jv["io.modelcontextprotocol/protocolVersion"].GetString(), "2026-07-28");
+    EXPECT_EQ(jv["io.modelcontextprotocol/clientInfo"]["name"].GetString(), "client");
 
-    auto recovered = j.get<RequestMeta>();
+    auto recovered = DeserializeRequestMeta(jv);
     EXPECT_EQ(recovered.protocol_version, "2026-07-28");
     EXPECT_TRUE(recovered.client_info.has_value());
     EXPECT_TRUE(recovered.client_capabilities.has_value());
@@ -539,11 +543,11 @@ TEST(Conformance, ElicitRequestParamsFormRoundTrip) {
     ElicitRequestParams p;
     p.message = "What is your name?";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["message"], "What is your name?");
-    EXPECT_FALSE(j.contains("requestedSchema"));
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["message"].GetString(), "What is your name?");
+    EXPECT_FALSE(jv.Contains("requestedSchema"));
 
-    auto recovered = j.get<ElicitRequestParams>();
+    auto recovered = DeserializeElicitRequestParams(jv);
     EXPECT_EQ(recovered.message, "What is your name?");
     EXPECT_FALSE(recovered.requested_schema.has_value());
 }
@@ -551,33 +555,35 @@ TEST(Conformance, ElicitRequestParamsFormRoundTrip) {
 TEST(Conformance, ElicitRequestParamsWithSchemaRoundTrip) {
     ElicitRequestParams p;
     p.message = "Enter your age";
-    p.requested_schema = nlohmann::json{
-        {"type", "object"},
-        {"properties", {{"age", {{"type", "number"}}}}}
-    };
+    p.requested_schema = JsonValue(JsonValue::object_tag);
+    (*p.requested_schema)["type"] = "object";
+    (*p.requested_schema)["properties"] = JsonValue(JsonValue::object_tag);
+    (*p.requested_schema)["properties"]["age"] = JsonValue(JsonValue::object_tag);
+    (*p.requested_schema)["properties"]["age"]["type"] = "number";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["message"], "Enter your age");
-    EXPECT_EQ(j["requestedSchema"]["type"], "object");
-    EXPECT_EQ(j["requestedSchema"]["properties"]["age"]["type"], "number");
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["message"].GetString(), "Enter your age");
+    EXPECT_EQ(jv["requestedSchema"]["type"].GetString(), "object");
+    EXPECT_EQ(jv["requestedSchema"]["properties"]["age"]["type"].GetString(), "number");
 
-    auto recovered = j.get<ElicitRequestParams>();
+    auto recovered = DeserializeElicitRequestParams(jv);
     EXPECT_TRUE(recovered.requested_schema.has_value());
-    EXPECT_EQ((*recovered.requested_schema)["properties"]["age"]["type"], "number");
+    EXPECT_EQ((*recovered.requested_schema)["properties"]["age"]["type"].GetString(), "number");
 }
 
 TEST(Conformance, ElicitResultAcceptRoundTrip) {
     ElicitResult r;
-    r.values = nlohmann::json{{"name", "Alice"}};
+    r.values = JsonValue(JsonValue::object_tag);
+    (*r.values)["name"] = "Alice";
     r.result_type = ResultType::Complete;
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["values"]["name"], "Alice");
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeElicitResult(r);
+    EXPECT_EQ(jv["values"]["name"].GetString(), "Alice");
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
-    auto recovered = j.get<ElicitResult>();
+    auto recovered = DeserializeElicitResult(jv);
     EXPECT_TRUE(recovered.values.has_value());
-    EXPECT_EQ((*recovered.values)["name"], "Alice");
+    EXPECT_EQ((*recovered.values)["name"].GetString(), "Alice");
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -585,25 +591,27 @@ TEST(Conformance, ElicitResultDeclineRoundTrip) {
     ElicitResult r;
     r.result_type = ResultType::InputRequired;
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "input_required");
+    auto jv = SerializeElicitResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "input_required");
 
-    auto recovered = j.get<ElicitResult>();
+    auto recovered = DeserializeElicitResult(jv);
     EXPECT_FALSE(recovered.values.has_value());
     EXPECT_EQ(recovered.result_type, ResultType::InputRequired);
 }
 
 TEST(Conformance, ElicitResultWithMeta) {
     ElicitResult r;
-    r.values = nlohmann::json{{"ok", true}};
-    r.meta = nlohmann::json{{"trace", "abc"}};
+    r.values = JsonValue(JsonValue::object_tag);
+    (*r.values)["ok"] = true;
+    r.meta = JsonValue(JsonValue::object_tag);
+    (*r.meta)["trace"] = "abc";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["_meta"]["trace"], "abc");
+    auto jv = SerializeElicitResult(r);
+    EXPECT_EQ(jv["_meta"]["trace"].GetString(), "abc");
 
-    auto recovered = j.get<ElicitResult>();
+    auto recovered = DeserializeElicitResult(jv);
     ASSERT_TRUE(recovered.meta.has_value());
-    EXPECT_EQ((*recovered.meta)["trace"], "abc");
+    EXPECT_EQ((*recovered.meta)["trace"].GetString(), "abc");
 }
 
 TEST(Conformance, ElicitResultTypedAccept) {
@@ -611,38 +619,22 @@ TEST(Conformance, ElicitResultTypedAccept) {
     typed.action = "accept";
     typed.content = "Alice";
 
-    nlohmann::json j = typed;
-    EXPECT_EQ(j["action"], "accept");
-    EXPECT_EQ(j["content"], "Alice");
-
-    auto recovered = j.get<ElicitResultTyped<std::string>>();
-    EXPECT_TRUE(recovered.is_accepted());
-    EXPECT_TRUE(recovered.content.has_value());
-    EXPECT_EQ(*recovered.content, "Alice");
+    EXPECT_TRUE(typed.is_accepted());
+    ASSERT_TRUE(typed.content.has_value());
+    EXPECT_EQ(*typed.content, "Alice");
 }
 
 TEST(Conformance, ElicitResultTypedDecline) {
     ElicitResultTyped<int> typed;
     typed.action = "decline";
 
-    nlohmann::json j = typed;
-    EXPECT_EQ(j["action"], "decline");
-    EXPECT_FALSE(j.contains("content"));
-
-    auto recovered = j.get<ElicitResultTyped<int>>();
-    EXPECT_FALSE(recovered.is_accepted());
-    EXPECT_FALSE(recovered.content.has_value());
+    EXPECT_FALSE(typed.is_accepted());
+    EXPECT_FALSE(typed.content.has_value());
 }
 
 TEST(Conformance, ElicitResultTypedCancel) {
-    ElicitResultTyped<nlohmann::json> typed;
+    ElicitResultTyped<JsonValue> typed;
     EXPECT_EQ(typed.action, "cancel");
-
-    nlohmann::json j = typed;
-    EXPECT_EQ(j["action"], "cancel");
-
-    auto recovered = j.get<ElicitResultTyped<nlohmann::json>>();
-    EXPECT_EQ(recovered.action, "cancel");
 }
 
 TEST(Conformance, ElicitMethodConstant) {
@@ -652,44 +644,43 @@ TEST(Conformance, ElicitMethodConstant) {
 TEST(Conformance, MakeInputRequestForElicitation) {
     ElicitRequestParams params;
     params.message = "confirm?";
-    auto j = MakeInputRequestForElicitation(params);
+    auto jv = MakeInputRequestForElicitation(params);
 
-    EXPECT_EQ(j["method"], "elicitation/create");
-    EXPECT_EQ(j["params"]["message"], "confirm?");
+    EXPECT_EQ(jv["method"].GetString(), "elicitation/create");
+    EXPECT_EQ(jv["params"]["message"].GetString(), "confirm?");
 }
 
 TEST(Conformance, MakeInputResponseFromElicitResult) {
     ElicitResult result;
-    result.values = nlohmann::json{{"ok", true}};
+    result.values = JsonValue(JsonValue::object_tag);
+    (*result.values)["ok"] = true;
     result.result_type = ResultType::Complete;
 
-    auto j = MakeInputResponseFromElicitResult(result);
-    EXPECT_EQ(j["values"]["ok"], true);
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = MakeInputResponseFromElicitResult(result);
+    EXPECT_EQ(jv["values"]["ok"].GetBool(), true);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 }
 
 TEST(Conformance, ElicitRequestParamsEmptyMessage) {
     ElicitRequestParams p;
     p.message = "";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["message"], "");
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["message"].GetString(), "");
 
-    auto recovered = j.get<ElicitRequestParams>();
+    auto recovered = DeserializeElicitRequestParams(jv);
     EXPECT_TRUE(recovered.message.empty());
 }
 
 TEST(Conformance, ElicitResultTypedJsonValue) {
-    ElicitResultTyped<nlohmann::json> typed;
+    ElicitResultTyped<JsonValue> typed;
     typed.action = "accept";
-    typed.content = nlohmann::json{{"nested", {{"value", 42}}}};
+    typed.content = JsonValue(JsonValue::object_tag);
+    (*typed.content)["nested"] = JsonValue(JsonValue::object_tag);
+    (*typed.content)["nested"]["value"] = 42;
 
-    nlohmann::json j = typed;
-    EXPECT_EQ(j["content"]["nested"]["value"], 42);
-
-    auto recovered = j.get<ElicitResultTyped<nlohmann::json>>();
-    ASSERT_TRUE(recovered.content.has_value());
-    EXPECT_EQ((*recovered.content)["nested"]["value"], 42);
+    ASSERT_TRUE(typed.content.has_value());
+    EXPECT_EQ((*typed.content)["nested"]["value"], JsonValue(42));
 }
 
 // ====================================================================
@@ -700,12 +691,12 @@ TEST(Conformance, InputRequiredResultRoundTrip) {
     ir.input_requests.elicit = InputRequestElicit{"provide value"};
     ir.request_state = "state-abc";
 
-    nlohmann::json j = ir;
-    EXPECT_EQ(j["resultType"], "input_required");
-    EXPECT_EQ(j["inputRequests"]["elicit"]["message"], "provide value");
-    EXPECT_EQ(j["requestState"], "state-abc");
+    auto jv = SerializeInputRequiredResult(ir);
+    EXPECT_EQ(jv["resultType"].GetString(), "input_required");
+    EXPECT_EQ(jv["inputRequests"]["elicit"]["message"].GetString(), "provide value");
+    EXPECT_EQ(jv["requestState"].GetString(), "state-abc");
 
-    auto recovered = j.get<InputRequiredResult>();
+    auto recovered = DeserializeInputRequiredResult(jv);
     EXPECT_TRUE(recovered.input_requests.elicit.has_value());
     EXPECT_EQ(recovered.input_requests.elicit->message, "provide value");
     EXPECT_TRUE(recovered.request_state.has_value());
@@ -716,10 +707,10 @@ TEST(Conformance, InputRequiredResultWithConfirm) {
     InputRequiredResult ir;
     ir.input_requests.confirm = InputRequestElicit{"Are you sure?"};
 
-    nlohmann::json j = ir;
-    EXPECT_EQ(j["inputRequests"]["confirm"]["message"], "Are you sure?");
+    auto jv = SerializeInputRequiredResult(ir);
+    EXPECT_EQ(jv["inputRequests"]["confirm"]["message"].GetString(), "Are you sure?");
 
-    auto recovered = j.get<InputRequiredResult>();
+    auto recovered = DeserializeInputRequiredResult(jv);
     EXPECT_TRUE(recovered.input_requests.confirm.has_value());
     EXPECT_EQ(recovered.input_requests.confirm->message, "Are you sure?");
 }
@@ -729,11 +720,11 @@ TEST(Conformance, InputRequiredResultBothRequests) {
     ir.input_requests.confirm = InputRequestElicit{"Confirm?"};
     ir.input_requests.elicit = InputRequestElicit{"Provide details"};
 
-    nlohmann::json j = ir;
-    EXPECT_TRUE(j["inputRequests"].contains("confirm"));
-    EXPECT_TRUE(j["inputRequests"].contains("elicit"));
+    auto jv = SerializeInputRequiredResult(ir);
+    EXPECT_TRUE(jv["inputRequests"].Contains("confirm"));
+    EXPECT_TRUE(jv["inputRequests"].Contains("elicit"));
 
-    auto recovered = j.get<InputRequiredResult>();
+    auto recovered = DeserializeInputRequiredResult(jv);
     EXPECT_TRUE(recovered.input_requests.confirm.has_value());
     EXPECT_TRUE(recovered.input_requests.elicit.has_value());
 }
@@ -741,55 +732,63 @@ TEST(Conformance, InputRequiredResultBothRequests) {
 TEST(Conformance, InputRequestElicitWithSchema) {
     InputRequestElicit elicit;
     elicit.message = "pick one";
-    elicit.requested_schema = nlohmann::json{{"enum", {"a", "b", "c"}}};
+    elicit.requested_schema = JsonValue(JsonValue::object_tag);
+    (*elicit.requested_schema)["enum"] = JsonValue(JsonValue::array_tag);
+    (*elicit.requested_schema)["enum"].PushBack("a");
+    (*elicit.requested_schema)["enum"].PushBack("b");
+    (*elicit.requested_schema)["enum"].PushBack("c");
 
-    nlohmann::json j = elicit;
-    EXPECT_EQ(j["message"], "pick one");
-    EXPECT_EQ(j["requestedSchema"]["enum"][0], "a");
+    auto jv = SerializeInputRequestElicit(elicit);
+    EXPECT_EQ(jv["message"].GetString(), "pick one");
+    EXPECT_EQ(jv["requestedSchema"]["enum"][0].GetString(), "a");
 
-    auto recovered = j.get<InputRequestElicit>();
+    auto recovered = DeserializeInputRequestElicit(jv);
     EXPECT_TRUE(recovered.requested_schema.has_value());
 }
 
 TEST(Conformance, IsInputRequiredResultTrue) {
-    nlohmann::json j = {{"resultType", "input_required"}, {"inputRequests", {}}};
-    EXPECT_TRUE(IsInputRequiredResult(j));
+    JsonValue jv(JsonValue::object_tag);
+    jv["resultType"] = "input_required";
+    jv["inputRequests"] = JsonValue(JsonValue::object_tag);
+    EXPECT_TRUE(IsInputRequiredResult(jv));
 }
 
 TEST(Conformance, IsInputRequiredResultFalse) {
-    nlohmann::json j = {{"resultType", "complete"}};
-    EXPECT_FALSE(IsInputRequiredResult(j));
+    JsonValue jv(JsonValue::object_tag);
+    jv["resultType"] = "complete";
+    EXPECT_FALSE(IsInputRequiredResult(jv));
 }
 
 TEST(Conformance, IsInputRequiredResultMissingKey) {
-    nlohmann::json j = {{"ok", true}};
-    EXPECT_FALSE(IsInputRequiredResult(j));
+    JsonValue jv(JsonValue::object_tag);
+    jv["ok"] = true;
+    EXPECT_FALSE(IsInputRequiredResult(jv));
 }
 
 TEST(Conformance, ExtractInputRequestsFound) {
-    nlohmann::json j = {
-        {"inputRequests", {
-            {"elicit", {{"message", "enter value"}}}
-        }}
-    };
-    auto extracted = ExtractInputRequests(j);
+    JsonValue jv(JsonValue::object_tag);
+    jv["inputRequests"] = JsonValue(JsonValue::object_tag);
+    jv["inputRequests"]["elicit"] = JsonValue(JsonValue::object_tag);
+    jv["inputRequests"]["elicit"]["message"] = "enter value";
+    auto extracted = ExtractInputRequests(jv);
     ASSERT_TRUE(extracted.has_value());
     ASSERT_TRUE(extracted->elicit.has_value());
     EXPECT_EQ(extracted->elicit->message, "enter value");
 }
 
 TEST(Conformance, ExtractInputRequestsNotFound) {
-    nlohmann::json j = {{"result", "ok"}};
-    auto extracted = ExtractInputRequests(j);
+    JsonValue jv(JsonValue::object_tag);
+    jv["result"] = "ok";
+    auto extracted = ExtractInputRequests(jv);
     EXPECT_FALSE(extracted.has_value());
 }
 
 TEST(Conformance, InputRequestsEmpty) {
     InputRequests ir;
-    nlohmann::json j = ir;
-    EXPECT_TRUE(j.empty());
+    auto jv = SerializeInputRequests(ir);
+    EXPECT_TRUE(jv.Empty());
 
-    auto recovered = j.get<InputRequests>();
+    auto recovered = DeserializeInputRequests(jv);
     EXPECT_FALSE(recovered.confirm.has_value());
     EXPECT_FALSE(recovered.elicit.has_value());
 }
@@ -797,14 +796,16 @@ TEST(Conformance, InputRequestsEmpty) {
 TEST(Conformance, CallToolRequestWithInputResponses) {
     CallToolRequestParams p;
     p.name = "test";
-    p.input_responses = nlohmann::json{{"values", {{"key", "val"}}}};
+    p.input_responses = JsonValue(JsonValue::object_tag);
+    (*p.input_responses)["values"] = JsonValue(JsonValue::object_tag);
+    (*p.input_responses)["values"]["key"] = "val";
     p.request_state = "state-xyz";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["inputResponses"]["values"]["key"], "val");
-    EXPECT_EQ(j["requestState"], "state-xyz");
+    auto jv = SerializeCallToolRequestParams(p);
+    EXPECT_EQ(jv["inputResponses"]["values"]["key"].GetString(), "val");
+    EXPECT_EQ(jv["requestState"].GetString(), "state-xyz");
 
-    auto recovered = j.get<CallToolRequestParams>();
+    auto recovered = DeserializeCallToolRequestParams(jv);
     ASSERT_TRUE(recovered.input_responses.has_value());
     ASSERT_TRUE(recovered.request_state.has_value());
     EXPECT_EQ(*recovered.request_state, "state-xyz");
@@ -814,127 +815,130 @@ TEST(Conformance, CallToolRequestWithInputResponses) {
 // Group 3: Elicitation Schema types as JSON (8-10 tests)
 // ====================================================================
 TEST(Conformance, SchemaStringTypeRoundTrip) {
-    nlohmann::json schema = {
-        {"type", "string"},
-        {"minLength", 1},
-        {"maxLength", 100},
-        {"format", "email"}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "string";
+    schema["minLength"] = int64_t(1);
+    schema["maxLength"] = int64_t(100);
+    schema["format"] = "email";
 
-    nlohmann::json j = schema;
-    EXPECT_EQ(j["type"], "string");
-    EXPECT_EQ(j["minLength"], 1);
-    EXPECT_EQ(j["maxLength"], 100);
-    EXPECT_EQ(j["format"], "email");
+    EXPECT_EQ(schema["type"].GetString(), "string");
+    EXPECT_EQ(schema["minLength"].GetInt(), 1);
+    EXPECT_EQ(schema["maxLength"].GetInt(), 100);
+    EXPECT_EQ(schema["format"].GetString(), "email");
 
     ElicitRequestParams p;
     p.message = "Enter email";
     p.requested_schema = schema;
 
-    nlohmann::json j2 = p;
-    EXPECT_EQ(j2["requestedSchema"]["minLength"], 1);
-    EXPECT_EQ(j2["requestedSchema"]["format"], "email");
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["minLength"].GetInt(), 1);
+    EXPECT_EQ(jv["requestedSchema"]["format"].GetString(), "email");
 
-    auto recovered = j2.get<ElicitRequestParams>();
+    auto recovered = DeserializeElicitRequestParams(jv);
     ASSERT_TRUE(recovered.requested_schema.has_value());
-    EXPECT_EQ((*recovered.requested_schema)["format"], "email");
+    EXPECT_EQ((*recovered.requested_schema)["format"].GetString(), "email");
 }
 
 TEST(Conformance, SchemaNumberTypeRoundTrip) {
-    nlohmann::json schema = {
-        {"type", "number"},
-        {"minimum", 0},
-        {"maximum", 150}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "number";
+    schema["minimum"] = int64_t(0);
+    schema["maximum"] = int64_t(150);
 
-    nlohmann::json j = schema;
-    EXPECT_EQ(j["minimum"], 0);
-    EXPECT_EQ(j["maximum"], 150);
+    EXPECT_EQ(schema["minimum"].GetInt(), 0);
+    EXPECT_EQ(schema["maximum"].GetInt(), 150);
 
     ElicitRequestParams p;
     p.message = "Enter age";
     p.requested_schema = schema;
 
     auto recovered = p.requested_schema;
-    EXPECT_EQ((*recovered)["minimum"], 0);
+    EXPECT_EQ((*recovered)["minimum"].GetInt(), 0);
 }
 
 TEST(Conformance, SchemaBooleanTypeRoundTrip) {
-    nlohmann::json schema = {
-        {"type", "boolean"},
-        {"default", true}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "boolean";
+    schema["default"] = true;
 
-    nlohmann::json j = schema;
-    EXPECT_EQ(j["type"], "boolean");
-    EXPECT_EQ(j["default"], true);
+    EXPECT_EQ(schema["type"].GetString(), "boolean");
+    EXPECT_EQ(schema["default"].GetBool(), true);
 }
 
 TEST(Conformance, SchemaEnumTypeRoundTrip) {
-    nlohmann::json schema = {
-        {"type", "string"},
-        {"enum", {"red", "green", "blue"}}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "string";
+    schema["enum"] = JsonValue(JsonValue::array_tag);
+    schema["enum"].PushBack("red");
+    schema["enum"].PushBack("green");
+    schema["enum"].PushBack("blue");
 
-    nlohmann::json j = schema;
-    EXPECT_EQ(j["enum"].size(), 3);
-    EXPECT_EQ(j["enum"][1], "green");
+    EXPECT_EQ(schema["enum"].Size(), 3);
+    EXPECT_EQ(schema["enum"][1].GetString(), "green");
 }
 
 TEST(Conformance, SchemaSingleSelectEnumUntitled) {
-    nlohmann::json schema = {
-        {"type", "string"},
-        {"enum", {"option1", "option2"}}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "string";
+    schema["enum"] = JsonValue(JsonValue::array_tag);
+    schema["enum"].PushBack("option1");
+    schema["enum"].PushBack("option2");
 
     ElicitRequestParams p;
     p.message = "Choose one";
     p.requested_schema = schema;
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["requestedSchema"]["enum"].size(), 2);
-    EXPECT_FALSE(j["requestedSchema"].contains("title"));
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["enum"].Size(), 2);
+    EXPECT_FALSE(jv["requestedSchema"].Contains("title"));
 }
 
 TEST(Conformance, SchemaSingleSelectEnumTitled) {
-    nlohmann::json schema = {
-        {"type", "string"},
-        {"enum", {"yes", "no"}},
-        {"title", "Confirmation"}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "string";
+    schema["enum"] = JsonValue(JsonValue::array_tag);
+    schema["enum"].PushBack("yes");
+    schema["enum"].PushBack("no");
+    schema["title"] = "Confirmation";
 
     ElicitRequestParams p;
     p.message = "Confirm?";
     p.requested_schema = schema;
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["requestedSchema"]["title"], "Confirmation");
-    EXPECT_EQ(j["requestedSchema"]["enum"][0], "yes");
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["title"].GetString(), "Confirmation");
+    EXPECT_EQ(jv["requestedSchema"]["enum"][0].GetString(), "yes");
 }
 
 TEST(Conformance, SchemaMultiSelectUntitled) {
-    nlohmann::json schema = {
-        {"type", "array"},
-        {"items", {{"type", "string"}, {"enum", {"a", "b", "c"}}}}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "array";
+    schema["items"] = JsonValue(JsonValue::object_tag);
+    schema["items"]["type"] = "string";
+    schema["items"]["enum"] = JsonValue(JsonValue::array_tag);
+    schema["items"]["enum"].PushBack("a");
+    schema["items"]["enum"].PushBack("b");
+    schema["items"]["enum"].PushBack("c");
 
-    nlohmann::json j = schema;
-    EXPECT_EQ(j["items"]["enum"].size(), 3);
+    EXPECT_EQ(schema["items"]["enum"].Size(), 3);
 }
 
 TEST(Conformance, SchemaMultiSelectTitled) {
-    nlohmann::json schema = {
-        {"type", "array"},
-        {"items", {{"type", "string"}, {"enum", {"x", "y"}}}},
-        {"title", "Pick multiple"}
-    };
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "array";
+    schema["items"] = JsonValue(JsonValue::object_tag);
+    schema["items"]["type"] = "string";
+    schema["items"]["enum"] = JsonValue(JsonValue::array_tag);
+    schema["items"]["enum"].PushBack("x");
+    schema["items"]["enum"].PushBack("y");
+    schema["title"] = "Pick multiple";
 
     ElicitRequestParams p;
     p.message = "Select";
     p.requested_schema = schema;
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["requestedSchema"]["title"], "Pick multiple");
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["title"].GetString(), "Pick multiple");
 }
 
 // ====================================================================
@@ -942,24 +946,24 @@ TEST(Conformance, SchemaMultiSelectTitled) {
 // ====================================================================
 TEST(Conformance, ExtensionsCapabilityServerRoundTrip) {
     ServerCapabilities caps;
-    caps.extensions = std::map<std::string, nlohmann::json>{};
+    caps.extensions = std::map<std::string, JsonValue>{};
 
-    nlohmann::json j = caps;
-    EXPECT_TRUE(j.contains("extensions"));
-    EXPECT_TRUE(j["extensions"].is_object());
+    auto jv = SerializeServerCapabilities(caps);
+    EXPECT_TRUE(jv.Contains("extensions"));
+    EXPECT_TRUE(jv["extensions"].IsObject());
 
-    auto recovered = j.get<ServerCapabilities>();
+    auto recovered = DeserializeServerCapabilities(jv);
     EXPECT_TRUE(recovered.extensions.has_value());
 }
 
 TEST(Conformance, ExtensionsCapabilityClientRoundTrip) {
     ClientCapabilities caps;
-    caps.extensions = std::map<std::string, nlohmann::json>{};
+    caps.extensions = std::map<std::string, JsonValue>{};
 
-    nlohmann::json j = caps;
-    EXPECT_TRUE(j.contains("extensions"));
+    auto jv = SerializeClientCapabilities(caps);
+    EXPECT_TRUE(jv.Contains("extensions"));
 
-    auto recovered = j.get<ClientCapabilities>();
+    auto recovered = DeserializeClientCapabilities(jv);
     EXPECT_TRUE(recovered.extensions.has_value());
 }
 
@@ -967,29 +971,29 @@ TEST(Conformance, ServerCapabilitiesNoExtensions) {
     ServerCapabilities caps;
     caps.tools = ToolsCapability{};
 
-    nlohmann::json j = caps;
-    EXPECT_FALSE(j.contains("extensions"));
+    auto jv = SerializeServerCapabilities(caps);
+    EXPECT_FALSE(jv.Contains("extensions"));
 
-    auto recovered = j.get<ServerCapabilities>();
+    auto recovered = DeserializeServerCapabilities(jv);
     EXPECT_FALSE(recovered.extensions.has_value());
 }
 
 TEST(Conformance, ClientCapabilitiesNoExtensions) {
     ClientCapabilities caps;
-    nlohmann::json j = caps;
-    EXPECT_FALSE(j.contains("extensions"));
+    auto jv = SerializeClientCapabilities(caps);
+    EXPECT_FALSE(jv.Contains("extensions"));
 }
 
 TEST(Conformance, ExtensionsCapabilityWithOtherCaps) {
     ServerCapabilities caps;
     caps.tools = ToolsCapability{};
-    caps.extensions = std::map<std::string, nlohmann::json>{};
+    caps.extensions = std::map<std::string, JsonValue>{};
     caps.subscriptions = SubscriptionsCapability{};
 
-    nlohmann::json j = caps;
-    EXPECT_TRUE(j.contains("extensions"));
-    EXPECT_TRUE(j.contains("subscriptions"));
-    EXPECT_TRUE(j.contains("tools"));
+    auto jv = SerializeServerCapabilities(caps);
+    EXPECT_TRUE(jv.Contains("extensions"));
+    EXPECT_TRUE(jv.Contains("subscriptions"));
+    EXPECT_TRUE(jv.Contains("tools"));
 }
 
 // ====================================================================
@@ -999,10 +1003,10 @@ TEST(Conformance, CallToolResultHasResultType) {
     CallToolResult r;
     r.content = {TextContent{"text", "hello"}};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeCallToolResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
-    auto recovered = j.get<CallToolResult>();
+    auto recovered = DeserializeCallToolResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -1010,10 +1014,10 @@ TEST(Conformance, ListToolsResultHasResultType) {
     ListToolsResult r;
     r.tools = {};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeListToolsResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
-    auto recovered = j.get<ListToolsResult>();
+    auto recovered = DeserializeListToolsResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -1021,10 +1025,10 @@ TEST(Conformance, ListResourcesResultHasResultType) {
     ListResourcesResult r;
     r.resources = {};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeListResourcesResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
-    auto recovered = j.get<ListResourcesResult>();
+    auto recovered = DeserializeListResourcesResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -1035,10 +1039,10 @@ TEST(Conformance, ReadResourceResultHasResultType) {
     trc.text = "data";
     r.contents = {ResourceContents(trc)};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeReadResourceResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
-    auto recovered = j.get<ReadResourceResult>();
+    auto recovered = DeserializeReadResourceResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -1046,16 +1050,16 @@ TEST(Conformance, ListPromptsResultHasResultType) {
     ListPromptsResult r;
     r.prompts = {};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeListPromptsResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 }
 
 TEST(Conformance, GetPromptResultHasResultType) {
     GetPromptResult r;
     r.messages = {};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeGetPromptResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 }
 
 TEST(Conformance, InitializeResultHasResultType) {
@@ -1064,8 +1068,8 @@ TEST(Conformance, InitializeResultHasResultType) {
     r.server_info = Implementation{"s", "1"};
     r.capabilities = ServerCapabilities{};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeInitializeResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 }
 
 TEST(Conformance, DiscoverResultHasResultType) {
@@ -1074,24 +1078,28 @@ TEST(Conformance, DiscoverResultHasResultType) {
     r.server_info = Implementation{"s", "1"};
     r.capabilities = ServerCapabilities{};
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeDiscoverResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
-    auto recovered = j.get<DiscoverResult>();
+    auto recovered = DeserializeDiscoverResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
 TEST(Conformance, CompleteResultHasResultType) {
     CompleteResult r;
-    r.completion = {{"values", {"a", "b"}}};
+    r.completion = JsonValue(JsonValue::object_tag);
+    r.completion["values"] = JsonValue(JsonValue::array_tag);
+    r.completion["values"].PushBack("a");
+    r.completion["values"].PushBack("b");
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["resultType"], "complete");
+    auto jv = SerializeCompleteResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
 }
 
 TEST(Conformance, ResultTypeDefaultWhenMissing) {
-    nlohmann::json j = {{"tools", nlohmann::json::array()}};
-    auto recovered = j.get<ListToolsResult>();
+    JsonValue jv(JsonValue::object_tag);
+    jv["tools"] = JsonValue(JsonValue::array_tag);
+    auto recovered = DeserializeListToolsResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -1104,12 +1112,12 @@ TEST(Conformance, SubscriptionFilterRoundTrip) {
     f.prompts_list_changed = false;
     f.resources_list_changed = true;
 
-    nlohmann::json j = f;
-    EXPECT_EQ(j["toolsListChanged"], true);
-    EXPECT_EQ(j["promptsListChanged"], false);
-    EXPECT_EQ(j["resourcesListChanged"], true);
+    auto jv = SerializeSubscriptionFilter(f);
+    EXPECT_EQ(jv["toolsListChanged"].GetBool(), true);
+    EXPECT_EQ(jv["promptsListChanged"].GetBool(), false);
+    EXPECT_EQ(jv["resourcesListChanged"].GetBool(), true);
 
-    auto recovered = j.get<SubscriptionFilter>();
+    auto recovered = DeserializeSubscriptionFilter(jv);
     EXPECT_TRUE(recovered.tools_list_changed.value_or(false));
     EXPECT_FALSE(recovered.prompts_list_changed.value_or(true));
     EXPECT_TRUE(recovered.resources_list_changed.value_or(false));
@@ -1119,19 +1127,19 @@ TEST(Conformance, SubscriptionFilterWithResourceSubscriptions) {
     SubscriptionFilter f;
     f.resource_subscriptions = {"file:///a.txt", "file:///b.txt"};
 
-    nlohmann::json j = f;
-    ASSERT_TRUE(j.contains("resourceSubscriptions"));
-    EXPECT_EQ(j["resourceSubscriptions"].size(), 2);
-    EXPECT_EQ(j["resourceSubscriptions"][1], "file:///b.txt");
+    auto jv = SerializeSubscriptionFilter(f);
+    ASSERT_TRUE(jv.Contains("resourceSubscriptions"));
+    EXPECT_EQ(jv["resourceSubscriptions"].Size(), 2);
+    EXPECT_EQ(jv["resourceSubscriptions"][1].GetString(), "file:///b.txt");
 
-    auto recovered = j.get<SubscriptionFilter>();
+    auto recovered = DeserializeSubscriptionFilter(jv);
     EXPECT_EQ(recovered.resource_subscriptions.size(), 2);
 }
 
 TEST(Conformance, SubscriptionFilterEmpty) {
     SubscriptionFilter f;
-    nlohmann::json j = f;
-    EXPECT_TRUE(j.empty());
+    auto jv = SerializeSubscriptionFilter(f);
+    EXPECT_TRUE(jv.Empty());
 }
 
 TEST(Conformance, SubscriptionsListenRequestParamsRoundTrip) {
@@ -1139,11 +1147,11 @@ TEST(Conformance, SubscriptionsListenRequestParamsRoundTrip) {
     p.notifications.tools_list_changed = true;
     p.notifications.resource_subscriptions = {"file:///data.txt"};
 
-    nlohmann::json j = p;
-    EXPECT_TRUE(j["notifications"]["toolsListChanged"]);
-    EXPECT_EQ(j["notifications"]["resourceSubscriptions"][0], "file:///data.txt");
+    auto jv = SerializeSubscriptionsListenRequestParams(p);
+    EXPECT_TRUE(jv["notifications"]["toolsListChanged"].GetBool());
+    EXPECT_EQ(jv["notifications"]["resourceSubscriptions"][0].GetString(), "file:///data.txt");
 
-    auto recovered = j.get<SubscriptionsListenRequestParams>();
+    auto recovered = DeserializeSubscriptionsListenRequestParams(jv);
     EXPECT_TRUE(recovered.notifications.tools_list_changed.value_or(false));
 }
 
@@ -1151,10 +1159,10 @@ TEST(Conformance, SubscriptionsAcknowledgedRoundTrip) {
     SubscriptionsAcknowledgedNotificationParams n;
     n.notifications.prompts_list_changed = true;
 
-    nlohmann::json j = n;
-    EXPECT_TRUE(j["notifications"]["promptsListChanged"]);
+    auto jv = SerializeSubscriptionsAcknowledgedNotificationParams(n);
+    EXPECT_TRUE(jv["notifications"]["promptsListChanged"].GetBool());
 
-    auto recovered = j.get<SubscriptionsAcknowledgedNotificationParams>();
+    auto recovered = DeserializeSubscriptionsAcknowledgedNotificationParams(jv);
     EXPECT_TRUE(recovered.notifications.prompts_list_changed.value_or(false));
 }
 
@@ -1162,12 +1170,12 @@ TEST(Conformance, SubscriptionFilterPartialFlags) {
     SubscriptionFilter f;
     f.resources_list_changed = true;
 
-    nlohmann::json j = f;
-    EXPECT_FALSE(j.contains("toolsListChanged"));
-    EXPECT_FALSE(j.contains("promptsListChanged"));
-    EXPECT_TRUE(j["resourcesListChanged"]);
+    auto jv = SerializeSubscriptionFilter(f);
+    EXPECT_FALSE(jv.Contains("toolsListChanged"));
+    EXPECT_FALSE(jv.Contains("promptsListChanged"));
+    EXPECT_TRUE(jv["resourcesListChanged"].GetBool());
 
-    auto recovered = j.get<SubscriptionFilter>();
+    auto recovered = DeserializeSubscriptionFilter(jv);
     EXPECT_FALSE(recovered.tools_list_changed.has_value());
     EXPECT_TRUE(recovered.resources_list_changed.has_value());
 }
@@ -1180,12 +1188,12 @@ TEST(Conformance, GetTaskResultWorking) {
     r.task_id = "task-1";
     r.status = "working";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["taskId"], "task-1");
-    EXPECT_EQ(j["status"], "working");
-    EXPECT_EQ(j["resultType"], "task");
+    auto jv = SerializeGetTaskResult(r);
+    EXPECT_EQ(jv["taskId"].GetString(), "task-1");
+    EXPECT_EQ(jv["status"].GetString(), "working");
+    EXPECT_EQ(jv["resultType"].GetString(), "task");
 
-    auto recovered = j.get<GetTaskResult>();
+    auto recovered = DeserializeGetTaskResult(jv);
     EXPECT_EQ(recovered.task_id, "task-1");
     EXPECT_EQ(recovered.status, "working");
 }
@@ -1194,13 +1202,14 @@ TEST(Conformance, GetTaskResultCompleted) {
     GetTaskResult r;
     r.task_id = "task-2";
     r.status = "completed";
-    r.result = nlohmann::json{{"output", "done"}};
+    r.result = JsonValue(JsonValue::object_tag);
+    (*r.result)["output"] = "done";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["status"], "completed");
-    EXPECT_EQ(j["result"]["output"], "done");
+    auto jv = SerializeGetTaskResult(r);
+    EXPECT_EQ(jv["status"].GetString(), "completed");
+    EXPECT_EQ(jv["result"]["output"].GetString(), "done");
 
-    auto recovered = j.get<GetTaskResult>();
+    auto recovered = DeserializeGetTaskResult(jv);
     EXPECT_EQ(recovered.status, "completed");
     ASSERT_TRUE(recovered.result.has_value());
 }
@@ -1211,11 +1220,11 @@ TEST(Conformance, GetTaskResultFailed) {
     r.status = "failed";
     r.error_message = "something went wrong";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["status"], "failed");
-    EXPECT_EQ(j["errorMessage"], "something went wrong");
+    auto jv = SerializeGetTaskResult(r);
+    EXPECT_EQ(jv["status"].GetString(), "failed");
+    EXPECT_EQ(jv["errorMessage"].GetString(), "something went wrong");
 
-    auto recovered = j.get<GetTaskResult>();
+    auto recovered = DeserializeGetTaskResult(jv);
     EXPECT_EQ(recovered.status, "failed");
     ASSERT_TRUE(recovered.error_message.has_value());
     EXPECT_EQ(*recovered.error_message, "something went wrong");
@@ -1226,36 +1235,38 @@ TEST(Conformance, GetTaskResultCancelled) {
     r.task_id = "task-4";
     r.status = "cancelled";
 
-    nlohmann::json j = r;
-    EXPECT_EQ(j["status"], "cancelled");
+    auto jv = SerializeGetTaskResult(r);
+    EXPECT_EQ(jv["status"].GetString(), "cancelled");
 }
 
 TEST(Conformance, GetTaskResultInputRequired) {
     GetTaskResult r;
     r.task_id = "task-5";
     r.status = "working";
-    r.input_required = nlohmann::json{{"fields", {"name"}}};
+    r.input_required = JsonValue(JsonValue::object_tag);
+    (*r.input_required)["fields"] = JsonValue(JsonValue::array_tag);
+    (*r.input_required)["fields"].PushBack("name");
 
-    nlohmann::json j = r;
-    ASSERT_TRUE(j.contains("inputRequired"));
-    EXPECT_EQ(j["inputRequired"]["fields"][0], "name");
+    auto jv = SerializeGetTaskResult(r);
+    ASSERT_TRUE(jv.Contains("inputRequired"));
+    EXPECT_EQ(jv["inputRequired"]["fields"][0].GetString(), "name");
 }
 
 TEST(Conformance, UpdateTaskResultRoundTrip) {
     UpdateTaskResult r;
-    nlohmann::json j = r;
-    EXPECT_TRUE(j.contains("resultType"));
+    auto jv = SerializeEmptyResult(r);
+    EXPECT_TRUE(jv.Contains("resultType"));
 
-    auto recovered = j.get<UpdateTaskResult>();
+    auto recovered = DeserializeEmptyResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
 TEST(Conformance, CancelTaskResultRoundTrip) {
     CancelTaskResult r;
-    nlohmann::json j = r;
-    EXPECT_TRUE(j.contains("resultType"));
+    auto jv = SerializeEmptyResult(r);
+    EXPECT_TRUE(jv.Contains("resultType"));
 
-    auto recovered = j.get<CancelTaskResult>();
+    auto recovered = DeserializeEmptyResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -1263,23 +1274,24 @@ TEST(Conformance, GetTaskRequestParamsRoundTrip) {
     GetTaskRequestParams p;
     p.task_id = "task-1";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["task_id"], "task-1");
+    auto jv = SerializeGetTaskRequestParams(p);
+    EXPECT_EQ(jv["taskId"].GetString(), "task-1");
 
-    auto recovered = j.get<GetTaskRequestParams>();
+    auto recovered = DeserializeGetTaskRequestParams(jv);
     EXPECT_EQ(recovered.task_id, "task-1");
 }
 
 TEST(Conformance, UpdateTaskRequestParamsRoundTrip) {
     UpdateTaskRequestParams p;
     p.task_id = "task-2";
-    p.result = nlohmann::json{{"progress", 0.5}};
+    p.result = JsonValue(JsonValue::object_tag);
+    (*p.result)["progress"] = 0.5;
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["taskId"], "task-2");
-    EXPECT_EQ(j["result"]["progress"], 0.5);
+    auto jv = SerializeUpdateTaskRequestParams(p);
+    EXPECT_EQ(jv["taskId"].GetString(), "task-2");
+    EXPECT_EQ(jv["result"]["progress"], JsonValue(0.5));
 
-    auto recovered = j.get<UpdateTaskRequestParams>();
+    auto recovered = DeserializeUpdateTaskRequestParams(jv);
     EXPECT_EQ(recovered.task_id, "task-2");
 }
 
@@ -1288,11 +1300,11 @@ TEST(Conformance, CancelTaskRequestParamsRoundTrip) {
     p.task_id = "task-3";
     p.reason = "no longer needed";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["taskId"], "task-3");
-    EXPECT_EQ(j["reason"], "no longer needed");
+    auto jv = SerializeCancelTaskRequestParams(p);
+    EXPECT_EQ(jv["taskId"].GetString(), "task-3");
+    EXPECT_EQ(jv["reason"].GetString(), "no longer needed");
 
-    auto recovered = j.get<CancelTaskRequestParams>();
+    auto recovered = DeserializeCancelTaskRequestParams(jv);
     EXPECT_EQ(recovered.task_id, "task-3");
     ASSERT_TRUE(recovered.reason.has_value());
     EXPECT_EQ(*recovered.reason, "no longer needed");
@@ -1307,12 +1319,12 @@ TEST(Conformance, LoggingLevelDebug) {
     p.logger = "test";
     p.data = "debug message";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["level"], "debug");
-    EXPECT_EQ(j["logger"], "test");
-    EXPECT_EQ(j["data"], "debug message");
+    auto jv = SerializeLoggingMessageNotificationParams(p);
+    EXPECT_EQ(jv["level"].GetString(), "debug");
+    EXPECT_EQ(jv["logger"].GetString(), "test");
+    EXPECT_EQ(jv["data"].GetString(), "debug message");
 
-    auto recovered = j.get<LoggingMessageNotificationParams>();
+    auto recovered = DeserializeLoggingMessageNotificationParams(jv);
     EXPECT_EQ(recovered.level, LoggingLevel::Debug);
 }
 
@@ -1320,10 +1332,11 @@ TEST(Conformance, LoggingLevelInfo) {
     LoggingMessageNotificationParams p;
     p.level = LoggingLevel::Info;
     p.logger = "app";
-    p.data = nlohmann::json{{"event", "started"}};
+    p.data = JsonValue(JsonValue::object_tag);
+    p.data["event"] = "started";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["level"], "info");
+    auto jv = SerializeLoggingMessageNotificationParams(p);
+    EXPECT_EQ(jv["level"].GetString(), "info");
 }
 
 TEST(Conformance, LoggingLevelWarning) {
@@ -1332,10 +1345,10 @@ TEST(Conformance, LoggingLevelWarning) {
     p.logger = "app";
     p.data = "warning";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["level"], "warning");
+    auto jv = SerializeLoggingMessageNotificationParams(p);
+    EXPECT_EQ(jv["level"].GetString(), "warning");
 
-    auto recovered = j.get<LoggingMessageNotificationParams>();
+    auto recovered = DeserializeLoggingMessageNotificationParams(jv);
     EXPECT_EQ(recovered.level, LoggingLevel::Warning);
 }
 
@@ -1345,14 +1358,14 @@ TEST(Conformance, LoggingLevelErrorCritical) {
     p.logger = "sys";
     p.data = "error";
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["level"], "error");
+    auto jv = SerializeLoggingMessageNotificationParams(p);
+    EXPECT_EQ(jv["level"].GetString(), "error");
 
     p.level = LoggingLevel::Critical;
-    j = p;
-    EXPECT_EQ(j["level"], "critical");
+    jv = SerializeLoggingMessageNotificationParams(p);
+    EXPECT_EQ(jv["level"].GetString(), "critical");
 
-    auto recovered = j.get<LoggingMessageNotificationParams>();
+    auto recovered = DeserializeLoggingMessageNotificationParams(jv);
     EXPECT_EQ(recovered.level, LoggingLevel::Critical);
 }
 
@@ -1362,8 +1375,8 @@ TEST(Conformance, LoggingLevelAllValues) {
         p.level = level;
         p.logger = "t";
         p.data = "x";
-        nlohmann::json j = p;
-        EXPECT_STREQ(j["level"].get<std::string>().c_str(), expected);
+        auto jv = SerializeLoggingMessageNotificationParams(p);
+        EXPECT_STREQ(jv["level"].GetString().c_str(), expected);
     };
 
     check_level(LoggingLevel::Debug, "debug");
@@ -1380,10 +1393,10 @@ TEST(Conformance, SetLevelRequestParamsRoundTrip) {
     SetLevelRequestParams p;
     p.level = LoggingLevel::Warning;
 
-    nlohmann::json j = p;
-    EXPECT_EQ(j["level"], "warning");
+    auto jv = SerializeSetLevelRequestParams(p);
+    EXPECT_EQ(jv["level"].GetString(), "warning");
 
-    auto recovered = j.get<SetLevelRequestParams>();
+    auto recovered = DeserializeSetLevelRequestParams(jv);
     EXPECT_EQ(recovered.level, LoggingLevel::Warning);
 }
 
@@ -1391,8 +1404,8 @@ TEST(Conformance, SetLevelRequestParamsAllLevels) {
     auto check = [](LoggingLevel level) {
         SetLevelRequestParams p;
         p.level = level;
-        nlohmann::json j = p;
-        auto recovered = j.get<SetLevelRequestParams>();
+        auto jv = SerializeSetLevelRequestParams(p);
+        auto recovered = DeserializeSetLevelRequestParams(jv);
         EXPECT_EQ(recovered.level, level);
     };
 

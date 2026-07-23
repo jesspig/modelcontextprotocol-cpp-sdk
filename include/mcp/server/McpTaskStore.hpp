@@ -1,11 +1,13 @@
 #pragma once
 
+#include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>
 
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace mcp {
 
@@ -23,9 +25,9 @@ enum class TaskStatus {
 struct TaskState {
     std::string task_id;
     TaskStatus status{TaskStatus::Pending};
-    std::optional<nlohmann::json> result;
+    std::optional<JsonValue> result;
     std::optional<std::string> error_message;
-    std::optional<nlohmann::json> input_required;
+    std::optional<JsonValue> input_required;
     double progress{0};
     std::optional<double> progress_total;
     std::string created_at;
@@ -40,7 +42,7 @@ public:
     virtual TaskState CreateTask(const std::string& task_id) = 0;
     virtual std::optional<TaskState> GetTask(const std::string& task_id) = 0;
     virtual bool UpdateTask(const std::string& task_id,
-                            const std::optional<nlohmann::json>& result) = 0;
+                            const std::optional<JsonValue>& result) = 0;
     virtual bool CancelTask(const std::string& task_id,
                             const std::optional<std::string>& reason) = 0;
     virtual bool SetTaskStatus(const std::string& task_id, TaskStatus status) = 0;

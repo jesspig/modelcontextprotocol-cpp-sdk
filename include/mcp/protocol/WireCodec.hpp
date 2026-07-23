@@ -2,6 +2,7 @@
 
 #include <mcp/Export.hpp>
 #include <mcp/McpTypes.hpp>
+#include <mcp/JsonValue.hpp>
 
 #include <memory>
 #include <string_view>
@@ -28,30 +29,30 @@ public:
 
     // ── Request validation ──
     virtual WireValidation ValidateRequest(
-        std::string_view method, const nlohmann::json& raw) const = 0;
+        std::string_view method, const JsonValue& raw) const = 0;
     virtual WireValidation ValidateResponse(
-        std::string_view method, const nlohmann::json& raw) const = 0;
+        std::string_view method, const JsonValue& raw) const = 0;
     virtual WireValidation ValidateNotification(
-        std::string_view method, const nlohmann::json& raw) const = 0;
+        std::string_view method, const JsonValue& raw) const = 0;
 
     // ── Envelope / _meta handling ──
     // Stamp outgoing request with era-appropriate _meta
     virtual void StampOutgoingRequest(
-        nlohmann::json& request_body,
+        JsonValue& request_body,
         const RequestMeta& meta) const = 0;
 
     // Extract _meta from incoming request (2026: _meta envelope fields)
     virtual std::optional<RequestMeta> ExtractIncomingMeta(
-        const nlohmann::json& request_body) const = 0;
+        const JsonValue& request_body) const = 0;
 
     // ── Result encoding/decoding ──
     // Decode wire result, handling resultType discrimination (2026)
-    virtual nlohmann::json DecodeResult(
-        std::string_view method, const nlohmann::json& raw) const = 0;
+    virtual JsonValue DecodeResult(
+        std::string_view method, const JsonValue& raw) const = 0;
 
     // Encode result, stamping resultType (2026)
-    virtual nlohmann::json EncodeResult(
-        std::string_view method, const nlohmann::json& result) const = 0;
+    virtual JsonValue EncodeResult(
+        std::string_view method, const JsonValue& result) const = 0;
 
     // ── Error code remapping ──
     virtual int32_t EncodeErrorCode(int32_t code) const = 0;

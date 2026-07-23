@@ -43,11 +43,11 @@ TEST(WireCodecTest, Rev2025HasNotificationMethod) {
 
 TEST(WireCodecTest, Rev2025StampIsNoop) {
     auto codec = MakeWireCodec("2025-11-25");
-    nlohmann::json body = nlohmann::json::object();
+    JsonValue body(JsonValue::object_tag);
     RequestMeta meta;
     meta.protocol_version = "2025-11-25";
     codec->StampOutgoingRequest(body, meta);
-    EXPECT_TRUE(body.empty());  // no _meta added
+    EXPECT_TRUE(body.Empty());  // no _meta added
 }
 
 // ── 2026 codec ──
@@ -64,7 +64,8 @@ TEST(WireCodecTest, Rev2026Validates_MetaRequired) {
     auto codec = MakeWireCodec("2026-07-28");
 
     // tools/call without _meta → Invalid
-    nlohmann::json body = {{"name", "test"}};
+    JsonValue body(JsonValue::object_tag);
+    body["name"] = "test";
     EXPECT_EQ(codec->ValidateRequest("tools/call", body),
               WireValidation::Invalid);
 
@@ -75,7 +76,7 @@ TEST(WireCodecTest, Rev2026Validates_MetaRequired) {
 
 TEST(WireCodecTest, Rev2026StampAddsMeta) {
     auto codec = MakeWireCodec("2026-07-28");
-    nlohmann::json body = nlohmann::json::object();
+    JsonValue body(JsonValue::object_tag);
 
     RequestMeta meta;
     meta.protocol_version = "2026-07-28";
@@ -84,24 +85,24 @@ TEST(WireCodecTest, Rev2026StampAddsMeta) {
 
     codec->StampOutgoingRequest(body, meta);
 
-    ASSERT_TRUE(body.contains("_meta"));
+    ASSERT_TRUE(body.Contains("_meta"));
     EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/protocolVersion"],
               "2026-07-28");
     EXPECT_EQ(
         body["_meta"]["io.modelcontextprotocol/clientInfo"]["name"],
         "test-client");
     EXPECT_TRUE(
-        body["_meta"].contains(
+        body["_meta"].Contains(
             "io.modelcontextprotocol/clientCapabilities"));
 }
 
 TEST(WireCodecTest, Rev2026ExtractMeta) {
     auto codec = MakeWireCodec("2026-07-28");
-    nlohmann::json body;
-    body["_meta"] = nlohmann::json::object();
+    JsonValue body(JsonValue::object_tag);
+    body["_meta"] = JsonValue(JsonValue::object_tag);
     body["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2026-07-28";
     body["_meta"]["io.modelcontextprotocol/clientInfo"] =
-        Implementation{"cli", "2.0"};
+        SerializeImplementation(Implementation{"cli", "2.0"});
 
     auto meta = codec->ExtractIncomingMeta(body);
     ASSERT_TRUE(meta.has_value());
@@ -112,10 +113,11 @@ TEST(WireCodecTest, Rev2026ExtractMeta) {
 
 TEST(WireCodecTest, Rev2026EncodeResult) {
     auto codec = MakeWireCodec("2026-07-28");
-    nlohmann::json result = {{"content", nlohmann::json::array()}};
+    JsonValue result(JsonValue::object_tag);
+    result["content"] = JsonValue(JsonValue::array_tag);
     auto encoded = codec->EncodeResult("tools/call", result);
     EXPECT_EQ(encoded["resultType"], "complete");
-    EXPECT_TRUE(encoded.contains("content"));
+    EXPECT_TRUE(encoded.Contains("content"));
 }
 
 TEST(WireCodecTest, Rev2026ErrorCodeRemapping) {
@@ -131,16 +133,14 @@ TEST(WireCodecTest, JsonRpcRequestWithMetaRoundTrip) {
     JsonRpcRequest req;
     req.id = RequestId{int64_t(1)};
     req.method = "tools/call";
-    req.params = nlohmann::json{{"name", "echo"}};
-    req.meta = nlohmann::json{
-        {"io.modelcontextprotocol/protocolVersion", "2026-07-28"}
-    };
+    req.params = JsonValue(JsonValue::object_tag);
+    (*req.params)["name"] = "echo";
+    req.meta = JsonValue(JsonValue::object_tag);
+    (*req.meta)["io.modelcontextprotocol/protocolVersion"] = "2026-07-28";
 
-    nlohmann::json j = req;
-    EXPECT_EQ(j["_meta"]["io.modelcontextprotocol/protocolVersion"],
-              "2026-07-28");
-
-    auto req2 = j.get<JsonRpcRequest>();
+    auto json_str = SerializeMessage(JsonRpcMessage(req));
+    auto parsed = DeserializeMessage(json_str);
+    const auto& req2 = std::get<JsonRpcRequest>(parsed);
     ASSERT_TRUE(req2.meta.has_value());
     EXPECT_EQ((*req2.meta)["io.modelcontextprotocol/protocolVersion"],
               "2026-07-28");

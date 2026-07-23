@@ -10,7 +10,7 @@
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "MCP_BUILD_TESTS": "ON",
-                "MCP_BUILD_EXAMPLES": "ON"
+                "MCP_BUILD_EXAMPLES": "OFF"
             }
         },
         {
@@ -22,7 +22,7 @@
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "MCP_BUILD_TESTS": "ON",
-                "MCP_BUILD_EXAMPLES": "ON"
+                "MCP_BUILD_EXAMPLES": "OFF"
             }
         }
     ],

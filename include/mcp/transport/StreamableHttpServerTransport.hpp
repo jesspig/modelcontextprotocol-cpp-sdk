@@ -4,7 +4,7 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
 
-#include <nlohmann/json.hpp>
+#include <mcp/JsonValue.hpp>
 
 #include <future>
 #include <memory>
@@ -39,7 +39,6 @@ struct StreamableHttpServerOptions {
 class StreamableHttpServerTransport : public TransportBase {
 public:
     StreamableHttpServerTransport(
-        asio::io_context& io_ctx,
         StreamableHttpServerOptions options = {});
 
     ~StreamableHttpServerTransport() override;
@@ -53,7 +52,7 @@ public:
     static bool ValidateMcpHeaders(
         const std::string& method_header,
         const std::string& name_header,
-        const nlohmann::json& body,
+        const JsonValue& body,
         std::string& error_out);
 
 private:

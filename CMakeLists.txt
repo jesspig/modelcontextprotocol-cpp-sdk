@@ -81,19 +81,29 @@ if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHE
 endif()
 
 # ====================================================================
-# mcp-core — INTERFACE, header-only
+# mcp-core — STATIC
 # ====================================================================
-add_library(mcp-core INTERFACE)
-target_include_directories(mcp-core INTERFACE
+add_library(mcp-core STATIC)
+target_sources(mcp-core PRIVATE
+    src/core/JsonValue.cpp
+    src/core/JsonRpc.cpp
+    src/core/McpTypes.cpp
+    src/core/Content.cpp
+    src/core/Capabilities.cpp)
+target_include_directories(mcp-core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(mcp-core INTERFACE nlohmann_json::nlohmann_json Threads::Threads)
+target_include_directories(mcp-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mcp-core PUBLIC Threads::Threads)
+target_link_libraries(mcp-core PRIVATE simdjson)
+set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
+set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
 if(MCP_WERROR)
     if(MSVC)
-        target_compile_options(mcp-core INTERFACE /WX)
+        target_compile_options(mcp-core PUBLIC /WX)
     else()
-        target_compile_options(mcp-core INTERFACE -Werror)
+        target_compile_options(mcp-core PUBLIC -Werror)
     endif()
     message(STATUS "[mcp] Werror enabled")
 endif()
@@ -105,18 +115,16 @@ add_library(mcp-transport STATIC)
 target_sources(mcp-transport PRIVATE
     src/transport/StdioServerTransport.cpp
     src/transport/StdioClientTransport.cpp
-    src/transport/SseClientTransport.cpp
     src/transport/InMemoryTransport.cpp
+    src/transport/SseClientTransport.cpp
     src/transport/WebSocketClientTransport.cpp)
 if(WIN32)
     target_sources(mcp-transport PRIVATE src/transport/detail/win32_platform.cpp)
-    target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio winhttp)
 else()
     target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
-    target_link_libraries(mcp-transport PUBLIC mcp-core asio::asio)
 endif()
-set_property(TARGET mcp-transport PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
-set_property(TARGET mcp-transport PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
+target_link_libraries(mcp-transport PUBLIC mcp-core hv_static)
+set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
 # mcp-protocol — STATIC
@@ -126,8 +134,9 @@ target_sources(mcp-protocol PRIVATE
     src/protocol/WireCodec.cpp
     src/protocol/McpSessionHandler.cpp)
 target_link_libraries(mcp-protocol PUBLIC mcp-transport)
-set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
-set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
+# McpSessionHandler.cpp and WireCodec.cpp share anonymous namespace helpers
+# Unity builds merge them causing duplicate symbol errors
+set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
 # mcp-server — STATIC
@@ -137,6 +146,7 @@ target_sources(mcp-server PRIVATE
     src/server/McpServer.cpp
     src/server/FileTaskStore.cpp)
 target_link_libraries(mcp-server PUBLIC mcp-protocol)
+target_include_directories(mcp-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
@@ -149,6 +159,7 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
+target_include_directories(mcp-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
     target_link_libraries(mcp-transport PUBLIC OpenSSL::SSL)
@@ -171,7 +182,7 @@ target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
-target_link_libraries(mcp-http PUBLIC mcp-transport)
+target_link_libraries(mcp-http PUBLIC mcp-transport hv_static)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 

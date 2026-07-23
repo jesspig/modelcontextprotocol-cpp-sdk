@@ -38,7 +38,7 @@ public:
         std::optional<std::string> cursor = std::nullopt);
     CallToolResult CallTool(
         std::string_view name,
-        std::optional<nlohmann::json> arguments = std::nullopt,
+        std::optional<JsonValue> arguments = std::nullopt,
         const RequestOptions& options = {});
 
     // ── Resources ──
@@ -60,7 +60,7 @@ public:
         std::optional<std::string> cursor = std::nullopt);
     GetPromptResult GetPrompt(
         std::string_view name,
-        std::optional<nlohmann::json> arguments = std::nullopt,
+        std::optional<JsonValue> arguments = std::nullopt,
         const RequestOptions& options = {});
 
     // ── Completions ──
@@ -70,7 +70,7 @@ public:
     GetTaskResult GetTask(std::string_view task_id);
     UpdateTaskResult UpdateTask(
         std::string_view task_id,
-        std::optional<nlohmann::json> result = std::nullopt);
+        std::optional<JsonValue> result = std::nullopt);
     CancelTaskResult CancelTask(
         std::string_view task_id,
         std::optional<std::string> reason = std::nullopt);
@@ -125,9 +125,9 @@ private:
         std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
     // MRTR-aware request: handles input_required loop
-    nlohmann::json SendRequestWithMrtr(
+    JsonValue SendRequestWithMrtr(
         std::string_view method,
-        nlohmann::json params_json,
+        JsonValue params_json,
         const RequestMeta& meta,
         std::chrono::milliseconds timeout);
 

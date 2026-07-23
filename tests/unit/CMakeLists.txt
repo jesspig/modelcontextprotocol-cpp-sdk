@@ -26,3 +26,7 @@ gtest_discover_tests(mcp-oauth-tests)
 add_executable(mcp-transport-tests TransportTests.cpp)
 target_link_libraries(mcp-transport-tests PRIVATE mcp-transport GTest::gtest_main)
 gtest_discover_tests(mcp-transport-tests)
+
+add_executable(mcp-http-tests HttpServerTests.cpp)
+target_link_libraries(mcp-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
+gtest_discover_tests(mcp-http-tests)

@@ -80,7 +80,7 @@ if (typed_result.is_accepted()) {
 client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         ElicitResult result;
-        result.values = nlohmann::json{{"confirmed", true}};
+        result.values = JsonValue(JsonValue::Object{{"confirmed", JsonValue(true)}});
         return result;
     });
 ```
@@ -101,11 +101,11 @@ ir.request_state = "state-token";
 
 ```cpp
 // 构建用于 elicitation 的输入请求负载
-nlohmann::json req = MakeInputRequestForElicitation(params);
+JsonValue req = MakeInputRequestForElicitation(params);
 // req == {"method": "elicitation/create", "params": {...}}
 
 // 将 elicit 结果转换为输入响应
-nlohmann::json resp = MakeInputResponseFromElicitResult(result);
+JsonValue resp = MakeInputResponseFromElicitResult(result);
 
 // 检查 JSON 结果是否表示 input_required
 if (IsInputRequiredResult(raw_result)) {
