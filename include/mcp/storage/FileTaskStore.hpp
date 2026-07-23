@@ -23,6 +23,7 @@ public:
     bool CancelTask(const std::string& task_id,
                     const std::optional<std::string>& reason) override;
     bool SetTaskStatus(const std::string& task_id, TaskStatus status) override;
+    std::vector<TaskState> GetAllTasks() override;
 
 private:
     void Flush();

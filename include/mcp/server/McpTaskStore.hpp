@@ -46,6 +46,7 @@ public:
     virtual bool CancelTask(const std::string& task_id,
                             const std::optional<std::string>& reason) = 0;
     virtual bool SetTaskStatus(const std::string& task_id, TaskStatus status) = 0;
+    virtual std::vector<TaskState> GetAllTasks() = 0;
 };
 
 } // namespace mcp

@@ -6,7 +6,6 @@
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
-#include <mcp/server/ServerHandlers.hpp>
 
 #include <condition_variable>
 #include <future>
@@ -68,28 +67,7 @@ public:
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
 
-    // ── Elicitation typed (generic) ──
-    template <typename T>
-    std::future<ElicitResultTyped<T>> Elicit(
-        std::string_view message,
-        std::optional<JsonValue> extra_meta = std::nullopt)
-    {
-        ElicitRequestParams params;
-        params.message = std::string(message);
-        params.requested_schema = detail::build_json_schema<T>();
-
-        auto raw_future = Elicit(params);
-        return std::async(std::launch::deferred,
-            [raw_future = std::move(raw_future)]() mutable {
-                auto raw = raw_future.get();
-                ElicitResultTyped<T> typed;
-                if (raw.values) {
-                    typed.content = raw.values->get<T>();
-                    typed.action = "accept";
-                }
-                return typed;
-            });
-    }
+    // Elicit (server→client) - typed convenience removed; use the raw Elicit with explicit schema
 
     // ── Completion handler ──
     using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;
@@ -157,12 +135,19 @@ private:
         std::string name;
         std::string uri_pattern;
         bool is_template;
+        std::optional<std::string> description;
+        std::optional<std::string> title;
+        std::optional<std::string> mime_type;
+        std::vector<Icon> icons;
         std::function<ReadResourceResult(const std::string&)> handler;
         std::function<ReadResourceResult(const std::string&, const std::map<std::string, std::string>&)> template_handler;
     };
     std::vector<ResourceEntry> resources_;
     struct PromptEntry {
         std::string name;
+        std::optional<std::string> description;
+        std::optional<std::string> title;
+        std::vector<Icon> icons;
         std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)> handler;
     };
     std::vector<PromptEntry> prompts_;
@@ -174,15 +159,15 @@ private:
     // Completion handler (optional user-registered)
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
 
-    // Active subscriptions
-    std::vector<Subscription> subscriptions_;
-
     // Async tool call lifecycle management
     std::mutex pending_async_mutex_;
     std::vector<std::shared_future<void>> pending_async_futures_;
 
     // Initialization state (2025-era protocol)
     std::atomic<bool> initialized_{false};
+
+    // Current logging level (set via logging/setLevel)
+    std::optional<LoggingLevel> current_log_level_;
 
     // Stateless mode (no session persistence, no MRTR)
     bool is_stateless_{false};
