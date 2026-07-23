@@ -10,7 +10,7 @@ namespace mcp {
 
 // JSON parse safety limits
 #define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-// K_MAX_JSON_DEPTH removed — nlohmann-json v3.11.3 parse() accepts 4 args max
+
 
 namespace {
 
