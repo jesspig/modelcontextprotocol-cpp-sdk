@@ -27,7 +27,7 @@ auto client = McpClient::Create(transport, opts);
 | `supported_protocol_versions` | `vector<string>` | 客户端声明的协议版本 |
 | `input_required_config` | `InputRequiredConfig` | MRTR elicitation 响应的配置 |
 | `cache_config` | `CacheConfig` | 客户端缓存配置 |
-| `extensions` | `optional<nlohmann::json>` | 协议扩展声明 |
+| `extensions` | `optional<JsonValue>` | 协议扩展声明 |
 | `enforce_strict_capabilities` | `bool` | 拒绝未知能力（默认 false） |
 | `list_max_pages` | `int` | 分页列表操作的最大页数（默认 64） |
 
@@ -39,14 +39,14 @@ auto tools = client->ListTools();
 
 // 调用工具
 auto result = client->CallTool("echo",
-    nlohmann::json{{"text", "Hello"}});
+    JsonValue(JsonValue::Object{{"text", "Hello"}}));
 
 // 读取资源
 auto resource = client->ReadResource("file:///config.json");
 
 // 获取提示词
 auto prompt = client->GetPrompt("code_review",
-    nlohmann::json{{"diff", "..."}});
+    JsonValue(JsonValue::Object{{"diff", "..."}}));
 
 // 补全提示词/资源引用
 auto completion = client->Complete(params);
@@ -64,7 +64,7 @@ client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         // 提示用户输入，返回结果
         ElicitResult result;
-        result.values = nlohmann::json{{"name", "Alice"}};
+        result.values = JsonValue(JsonValue::Object{{"name", "Alice"}});
         return result;
     });
 

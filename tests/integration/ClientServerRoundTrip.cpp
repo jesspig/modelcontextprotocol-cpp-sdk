@@ -20,13 +20,9 @@ struct ClientServerFixture : ::testing::Test {
     void SetUp() override {
         auto pair = InMemoryTransport::CreatePair();
 
-        // Use the transport's shared io_context so server->Run() processes
-        // async work for both client and server transports.
-        auto& io_ctx = pair.server->GetMessageChannel().IoContext();
-
         ServerOptions sopts;
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
-        server = McpServer::Create(pair.server, sopts, &io_ctx);
+        server = McpServer::Create(pair.server, sopts);
 
         // Register echo tool
         server->RegisterTool("echo",
@@ -34,7 +30,9 @@ struct ClientServerFixture : ::testing::Test {
             std::function<CallToolResult(const Ctx&)>(
                 [](const Ctx& ctx) -> CallToolResult {
                     auto text = ctx.Params().arguments
-                        ? ctx.Params().arguments->value("text", "")
+                        ? ((*ctx.Params().arguments)["text"].IsString()
+                           ? (*ctx.Params().arguments)["text"].GetString()
+                           : "")
                         : "";
                     CallToolResult r;
                     r.content.push_back(TextContent{"text", text});
@@ -47,8 +45,8 @@ struct ClientServerFixture : ::testing::Test {
             std::function<CallToolResult(const Ctx&)>(
                 [](const Ctx& ctx) -> CallToolResult {
                     auto& args = ctx.Params().arguments;
-                    int a = args ? args->value("a", 0) : 0;
-                    int b = args ? args->value("b", 0) : 0;
+                    int a = args && (*args)["a"].IsInt() ? static_cast<int>((*args)["a"].GetInt()) : 0;
+                    int b = args && (*args)["b"].IsInt() ? static_cast<int>((*args)["b"].GetInt()) : 0;
                     CallToolResult r;
                     r.content.push_back(
                         TextContent{"text", std::to_string(a + b)});
@@ -102,7 +100,7 @@ TEST_F(ClientServerFixture, ListTools) {
 // ── 调用 echo ──
 TEST_F(ClientServerFixture, CallToolEcho) {
     auto result = client->CallTool("echo",
-        nlohmann::json{{"text", "Hello MCP"}});
+        JsonValue::Parse(R"({"text":"Hello MCP"})"));
 
     ASSERT_GE(result.content.size(), 1);
     auto* text = std::get_if<TextContent>(&result.content[0]);
@@ -114,7 +112,7 @@ TEST_F(ClientServerFixture, CallToolEcho) {
 // ── 调用 add ──
 TEST_F(ClientServerFixture, CallToolAdd) {
     auto result = client->CallTool("add",
-        nlohmann::json{{"a", 40}, {"b", 2}});
+        JsonValue::Parse(R"({"a":40,"b":2})"));
 
     ASSERT_GE(result.content.size(), 1);
     auto* text = std::get_if<TextContent>(&result.content[0]);

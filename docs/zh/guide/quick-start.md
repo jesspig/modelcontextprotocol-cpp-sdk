@@ -9,7 +9,7 @@ cmake --preset debug
 # 构建
 cmake --build --preset debug
 
-# 运行全部 216 个测试
+# 运行全部测试
 ctest --preset debug --output-on-failure
 ```
 
@@ -20,25 +20,25 @@ ctest --preset debug --output-on-failure
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_shared<StdioServerTransport>(io_ctx);
+    auto transport = std::make_unique<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
 
-    auto server = McpServer::Create(transport, opts, &io_ctx);
+    auto server = McpServer::Create(std::move(transport), opts);
 
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo input text back"),
         [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            auto& params = ctx.Params();
+            std::string text;
+            if (params.arguments && params.arguments->Contains("text")) {
+                text = (*params.arguments)["text"].GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -71,19 +71,10 @@ int main() {
     for (const auto& tool : tools.tools)
         std::cout << tool.name << "\n";
 
-    auto result = client->CallTool("echo",
-        nlohmann::json{{"text", "Hello, MCP!"}});
+    JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
+    auto result = client->CallTool("echo", args);
     return 0;
 }
 ```
 
-## 重要注意事项
 
-使用 `McpServer::Create` 或 `McpClient::Create` 配合传输层时，两者必须共享同一个 `asio::io_context`。始终将 io_context 作为第三个参数传入：
-
-```cpp
-auto transport = std::make_shared<StdioServerTransport>(io_ctx);
-auto server = McpServer::Create(transport, opts, &io_ctx);
-```
-
-省略 io_context 参数会创建一个内部 io_context，导致传输通道上发生静默数据丢失。

@@ -2,9 +2,6 @@
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
 
-#include <asio/post.hpp>
-#include <nlohmann/json.hpp>
-
 namespace mcp {
 
 // JSON parse safety limits
@@ -12,10 +9,9 @@ namespace mcp {
 // K_MAX_JSON_DEPTH removed — nlohmann-json v3.11.3 parse() accepts 4 args max
 // The constant was being passed as ignore_comments=true, enabling JSON comment parsing
 
-StdioServerTransport::StdioServerTransport(asio::io_context& io_ctx)
-    : TransportBase(io_ctx)
+StdioServerTransport::StdioServerTransport()
+    : TransportBase()
 {
-    channel_ = std::make_unique<MessageChannel>(io_ctx, 64);
 }
 
 StdioServerTransport::~StdioServerTransport() {
@@ -45,8 +41,7 @@ void StdioServerTransport::Close() {
 void StdioServerTransport::SendMessageAsync(JsonRpcMessage message) {
     if (!running_) return;
 
-    nlohmann::json j = message;
-    std::string line = j.dump() + "\n";
+    auto line = SerializeMessage(message) + "\n";
 
     stdout_pipe_->Write(line.data(), line.size());
 }
@@ -76,12 +71,8 @@ void StdioServerTransport::ReadLoop() {
             }
 
             try {
-                auto j = nlohmann::json::parse(line, nullptr, false, false);
-                JsonRpcMessage msg = j.get<JsonRpcMessage>();
-                asio::post(IoContext(), [this, msg = std::move(msg)]() {
-                    if (!running_) return;
-                    if (channel_) channel_->Send(std::move(msg));
-                });
+                auto msg = DeserializeMessage(line);
+                if (channel_) channel_->Send(std::move(msg));
             } catch (const std::exception& e) {
                 MCP_LOG(Error, std::string("stdio parse error: ") + e.what());
                 NotifyError(e.what());

@@ -39,7 +39,7 @@ auto codec = MakeWireCodec("2026-07-28");
 | 结果 | 普通 JSON（恒等编解码） | 带 `resultType` 字段的类型化结果（自动标记 `"complete"`） |
 | `_meta` 验证 | 不需要 | 除 `server/discover` 外所有请求必须携带 |
 
-### 2016 时代的 Wire 验证
+### 2026 时代的 Wire 验证
 
 `Rev2026Codec::ValidateRequest` 拒绝缺少 `_meta` 信封的请求，`server/discover` 除外（它是引导调用）。这强制实现了无状态协议设计。
 
@@ -111,12 +111,12 @@ bool IsJuly2026OrLater() const;
 
 ### MessageChannel
 
-`MessageChannel` 包装了 `asio::experimental::channel<void(asio::error_code, JsonRpcMessage)>`，提供：
+`MessageChannel` 提供了基于 `std::queue`、`std::mutex` 和 `std::condition_variable` 的有界异步消息队列，支持背压：
 
-- `AsyncReceive(callback)` — 异步接收，带完成回调
-- `Send(message)` — 将消息加入发送队列
-- `Close()` — 关闭通道
-- `IsOpen()` — 检查通道状态
+- `AsyncReceive(callback)` — 阻塞直到消息到达或通道关闭
+- `Send(message)` — 缓冲区满时阻塞（背压）
+- `TrySend(message)` — 非阻塞发送
+- `Close()` — 唤醒所有等待者
 
 由 `McpSessionHandler` 用于异步消息循环。
 

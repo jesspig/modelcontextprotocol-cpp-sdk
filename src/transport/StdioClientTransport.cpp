@@ -2,9 +2,6 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/JsonRpc.hpp>
 
-#include <asio/post.hpp>
-#include <nlohmann/json.hpp>
-
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -20,17 +17,14 @@ namespace {
 class StdioClientSessionTransport : public TransportBase {
 public:
     StdioClientSessionTransport(
-        std::shared_ptr<asio::io_context> io_ctx,
         std::unique_ptr<detail::ProcessHandle> process,
         std::unique_ptr<detail::PipeHandle> stdin_pipe,
         std::unique_ptr<detail::PipeHandle> stdout_pipe)
-        : TransportBase(*io_ctx)
-        , io_ctx_(std::move(io_ctx))
+        : TransportBase()
         , process_(std::move(process))
         , stdin_pipe_(std::move(stdin_pipe))
         , stdout_pipe_(std::move(stdout_pipe))
     {
-        channel_ = std::make_unique<MessageChannel>(*io_ctx_, 64);
     }
 
     ~StdioClientSessionTransport() override {
@@ -43,10 +37,6 @@ public:
             detail::SetThreadName("mcp-worker");
             ReadThread();
         });
-        io_thread_ = std::thread([this]() {
-            detail::SetThreadName("mcp-worker");
-            io_ctx_->run();
-        });
         SetConnected();
     }
 
@@ -58,8 +48,6 @@ public:
         if (stdout_pipe_) stdout_pipe_->Close();
 
         if (read_thread_.joinable()) read_thread_.join();
-        io_ctx_->stop();
-        if (io_thread_.joinable()) io_thread_.join();
 
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -68,8 +56,7 @@ public:
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
 
-        nlohmann::json j = message;
-        std::string line = j.dump() + "\n";
+        auto line = SerializeMessage(message) + "\n";
         if (stdin_pipe_) stdin_pipe_->Write(line.data(), line.size());
     }
 
@@ -103,11 +90,8 @@ private:
                 }
 
                 try {
-                    auto j = nlohmann::json::parse(line, nullptr, false, false);
-                    JsonRpcMessage msg = j.get<JsonRpcMessage>();
-                    asio::post(*io_ctx_, [this, msg = std::move(msg)]() {
-                        if (channel_) channel_->Send(std::move(msg));
-                    });
+                    auto msg = DeserializeMessage(line);
+                    if (channel_) channel_->Send(std::move(msg));
                 } catch (const std::exception& e) {
                     NotifyError(e.what());
                 }
@@ -115,9 +99,7 @@ private:
         }
     }
 
-    std::shared_ptr<asio::io_context> io_ctx_;
     std::thread read_thread_;
-    std::thread io_thread_;
     std::unique_ptr<detail::ProcessHandle> process_;
     std::unique_ptr<detail::PipeHandle> stdin_pipe_;
     std::unique_ptr<detail::PipeHandle> stdout_pipe_;
@@ -146,9 +128,7 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
     auto created = detail::CreateProcess(info);
     if (!created.process) return nullptr;
 
-    auto io_ctx = std::make_shared<asio::io_context>();
     auto session = std::make_shared<StdioClientSessionTransport>(
-        std::move(io_ctx),
         std::move(created.process),
         std::move(created.stdin_pipe),
         std::move(created.stdout_pipe));

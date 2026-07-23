@@ -26,9 +26,11 @@ int main() {
         ToolOptions{}.Description("Echo input"),
         std::function<CallToolResult(const Ctx&)>(
             [](const Ctx& ctx) -> CallToolResult {
-                auto text = ctx.Params().arguments
-                    ? ctx.Params().arguments->value("text", "")
-                    : "";
+                std::string text;
+                if (ctx.Params().arguments) {
+                    if (auto* v = ctx.Params().arguments->Find("text"); v && v->IsString())
+                        text = v->GetString();
+                }
                 CallToolResult r;
                 r.content.push_back(TextContent{"text", text});
                 return r;
@@ -63,7 +65,8 @@ int main() {
 
     // 调用 echo 工具
     std::cout << "\nCalling echo tool with 'Hello, MCP!'..." << std::endl;
-    auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
+    JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
+    auto result = client->CallTool("echo", args);
     for (const auto& content : result.content) {
         if (auto* text = std::get_if<TextContent>(&content)) {
             std::cout << "Response: " << text->text << std::endl;

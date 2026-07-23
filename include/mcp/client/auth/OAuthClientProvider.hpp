@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/JsonValue.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
 #include <mcp/McpTypes.hpp>
 
@@ -80,10 +81,10 @@ private:
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
 
     // RFC 9207: validate issuer parameter in token response
-    bool ValidateTokenIssuer(const nlohmann::json& response) const;
+    bool ValidateTokenIssuer(const JsonValue& response) const;
 
     // HTTP POST helper (minimal, for OAuth endpoints only)
-    nlohmann::json HttpPost(
+    JsonValue HttpPost(
         std::string_view url,
         const std::map<std::string, std::string>& form_data);
 

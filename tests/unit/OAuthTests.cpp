@@ -1,6 +1,7 @@
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
 
+#include <chrono>
 #include <gtest/gtest.h>
 
 using namespace mcp;

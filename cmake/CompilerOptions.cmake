@@ -69,8 +69,5 @@ endif()
 include(FindThreads)
 find_package(Threads REQUIRED)
 
-# ── ASIO ──
-add_compile_definitions(ASIO_STANDALONE ASIO_NO_DEPRECATED)
-
 # ── PIC ──
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

@@ -11,11 +11,9 @@ namespace {
 class InMemoryTransportImpl : public TransportBase {
 public:
     InMemoryTransportImpl(
-        std::shared_ptr<asio::io_context> io_ctx,
         std::shared_ptr<MessageChannel> recv_channel,
         std::shared_ptr<MessageChannel> send_channel)
-        : TransportBase(*io_ctx)
-        , io_ctx_(std::move(io_ctx))
+        : TransportBase()
         , recv_channel_(std::move(recv_channel))
         , send_channel_(std::move(send_channel))
     {}
@@ -33,7 +31,6 @@ public:
     MessageChannel& GetMessageChannel() override { return *recv_channel_; }
 
 private:
-    std::shared_ptr<asio::io_context> io_ctx_;
     std::shared_ptr<MessageChannel> recv_channel_;
     std::shared_ptr<MessageChannel> send_channel_;
 };
@@ -41,14 +38,12 @@ private:
 } // namespace
 
 InMemoryTransport::Pair InMemoryTransport::CreatePair() {
-    auto io_ctx = std::make_shared<asio::io_context>();
-
     // Client receives from s2c, writes to c2s; server receives from c2s, writes to s2c
-    auto c2s = std::make_shared<MessageChannel>(*io_ctx, 64);
-    auto s2c = std::make_shared<MessageChannel>(*io_ctx, 64);
+    auto c2s = std::make_shared<MessageChannel>(64);
+    auto s2c = std::make_shared<MessageChannel>(64);
 
-    auto client = std::make_shared<InMemoryTransportImpl>(io_ctx, s2c, c2s);
-    auto server = std::make_shared<InMemoryTransportImpl>(io_ctx, c2s, s2c);
+    auto client = std::make_shared<InMemoryTransportImpl>(s2c, c2s);
+    auto server = std::make_shared<InMemoryTransportImpl>(c2s, s2c);
 
     Pair pair;
     pair.client = std::move(client);

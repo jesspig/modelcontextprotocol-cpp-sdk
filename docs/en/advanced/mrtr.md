@@ -79,7 +79,7 @@ The client handles MRTR via `SetElicitationHandler`:
 client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         ElicitResult result;
-        result.values = nlohmann::json{{"confirmed", true}};
+        result.values = JsonValue(JsonValue::Object{{"confirmed", JsonValue(true)}});
         return result;
     });
 ```
@@ -100,11 +100,11 @@ ir.request_state = "state-token";
 
 ```cpp
 // Build an input request payload for elicitation
-nlohmann::json req = MakeInputRequestForElicitation(params);
+JsonValue req = MakeInputRequestForElicitation(params);
 // req == {"method": "elicitation/create", "params": {...}}
 
 // Convert an elicited result to an input response
-nlohmann::json resp = MakeInputResponseFromElicitResult(result);
+JsonValue resp = MakeInputResponseFromElicitResult(result);
 
 // Check if a JSON result indicates input_required
 if (IsInputRequiredResult(raw_result)) {

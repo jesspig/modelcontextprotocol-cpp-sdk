@@ -22,7 +22,7 @@ install(TARGETS
     EXPORT mcp-cpp-sdk-targets)
 
 # External dependencies needed by the export set
-install(TARGETS nlohmann_json asio
+install(TARGETS simdjson hv
     EXPORT mcp-cpp-sdk-targets)
 
 # ====================================================================

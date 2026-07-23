@@ -3,7 +3,9 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
 #include <mcp/McpTypes.hpp>
-#include <asio/steady_timer.hpp>
+#include <mcp/JsonValue.hpp>
+#include <chrono>
+#include <functional>
 #include <optional>
 #include <string>
 #include <memory>
@@ -26,8 +28,8 @@ struct IncomingRequestMeta {
 // PendingRequest — used by session handler for request/response tracking
 // ═══════════════════════════════════════════════════════════════════════
 struct PendingRequest {
-    std::function<void(nlohmann::json)> callback;
-    std::shared_ptr<asio::steady_timer> timer;
+    std::function<void(JsonValue)> callback;
+    std::chrono::steady_clock::time_point deadline;
 };
 
 // ═══════════════════════════════════════════════════════════════════════
