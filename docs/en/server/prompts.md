@@ -42,5 +42,5 @@ p.arguments = {arg};
 ```
 
 ::: note
-`PromptOptions` is accepted by the registration API but `description` is currently not propagated to the protocol-level prompt exposed via `prompts/list`. The `Prompt` struct returned in `ListPromptsResult` only includes `name`.
+`PromptOptions` fields (`description`, `title`, `icons`) are propagated to the protocol-level `Prompt` struct returned via `prompts/list`.
 :::

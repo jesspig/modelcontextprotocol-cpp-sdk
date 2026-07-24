@@ -80,32 +80,34 @@ Configure presets: `debug`, `release`. Ninja generator required.
 ┌─────────────────────────────────────┐
 │  mcp-server        mcp-client       │  Server & Client API
 ├─────────────────────────────────────┤
-│  mcp-protocol                       │  WireCodec, version negotiation
+│  mcp-protocol                       │  WireCodec, McpSessionHandler
 ├─────────────────────────────────────┤
-│  mcp-transport                      │  Stdio, SSE, WebSocket, Streamable HTTP
+│  mcp-transport       mcp-http       │  Transports, Streamable HTTP, SSE
 ├─────────────────────────────────────┤
-│  mcp-core            mcp-http       │  Types, JSON-RPC, HTTP serving
+│  mcp-core                           │  Types, JSON-RPC, interfaces
 └─────────────────────────────────────┘
 ```
 
 Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All libraries are static.
 
-- **mcp-core** — Core types, JSON-RPC message structures, error codes, capabilities, transport interfaces.
-- **mcp-transport** — Transport implementations: stdio (client/server), SSE client, WebSocket (simplified), in-memory for testing.
-- **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation, `MessageFilter` pipeline.
-- **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation.
-- **mcp-client** — `McpClient` with server discovery, version negotiation, OAuth (PKCE/DCR), MRTR driver, tool cache, `FileTokenCache`.
-- **mcp-http** — HTTP server for Streamable HTTP mode and SSE endpoint serving.
+- **mcp-core** — Core types, JSON-RPC message structures, error codes, capabilities, content types, transport interfaces.
+- **mcp-transport** — Transport implementations: StdioServerTransport, StdioClientTransport, SseClientTransport, InMemoryTransport, WebSocketClientTransport, StreamableHttpServerTransport, StreamableHttpClientTransport. Platform-specific I/O in `detail/` (posix, win32).
+- **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation with timeout, `MessageFilter` pipeline.
+- **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation, subscription management.
+- **mcp-client** — `McpClient` with server discovery (`server/discover` → initialize fallback), version negotiation, OAuth (PKCE/DCR), MRTR (InputRequired loop), tool cache, `FileTokenCache`.
+- **mcp-http** — HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence), `StreamableHttpServerTransport`, `StreamableHttpClientTransport`.
 
 ### All transports
 
-| Transport       | Client | Server | Description                                   |
-|-----------------|--------|--------|-----------------------------------------------|
-| Stdio           | Yes    | Yes    | stdin/stdout pipes                            |
-| Streamable HTTP | Yes    | Yes    | HTTP POST with streaming responses            |
-| SSE             | Yes    | No     | Server-Sent Events for server → client push   |
-| WebSocket       | Yes    | No     | TCP-based bidirectional (simplified)          |
-| InMemory        | Yes    | Yes    | In-process transport for testing              |
+| Transport       | Client | Server | Description                                      |
+|-----------------|--------|--------|--------------------------------------------------|
+| Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication     |
+| Streamable HTTP | Yes    | Yes    | HTTP POST with JSON/session-mode responses       |
+| SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications        |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient)  |
+| InMemory        | Yes    | Yes    | In-process transport for testing                 |
+
+> ¹ SSE server-side is provided through `StreamableHttpServerTransport` when `enable_legacy_sse` is `true`, which serves an SSE stream via HTTP GET.
 
 ## Usage
 
@@ -199,7 +201,7 @@ The `WireCodec` factory auto-selects the correct codec for the negotiated versio
 
 ## Conformance Tests
 
-**122 conformance tests** covering protocol type serialization across both eras:
+**113 conformance tests** covering protocol type serialization across both eras:
 
 - JSON-RPC message round-trips (request, notification, response, error)
 - WireCodec era-gating (2025 vs 2026 method/notification sets)

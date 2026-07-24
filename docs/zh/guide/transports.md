@@ -1,20 +1,20 @@
 # 传输层
 
-| 传输层            | 客户端 | 服务器 | 描述                                     |
-|------------------|--------|--------|------------------------------------------|
-| Stdio           | 是     | 是     | stdin/stdout 管道，子进程通信              |
-| Streamable HTTP | 是     | 是     | HTTP POST 配合流式服务器发送事件           |
-| SSE             | 是     | 是¹   | 用于推送通知的服务器发送事件                |
-| WebSocket       | 是     | 否     | 基于 TCP 的双向通信（libhv WebSocketClient） |
-| InMemory        | 是     | 是     | 进程内通信，用于测试                       |
+| 传输层            | 客户端 | 服务器 | 描述                                        |
+|------------------|--------|--------|---------------------------------------------|
+| Stdio           | 是     | 是     | stdin/stdout 管道，子进程通信                 |
+| Streamable HTTP | 是     | 是     | HTTP POST 配合 JSON/会话模式响应             |
+| SSE             | 是     | 是¹   | 用于推送通知的服务器发送事件                   |
+| WebSocket       | 是     | 否     | 基于 TCP 的双向通信（libhv WebSocketClient）  |
+| InMemory        | 是     | 是     | 进程内通信，用于测试                          |
 
 ## Streamable HTTP
 
 Streamable HTTP 传输实现了 MCP Streamable HTTP 规范。每个会话使用一个内部的 `StreamableHttpSessionTransport`（封装 `ITransport`），配备独立的消息通道和后台线程。
 
-**请求流程**：客户端通过 HTTP POST 发送 JSON-RPC 消息。服务端验证 `Mcp-Method` 和 `Mcp-Name` 头是否与消息体匹配（SEP-2243），在响应中回显这些头，并将 `Mcp-Param-*` 头提取到 `_meta.x-mcp-headers`。如果响应是 JSON，服务端在**无状态**模式下同步响应（通过 `std::promise` 进行待处理响应关联），或在会话模式下返回 `202 Accepted`。如果响应是 SSE（`text/event-stream`），服务端保持连接打开并流式推送事件。
+**请求流程**：客户端通过 HTTP POST 发送 JSON-RPC 消息。在**无状态**模式下，服务端同步处理请求并以 JSON 响应（通过 `std::promise` 关联响应，超时时间 30 秒）。在**会话**模式下，服务端返回 `202 Accepted`，并通过 SSE（通过独立的 GET 端点）异步交付结果。服务端验证 `Mcp-Method` 和 `Mcp-Name` 头是否与消息体匹配（SEP-2243），在响应中回显这些头，并将 `Mcp-Param-*` 头提取到 `_meta.x-mcp-headers`。
 
-**SSE 读取循环**：在客户端，当 POST 响应的 `Content-Type` 为 `text/event-stream` 时，后台线程（`SseReadLoop`）读取数据块，按 `\n\n` 分隔符拆分，解析 `data:` 行，并将 `JsonRpcMessage` 入队到 `MessageChannel`。
+**SSE 读取循环**：在客户端，当 POST 响应包含 SSE 事件时（例如会话模式结果），后台线程读取数据块，按 `\n\n` 分隔符拆分，解析 `data:` 行，并将 `JsonRpcMessage` 入队到 `MessageChannel`。
 
 **请求头**（`StreamableHttpClientTransport`）：
 - `MCP-Protocol-Version: 2026-07-28` — 始终发送
@@ -58,7 +58,7 @@ IClientTransport（连接工厂）
 |-------------------------------|-----------------------------------|----------|-------------------------|
 | `command`                     | `std::string`                     | 必填     | 子进程命令              |
 | `arguments`                   | `std::vector<std::string>`        | `{}`     | 命令行参数              |
-| `name`                        | `std::string`                     | `"stdio"`| 传输层名称              |
+| `name`                        | `std::string`                     | `""`    | 传输层名称（为空时回退到 `"stdio"`） |
 | `working_directory`           | `std::string`                     | `""`     | 子进程工作目录          |
 | `inherit_environment_variables` | `bool`                          | `true`   | 继承父进程环境          |
 | `environment_variables`       | `std::map<std::string, std::string>` | `{}`  | 附加环境变量            |
@@ -98,5 +98,4 @@ struct Pair {
 `StreamableHttpServerTransport` 支持无状态模式，由 `StreamableHttpServerOptions::stateless` 控制（默认 `false`）。当为 `true` 时，`IsStateless()` 返回 `true`，并且：
 
 - **无会话**：每个请求独立；通过 `std::promise` 同步关联响应，超时时间 30 秒。
-- **无 SSE**：服务端发起的通知通过 JSON 响应当行传递；跳过 `EventStore` 追加。
-- **MRTR 禁用**：服务器禁用 `InputRequiredResult`——请求必须通过 `_meta` 和 `requestState`（用于跨请求状态恢复的不透明令牌）携带完整上下文。
+- **无 SSE**：不进行 SSE 广播或 `EventStore` 追加；仅与待处理请求关联的响应通过 JSON 交付。

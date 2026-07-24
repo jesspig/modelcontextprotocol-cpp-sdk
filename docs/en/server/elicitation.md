@@ -26,9 +26,9 @@ if (result.values) {
 }
 ```
 
-## Generic Typed Form
+## Typed Helpers
 
-Use the `Elicit<T>` template for type-safe elicitation:
+`ElicitResultTyped<T>` is a user-side convenience wrapper for deserializing elicitation results into a typed structure:
 
 ```cpp
 struct AddressForm {
@@ -37,20 +37,35 @@ struct AddressForm {
     std::string zip_code;
 };
 
-auto future = server->Elicit<AddressForm>("Please provide your shipping address");
-auto result = future.get();
-if (result.is_accepted() && result.content) {
-    auto& addr = *result.content;
-    std::cout << addr.street << ", " << addr.city << "\n";
+ElicitResult raw = future.get();
+ElicitResultTyped<AddressForm> typed;
+if (raw.values) {
+    typed.action = "accept";
+    typed.content = AddressForm{
+        (*raw.values)["street"].GetString(),
+        (*raw.values)["city"].GetString(),
+        (*raw.values)["zip_code"].GetString()
+    };
+}
+
+if (typed.is_accepted() && typed.content) {
+    auto& addr = *typed.content;
+    // ...
 }
 ```
 
 ## Elicitation Result
 
-The result has a three-value action:
+`ElicitResult` extends `Result` with the following fields:
 
-| Action | Meaning |
-|--------|---------|
-| `accept` | User submitted the form |
-| `decline` | User explicitly declined |
-| `cancel` | User dismissed without action (default) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `values` | `std::optional<JsonValue>` | Submitted form data (present on accept) |
+| `result_type` | `ResultType` | `Complete` (accepted) or `InputRequired` (declined/pending) |
+
+`ElicitResultTyped<T>` provides a user-side action model:
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `action` | `std::string` | `"accept"`, `"decline"`, or `"cancel"` (default) |
+| `content` | `std::optional<T>` | Deserialized values (present on accept) |

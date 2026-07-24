@@ -9,6 +9,22 @@
 3. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
 4. **令牌撤销**，通过手动调用 `Revoke()`
 
+## OAuthClientOptions
+
+| 字段 | 类型 | 描述 |
+|-------|------|-------------|
+| `server_url` | `string` | 授权服务器基础 URL |
+| `redirect_uri` | `string` | OAuth 重定向 URI |
+| `client_id` | `optional<string>` | 客户端标识（未提供时自动注册） |
+| `client_secret` | `optional<string>` | 客户端密钥（可选） |
+| `client_metadata_document_uri` | `optional<string>` | 外部元数据文档 URI |
+| `scopes` | `vector<string>` | 请求的 OAuth 作用域 |
+| `token_cache` | `shared_ptr<ITokenCache>` | 令牌持久化（默认：`InMemoryTokenCache`） |
+| `auth_server_url` | `optional<string>` | 显式授权服务器 URL（覆盖元数据发现） |
+| `timeout_seconds` | `int` | HTTP 请求超时（默认 30） |
+| `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
+| `authorization_code_callback` | `function<optional<string>()>` | 返回授权码的回调 |
+
 ## 设置
 
 ```cpp
@@ -16,6 +32,7 @@ OAuthClientOptions oauth_opts;
 oauth_opts.server_url = "https://auth.server.com";
 oauth_opts.redirect_uri = "http://localhost:3000/callback";
 oauth_opts.client_id = "my-client";
+oauth_opts.scopes = {"profile", "email"};
 oauth_opts.authorization_redirect_handler =
     [](std::string_view url) {
         // 在浏览器中打开 URL 让用户授权
@@ -47,6 +64,8 @@ auto token = auth->GetAccessToken();
 
 ## PKCE 辅助函数
 
+PKCE 辅助函数位于 `<mcp/client/auth/OAuthClientProvider.hpp>` 的 `pkce` 命名空间中。
+
 ```cpp
 auto verifier = pkce::GenerateCodeVerifier();
 auto challenge = pkce::ComputeCodeChallenge(verifier);
@@ -55,14 +74,16 @@ auto encoded = pkce::Base64UrlEncode(input);
 
 ## 令牌缓存
 
-SDK 提供了 `ITokenCache` 的两种实现：
+SDK 提供了 `ITokenCache`（定义于 `<mcp/client/auth/TokenCache.hpp>`）的两种实现：
 
-| 实现 | 持久化 | 加密 |
+| 实现 | 持久化 | 保护 |
 |----------------|-------------|------------|
 | `InMemoryTokenCache` | 仅运行时 | 无 |
-| `FileTokenCache` | JSON 文件（POSIX）/ DPAPI 加密（Windows） | POSIX 上 `chmod 0600`，Windows 上 `CryptProtectData` |
+| `FileTokenCache`（`<mcp/storage/FileTokenCache.hpp>`） | JSON 文件 | POSIX 上 `chmod 0600`，Windows 上 `CryptProtectData`（DPAPI） |
 
 ```cpp
+#include <mcp/storage/FileTokenCache.hpp>
+
 auto token_cache = std::make_shared<FileTokenCache>("./tokens.json");
 OAuthClientOptions oauth_opts;
 oauth_opts.token_cache = token_cache;
@@ -70,4 +91,4 @@ oauth_opts.token_cache = token_cache;
 
 ## 要求
 
-当没有 OpenSSL 时，OAuth PKCE 使用 `std::random_device` 作为回退。安装 OpenSSL 后（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）将使用 `RAND_bytes` 生成代码验证器，同时启用 TLS 安全的令牌交换。
+OAuth PKCE 在构建时若使用 OpenSSL（`MCP_HAVE_OPENSSL`），则使用 `RAND_bytes`；否则回退到 `std::random_device`。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可为代码验证器生成提供密码学级随机数。令牌交换的 TLS 由 libhv 的 HTTP 客户端处理。

@@ -55,22 +55,15 @@ result.content.push_back(TextContent{"text",
 return result;
 ```
 
-带 JSON Schema 推断的类型化 elicit：
+用户可以手动使用 `ElicitResultTyped<T>` 构造类型化结果：
 
 ```cpp
-struct OrderConfirmation {
-    bool confirmed;
-    std::string notes;
-};
-
-auto typed_result = server->Elicit<OrderConfirmation>(
-    "请确认订单详情").get();
-if (typed_result.is_accepted()) {
-    // typed_result.content->confirmed, typed_result.content->notes
-}
+ElicitResultTyped<JsonValue> typed;
+typed.action = "accept";
+typed.content = JsonValue(JsonValue::Object{{"confirmed", true}});
 ```
 
-`Elicit` 方法返回 `std::future<ElicitResult>`（或类型化重载的 `std::future<ElicitResultTyped<T>>`）。
+`Elicit` 方法返回 `std::future<ElicitResult>`。
 
 ## 客户端
 

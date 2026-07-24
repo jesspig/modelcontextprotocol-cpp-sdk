@@ -5,60 +5,42 @@
 ```bash
 cmake --preset debug                          # Configure (Ninja, Debug)
 cmake --build --preset debug                  # Build
-ctest --preset debug --output-on-failure      # Run all tests
-ctest -R WireCodec                            # Filter single suite
-ctest -R Conformance -V                       # Filter group with verbose
+ctest --preset debug --output-on-failure      # All tests
+ctest -R WireCodec                            # Single suite
 cmake --build --preset debug --target mcp-server-tests   # Single target
 ```
 
-Presets: `debug`, `release`. Ninja generator only.
+Presets: `debug`, `release`. Ninja generator only. CI: push/PR to `develop`.
 
-### Non-obvious build facts
+### Non‑obvious build facts
 
-- **Unity (jumbo) builds ON** by default. Override `-DMCP_UNITY_BUILD=OFF`. `mcp-client` uses `UNITY_BUILD_UNIQUE_ID ON` to avoid OAuth symbol clashes. Exceptions: `mcp-transport` and `mcp-protocol` have Unity explicitly disabled (anonymous namespace symbols clash).
-- **Ninja job pools + Unity batch size**: auto-computed from CPU/memory. Override via `MCP_COMPILE_JOBS`, `MCP_LINK_JOBS`, `MCP_UNITY_BATCH_SIZE`.
-- **Compiler auto-detection**: `clang-cl` (Win) > `clang++-N` + matching `clang-N` (Linux) > system default. Detected before `project()`, skips if `CMAKE_CXX_COMPILER` already set.
-- **LTO**: auto-enabled in Release. clang-cl: `CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON` (maps to LTCG-style linking). Clang: ThinLTO. GCC: IPO.
-- **Compiler cache**: sccache > ccache > none. Auto-detected. sccache supports MSVC/clang-cl; ccache skips MSVC.
+- **Unity (jumbo) builds ON** by default. Override `-DMCP_UNITY_BUILD=OFF`.
+- `mcp-transport` and `mcp-protocol` have Unity explicitly disabled (anonymous namespace symbols clash). `mcp-client` uses `UNITY_BUILD_UNIQUE_ID ON` (OAuth symbols).
+- **Compiler auto-detection** runs before `project()`: clang-cl (Win) > clang++-N + matching clang-N (Linux) > system default. Skips if `CMAKE_CXX_COMPILER` already set.
+- **LTO**: auto-enabled in Release (clang-cl: LTCG, Clang: ThinLTO, GCC: IPO).
+- **Compiler cache**: sccache > ccache > none. sccache supports MSVC/clang-cl; ccache skips MSVC.
 - **Dependencies cached in `build/<preset>/_deps/`**. Deleting `build/` is expensive.
-- **`mcp-core` is STATIC** (has JsonValue.cpp, JsonRpc.cpp, etc.) — changing serialization recompiles many dependents.
-- **Werror**: only with `-DMCP_WERROR=ON` (CI). Off by default.
-- **CI** (`ci.yml`): push to `develop` + PRs targeting `develop`. Matrix: windows-2022, ubuntu-24.04, macos-15 × debug/release. All with `-DMCP_WERROR=ON`.
+- **Werror**: only with `-DMCP_WERROR=ON` (CI).
+- **`mcp-core` is STATIC** (JsonValue.cpp, JsonRpc.cpp, etc.) — changing serialization recompiles many dependents.
 
-### Cross-platform traps
+### Cross‑platform traps
 
-- **macOS linker**: `environ` in C++ anonymous namespaces creates mangled symbol `mcp::detail::environ`. Use `_NSGetEnviron()` (`<crt_externs.h>`) instead.
-- **macOS `pthread_setname_np`**: single-arg on Apple, two-arg elsewhere. Guard with `#ifdef __APPLE__`.
-- **GCC `warn_unused_result`**: `(void)`-cast does **not suppress** it — only works on Clang. Affects `chdir()`, `close()`, `dup2()`, `pipe()`.
-- **CMake CMP0169**: guarded with `if(POLICY CMP0169)` — not available before CMake 3.30.
-- **WSL**: build cache is not cross-platform. Windows clang-cl and WSL Linux builds need separate build dirs.
-- **`InMemoryTransport::CreatePair()`** returns `shared_ptr<ITransport>`, not concrete type. Use `dynamic_cast<TransportBase*>` to access state machine.
+- macOS: `environ` in anonymous namespaces creates mangled `mcp::detail::environ`. Use `_NSGetEnviron()`.
+- macOS: `pthread_setname_np` is single-arg — guard with `#ifdef __APPLE__`.
+- GCC: `(void)`-cast does **not suppress** `warn_unused_result` (Clang only). Affects `chdir()`, `close()`, `dup2()`, `pipe()`.
+- Apple Clang enables `-Wunused-private-field` by default — with `-Werror` any unused private member is a hard error.
+- clang-cl silently accepts both MSVC (`/W4`) and GCC (`-Wall`) flags — typos pass through.
+- `CMake CMP0169`: guarded with `if(POLICY CMP0169)` — not available before CMake 3.30.
 
-### Platform-specific traps
+### Unity build traps
 
-**Apple Clang vs LLVM Clang (macOS):**
+- **Header self-containment is mandatory**: Unity merges `.cpp` files; headers relying on prior `#include` order break.
+- **Debugging**: error line numbers point to the generated Unity batch file, not the original source. Disable with `-DMCP_UNITY_BUILD=OFF`.
+- GCC may trigger `-Wunused-function` in Unity files — guard anonymous namespace functions with `[[maybe_unused]]`.
 
-- Version numbers differ (Apple Clang 15 is LLVM 16). No `clang++-18` binary on macOS — only plain `clang++`.
-- Apple Clang enables `-Wunused-private-field` by default — with `-Werror` (CI) any unused private member is a hard error.
+### libhv FetchContent patch
 
-**GCC (Ubuntu):**
-
-- GCC does not support ThinLTO. Falls back to IPO via `check_ipo_supported()`.
-- Unity batch files may trigger `-Wunused-function` — guard anonymous namespace functions with `[[maybe_unused]]`.
-
-**Windows (clang-cl / MSVC):**
-
-- `_WIN32_WINNT=0x0A00` required for Windows 10+ API level.
-- clang-cl silently accepts both MSVC-style (`/W4`) and GCC-style (`-Wall`) flags — typos pass through.
-- sccache supports MSVC/clang-cl; ccache does NOT support MSVC.
-- clang-cl uses `/link` for linker flags, not `-Wl,`.
-
-### Unity (jumbo) build traps
-
-- **Header self-containment is mandatory**: Unity merges `.cpp` files; any header relying on prior `#include` order breaks.
-- **`mcp-client` requires `UNITY_BUILD_UNIQUE_ID ON`** to avoid OAuth static/anonymous-namespace symbol clashes.
-- **Debugging**: error line numbers point to the generated Unity batch file, not the original source. Disable Unity with `-DMCP_UNITY_BUILD=OFF`.
-- **Batch size formula**: `min(mem / 500MB, (cores + 1) / 2)`. Minimum batch size 2. Single-core machines disable Unity entirely.
+`cmake/FetchDependencies.cmake` patches libhv's CMakeLists.txt: the `install(FILES ... DESTINATION include/hv)` is replaced with `file(COPY ...)` so the `include/hv/` directory exists at configure time (matching `hv_static`'s `BUILD_INTERFACE`). If an agent adds a new preset or modifies dependency fetching, this patch must be preserved.
 
 ## Architecture
 
@@ -66,152 +48,111 @@ Presets: `debug`, `release`. Ninja generator only.
 include/mcp/       — Public headers
 src/client/        — McpClient, OAuth, FileTokenCache
 src/server/        — McpServer, FileTaskStore
-src/protocol/      — McpSessionHandler (engine), WireCodec
-src/transport/     — Stdio, SSE, InMemory, WebSocket transport impls
+src/protocol/      — McpSessionHandler (JSON-RPC engine), WireCodec (dual-era)
+src/transport/     — Stdio, SSE, InMemory, WebSocket, StreamableHttp impls
 src/http/          — HttpServer, EventStore, StreamableHttp*
 tests/             — unit/ (gtest), integration/, conformance/
 examples/          — EchoServer, WeatherServer, SimpleClient
 ```
 
-Library dep chain: `mcp-core (STATIC)` → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
-
-All libraries are STATIC. No `INTERFACE` / header-only libraries.
+Library dep chain: `mcp-core` → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All STATIC. No INTERFACE / header-only libraries.
 
 ### Transport hierarchy
 
 ```
-ITransport —— TransportBase (3-state: Initial→Connected→Disconnected)
+ITransport — TransportBase (3-state: Initial→Connected→Disconnected)
   ├── StdioServerTransport
-  ├── StdioClientSessionTransport (internal, anonymous namespace)
   ├── InMemoryTransportImpl
-  ├── SseClientSessionTransport (internal)
-  ├── WebSocketSessionTransport (internal, wraps hv::WebSocketClient, enable_shared_from_this)
   ├── StreamableHttpServerTransport
-  └── StreamableHttpSessionTransport (internal, via StreamableHttpClientTransport; Win32/WinHTTP + POSIX/libhv)
+  └── *SessionTransport (internal, anonymous namespace or enable_shared_from_this)
 
 IClientTransport (connection factory)
   ├── StdioClientTransport (PlatformIO, merged Win32+POSIX)
-  ├── SseClientTransport (libhv HttpClient + requests::post)
-  ├── StreamableHttpClientTransport (libhv requests::post / WinHTTP)
+  ├── SseClientTransport (libhv HttpClient)
+  ├── StreamableHttpClientTransport (libhv requests / WinHTTP)
   └── WebSocketClientTransport (libhv WebSocketClient)
 ```
 
-All transports have zero dependency on `asio::io_context` — they use raw threads + stdlib primitives (mutex, condition_variable) or libhv's event loop.
+No asio dependency — raw threads + stdlib primitives (mutex, condition_variable) or libhv event loop.
 
-### MessageChannel (custom, not asio)
+`MessageChannel` (`include/mcp/protocol/MessageChannel.hpp`) is a bounded async queue (`std::queue + mutex + condition_variable`) replacing `asio::experimental::channel`.
 
-`MessageChannel` (`include/mcp/protocol/MessageChannel.hpp`) is a bounded async queue built on `std::queue + mutex + condition_variable`:
+`InMemoryTransport::CreatePair()` returns `shared_ptr<ITransport>`. Use `dynamic_cast<TransportBase*>` to access state machine.
 
-- `AsyncReceive(callback)` — blocks until a message arrives or channel is closed
-- `Send(msg)` — blocks if buffer full (backpressure)
-- `TrySend(msg)` — non-blocking
-- `Close()` — wakes all waiters
-- Replaces the old `asio::experimental::channel`
+### HttpServer (`mcp-http`)
 
-### Protocol engine
+PIMPL pattern over libhv `HttpService`. Key detail: `HttpServerOptions::on_connect` and `on_disconnect` are **now wired** — they fire on SSE client add/remove respectively.
 
-`McpSessionHandler` (in `mcp-protocol`) is the JSON-RPC engine:
+### Version negotiation (critical)
 
-- Async message loop over `MessageChannel`
-- Request/response correlation with timeout; `next_request_id_` is `std::atomic<int64_t>`
-- Handler dispatch via `unordered_map` (two maps: one for requests, one for notifications)
-- Dual-era `WireCodec` (2025-11-25 initialize handshake / 2026-07-28 per-request `_meta`)
+- **`HandleInitialize` must echo the client's legacy version**: Return the version the client sent (e.g., `"2025-11-25"`). Never return `kLatestProtocolVersion` (`"2026-07-28"`) — TS SDK v2 validates `result.protocolVersion` against its legacy list.
+- **Modern versions (2026-07-28+) are NEVER negotiated via `initialize`**: Only via `server/discover`.
+- `McpClient` connect modes: `Auto` (default, probes `server/discover`, falls back to `initialize`), `Legacy` (initialize only), `Pin` (pinned version).
+- `SetNegotiatedProtocolVersion(version)` stores the version and recreates the `WireCodec`.
 
-### Version negotiation gotchas
+## Key protocol patterns
 
-- **`HandleInitialize` must echo the client's legacy version**: Return the version the client sent (e.g., `"2025-11-25"`). Never return `kLatestProtocolVersion` (`"2026-07-28"`) — TypeScript SDK v2 validates `result.protocolVersion` against its legacy list and throws if it doesn't match.
-- **Modern versions (2026-07-28+) are NEVER negotiated via `initialize`**: Only via `server/discover`. The initialize handshake is strictly for legacy versions.
-- `SetNegotiatedProtocolVersion(version)` both stores the version AND recreates the `WireCodec`.
-
-### HttpServer
-
-`HttpServer` (in `mcp-http`) uses libhv `HttpService` internally (PIMPL pattern):
-
-- `SetHandler(method, path, handler)` registers handlers (GET/POST/etc.)
-- SSE streaming: handler sets `resp.is_sse = true` → libhv async handler with `HttpResponseWriter`
-- Connected SSE clients stored by ID; `BroadcastSse(event)` pushes to all
-- `HttpServerOptions` provides optional `on_request` callback. (`on_connect` and `on_disconnect` are declared but not wired in the current implementation.)
-
-## Key protocol patterns (2026-07-28 era)
-
-- **Stateless**: `initialize`/`initialized` handshake replaced by `server/discover`. Per-request `_meta` carries `protocolVersion`, `clientInfo`, `clientCapabilities`, `logLevel` on every C→S request; additionally `progressToken` and `subscriptionId` extracted from incoming `_meta`.
-- **MRTR**: Server-initiated interactions (elicitation) embedded as `InputRequiredResult`.
+- **2026-07-28+ (modern)**: Stateless. `server/discover` replaces `initialize`/`initialized`. Per-request `_meta` carries `protocolVersion`, `clientInfo`, `clientCapabilities`, `logLevel`.
+- **MRTR**: Server-initiated elicitation embedded as `InputRequiredResult`.
 - **Subscriptions**: `subscriptions/listen` replaces `resources/subscribe`.
-- **Extensions**: Negotiated via `map<string, json>` on `ClientCapabilities`/`ServerCapabilities`.
 - **Caching**: `CacheHint` with `ttlMs`/`cacheScope`.
 - **Mcp-Method header**: Dynamic, derived from JSON-RPC body method field (for Streamable HTTP + SSE).
 
-## ServerOptions event hooks
+## Notification handlers
 
-`ServerOptions` exposes four layers of event callbacks, all optional:
+All 17 notification types are registered in `WireCodec.cpp` codec collections. Server‑side handlers are wired in `McpServer::WireHandlers()`; client‑side handlers in `McpClient::WireClientHandlers()`. Notifications are dispatched via `McpSessionHandler::OnNotification()` — unregistered notifications are logged (catch‑all added in OnNotification).
 
-| Layer | Callbacks | Purpose |
-|-------|-----------|---------|
-| **Shorthand** | `on_method_called`, `on_protocol_error` | Quick logging — method name / error message strings only |
-| **Full message** | `on_request`, `on_response`, `on_error`, `on_notification` | Full JSON-RPC message bodies |
-| **Server lifecycle** | `on_client_connected`, `on_initialized` | High‑level server events |
-| **Transport** | `on_transport_close`, `on_transport_error` | Connection‑level events |
+**Gotchas**:
+- `notifications/cancelled` is hard‑coded in `OnNotification()` before the handler map lookup (not a `SetNotificationHandler` registration).
+- `logging/setLevel` is a **request** (not notification) — if adding a server, it must be registered in `WireHandlers()`.
+- Progress notification handling resets pending‑request timeouts. Implementation is in the session handler.
 
-For fine‑grained interception (auth, audit, rate‑limiting), inject `FilterPipeline` via `incoming_filters` / `outgoing_filters`. See `MessageFilter.hpp`.
+## Server options and event hooks
 
-## Coding Style
+`ServerOptions` exposes four callback layers: shorthand (`on_method_called`, `on_protocol_error`), full message (`on_request`, `on_response`, `on_error`, `on_notification`), lifecycle (`on_client_connected`, `on_initialized`), transport (`on_transport_close`, `on_transport_error`). For auth/audit/rate‑limiting, inject `FilterPipeline` via `incoming_filters`/`outgoing_filters`.
 
-- **C++17**, `#pragma once`, 4-space indent. No auto-formatter.
-- **Types/Functions**: PascalCase. Constants: `k` + PascalCase.
-- **Members**: snake_case + underscore (`io_ctx_`).
-- **Namespace**: flat `mcp`. Sub-namespaces: `mcp::methods`, `mcp::notifications`.
-- **All public types are pure C++17** (`std::variant`‑based `JsonValue`). Zero external JSON deps in public headers.
-- **Content annotations**: typed `Annotations` struct (`audience`, `priority`, `last_modified`), not raw JSON.
-- **`Prompt` has no `annotations` field** — per spec. Do not add.
-- **Server guards requests with `initialized_` flag**: All handlers reject with `InvalidRequest` until `notifications/initialized` received.
-- **`McpClient` sends `notifications/initialized` after `HandshakeInitialize`**: Required by 2025-era protocol.
-- **`McpClient` connect modes**: `ClientOptions::connect_mode` controls negotiation. `Auto` (default) probes `server/discover`, falls back to `initialize`. `Legacy` forces `initialize` only. `Pin` uses a pinned version.
-- **`ToolOptions::InputSchema(JsonValue s)` is required for tools with parameters**: Without it, `McpServerToolImpl` hardcodes an empty schema `{"type":"object","properties":{}}`.
-- **`ContentVariant` includes `ResourceLink`**: handle `type == "resource_link"` in dispatch.
-- **`JsonRpcErrorResponse::id` is `optional<RequestId>`**: Null-id errors serialize correctly per JSON-RPC 2.0 §5.1.
-- **`jsonrpc: "2.0"` validated** in all `from_json`; invalid version throws.
-- **Log levels via `MCP_LOG_LEVEL` env var**: 0=Off (default), 1=Error, 2=Warning, 3=Info, 4=Debug, 5=Trace.
-- **OAuth HTTP/1.1 uses `Connection: close`**: Each token exchange opens a new TCP connection. No keep-alive.
+## Coding conventions
 
-## JsonValue — public JSON type
+- **C++17**, `#pragma once`, 4‑space indent. No auto‑formatter.
+- Types/functions: PascalCase. Constants: `k` + PascalCase. Members: snake_case + underscore (`io_ctx_`).
+- Namespace: flat `mcp`. Sub‑namespaces: `mcp::methods`, `mcp::notifications`.
+- **No external JSON in public headers**: `JsonValue` (`std::variant`-based) is the sole JSON type. Parsing uses simdjson DOM (internal). Serialization is hand‑written `Dump()`.
+- `Prompt` has no `annotations` field — per spec.
+- Server guards all handlers with `initialized_` flag until `notifications/initialized` received.
+- `ContentVariant` includes `ResourceLink` — dispatch on `type == "resource_link"`.
+- `JsonRpcErrorResponse::id` is `optional<RequestId>` (per JSON‑RPC 2.0 §5.1).
+- Log levels via `MCP_LOG_LEVEL` env var: 0=Off, 1=Error, 2=Warning, 3=Info, 4=Debug, 5=Trace.
+- OAuth HTTP/1.1 uses `Connection: close` — each token exchange opens a new TCP connection.
+- `ToolOptions::InputSchema(JsonValue s)` is required for tools with parameters (default is empty schema).
+- Dead code removed: `ServerHandlers.hpp` (deleted — handler types are now inline lambdas).
 
-`JsonValue` (`include/mcp/JsonValue.hpp`) is a recursive `std::variant<nullptr, bool, int64_t, double, string, Array, Object>`:
+## Testing
 
-- Parsing uses **simdjson DOM** (not on-demand) — internal only, not in public headers
-- Serialization is a hand-written recursive `Dump()` — no rapidjson/simdjson in public headers
-- Type methods: `IsNull()`, `IsBool()`, `IsInt()`, `IsDouble()`, `IsNumber()`, `IsString()`, `IsArray()`, `IsObject()`
-- Access: `GetBool()`, `GetInt()`, `GetDouble()`, `GetString()`, `GetArray()`, `GetObject()` (throws on type mismatch), `Find(key)` (returns nullptr, no throw)
-- Container: `Contains(key)`, `Size()`, `Empty()`, `operator[](key)`, `PushBack(val)`
-- Serialization helpers in `include/mcp/JsonRpc.hpp` and `src/detail/JsonSerializer.hpp` (internal, not in public headers)
+`InMemoryTransport` is **synchronous** — messages deliver on `Send()`/`AsyncReceive()`, no external event loop. All tests compile and pass without OpenSSL.
 
-## Testing (Google Test, auto-fetched)
+| Suite | Target | Key file |
+|-------|--------|----------|
+| JsonRpcTest | `mcp-core-tests` | Serialization + variant dispatch |
+| McpTypesTest | `mcp-core-tests` | Type round‑trips |
+| WireCodecTest | `mcp-wire-codec-tests` | Era‑gating codec |
+| McpServerTest | `mcp-server-tests` | Registration, capabilities |
+| McpClientTest | `mcp-client-tests` | Client creation, connect modes |
+| OAuthTest | `mcp-oauth-tests` | PKCE, token cache |
+| TransportTest | `mcp-transport-tests` | InMemory + state machine via `dynamic_cast<TransportBase*>` |
+| HttpServer/EventStore/StreamableHttp | `mcp-http-tests` | HTTP server, SSE, headers |
+| Conformance | `mcp-conformance-tests` | MCP spec compliance |
+| ClientServerFixture | `mcp-integration-tests` | Client‑server round‑trip via InMemoryTransport |
 
-| Suite | Target | Notes |
-|-------|--------|-------|
-| `JsonRpcTest` | `mcp-core-tests` | Message serialization + variant dispatch |
-| `McpTypesTest` | `mcp-core-tests` | Type round-trips with annotations, icons, content variants |
-| `WireCodecTest` | `mcp-wire-codec-tests` | Era-gating codec |
-| `McpServerTest` | `mcp-server-tests` | Registration, capabilities |
-| `McpClientTest` | `mcp-client-tests` | Client creation, tool cache |
-| `OAuthTest` | `mcp-oauth-tests` | PKCE, token cache |
-| `TransportTest` | `mcp-transport-tests` | InMemory + state machine via `dynamic_cast<TransportBase*>` |
-| `HttpServerTest` / `EventStoreTest` / `StreamableHttpTest` | `mcp-http-tests` | HttpServer GET/POST/404, EventStore, StreamableHttp header validation |
-| `Conformance` | `mcp-conformance-tests` | MCP spec compliance tests |
-| `ClientServerFixture` | `mcp-integration-tests` | Client-server round-trip via InMemoryTransport |
-
-- `InMemoryTransport` is **synchronous** — messages deliver on `Send()` / `AsyncReceive()`, no external event loop needed.
-- All tests compile and pass without OpenSSL. TLS features require OpenSSL.
-
-## Dependencies (auto-fetched via FetchContent)
+## Dependencies (auto‑fetched)
 
 | Dep | Version | Notes |
 |-----|---------|-------|
-| libhv | 1.3.4 | HTTP client/server, WebSocket client, event loop; `hv_static` target |
-| simdjson | 3.12.3 | JSON parsing (internal only, not in public headers) |
+| libhv | 1.3.4 | HTTP client/server, WebSocket, event loop; `hv_static` target |
+| simdjson | 3.12.3 | JSON parsing (internal, not in public headers) |
 | GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Optional; TLS (WebSocket, SSE HTTPS, OAuth). PKCE SHA-256 falls back to built-in. Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
+| OpenSSL | system | Optional: TLS, PKCE SHA‑256 (falls back to built‑in) |
 
-**No asio. No nlohmann-json.** Both have been fully removed. All JSON-RPC serialization uses `JsonValue`.
+No asio. No nlohmann‑json. Both fully removed.
 
 ## Commits
 

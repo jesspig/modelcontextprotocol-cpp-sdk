@@ -54,22 +54,15 @@ result.content.push_back(TextContent{"text",
 return result;
 ```
 
-Typed elicitation with JSON Schema inference:
+Users can construct a typed result manually using `ElicitResultTyped<T>`:
 
 ```cpp
-struct OrderConfirmation {
-    bool confirmed;
-    std::string notes;
-};
-
-auto typed_result = server->Elicit<OrderConfirmation>(
-    "Please confirm the order details").get();
-if (typed_result.is_accepted()) {
-    // typed_result.content->confirmed, typed_result.content->notes
-}
+ElicitResultTyped<JsonValue> typed;
+typed.action = "accept";
+typed.content = JsonValue(JsonValue::Object{{"confirmed", true}});
 ```
 
-The `Elicit` method returns `std::future<ElicitResult>` (or `std::future<ElicitResultTyped<T>>` for the typed overload).
+The `Elicit` method returns `std::future<ElicitResult>`.
 
 ## Client Side
 

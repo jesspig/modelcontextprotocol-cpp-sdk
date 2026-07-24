@@ -60,8 +60,11 @@ auto codec = MakeWireCodec("2026-07-28");
 | `log_level` | `io.modelcontextprotocol/logLevel` |
 | `progress_token` | `progressToken` |
 | `subscription_id` | `io.modelcontextprotocol/subscriptionId` |
+| `traceparent`     | `traceparent` |
+| `tracestate`      | `tracestate` |
+| `baggage`         | `baggage` |
 
-`StampOutgoingMeta` 辅助函数将 `protocolVersion`、`clientInfo`、`clientCapabilities` 和 `logLevel` 标记到传出请求的 `_meta` 中。
+`StampOutgoingMeta` 辅助函数将 `protocolVersion`、`clientInfo`、`clientCapabilities`、`logLevel`、`traceparent`、`tracestate` 和 `baggage` 标记到传出请求的 `_meta` 中。
 
 ### 按时代划分的方法
 
@@ -71,7 +74,7 @@ auto codec = MakeWireCodec("2026-07-28");
 |-----|---------|
 | 公共（两个时代） | `tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`、`prompts/list`、`prompts/get`、`completion/complete`、`elicitation/create` |
 | 仅 2025 | `ping`、`initialize`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage` |
-| 仅 2026 | `server/discover`、`server/extensions/list`、`subscriptions/listen`、`tasks/get`、`tasks/update`、`tasks/cancel` |
+| 仅 2026 | `server/discover`、`server/extensions/list`、`subscriptions/listen`、`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` |
 
 ### 按时代划分的通知
 
@@ -134,13 +137,6 @@ pipeline->AddFilter(std::make_shared<IncomingMessageFilter>(
 ```
 
 入站过滤器包装处理程序分发；出站过滤器包装传输层发送。两者都是可选的，通过 `ServerOptions::incoming_filters` / `outgoing_filters` 配置。
-
-### X-Mcp-Header 注解
-
-`XMcpHeaders.hpp` 为 JSON Schema 中的 `x-mcp-header` 注解提供辅助函数：
-
-- `ScanXMcpHeaders(schema)` — 从 `x-mcp-header` 声明中提取 `paramName → headerName` 映射
-- `ExtractXMcpHeaderValues(params, decls)` — 从参数中提取基本类型（字符串、整数、布尔值）的头部值
 
 ## 错误码重新映射（2026 时代）
 

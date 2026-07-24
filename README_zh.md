@@ -81,32 +81,34 @@ ctest --preset debug --output-on-failure
 ┌─────────────────────────────────────┐
 │  mcp-server        mcp-client       │  服务器 & 客户端 API
 ├─────────────────────────────────────┤
-│  mcp-protocol                       │  WireCodec、版本协商
+│  mcp-protocol                       │  WireCodec、McpSessionHandler
 ├─────────────────────────────────────┤
-│  mcp-transport                      │  Stdio、SSE、WebSocket、Streamable HTTP
+│  mcp-transport       mcp-http       │  传输层、Streamable HTTP、SSE
 ├─────────────────────────────────────┤
-│  mcp-core            mcp-http       │  类型、JSON-RPC、HTTP 服务
+│  mcp-core                           │  类型、JSON-RPC、接口
 └─────────────────────────────────────┘
 ```
 
 库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。所有库均为静态库。
 
-- **mcp-core** — 核心类型、JSON-RPC 消息结构、错误码、能力声明、传输层接口。
-- **mcp-transport** — 传输层实现：stdio（客户端/服务器）、SSE 客户端、WebSocket（简化版）、进程内通信（用于测试）。
-- **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联、`MessageFilter` 管道。
-- **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit。
-- **mcp-client** — `McpClient`，含服务器发现、版本协商、OAuth（PKCE/DCR）、MRTR 驱动、工具缓存、`FileTokenCache`。
-- **mcp-http** — 用于 Streamable HTTP 模式和 SSE 端点服务的 HTTP 服务器。
+- **mcp-core** — 核心类型、JSON-RPC 消息结构、错误码、能力声明、内容类型、传输层接口。
+- **mcp-transport** — 传输层实现：StdioServerTransport、StdioClientTransport、SseClientTransport、InMemoryTransport、WebSocketClientTransport、StreamableHttpServerTransport、StreamableHttpClientTransport。平台相关 I/O 在 `detail/` 目录下（posix、win32）。
+- **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联与超时、`MessageFilter` 管道。
+- **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit、订阅管理。
+- **mcp-client** — `McpClient`，含服务器发现（`server/discover` → initialize 回退）、版本协商、OAuth（PKCE/DCR）、MRTR（InputRequired 循环）、工具缓存、`FileTokenCache`。
+- **mcp-http** — 用于 Streamable HTTP 模式的 HTTP 服务器：`HttpServer`、`EventStore`（SSE 事件持久化）、`StreamableHttpServerTransport`、`StreamableHttpClientTransport`。
 
 ### 所有传输层
 
-| 传输层          | 客户端 | 服务器 | 说明                                         |
-|----------------|--------|--------|----------------------------------------------|
-| Stdio          | 是     | 是     | stdin/stdout 管道                            |
-| Streamable HTTP| 是     | 是     | HTTP POST 带流式响应                         |
-| SSE            | 是     | 否     | 服务器推送事件（Server-Sent Events）          |
-| WebSocket      | 是     | 否     | TCP 双向通信（简化版 RFC 6455）              |
-| InMemory       | 是     | 是     | 进程内传输，用于测试                          |
+| 传输层          | 客户端 | 服务器 | 说明                                           |
+|----------------|--------|--------|------------------------------------------------|
+| Stdio          | 是     | 是     | stdin/stdout 管道，子进程通信                  |
+| Streamable HTTP| 是     | 是     | HTTP POST 配合 JSON/会话模式响应               |
+| SSE            | 是     | 是¹   | 用于推送通知的服务器发送事件                  |
+| WebSocket      | 是     | 否     | TCP 双向通信（libhv WebSocketClient）          |
+| InMemory       | 是     | 是     | 进程内传输，用于测试                           |
+
+> ¹ 服务端 SSE 通过 `StreamableHttpServerTransport` 提供，当 `enable_legacy_sse` 为 `true` 时，在同一端点上通过 HTTP GET 提供 SSE 流。
 
 ## 使用方式
 
@@ -200,7 +202,7 @@ auth.Authenticate();
 
 ## 一致性测试
 
-**122 个一致性测试**，覆盖两个时代的协议类型序列化：
+**113 个一致性测试**，覆盖两个时代的协议类型序列化：
 
 - JSON-RPC 消息往返（请求、通知、响应、错误）
 - WireCodec 时代门控（2025 与 2026 方法/通知集）

@@ -7,7 +7,8 @@
 ```cpp
 StdioClientTransportOptions transport_opts;
 transport_opts.command = "path/to/server";
-auto transport = std::make_shared<StdioClientTransport>(transport_opts);
+auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+auto transport = factory->Connect();
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
@@ -18,41 +19,56 @@ auto client = McpClient::Create(transport, opts);
 
 | 字段 | 类型 | 描述 |
 |-------|------|-------------|
-| `client_info` | `Implementation` | 客户端标识 |
+| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.1.0"}`） |
 | `capabilities` | `optional<ClientCapabilities>` | 声明的能力 |
 | `connect_mode` | `ConnectMode` | `Auto`（发现 → 初始化）、`Legacy`、`Pin` |
 | `initialization_timeout` | `chrono::seconds` | 握手超时（默认 60s） |
 | `pin_protocol_version` | `optional<string>` | 固定到特定协议版本（用于 `Pin` 模式） |
 | `discover_probe_timeout` | `chrono::seconds` | 服务发现探测超时（默认 5s） |
-| `supported_protocol_versions` | `vector<string>` | 客户端声明的协议版本 |
-| `input_required_config` | `InputRequiredConfig` | MRTR elicitation 响应的配置 |
-| `cache_config` | `CacheConfig` | 客户端缓存配置 |
+| `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation 配置：`auto_fulfill=true`、`max_rounds=8`、`round_timeout=600s` |
 | `extensions` | `optional<JsonValue>` | 协议扩展声明 |
-| `enforce_strict_capabilities` | `bool` | 拒绝未知能力（默认 false） |
-| `list_max_pages` | `int` | 分页列表操作的最大页数（默认 64） |
 
 ## 发起请求
 
 ```cpp
-// 列出工具
+// 列出工具（可选游标用于分页）
 auto tools = client->ListTools();
 
-// 调用工具
+// 调用工具（支持可选参数、RequestOptions 和 MRTR）
 auto result = client->CallTool("echo",
     JsonValue(JsonValue::Object{{"text", "Hello"}}));
 
-// 读取资源
+// 读取资源（支持 CacheableRequestOptions）
 auto resource = client->ReadResource("file:///config.json");
 
-// 获取提示词
+// 获取提示词（支持可选参数和 RequestOptions）
 auto prompt = client->GetPrompt("code_review",
     JsonValue(JsonValue::Object{{"diff", "..."}}));
 
 // 补全提示词/资源引用
 auto completion = client->Complete(params);
 
-// Ping（心跳）
+// Ping（心跳，2026-07-28 协议版本已弃用）
 client->Ping();
+
+// 发现服务器能力（重新协商）
+auto discover = client->Discover();
+
+// 列出资源和模板
+auto resources = client->ListResources();
+auto templates = client->ListResourceTemplates();
+
+// 列出提示词
+auto prompts = client->ListPrompts();
+
+// 订阅/取消订阅资源变更
+client->SubscribeResource("file:///config.json");
+client->UnsubscribeResource("file:///config.json");
+
+// 任务操作
+auto task = client->GetTask("task-123");
+client->UpdateTask("task-123", result_json);
+client->CancelTask("task-123", "不再需要");
 ```
 
 ## 服务端到客户端处理器
@@ -77,6 +93,16 @@ client->SetRootsHandler(
     [](const ListRootsRequestParams& params) -> ListRootsResult {
         // 已弃用：提供根目录
     });
+
+client->SetNotificationHandler("custom/notification",
+    [](const JsonRpcNotification& notif) {
+        // 处理服务器发送的通知
+    });
+
+client->SetLoggingHandler(
+    [](const LoggingMessageNotificationParams& params) {
+        // 处理来自服务器的日志消息
+    });
 ```
 
 ## 订阅
@@ -86,6 +112,7 @@ client->SetRootsHandler(
 SubscriptionsListenRequestParams subs;
 subs.notifications.tools_list_changed = true;
 subs.notifications.resources_list_changed = true;
+subs.notifications.resource_subscriptions = {"file:///config.json"};
 client->SubscribeAsync(subs);
 ```
 

@@ -7,6 +7,8 @@ Protocol extensions are negotiated via the `extensions` map on `ClientCapabiliti
 Setting a `task_store` on `ServerOptions` automatically enables the extensions capability with an empty map:
 
 ```cpp
+auto transport = std::make_shared<StdioServerTransport>();
+
 ServerOptions opts;
 opts.task_store = std::make_shared<FileTaskStore>("tasks.json");
 

@@ -16,7 +16,7 @@
 
 ### mcp-core（STATIC）
 
-核心协议类型和 JSON 基础设施：`JsonValue`（基于 `std::variant` 的递归 JSON）、`JsonRpcRequest`、`JsonRpcResponse`、`JsonRpcNotification`、`JsonRpcErrorResponse`、错误码、能力声明（`ClientCapabilities`、`ServerCapabilities`）、内容类型（`TextContent`、`ImageContent`、`EmbeddedResource`、`ResourceLink`）、传输层接口（`ITransport`、`IClientTransport`）。
+核心协议类型和 JSON 基础设施：`JsonValue`（基于 `std::variant` 的递归 JSON）、`JsonRpcRequest`、`JsonRpcResponse`、`JsonRpcNotification`、`JsonRpcErrorResponse`、错误码、能力声明（`ClientCapabilities`、`ServerCapabilities`）、内容类型（`TextContent`、`ImageContent`、`AudioContent`、`EmbeddedResource`、`ResourceLink`）、传输层接口（`ITransport`、`IClientTransport`）。
 
 ### mcp-transport（STATIC）
 
@@ -28,11 +28,11 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 
 ### mcp-server（STATIC）
 
-`McpServer`：工具/资源/提示注册、`Extension` 框架（SEP-2133）、`IMcpTaskStore`（含用于持久化的 `FileTaskStore`）、服务器到客户端的 `Elicit`、MRTR（`InputRequiredResult`）、订阅管理、Streamable HTTP 的无状态模式。
+`McpServer`：工具/资源/提示注册、`IMcpTaskStore`（含用于持久化的 `FileTaskStore`）、服务器到客户端的 `Elicit`、MRTR（`InputRequiredResult`）、订阅管理、Streamable HTTP 的无状态模式。
 
 ### mcp-client（STATIC）
 
-`McpClient`：服务器发现（`server/discover` → initialize 回退）、版本协商、工具缓存、MRTR 驱动（`MrtrDriver`）、OAuth（PKCE、DCR、令牌刷新/撤销、`FileTokenCache`）。
+`McpClient`：服务器发现（`server/discover` → initialize 回退）、版本协商、工具缓存、MRTR（通过 `SendRequestWithMrtr` 的 InputRequired 循环）、OAuth（PKCE、DCR、令牌刷新/撤销、`FileTokenCache`）。
 
 ### mcp-http（STATIC）
 
@@ -42,8 +42,7 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 
 ```
 mcp-core (STATIC)
-  ├── simdjson  (JSON 解析，内部使用)
-  └── libhv     (HTTP/WebSocket，通过 mcp-transport)
+  └── simdjson  (JSON 解析，内部使用)
 
 mcp-transport (STATIC)
   └── mcp-core + libhv

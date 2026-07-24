@@ -7,12 +7,12 @@ Source: [`examples/WeatherServer/`](https://github.com/modelcontextprotocol/cpp-
 ## Features
 
 - **Tool**: `get_alerts` — returns simulated weather alerts for a US state
-- **Tool**: `get_forecast` — returns simulated weather forecast with location parameters
+- **Tool**: `get_forecast` — returns simulated weather forecast with state, latitude, and longitude parameters
 
 ## Running
 
 ```bash
-cmake --preset debug
+cmake --preset debug -DMCP_BUILD_EXAMPLES=ON
 cmake --build --preset debug
 build/debug/examples/WeatherServer/WeatherServer
 ```

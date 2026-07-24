@@ -60,8 +60,11 @@ The `IncomingRequestMeta` struct extracts these fields from the 2026-era `_meta`
 | `log_level` | `io.modelcontextprotocol/logLevel` |
 | `progress_token` | `progressToken` |
 | `subscription_id` | `io.modelcontextprotocol/subscriptionId` |
+| `traceparent`     | `traceparent` |
+| `tracestate`      | `tracestate` |
+| `baggage`         | `baggage` |
 
-The `StampOutgoingMeta` helper stamps `protocolVersion`, `clientInfo`, `clientCapabilities`, and `logLevel` onto outgoing request `_meta`.
+The `StampOutgoingMeta` helper stamps `protocolVersion`, `clientInfo`, `clientCapabilities`, `logLevel`, `traceparent`, `tracestate`, and `baggage` onto outgoing request `_meta`.
 
 ### Era-Gated Methods
 
@@ -71,7 +74,7 @@ The codec defines per-era method sets:
 |-----|---------|
 | Common (both eras) | `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete`, `elicitation/create` |
 | 2025-only | `ping`, `initialize`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage` |
-| 2026-only | `server/discover`, `server/extensions/list`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel` |
+| 2026-only | `server/discover`, `server/extensions/list`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel`, `tasks/result`, `tasks/list` |
 
 ### Era-Gated Notifications
 
@@ -134,13 +137,6 @@ pipeline->AddFilter(std::make_shared<IncomingMessageFilter>(
 ```
 
 Incoming filters wrap handler dispatch; outgoing filters wrap transport send. Both are optional and configured via `ServerOptions::incoming_filters` / `outgoing_filters`.
-
-### X-Mcp-Header Annotations
-
-`XMcpHeaders.hpp` provides helpers for `x-mcp-header` annotations in JSON Schema:
-
-- `ScanXMcpHeaders(schema)` — extracts `paramName → headerName` mappings from `x-mcp-header` declarations
-- `ExtractXMcpHeaderValues(params, decls)` — extracts header values from params for primitive types (string, integer, boolean)
 
 ## Error Code Remapping (2026-era)
 

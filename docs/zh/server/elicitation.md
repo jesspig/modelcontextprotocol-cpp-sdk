@@ -26,9 +26,9 @@ if (result.values) {
 }
 ```
 
-## 泛型类型化表单
+## 类型化辅助结构
 
-使用 `Elicit<T>` 模板实现类型安全的启发式收集：
+`ElicitResultTyped<T>` 是一个用户侧的类型安全封装，用于将启发式收集结果反序列化为结构化类型：
 
 ```cpp
 struct AddressForm {
@@ -37,20 +37,35 @@ struct AddressForm {
     std::string zip_code;
 };
 
-auto future = server->Elicit<AddressForm>("请提供您的收货地址");
-auto result = future.get();
-if (result.is_accepted() && result.content) {
-    auto& addr = *result.content;
-    std::cout << addr.street << ", " << addr.city << "\n";
+ElicitResult raw = future.get();
+ElicitResultTyped<AddressForm> typed;
+if (raw.values) {
+    typed.action = "accept";
+    typed.content = AddressForm{
+        (*raw.values)["street"].GetString(),
+        (*raw.values)["city"].GetString(),
+        (*raw.values)["zip_code"].GetString()
+    };
+}
+
+if (typed.is_accepted() && typed.content) {
+    auto& addr = *typed.content;
+    // ...
 }
 ```
 
 ## 启发式收集结果
 
-结果有三种取值：
+`ElicitResult` 继承自 `Result`，包含以下字段：
 
-| 动作 | 含义 |
-|--------|---------|
-| `accept` | 用户提交了表单 |
-| `decline` | 用户明确拒绝 |
-| `cancel` | 用户未操作直接关闭（默认） |
+| 字段 | 类型 | 说明 |
+|-------|------|-------------|
+| `values` | `std::optional<JsonValue>` | 提交的表单数据（接受时存在） |
+| `result_type` | `ResultType` | `Complete`（已接受）或 `InputRequired`（已拒绝/待处理） |
+
+`ElicitResultTyped<T>` 提供用户侧的操作模型：
+
+| 成员 | 类型 | 说明 |
+|--------|------|-------------|
+| `action` | `std::string` | `"accept"`、`"decline"` 或 `"cancel"`（默认） |
+| `content` | `std::optional<T>` | 反序列化的值（接受时存在） |

@@ -9,10 +9,8 @@ auto transport = std::make_shared<StdioServerTransport>();
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
-opts.capabilities = ServerCapabilities{};
-opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts);
+auto server = McpServer::Create(transport, opts);
 server->Run();
 ```
 
@@ -27,10 +25,8 @@ auto transport = std::make_shared<StreamableHttpServerTransport>(http_opts);
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
-opts.capabilities = ServerCapabilities{};
-opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts);
+auto server = McpServer::Create(transport, opts);
 server->Run();
 ```
 

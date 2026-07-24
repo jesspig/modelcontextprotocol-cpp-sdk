@@ -9,7 +9,7 @@ cmake --preset debug
 # Build
 cmake --build --preset debug
 
-# Run all 216 tests
+# Run all 215 tests
 ctest --preset debug --output-on-failure
 ```
 
@@ -60,7 +60,8 @@ using namespace mcp;
 int main() {
     StdioClientTransportOptions transport_opts;
     transport_opts.command = "./my-server";
-    auto transport = std::make_shared<StdioClientTransport>(transport_opts);
+    auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+    auto transport = factory->Connect();
 
     ClientOptions opts;
     opts.client_info = Implementation{"MyClient", "1.0.0"};
@@ -71,7 +72,7 @@ int main() {
     for (const auto& tool : tools.tools)
         std::cout << tool.name << "\n";
 
-    JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
+    JsonValue args(JsonValue::FromObject({{"text", "Hello, MCP!"}}));
     auto result = client->CallTool("echo", args);
     return 0;
 }
