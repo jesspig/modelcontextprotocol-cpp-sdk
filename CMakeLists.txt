@@ -124,7 +124,7 @@ else()
     target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
 endif()
 target_link_libraries(mcp-transport PUBLIC mcp-core hv_static)
-target_include_directories(mcp-transport PRIVATE ${libhv_SOURCE_DIR}/include)
+target_include_directories(mcp-transport SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
