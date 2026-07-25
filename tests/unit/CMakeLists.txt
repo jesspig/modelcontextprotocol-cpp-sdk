@@ -29,6 +29,7 @@ gtest_discover_tests(mcp-transport-tests)
 
 add_executable(mcp-http-tests HttpServerTests.cpp)
 target_link_libraries(mcp-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
+target_include_directories(mcp-http-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 gtest_discover_tests(mcp-http-tests)
 
 add_executable(mcp-message-filter-tests MessageFilterTests.cpp)

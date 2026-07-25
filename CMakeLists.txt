@@ -184,6 +184,7 @@ if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
 target_link_libraries(mcp-http PUBLIC mcp-transport hv_static)
+target_include_directories(mcp-http SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
