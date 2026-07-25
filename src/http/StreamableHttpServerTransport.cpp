@@ -5,6 +5,7 @@
 #include <mcp/Log.hpp>
 
 #include <sstream>
+#include <stdexcept>
 
 namespace mcp {
 

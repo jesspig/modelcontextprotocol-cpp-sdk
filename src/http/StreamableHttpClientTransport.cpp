@@ -28,6 +28,10 @@
 #pragma comment(lib, "winhttp.lib")
 #endif
 
+#ifndef _WIN32
+#include <hv/requests.h>
+#endif
+
 namespace mcp {
 
 // JSON parse safety limits
@@ -293,7 +297,6 @@ private:
 // POSIX implementation using libhv
 // ═══════════════════════════════════════════════════════════════════════
 #else
-#include <hv/requests.h>
 
 namespace {
 

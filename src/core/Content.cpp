@@ -4,6 +4,7 @@
 #include <mcp/Implementation.hpp>
 #include <mcp/Meta.hpp>
 #include <detail/JsonSerializer.hpp>
+#include <stdexcept>
 
 namespace mcp {
 

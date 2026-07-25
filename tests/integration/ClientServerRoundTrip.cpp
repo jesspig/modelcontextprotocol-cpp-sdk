@@ -154,5 +154,8 @@ TEST_F(ClientServerFixture, ServerCapabilities) {
 
 // ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     EXPECT_NO_THROW(client->Ping());
+#pragma clang diagnostic pop
 }
