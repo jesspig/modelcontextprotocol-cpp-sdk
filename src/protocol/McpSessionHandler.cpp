@@ -167,6 +167,20 @@ void McpSessionHandler::CheckTimeouts() {
     }
 }
 
+void McpSessionHandler::ResetTimeoutByProgressToken(const std::string& pt_key) {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    auto it = progress_token_map_.find(pt_key);
+    if (it != progress_token_map_.end()) {
+        auto pit = pending_.find(it->second);
+        if (pit != pending_.end()) {
+            auto remaining = pit->second->deadline - std::chrono::steady_clock::now();
+            if (remaining < std::chrono::seconds(30)) {
+                pit->second->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Dispatch
 // ═══════════════════════════════════════════════════════════════════════
@@ -382,10 +396,19 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
         promise->set_value(std::move(result));
     };
     pending->deadline = std::chrono::steady_clock::now() + timeout;
+    pending->progress_token = meta.progress_token;
 
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_[std::to_string(id)] = pending;
+        if (meta.progress_token) {
+            auto pt_key = std::visit([](const auto& v) -> std::string {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::string>) return v;
+                else return std::to_string(v);
+            }, *meta.progress_token);
+            progress_token_map_[pt_key] = std::to_string(id);
+        }
     }
 
     // Apply outgoing filters for the request
@@ -450,12 +473,15 @@ void McpSessionHandler::StampOutgoingMeta(JsonValue& body, const RequestMeta& me
 
     JsonValue meta_obj(JsonValue::object_tag);
     meta_obj["io.modelcontextprotocol/protocolVersion"] = JsonValue(meta.protocol_version);
-    if (meta.client_info)
+    if (meta.client_info) {
         meta_obj["io.modelcontextprotocol/clientInfo"] = ImplToJson(*meta.client_info);
-        if (meta.client_capabilities)
-            meta_obj["io.modelcontextprotocol/clientCapabilities"] = CapsToJson(*meta.client_capabilities);
-        if (meta.log_level)
-            meta_obj["io.modelcontextprotocol/logLevel"] = LogLevelToJson(*meta.log_level);
+    }
+    if (meta.client_capabilities) {
+        meta_obj["io.modelcontextprotocol/clientCapabilities"] = CapsToJson(*meta.client_capabilities);
+    }
+    if (meta.log_level) {
+        meta_obj["io.modelcontextprotocol/logLevel"] = LogLevelToJson(*meta.log_level);
+    }
     body["_meta"] = std::move(meta_obj);
 
     LogContext ctx;
@@ -483,12 +509,15 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     };
 
     meta.protocol_version = get_str("io.modelcontextprotocol/protocolVersion");
-    if (auto* it = j.Find("io.modelcontextprotocol/clientInfo"))
+    if (auto* it = j.Find("io.modelcontextprotocol/clientInfo")) {
         meta.client_info = ImplFromJson(*it);
-        if (auto it = j.Find("io.modelcontextprotocol/clientCapabilities"); it)
-            meta.client_capabilities = CapsFromJson(*it);
-        if (auto it = j.Find("io.modelcontextprotocol/logLevel"); it)
-            meta.log_level = LogLevelFromJson(*it);
+    }
+    if (auto it = j.Find("io.modelcontextprotocol/clientCapabilities"); it) {
+        meta.client_capabilities = CapsFromJson(*it);
+    }
+    if (auto it = j.Find("io.modelcontextprotocol/logLevel"); it) {
+        meta.log_level = LogLevelFromJson(*it);
+    }
     if (auto* pt = j.Find("progressToken")) {
         if (pt->IsString())
             meta.progress_token = pt->GetString();

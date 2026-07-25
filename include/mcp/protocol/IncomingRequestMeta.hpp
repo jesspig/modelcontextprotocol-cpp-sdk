@@ -35,6 +35,7 @@ struct IncomingRequestMeta {
 struct PendingRequest {
     std::function<void(JsonValue)> callback;
     std::chrono::steady_clock::time_point deadline;
+    std::optional<ProgressToken> progress_token;
 };
 
 // ═══════════════════════════════════════════════════════════════════════
