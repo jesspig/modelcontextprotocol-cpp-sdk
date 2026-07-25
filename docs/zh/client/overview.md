@@ -69,6 +69,9 @@ client->UnsubscribeResource("file:///config.json");
 auto task = client->GetTask("task-123");
 client->UpdateTask("task-123", result_json);
 client->CancelTask("task-123", "不再需要");
+
+// 轮询任务直到完成（可配置间隔和超时）
+auto completed = client->PollTaskToCompletionAsync("task-123");
 ```
 
 ## 服务端到客户端处理器
@@ -121,5 +124,5 @@ client->SubscribeAsync(subs);
 客户端自动协商协议版本：
 
 1. **Auto**（默认）：探测 `server/discover`，回退至 `initialize` 握手
-2. **Pin**：强制指定版本
+2. **Pin**：强制指定版本（通过 `pin_protocol_version`，未设置时默认使用 `kLatestProtocolVersion`）
 3. **Legacy**：仅使用 `initialize` 握手

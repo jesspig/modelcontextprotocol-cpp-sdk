@@ -26,9 +26,19 @@ if (result.values) {
 }
 ```
 
+## 启发式收集结果
+
+`ElicitResult` 继承自 `Result`，包含：
+
+| 字段 | 类型 | 说明 |
+|-------|------|------|
+| `values` | `optional<JsonValue>` | 提交的表单数据（接受时存在） |
+
+继承的 `result_type`（`Complete` 或 `InputRequired`）指示输入是否已完成或仍在等待。
+
 ## 类型化辅助结构
 
-`ElicitResultTyped<T>` 是一个用户侧的类型安全封装，用于将启发式收集结果反序列化为结构化类型：
+`ElicitResultTyped<T>` 是一个用户侧的便利结构体，用于封装反序列化结果：
 
 ```cpp
 struct AddressForm {
@@ -54,18 +64,12 @@ if (typed.is_accepted() && typed.content) {
 }
 ```
 
-## 启发式收集结果
-
-`ElicitResult` 继承自 `Result`，包含以下字段：
-
-| 字段 | 类型 | 说明 |
-|-------|------|-------------|
-| `values` | `std::optional<JsonValue>` | 提交的表单数据（接受时存在） |
-| `result_type` | `ResultType` | `Complete`（已接受）或 `InputRequired`（已拒绝/待处理） |
-
-`ElicitResultTyped<T>` 提供用户侧的操作模型：
+`ElicitResultTyped<T>` 成员：
 
 | 成员 | 类型 | 说明 |
-|--------|------|-------------|
-| `action` | `std::string` | `"accept"`、`"decline"` 或 `"cancel"`（默认） |
-| `content` | `std::optional<T>` | 反序列化的值（接受时存在） |
+|--------|------|------|
+| `action` | `string` | `"accept"`、`"decline"` 或 `"cancel"`（默认） |
+| `content` | `optional<T>` | 反序列化的值（接受时存在） |
+| `is_accepted()` | `bool` | 当 `action == "accept"` 时返回 `true` |
+
+注意：`ElicitResultTyped<T>` 不由任何 API 返回——请从原始的 `ElicitResult` 手动构造。

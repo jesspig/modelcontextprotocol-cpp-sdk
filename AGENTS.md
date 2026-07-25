@@ -10,7 +10,11 @@ ctest -R WireCodec                            # Single suite
 cmake --build --preset debug --target mcp-server-tests   # Single target
 ```
 
-Presets: `debug`, `release`. Ninja generator only. CI: push/PR to `develop`.
+Presets: `debug`, `release`. Ninja generator only. CI: push/PR to `develop` (ci.yml, 3 OS × 2 build types).
+
+Examples are OFF by default: add `-DMCP_BUILD_EXAMPLES=ON` to configure to build examples.
+
+No formatter/linter config — `-Wextra -Wpedantic` for Clang/GCC, `/W4` for MSVC/clang-cl.
 
 ### Non‑obvious build facts
 
@@ -20,7 +24,7 @@ Presets: `debug`, `release`. Ninja generator only. CI: push/PR to `develop`.
 - **LTO**: auto-enabled in Release (clang-cl: LTCG, Clang: ThinLTO, GCC: IPO).
 - **Compiler cache**: sccache > ccache > none. sccache supports MSVC/clang-cl; ccache skips MSVC.
 - **Dependencies cached in `build/<preset>/_deps/`**. Deleting `build/` is expensive.
-- **Werror**: only with `-DMCP_WERROR=ON` (CI).
+- **Werror**: only with `-DMCP_WERROR=ON` (CI). CI adds this automatically.
 - **`mcp-core` is STATIC** (JsonValue.cpp, JsonRpc.cpp, etc.) — changing serialization recompiles many dependents.
 
 ### Cross‑platform traps
@@ -105,7 +109,7 @@ All 17 notification types are registered in `WireCodec.cpp` codec collections. S
 **Gotchas**:
 - `notifications/cancelled` is hard‑coded in `OnNotification()` before the handler map lookup (not a `SetNotificationHandler` registration).
 - `logging/setLevel` is a **request** (not notification) — if adding a server, it must be registered in `WireHandlers()`.
-- Progress notification handling resets pending‑request timeouts. Implementation is in the session handler.
+- Progress notification handler calls `ResetTimeoutByProgressToken()` which extends the deadline by 30s via `progress_token_map_` → `pending_` lookup. Defined in `McpSessionHandler`, wired in `McpServer::WireHandlers()`.
 
 ## Server options and event hooks
 
@@ -119,12 +123,12 @@ All 17 notification types are registered in `WireCodec.cpp` codec collections. S
 - **No external JSON in public headers**: `JsonValue` (`std::variant`-based) is the sole JSON type. Parsing uses simdjson DOM (internal). Serialization is hand‑written `Dump()`.
 - `Prompt` has no `annotations` field — per spec.
 - Server guards all handlers with `initialized_` flag until `notifications/initialized` received.
-- `ContentVariant` includes `ResourceLink` — dispatch on `type == "resource_link"`.
+- `ContentVariant` includes `ResourceLink`, `ToolUseContent`, `ToolResultContent` — dispatch on `type` string.
 - `JsonRpcErrorResponse::id` is `optional<RequestId>` (per JSON‑RPC 2.0 §5.1).
 - Log levels via `MCP_LOG_LEVEL` env var: 0=Off, 1=Error, 2=Warning, 3=Info, 4=Debug, 5=Trace.
 - OAuth HTTP/1.1 uses `Connection: close` — each token exchange opens a new TCP connection.
 - `ToolOptions::InputSchema(JsonValue s)` is required for tools with parameters (default is empty schema).
-- Dead code removed: `ServerHandlers.hpp` (deleted — handler types are now inline lambdas).
+- `StreamableHttpClientTransport::Name()` returns `"streamable-http"` when `options_.name` is empty.
 
 ## Testing
 
@@ -142,6 +146,11 @@ All 17 notification types are registered in `WireCodec.cpp` codec collections. S
 | HttpServer/EventStore/StreamableHttp | `mcp-http-tests` | HTTP server, SSE, headers |
 | Conformance | `mcp-conformance-tests` | MCP spec compliance |
 | ClientServerFixture | `mcp-integration-tests` | Client‑server round‑trip via InMemoryTransport |
+| MessageFilterTest | `mcp-message-filter-tests` | FilterPipeline chain, stop, modify |
+| FileTokenCacheTest | `mcp-token-cache-tests` | Persistence, corruption handling |
+| FileTaskStoreTest | `mcp-task-store-tests` | Task CRUD, status transitions |
+| StreamableHttpTransportTest | `mcp-streamable-http-tests` | Client/server construction, header validation |
+| WebSocketTransportTest | `mcp-websocket-tests` | Construction, default name |
 
 ## Dependencies (auto‑fetched)
 
@@ -153,6 +162,10 @@ All 17 notification types are registered in `WireCodec.cpp` codec collections. S
 | OpenSSL | system | Optional: TLS, PKCE SHA‑256 (falls back to built‑in) |
 
 No asio. No nlohmann‑json. Both fully removed.
+
+## Documentation
+
+`docs/` is a vitepress site (`pnpm dev` to serve locally, `pnpm build` to build). Bilingual: `en/` and `zh/` directories. The SDK uses this for user-facing docs; generated API docs are in `docs/.vitepress/dist/`.
 
 ## Commits
 

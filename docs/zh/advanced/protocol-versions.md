@@ -41,7 +41,21 @@ auto codec = MakeWireCodec("2026-07-28");
 
 ### 2026 时代的 Wire 验证
 
-`Rev2026Codec::ValidateRequest` 拒绝缺少 `_meta` 信封的请求，`server/discover` 除外（它是引导调用）。这强制实现了无状态协议设计。
+`Rev2026Codec::ValidateRequest` 执行两项检查：
+1. **时代成员资格**：如果方法不在 2026 时代的方法集合中，返回 `NotInEra`。
+2. **`_meta` 存在性**：如果请求（`server/discover` 除外）缺少 `_meta` 信封，返回 `Invalid`。
+
+这强制实现了无状态协议设计，其中 `server/discover` 是唯一不需要前置上下文的引导调用。
+
+### 响应验证（2026 时代）
+
+`Rev2026Codec::ValidateResponse` 验证出站响应：
+1. **`resultType` 字段**：所有响应必须包含 `resultType`。缺失则返回 `Invalid`。
+2. **列表方法**：对于 `tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`、`server/extensions/list` 和 `tasks/list`，`resultType` 必须为 `"complete"`。列表结果不能是部分/input_required。
+
+### 通知验证（2026 时代）
+
+`Rev2026Codec::ValidateNotification` 确保通知不包含 `id`、`result` 或 `error` 字段——只允许 `method` 和 `params`。
 
 ### 结果编码
 
@@ -64,7 +78,7 @@ auto codec = MakeWireCodec("2026-07-28");
 | `tracestate`      | `tracestate` |
 | `baggage`         | `baggage` |
 
-`StampOutgoingMeta` 辅助函数将 `protocolVersion`、`clientInfo`、`clientCapabilities`、`logLevel`、`traceparent`、`tracestate` 和 `baggage` 标记到传出请求的 `_meta` 中。
+`StampOutgoingMeta` 辅助函数将 `protocolVersion`、`clientInfo`、`clientCapabilities` 和 `logLevel` 标记到传出请求的 `_meta` 中。分布式追踪字段（`traceparent`、`tracestate`、`baggage`）不会被此辅助函数自动标记。
 
 ### 按时代划分的方法
 
@@ -140,8 +154,12 @@ pipeline->AddFilter(std::make_shared<IncomingMessageFilter>(
 
 ## 错误码重新映射（2026 时代）
 
-| 代码 | 名称 | 2025 值 | 2026 值 |
-|------|------|-----------|-----------|
-| HeaderMismatch | 头部不匹配 | -32001 | -32020 |
-| MissingRequiredClientCapability | 缺少必要能力 | -32003 | -32021 |
-| UnsupportedProtocolVersion | 版本不匹配 | -32004 | -32022 |
+`Rev2026Codec::EncodeErrorCode` 将旧版 2025 时代的错误码重新映射为 2026 时代的值：
+
+| 错误 | 2025 值 | 2026 值 |
+|-------|-----------|-----------|
+| `HeaderMismatch` (-32020) | -32001 | -32020 |
+| `MissingRequiredClientCapability` (-32021) | -32003 | -32021 |
+| `UnsupportedProtocolVersion` (-32022) | -32004 | -32022 |
+
+其他所有错误码原样传递。

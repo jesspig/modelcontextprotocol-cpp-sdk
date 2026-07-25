@@ -8,6 +8,7 @@ Source: [`examples/EchoServer/`](https://github.com/modelcontextprotocol/cpp-sdk
 
 - **Tool**: `echo` — echoes input text back
 - **Resource**: `echo://static` — returns a stored message
+- **Resource Template**: `echo://{text}` — echoes the URI parameter
 - **Prompt**: `capitalize` — capitalizes input text
 
 ## Running

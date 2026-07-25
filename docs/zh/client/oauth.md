@@ -5,7 +5,7 @@
 ## 流程
 
 1. **授权码 + PKCE**，使用 S256 代码质询
-2. **动态客户端注册**（DCR），用于首次使用的客户端（合成注册，无网络请求）
+2. **动态客户端注册**（DCR），用于首次使用的客户端（HTTP POST 到注册端点）
 3. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
 4. **令牌撤销**，通过手动调用 `Revoke()`
 
@@ -60,7 +60,7 @@ auto token = auth->GetAccessToken();
 | `HasToken()` | 检查是否存在任何令牌（可能已过期） |
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
 | `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权 |
-| `Revoke()` | 清除存储的令牌 |
+| `Revoke()` | 清除存储的令牌（不调用撤销端点） |
 
 ## PKCE 辅助函数
 
@@ -79,7 +79,7 @@ SDK 提供了 `ITokenCache`（定义于 `<mcp/client/auth/TokenCache.hpp>`）的
 | 实现 | 持久化 | 保护 |
 |----------------|-------------|------------|
 | `InMemoryTokenCache` | 仅运行时 | 无 |
-| `FileTokenCache`（`<mcp/storage/FileTokenCache.hpp>`） | JSON 文件 | POSIX 上 `chmod 0600`，Windows 上 `CryptProtectData`（DPAPI） |
+| `FileTokenCache`（`<mcp/storage/FileTokenCache.hpp>`） | JSON 文件（Windows 上 DPAPI 加密） | POSIX 上 `chmod 0600`，Windows 上 `CryptProtectData`（DPAPI）；额外提供 `LoadTokenResponse()` 和 `LoadClientRegistration()` 方法 |
 
 ```cpp
 #include <mcp/storage/FileTokenCache.hpp>

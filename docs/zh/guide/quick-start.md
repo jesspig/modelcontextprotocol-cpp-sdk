@@ -24,7 +24,7 @@ ctest --preset debug --output-on-failure
 using namespace mcp;
 
 int main() {
-    auto transport = std::make_unique<StdioServerTransport>();
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
@@ -52,6 +52,7 @@ int main() {
 ## 最小客户端
 
 ```cpp
+#include <iostream>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 

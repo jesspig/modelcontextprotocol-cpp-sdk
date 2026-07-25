@@ -63,12 +63,78 @@ server->Run();
 
 简写回调（`on_method_called`、`on_protocol_error`）和完整消息回调（`on_request`、`on_error`）为**链式触发** — 同时设置时两者都会触发。
 
+## RequestContext\<TParams\>
+
+每个工具处理器接收到一个 `RequestContext<CallToolRequestParams>`，提供请求上下文：
+
+| 成员 | 返回类型 | 说明 |
+|--------|-------------|------|
+| `Params()` | `const TParams&` | 反序列化后的请求参数 |
+| `Server()` | `McpServer&` | 所属服务端实例的引用 |
+| `GetRequest()` | `const JsonRpcRequest&` | 原始 JSON-RPC 请求 |
+| `LogLevel()` | `optional<LoggingLevel>` | 来自 `_meta` 的每请求日志级别（2026 时代） |
+| `Log(level, data)` | `void` | 发送日志通知，受 `LogLevel()` 过滤 |
+
+`Log()` 方法遵循每请求日志级别：低于请求 `LogLevel()` 的消息会被静默丢弃。
+
+## McpServerTool
+
+对于可复用的工具定义，可以继承 `McpServerTool` 或使用 `McpServerTool::Create`：
+
+```cpp
+auto tool = McpServerTool::Create("get_weather",
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // ...
+    },
+    ToolOptions{}.Description("获取天气"));
+server->RegisterTool(tool);
+```
+
+`McpServerTool` 抽象类暴露：
+- `ProtocolTool()` — 返回协议层的 `Tool` 结构体
+- `InvokeAsync(ctx, promise)` — 重写以实现自定义异步执行
+
+基于 lambda 的 `RegisterTool` 重载内部同样创建 `McpServerTool`，行为一致。
+
+## 属性
+
+| 方法 | 返回类型 | 说明 |
+|--------|-------------|------|
+| `GetClientCapabilities()` | `const ClientCapabilities*` | 来自 `initialize` 或首次请求元数据的客户端能力（连接前为 nullptr） |
+| `GetClientInfo()` | `const Implementation*` | 客户端标识（连接前为 nullptr） |
+| `GetNegotiatedProtocolVersion()` | `string_view` | 协商后的协议版本字符串 |
+| `GetCapabilities()` | `const ServerCapabilities&` | 从注册原语自动推导的服务端能力 |
+| `IsMrtrSupported()` | `bool` | 是否支持 MRTR（多轮工具检索） |
+
+## 通知
+
+| 方法 | 说明 |
+|--------|------|
+| `SendToolListChanged()` | 通知客户端工具列表已变更 |
+| `SendResourceListChanged()` | 通知客户端资源列表已变更 |
+| `SendPromptListChanged()` | 通知客户端提示列表已变更 |
+| `SendLoggingMessage(level, data)` | 发送日志消息（遵循客户端的 `logging/setLevel`） |
+| `SendLoggingMessage(level, data, min_level)` | 重载，带有显式最低级别覆盖 |
+
+## 补全处理器
+
+为 `completion/complete` 请求注册可选处理器（如参数自动补全）：
+
+```cpp
+server->SetCompletionHandler(
+    [](const CompleteRequestParams& params) -> CompleteResult {
+        CompleteResult result;
+        result.completion = JsonValue::Parse(R"({"values":["value1","value2"]})");
+        return result;
+    });
+```
+
 ## 生命周期
 
 1. **构造**：`McpServer::Create` — 创建会话处理器、挂载处理器、启动消息循环
-2. **注册**：注册工具、资源、提示、扩展
-3. **运行**：`server->Run()` — 阻塞于内部消息通道
-4. **关闭**：`server->Close()` — 取消待处理请求、关闭传输层
+2. **注册**：通过 `RegisterTool`、`RegisterResource`、`RegisterResourceTemplate`、`RegisterPrompt` 注册工具、资源、提示
+3. **运行**：`server->Run()` — 阻塞直到 `Close()` 被调用；会话处理器异步处理消息
+4. **关闭**：`server->Close()` — 等待待处理的异步调用、关闭处理器和传输层
 
 ## 能力推导
 

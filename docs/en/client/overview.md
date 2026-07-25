@@ -69,6 +69,9 @@ client->UnsubscribeResource("file:///config.json");
 auto task = client->GetTask("task-123");
 client->UpdateTask("task-123", result_json);
 client->CancelTask("task-123", "no longer needed");
+
+// Poll task until completion (with configurable interval and timeout)
+auto completed = client->PollTaskToCompletionAsync("task-123");
 ```
 
 ## Server-to-Client Handlers
@@ -121,5 +124,5 @@ client->SubscribeAsync(subs);
 The client auto-negotiates the protocol version:
 
 1. **Auto** (default): Probe `server/discover`, fallback to `initialize` handshake
-2. **Pin**: Force a specific version
+2. **Pin**: Force a specific version (via `pin_protocol_version`, defaults to latest `kLatestProtocolVersion`)
 3. **Legacy**: Only `initialize` handshake

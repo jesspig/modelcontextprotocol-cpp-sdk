@@ -26,9 +26,19 @@ if (result.values) {
 }
 ```
 
-## Typed Helpers
+## Elicitation Result
 
-`ElicitResultTyped<T>` is a user-side convenience wrapper for deserializing elicitation results into a typed structure:
+`ElicitResult` extends `Result` with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `values` | `optional<JsonValue>` | Submitted form data (present on accept) |
+
+The inherited `result_type` (`Complete` or `InputRequired`) indicates whether the input was fulfilled or is still pending.
+
+## Typed Helper
+
+`ElicitResultTyped<T>` is a user-side convenience struct for wrapping a deserialized result:
 
 ```cpp
 struct AddressForm {
@@ -54,18 +64,12 @@ if (typed.is_accepted() && typed.content) {
 }
 ```
 
-## Elicitation Result
-
-`ElicitResult` extends `Result` with the following fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `values` | `std::optional<JsonValue>` | Submitted form data (present on accept) |
-| `result_type` | `ResultType` | `Complete` (accepted) or `InputRequired` (declined/pending) |
-
-`ElicitResultTyped<T>` provides a user-side action model:
+`ElicitResultTyped<T>` members:
 
 | Member | Type | Description |
 |--------|------|-------------|
-| `action` | `std::string` | `"accept"`, `"decline"`, or `"cancel"` (default) |
-| `content` | `std::optional<T>` | Deserialized values (present on accept) |
+| `action` | `string` | `"accept"`, `"decline"`, or `"cancel"` (default) |
+| `content` | `optional<T>` | Deserialized values (present on accept) |
+| `is_accepted()` | `bool` | Returns `true` when `action == "accept"` |
+
+Note: `ElicitResultTyped<T>` is not returned by any API — construct it manually from a raw `ElicitResult`.

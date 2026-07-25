@@ -24,7 +24,7 @@ Presets: `debug`, `release`. Ninja generator only.
 using namespace mcp;
 
 int main() {
-    auto transport = std::make_unique<StdioServerTransport>();
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
@@ -52,6 +52,7 @@ int main() {
 ## Minimal Client
 
 ```cpp
+#include <iostream>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 

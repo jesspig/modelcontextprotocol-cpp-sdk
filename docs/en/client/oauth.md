@@ -5,7 +5,7 @@ The client supports the MCP OAuth authorization flow for servers that require au
 ## Flow
 
 1. **Authorization Code + PKCE** with S256 code challenge
-2. **Dynamic Client Registration** (DCR) for first-time clients (synthetic, no wire call)
+2. **Dynamic Client Registration** (DCR) for first-time clients (HTTP POST to registration endpoint)
 3. **Token refresh** via preemptive expiry check (not 401-driven)
 4. **Token revocation** via manual `Revoke()` call
 
@@ -60,7 +60,7 @@ auto token = auth->GetAccessToken();
 | `HasToken()` | Check if any token exists (may be expired) |
 | `GetAuthorizationHeader()` | Returns `"Bearer {token}"` string |
 | `StepUpAuthorization(scopes)` | Re-authorize with additional scopes |
-| `Revoke()` | Clear stored tokens |
+| `Revoke()` | Clear stored tokens (does not call revocation endpoint) |
 
 ## PKCE Helpers
 
@@ -79,7 +79,7 @@ The SDK provides two implementations of `ITokenCache` (defined in `<mcp/client/a
 | Implementation | Persistence | Protection |
 |----------------|-------------|------------|
 | `InMemoryTokenCache` | Runtime only | None |
-| `FileTokenCache` (`<mcp/storage/FileTokenCache.hpp>`) | JSON file | `chmod 0600` on POSIX, `CryptProtectData` (DPAPI) on Windows |
+| `FileTokenCache` (`<mcp/storage/FileTokenCache.hpp>`) | JSON file (DPAPI encrypted on Windows) | `chmod 0600` on POSIX, `CryptProtectData` (DPAPI) on Windows; also exposes `LoadTokenResponse()` and `LoadClientRegistration()` for loading separately cached OAuth data |
 
 ```cpp
 #include <mcp/storage/FileTokenCache.hpp>

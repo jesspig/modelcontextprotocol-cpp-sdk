@@ -45,8 +45,8 @@ MRTR（SEP-2322）允许服务器处理程序在工具执行期间向客户端�
 工具处理程序通过 `Elicit` 请求用户输入：
 
 ```cpp
-// 直接使用 Elicit（服务端发送 elicit，等待响应）
-auto elicit_result = server->Elicit(
+// 通过 RequestContext 使用 Elicit（在工具处理程序内部）
+auto elicit_result = ctx.Server().Elicit(
     ElicitRequestParams{"确认订单?", /* requested_schema */}).get();
 
 CallToolResult result;
@@ -55,15 +55,17 @@ result.content.push_back(TextContent{"text",
 return result;
 ```
 
+`Elicit` 方法返回 `std::future<ElicitResult>`。
+
 用户可以手动使用 `ElicitResultTyped<T>` 构造类型化结果：
 
 ```cpp
 ElicitResultTyped<JsonValue> typed;
 typed.action = "accept";
-typed.content = JsonValue(JsonValue::Object{{"confirmed", true}});
+JsonValue obj(JsonValue::object_tag);
+obj["confirmed"] = JsonValue(true);
+typed.content = std::move(obj);
 ```
-
-`Elicit` 方法返回 `std::future<ElicitResult>`。
 
 ## 客户端
 
@@ -73,7 +75,9 @@ typed.content = JsonValue(JsonValue::Object{{"confirmed", true}});
 client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         ElicitResult result;
-        result.values = JsonValue(JsonValue::Object{{"confirmed", JsonValue(true)}});
+        JsonValue obj(JsonValue::object_tag);
+        obj["confirmed"] = JsonValue(true);
+        result.values = std::move(obj);
         return result;
     });
 ```
