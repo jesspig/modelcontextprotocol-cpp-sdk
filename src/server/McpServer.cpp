@@ -12,6 +12,32 @@
 
 namespace mcp {
 
+namespace {
+    // ── Pagination helper ──
+    constexpr size_t kDefaultPageSize = 100;
+
+    size_t ParseCursor(const std::optional<std::string>& cursor) {
+        if (!cursor || cursor->empty()) return 0;
+        return std::stoul(*cursor);
+    }
+
+    std::string MakeNextCursor(size_t next_index) {
+        return std::to_string(next_index);
+    }
+}
+
+namespace {
+
+CacheHint GetCacheHint(const std::optional<std::map<std::string, CacheHint>>& hints, const std::string_view method) {
+    if (hints) {
+        auto it = hints->find(std::string(method));
+        if (it != hints->end()) return it->second;
+    }
+    return {};
+}
+
+}
+
 static bool RequireInitialized(bool initialized, std::promise<JsonValue>& p) {
     if (!initialized) {
         p.set_exception(std::make_exception_ptr(
@@ -404,18 +430,21 @@ void McpServer::WireHandlers() {
 
     // ── notifications/progress ──
     handler_->SetNotificationHandler(notifications::kProgress,
-        [](const JsonRpcNotification& notif) {
+        [this](const JsonRpcNotification& notif) {
             if (notif.params && notif.params->IsObject()) {
-                auto* pt = notif.params->Find("progress_token");
+                auto* pt = notif.params->Find("progressToken");
                 if (pt) {
                     ProgressToken token;
                     if (pt->IsString())
                         token = pt->GetString();
                     else if (pt->IsInt())
                         token = pt->GetInt();
-                    // Reset timeout for pending request with this token (if tracked)
-                    // Currently no progress_token→request_id mapping exists.
-                    (void)token;
+                    auto pt_key = std::visit([](const auto& v) -> std::string {
+                        using T = std::decay_t<decltype(v)>;
+                        if constexpr (std::is_same_v<T, std::string>) return v;
+                        else return std::to_string(v);
+                    }, token);
+                    handler_->ResetTimeoutByProgressToken(pt_key);
                 }
             }
         });
@@ -574,6 +603,8 @@ void McpServer::HandleListTools(
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
+    auto hint = GetCacheHint(options_.cache_hints, "tools/list");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListToolsResult(result));
 }
 
@@ -633,7 +664,7 @@ void McpServer::HandleCallTool(
 }
 
 void McpServer::HandleListResources(
-    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -641,8 +672,19 @@ void McpServer::HandleListResources(
         return;
     }
     ListResourcesResult result;
+    size_t cursor_val = 0;
+    if (req.params) {
+        cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
+    }
+    size_t index = 0;
+    size_t sent = 0;
     for (const auto& entry : resources_) {
         if (entry.is_template) continue;
+        if (index++ < cursor_val) continue;
+        if (sent >= kDefaultPageSize) {
+            result.next_cursor = MakeNextCursor(index);
+            break;
+        }
         Resource r;
         r.uri = entry.uri_pattern;
         r.name = entry.name;
@@ -651,12 +693,15 @@ void McpServer::HandleListResources(
         r.mime_type = entry.mime_type;
         if (!entry.icons.empty()) r.icons = entry.icons;
         result.resources.push_back(std::move(r));
+        sent++;
     }
+    auto hint = GetCacheHint(options_.cache_hints, "resources/list");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListResourcesResult(result));
 }
 
 void McpServer::HandleListResourceTemplates(
-    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -664,8 +709,19 @@ void McpServer::HandleListResourceTemplates(
         return;
     }
     ListResourceTemplatesResult result;
+    size_t cursor_val = 0;
+    if (req.params) {
+        cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
+    }
+    size_t index = 0;
+    size_t sent = 0;
     for (const auto& entry : resources_) {
         if (!entry.is_template) continue;
+        if (index++ < cursor_val) continue;
+        if (sent >= kDefaultPageSize) {
+            result.next_cursor = MakeNextCursor(index);
+            break;
+        }
         ResourceTemplate rt;
         rt.uri_template = entry.uri_pattern;
         rt.name = entry.name;
@@ -674,7 +730,10 @@ void McpServer::HandleListResourceTemplates(
         rt.mime_type = entry.mime_type;
         if (!entry.icons.empty()) rt.icons = entry.icons;
         result.resource_templates.push_back(std::move(rt));
+        sent++;
     }
+    auto hint = GetCacheHint(options_.cache_hints, "resources/templates/list");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListResourceTemplatesResult(result));
 }
 
@@ -696,6 +755,8 @@ void McpServer::HandleReadResource(
         if (entry.uri_pattern == params.uri) {
             try {
                 auto result = entry.handler(params.uri);
+    auto hint = GetCacheHint(options_.cache_hints, "resources/read");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
 promise.set_value(SerializeReadResourceResult(result));
                 return;
             } catch (const McpError&) {
@@ -713,7 +774,7 @@ promise.set_value(SerializeReadResourceResult(result));
 }
 
 void McpServer::HandleListPrompts(
-    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!initialized_) {
         promise.set_exception(std::make_exception_ptr(
@@ -721,14 +782,28 @@ void McpServer::HandleListPrompts(
         return;
     }
     ListPromptsResult result;
+    size_t cursor_val = 0;
+    if (req.params) {
+        cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
+    }
+    size_t index = 0;
+    size_t sent = 0;
     for (const auto& entry : prompts_) {
+        if (index++ < cursor_val) continue;
+        if (sent >= kDefaultPageSize) {
+            result.next_cursor = MakeNextCursor(index);
+            break;
+        }
         Prompt p;
         p.name = entry.name;
         p.description = entry.description;
         p.title = entry.title;
         if (!entry.icons.empty()) p.icons = entry.icons;
         result.prompts.push_back(std::move(p));
+        sent++;
     }
+    auto hint = GetCacheHint(options_.cache_hints, "prompts/list");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListPromptsResult(result));
 }
 
@@ -817,6 +892,8 @@ void McpServer::HandleDiscover(
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }
+    auto hint = GetCacheHint(options_.cache_hints, "server/discover");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeDiscoverResult(result));
 }
 
