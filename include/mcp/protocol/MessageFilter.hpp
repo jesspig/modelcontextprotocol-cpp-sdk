@@ -24,21 +24,10 @@ public:
     virtual void Filter(const JsonRpcMessage& message, MessageFilterNext next) = 0;
 };
 
-// Incoming message filter — wraps around handler dispatch
-class IncomingMessageFilter : public MessageFilter {
+// Concrete filter wrapping a MessageFilterFunc (for ease of use)
+class MessageFilterFuncAdapter : public MessageFilter {
 public:
-    IncomingMessageFilter(MessageFilterFunc func) : func_(std::move(func)) {}
-    void Filter(const JsonRpcMessage& message, MessageFilterNext next) override {
-        func_(message, std::move(next));
-    }
-private:
-    MessageFilterFunc func_;
-};
-
-// Outgoing message filter — wraps around send
-class OutgoingMessageFilter : public MessageFilter {
-public:
-    OutgoingMessageFilter(MessageFilterFunc func) : func_(std::move(func)) {}
+    explicit MessageFilterFuncAdapter(MessageFilterFunc func) : func_(std::move(func)) {}
     void Filter(const JsonRpcMessage& message, MessageFilterNext next) override {
         func_(message, std::move(next));
     }
