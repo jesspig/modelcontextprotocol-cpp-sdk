@@ -1,3 +1,5 @@
+// WireCodecTests — unit tests for WireCodec factory, era-gating, and _meta handling
+
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/McpCore.hpp>
 
@@ -24,7 +26,7 @@ TEST(WireCodecTest, FactoryFallbackForUnknown) {
     EXPECT_EQ(codec->Era(), "2025-11-25");
 }
 
-// ── 2025 codec ──
+// ── 2025-era codec ──
 TEST(WireCodecTest, Rev2025HasRequestMethod) {
     auto codec = MakeWireCodec("2025-11-25");
     EXPECT_TRUE(codec->HasRequestMethod("tools/list"));
@@ -50,7 +52,7 @@ TEST(WireCodecTest, Rev2025StampIsNoop) {
     EXPECT_TRUE(body.Empty());  // no _meta added
 }
 
-// ── 2026 codec ──
+// ── 2026-era codec ──
 TEST(WireCodecTest, Rev2026HasRequestMethod) {
     auto codec = MakeWireCodec("2026-07-28");
     EXPECT_TRUE(codec->HasRequestMethod("tools/list"));

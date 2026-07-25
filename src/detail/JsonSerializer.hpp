@@ -1,3 +1,5 @@
+// JsonSerializer.hpp - Internal JSON serialization helpers (optional/vector field helpers)
+
 #pragma once
 
 #include <mcp/JsonValue.hpp>

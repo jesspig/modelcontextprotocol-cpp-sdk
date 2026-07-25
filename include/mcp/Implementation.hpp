@@ -1,5 +1,7 @@
 #pragma once
 
+// Implementation.hpp — Client/server implementation identification
+
 #include <mcp/Content.hpp>
 
 #include <optional>

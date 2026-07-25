@@ -1,5 +1,6 @@
 #pragma once
-
+// ClientOptions.hpp
+// Client connection options and configuration
 #include <mcp/Export.hpp>
 
 #include <mcp/Capabilities.hpp>
@@ -35,11 +36,6 @@ struct MCP_API ClientOptions {
     std::chrono::seconds initialization_timeout{60};
     std::chrono::seconds discover_probe_timeout{5};
 
-    // Protocol support
-    std::vector<std::string> supported_protocol_versions{
-        "2025-11-25", "2026-07-28"
-    };
-
     // MRTR (InputRequired) config
     struct InputRequiredConfig {
         bool auto_fulfill{true};
@@ -48,19 +44,9 @@ struct MCP_API ClientOptions {
     };
     std::optional<InputRequiredConfig> input_required_config;
 
-    // Response caching
-    struct CacheConfig {
-        int64_t default_ttl_ms{30000};
-        bool enabled{true};
-    };
-    std::optional<CacheConfig> cache_config;
-
     // Extensions declaration map
     std::optional<JsonValue> extensions;
 
-    // Other
-    bool enforce_strict_capabilities{false};
-    int list_max_pages{64};
 };
 
 } // namespace mcp

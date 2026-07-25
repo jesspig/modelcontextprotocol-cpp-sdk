@@ -1,3 +1,5 @@
+// WireCodec.cpp
+// Per-era WireCodec implementations (2025-11-25 and 2026-07-28)
 #include <mcp/protocol/WireCodec.hpp>
 
 #include <cstdint>
@@ -61,6 +63,7 @@ inline const std::unordered_set<std::string> k2026OnlyRequestMethods = {
     "server/extensions/list",
     "subscriptions/listen",
     "tasks/get", "tasks/update", "tasks/cancel",
+    "tasks/result", "tasks/list",
 };
 
 inline const std::unordered_set<std::string> kCommonNotifMethods = {
@@ -117,17 +120,28 @@ public:
     }
 
     WireValidation ValidateRequest(
-        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
+        std::string_view method, const JsonValue& raw) const override {
+        if (method == "initialize") {
+            if (!raw.Contains("protocolVersion") ||
+                !raw.Contains("capabilities") ||
+                !raw.Contains("clientInfo")) {
+                return WireValidation::Invalid;
+            }
+        }
         return WireValidation::Ok;
     }
 
     WireValidation ValidateResponse(
         std::string_view /*method*/, const JsonValue& /*raw*/) const override {
+        // 2025-era responses have no additional structural requirements
+        // beyond standard JSON-RPC validation (handled by the message parser).
         return WireValidation::Ok;
     }
 
     WireValidation ValidateNotification(
         std::string_view /*method*/, const JsonValue& /*raw*/) const override {
+        // 2025-era notifications have no additional structural requirements
+        // beyond standard JSON-RPC validation (handled by the message parser).
         return WireValidation::Ok;
     }
 
@@ -196,12 +210,28 @@ public:
     }
 
     WireValidation ValidateResponse(
-        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
+        std::string_view method, const JsonValue& raw) const override {
+        if (!raw.Contains("resultType")) {
+            return WireValidation::Invalid;
+        }
+        static const std::unordered_set<std::string> kListMethods = {
+            "tools/list", "resources/list", "resources/templates/list",
+            "prompts/list", "server/extensions/list", "tasks/list",
+        };
+        if (kListMethods.count(std::string(method)) > 0) {
+            auto* rt = raw.Find("resultType");
+            if (rt && (!rt->IsString() || rt->GetString() != "complete")) {
+                return WireValidation::Invalid;
+            }
+        }
         return WireValidation::Ok;
     }
 
     WireValidation ValidateNotification(
-        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
+        std::string_view /*method*/, const JsonValue& raw) const override {
+        if (raw.Contains("id") || raw.Contains("result") || raw.Contains("error")) {
+            return WireValidation::Invalid;
+        }
         return WireValidation::Ok;
     }
 
@@ -231,6 +261,9 @@ public:
             meta.client_info = ImplementationFromJson(*v);
         if (auto* v = m->Find(kClientCapabilitiesKey))
             meta.client_capabilities = ClientCapabilitiesFromJson(*v);
+        if (auto* v = m->Find("traceparent")) meta.traceparent = v->GetString();
+        if (auto* v = m->Find("tracestate")) meta.tracestate = v->GetString();
+        if (auto* v = m->Find("baggage")) meta.baggage = v->GetString();
         return meta;
     }
 

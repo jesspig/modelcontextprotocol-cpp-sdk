@@ -1,4 +1,6 @@
 #pragma once
+// McpSessionHandler.hpp
+// Internal JSON-RPC engine for message dispatch, request/response correlation, and filter pipelines
 #include <mcp/Export.hpp>
 #include <mcp/protocol/McpSession.hpp>
 #include <mcp/protocol/IncomingRequestMeta.hpp>
@@ -100,6 +102,9 @@ public:
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
 
+    // ── Progress tracking ──
+    void ResetTimeoutByProgressToken(const std::string& pt_key);
+
     // ── Event callbacks ──
     void SetOnRequestCallback(std::function<void(std::string_view method, const JsonRpcRequest&)> cb);
     void SetOnResponseCallback(std::function<void(const JsonRpcResponse&)> cb);
@@ -156,6 +161,9 @@ private:
     // Pending request tracking (for response/error correlation)
     std::unordered_map<std::string, std::shared_ptr<PendingRequest>> pending_;
     std::mutex pending_mutex_;
+
+    // Progress token → request_id mapping (for timeout reset)
+    std::unordered_map<std::string, std::string> progress_token_map_;
 
     // Subscriptions
     std::unordered_map<std::string, SubscriptionEntry> subscriptions_;

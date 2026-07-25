@@ -36,7 +36,37 @@ server->RegisterTool("delete_file", opts,
     });
 ```
 
-Available annotations via `ToolOptions`:
+## McpServerTool (Reusable Tools)
+
+For reusable tool logic, create an `McpServerTool` object explicitly:
+
+```cpp
+auto tool = McpServerTool::Create("get_weather",
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // ...
+    },
+    ToolOptions{}.Description("Get current weather"));
+server->RegisterTool(tool);
+```
+
+The lambda-based `RegisterTool` overload is shorthand for this — both forms are equivalent.
+
+## ToolOptions Fields
+
+All `ToolOptions` fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `optional<string>` | — | Override tool name |
+| `title` | `optional<string>` | — | Human-readable title |
+| `description` | `optional<string>` | — | Tool description |
+| `input_schema` | `optional<JsonValue>` | `{"type":"object","properties":{}}` | JSON Schema for input parameters |
+| `output_schema` | `optional<JsonValue>` | — | JSON Schema for structured output |
+| `use_structured_content` | `bool` | `false` | Opt into structured output (sets `output_schema` to `{"type":"object"}`) |
+| `icons` | `vector<Icon>` | — | Tool icons |
+| `meta` | `optional<JsonValue>` | — | Additional metadata |
+
+Annotation fields (propagated to `ToolAnnotations`):
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -58,7 +88,7 @@ result.structured_content = JsonValue::Parse(R"({
 })");
 ```
 
-The `structured_content` field is a 2026-07-28 protocol feature. Set `use_structured_content = true` on `ToolOptions` to opt in, which sets `output_schema` to `{"type": "object"}`.
+The `structured_content` field is a 2026-07-28 protocol feature. Set `use_structured_content = true` on `ToolOptions` to opt in (sets `output_schema` to `{"type": "object"}`). You can also set `output_schema` directly for fine-grained schema control.
 
 ## Input Schema
 

@@ -1,6 +1,6 @@
-// EchoServer — 对应 Python examples/echo.py / TypeScript examples/tools
-// 使用 StdioServerTransport，注册一个 echo 工具
-// 通过 stdio 行分隔 JSON 与 MCP 客户端通信
+// EchoServer — MCP server example
+// Uses StdioServerTransport, registers an echo tool
+// Communicates with MCP clients via stdio line-delimited JSON
 
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>

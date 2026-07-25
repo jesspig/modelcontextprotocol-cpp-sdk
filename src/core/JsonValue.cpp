@@ -1,3 +1,5 @@
+// JsonValue.cpp — JsonValue parsing and serialization implementation
+
 #include <mcp/JsonValue.hpp>
 #include <detail/JsonSerializer.hpp>
 
@@ -12,6 +14,7 @@ namespace mcp::detail {
 
 using namespace simdjson;
 
+// Recursively convert a simdjson DOM element to a JsonValue.
 static JsonValue FromDomElement(const dom::element& el) {
     switch (el.type()) {
     case dom::element_type::NULL_VALUE:
@@ -46,6 +49,7 @@ static JsonValue FromDomElement(const dom::element& el) {
     return JsonValue(nullptr);
 }
 
+// Recursively convert a simdjson on-demand value to a JsonValue by probing types in order.
 JsonValue FromSimdJsonValue(ondemand::value val) {
     // Try each type in order
     {
@@ -146,6 +150,7 @@ static void DumpString(std::ostream& os, const std::string& s) {
     os << '"';
 }
 
+// Recursively serialize a JsonValue to JSON text with optional indentation.
 static void DumpValue(std::ostream& os, const JsonValue& jv, int indent, int depth) {
     auto indent_line = [&]() {
         for (int i = 0; i < depth * indent; ++i) os << ' ';

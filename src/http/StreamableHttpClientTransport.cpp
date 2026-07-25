@@ -1,3 +1,5 @@
+// StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX libhv)
+
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>

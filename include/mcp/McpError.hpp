@@ -1,5 +1,7 @@
 #pragma once
 
+// McpError.hpp — MCP exception type wrapping McpErrorCode
+
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/JsonRpc.hpp>
 

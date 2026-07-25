@@ -1,3 +1,5 @@
+// posix_platform.cpp — POSIX process and pipe implementations
+
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <unistd.h>
 #include <sys/wait.h>

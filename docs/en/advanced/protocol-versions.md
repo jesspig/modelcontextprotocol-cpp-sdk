@@ -41,7 +41,21 @@ Note that `HandleDiscover` returns `{"2025-11-25", "2026-07-28"}` but does NOT c
 
 ### Wire Validation (2026-era)
 
-`Rev2026Codec::ValidateRequest` rejects requests missing the `_meta` envelope, except for `server/discover` which is the bootstrap call. This enforces the stateless protocol design.
+`Rev2026Codec::ValidateRequest` performs two checks:
+1. **Era membership**: Returns `NotInEra` if the method is not in the 2026-era method set.
+2. **_meta presence**: Returns `Invalid` if the request (except `server/discover`) lacks the `_meta` envelope.
+
+This enforces the stateless protocol design where `server/discover` is the only bootstrap call without prior context.
+
+### Response Validation (2026-era)
+
+`Rev2026Codec::ValidateResponse` validates outgoing responses:
+1. **`resultType` field**: Must be present on all responses. Returns `Invalid` if missing.
+2. **List methods**: For `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, `server/extensions/list`, and `tasks/list`, the `resultType` must be `"complete"`. List results cannot be partial/input_required.
+
+### Notification Validation (2026-era)
+
+`Rev2026Codec::ValidateNotification` ensures notifications do not contain `id`, `result`, or `error` fields — only `method` and `params` are allowed.
 
 ### Result Encoding
 
@@ -60,8 +74,11 @@ The `IncomingRequestMeta` struct extracts these fields from the 2026-era `_meta`
 | `log_level` | `io.modelcontextprotocol/logLevel` |
 | `progress_token` | `progressToken` |
 | `subscription_id` | `io.modelcontextprotocol/subscriptionId` |
+| `traceparent`     | `traceparent` |
+| `tracestate`      | `tracestate` |
+| `baggage`         | `baggage` |
 
-The `StampOutgoingMeta` helper stamps `protocolVersion`, `clientInfo`, `clientCapabilities`, and `logLevel` onto outgoing request `_meta`.
+The `StampOutgoingMeta` helper stamps `protocolVersion`, `clientInfo`, `clientCapabilities`, and `logLevel` onto outgoing request `_meta`. Trace/distributed tracing fields (`traceparent`, `tracestate`, `baggage`) are not auto-stamped by this helper.
 
 ### Era-Gated Methods
 
@@ -71,7 +88,7 @@ The codec defines per-era method sets:
 |-----|---------|
 | Common (both eras) | `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete`, `elicitation/create` |
 | 2025-only | `ping`, `initialize`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage` |
-| 2026-only | `server/discover`, `server/extensions/list`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel` |
+| 2026-only | `server/discover`, `server/extensions/list`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel`, `tasks/result`, `tasks/list` |
 
 ### Era-Gated Notifications
 
@@ -135,17 +152,14 @@ pipeline->AddFilter(std::make_shared<IncomingMessageFilter>(
 
 Incoming filters wrap handler dispatch; outgoing filters wrap transport send. Both are optional and configured via `ServerOptions::incoming_filters` / `outgoing_filters`.
 
-### X-Mcp-Header Annotations
-
-`XMcpHeaders.hpp` provides helpers for `x-mcp-header` annotations in JSON Schema:
-
-- `ScanXMcpHeaders(schema)` — extracts `paramName → headerName` mappings from `x-mcp-header` declarations
-- `ExtractXMcpHeaderValues(params, decls)` — extracts header values from params for primitive types (string, integer, boolean)
-
 ## Error Code Remapping (2026-era)
 
-| Code | Name | 2025 Value | 2026 Value |
-|------|------|-----------|-----------|
-| HeaderMismatch | Header mismatch | -32001 | -32020 |
-| MissingRequiredClientCapability | Missing capability | -32003 | -32021 |
-| UnsupportedProtocolVersion | Version mismatch | -32004 | -32022 |
+`Rev2026Codec::EncodeErrorCode` remaps legacy 2025-era error codes to 2026-era values:
+
+| Error | 2025 Value | 2026 Value |
+|-------|-----------|-----------|
+| `HeaderMismatch` (-32020) | -32001 | -32020 |
+| `MissingRequiredClientCapability` (-32021) | -32003 | -32021 |
+| `UnsupportedProtocolVersion` (-32022) | -32004 | -32022 |
+
+All other error codes pass through unchanged.

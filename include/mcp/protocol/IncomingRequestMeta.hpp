@@ -1,4 +1,6 @@
 #pragma once
+// IncomingRequestMeta.hpp
+// Extracted _meta fields from incoming 2026-era requests and support types
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
@@ -22,6 +24,9 @@ struct IncomingRequestMeta {
     std::optional<LoggingLevel> log_level;
     std::optional<ProgressToken> progress_token;
     std::optional<std::string> subscription_id;
+    std::optional<std::string> traceparent;
+    std::optional<std::string> tracestate;
+    std::optional<std::string> baggage;
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -30,6 +35,7 @@ struct IncomingRequestMeta {
 struct PendingRequest {
     std::function<void(JsonValue)> callback;
     std::chrono::steady_clock::time_point deadline;
+    std::optional<ProgressToken> progress_token;
 };
 
 // ═══════════════════════════════════════════════════════════════════════

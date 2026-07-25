@@ -1,3 +1,5 @@
+// EventStore.hpp - SSE event sequence store with resumption support
+
 #pragma once
 
 #include <mcp/JsonRpc.hpp>

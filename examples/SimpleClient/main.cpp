@@ -1,6 +1,6 @@
-// SimpleClient — 对应 C# QuickstartClient
-// 演示如何创建客户端、列出工具、调用工具
-// 使用 InMemoryTransport 连接嵌入式 EchoServer
+// SimpleClient — MCP client example
+// Demonstrates creating a client, listing tools, and calling a tool
+// Uses InMemoryTransport to connect to an embedded EchoServer
 
 #include <mcp/client/McpClient.hpp>
 #include <mcp/server/McpServer.hpp>

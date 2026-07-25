@@ -1,3 +1,5 @@
+// Content.cpp — Content type serialization/deserialization implementations
+
 #include <mcp/Content.hpp>
 #include <mcp/Implementation.hpp>
 #include <mcp/Meta.hpp>
@@ -117,6 +119,7 @@ JsonValue SerializeResourceContents(const ResourceContents& rc) {
     }, rc);
 }
 
+// Heuristic dispatch: presence of "text" or "blob" determines resource content type.
 ResourceContents DeserializeResourceContents(const JsonValue& j) {
     if (j.Find("text")) return DeserializeTextResourceContents(j);
     if (j.Find("blob")) return DeserializeBlobResourceContents(j);
@@ -255,6 +258,7 @@ JsonValue SerializeContentVariant(const ContentVariant& content) {
     }, content);
 }
 
+// Dispatch to the correct content deserializer based on the "type" field.
 ContentVariant DeserializeContentVariant(const JsonValue& j) {
     auto type = j["type"].GetString();
     if (type == "text")          return DeserializeTextContent(j);
@@ -362,6 +366,9 @@ JsonValue SerializeRequestMeta(const RequestMeta& v) {
     if (v.extensions) {
         for (const auto& [k, val] : v.extensions->GetObject()) obj[k] = val;
     }
+    if (v.traceparent) obj["traceparent"] = JsonValue(*v.traceparent);
+    if (v.tracestate) obj["tracestate"] = JsonValue(*v.tracestate);
+    if (v.baggage) obj["baggage"] = JsonValue(*v.baggage);
     return obj;
 }
 
@@ -377,7 +384,10 @@ RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     if (cc) v.client_capabilities = DeserializeClientCapabilities(*cc);
     auto* ll = j.Find("io.modelcontextprotocol/logLevel");
     if (ll) v.log_level = DeserializeLoggingLevel(*ll);
-    // ponytail: extensions skipped in deserialize (old code didn't read them back either)
+    // Extensions are not read back during deserialization (legacy behavior).
+    if (auto* tp = j.Find("traceparent")) v.traceparent = tp->GetString();
+    if (auto* ts = j.Find("tracestate")) v.tracestate = ts->GetString();
+    if (auto* bg = j.Find("baggage")) v.baggage = bg->GetString();
     return v;
 }
 

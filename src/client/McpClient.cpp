@@ -1,3 +1,5 @@
+// McpClient.cpp
+// McpClient and VersionNegotiation implementation
 #include <mcp/client/McpClient.hpp>
 #include <mcp/McpError.hpp>
 
@@ -230,37 +232,34 @@ void McpClient::Close() {
 // Wire client-side handlers
 // ====================================================================
 void McpClient::WireClientHandlers() {
-    // Sampling handler (deprecated)
-    handler_->SetRequestHandler(methods::kCreateMessage,
-        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-            if (!sampling_handler_) {
-                throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
-            }
-            CreateMessageRequestParams params;
-            if (req.params) params = DeserializeCreateMessageRequestParams(*req.params);
-            try {
-                auto result = (*sampling_handler_)(params);
-                p.set_value(SerializeCreateMessageResult(result));
-            } catch (...) {
-                p.set_exception(std::current_exception());
-            }
-        });
+    // Sampling handler (deprecated) — only register if explicitly set
+    if (sampling_handler_) {
+        handler_->SetRequestHandler(methods::kCreateMessage,
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                CreateMessageRequestParams params;
+                if (req.params) params = DeserializeCreateMessageRequestParams(*req.params);
+                try {
+                    auto result = (*sampling_handler_)(params);
+                    p.set_value(SerializeCreateMessageResult(result));
+                } catch (...) {
+                    p.set_exception(std::current_exception());
+                }
+            });
+    }
 
-    // Roots handler (deprecated)
-    handler_->SetRequestHandler(methods::kListRoots,
-        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-            (void)req;
-            if (!roots_handler_) {
-                p.set_value(SerializeListRootsResult(ListRootsResult{}));
-                return;
-            }
-            try {
-                auto result = (*roots_handler_)(ListRootsRequestParams{});
-                p.set_value(SerializeListRootsResult(result));
-            } catch (...) {
-                p.set_exception(std::current_exception());
-            }
-        });
+    // Roots handler (deprecated) — only register if explicitly set
+    if (roots_handler_) {
+        handler_->SetRequestHandler(methods::kListRoots,
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                (void)req;
+                try {
+                    auto result = (*roots_handler_)(ListRootsRequestParams{});
+                    p.set_value(SerializeListRootsResult(result));
+                } catch (...) {
+                    p.set_exception(std::current_exception());
+                }
+            });
+    }
 
     // Elicitation handler
     handler_->SetRequestHandler(methods::kElicit,
@@ -288,6 +287,38 @@ void McpClient::WireClientHandlers() {
                 nh(notif);
             });
     }
+
+    // ── Client-side notification handlers ──
+    handler_->SetNotificationHandler(notifications::kResourceUpdated,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kResourceListChanged,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kToolListChanged,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kPromptListChanged,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kMessage,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kProgress,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kRootsListChanged,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kElicitationComplete,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kTaskStatus,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kTaskWorking,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kTaskCompleted,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kTaskFailed,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kTaskCancelled,
+        [](const JsonRpcNotification&) {});
+    handler_->SetNotificationHandler(notifications::kTaskInputRequired,
+        [](const JsonRpcNotification&) {});
 }
 
 // ====================================================================
@@ -334,23 +365,10 @@ void McpClient::SetNotificationHandler(
     notif_handlers_.emplace_back(std::string(method), std::move(handler));
 }
 
-// ====================================================================
-// Tool cache
-// ====================================================================
-void McpClient::AddKnownTools(const std::vector<Tool>& tools) {
-    for (const auto& t : tools) {
-        known_tools_[t.name] = McpClientTool::FromProtocol(t);
-    }
-}
-
-void McpClient::RemoveKnownTools(const std::vector<std::string>& names) {
-    for (const auto& name : names) {
-        known_tools_.erase(std::string(name));
-    }
-}
-
-void McpClient::ClearKnownTools() {
-    known_tools_.clear();
+void McpClient::SetLoggingHandler(
+    std::function<void(const LoggingMessageNotificationParams&)> handler)
+{
+    logging_handler_ = std::move(handler);
 }
 
 // ====================================================================
@@ -451,10 +469,8 @@ JsonValue McpClient::SendRequestWithMrtr(
 // Tools
 // ====================================================================
 ListToolsResult McpClient::ListTools(
-    const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
-    (void)options;
     ListToolsRequestParams params;
     params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
@@ -579,10 +595,8 @@ CallToolResult McpClient::CallTool(
 // Resources
 // ====================================================================
 ListResourcesResult McpClient::ListResources(
-    const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
-    (void)options;
     ListResourcesRequestParams params;
     params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
@@ -592,10 +606,8 @@ ListResourcesResult McpClient::ListResources(
 }
 
 ListResourceTemplatesResult McpClient::ListResourceTemplates(
-    const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
-    (void)options;
     ListResourceTemplatesRequestParams params;
     params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
@@ -643,10 +655,8 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
 // Prompts
 // ====================================================================
 ListPromptsResult McpClient::ListPrompts(
-    const CacheableRequestOptions& options,
     std::optional<std::string> cursor)
 {
-    (void)options;
     ListPromptsRequestParams params;
     params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);

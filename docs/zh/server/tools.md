@@ -36,10 +36,40 @@ server->RegisterTool("delete_file", opts,
     });
 ```
 
-通过 `ToolOptions` 可用的注解：
+## McpServerTool（可复用工具）
 
-| 字段 | 类型 | 描述 |
-|-------|------|-------------|
+对于可复用的工具逻辑，可以显式创建 `McpServerTool` 对象：
+
+```cpp
+auto tool = McpServerTool::Create("get_weather",
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // ...
+    },
+    ToolOptions{}.Description("获取当前天气"));
+server->RegisterTool(tool);
+```
+
+基于 lambda 的 `RegisterTool` 重载是此方式的简写——两种形式等价。
+
+## ToolOptions 字段
+
+所有 `ToolOptions` 字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|-------|------|---------|------|
+| `name` | `optional<string>` | — | 覆盖工具名称 |
+| `title` | `optional<string>` | — | 人类可读的标题 |
+| `description` | `optional<string>` | — | 工具描述 |
+| `input_schema` | `optional<JsonValue>` | `{"type":"object","properties":{}}` | 输入参数的 JSON Schema |
+| `output_schema` | `optional<JsonValue>` | — | 结构化输出的 JSON Schema |
+| `use_structured_content` | `bool` | `false` | 选择启用结构化输出（将 `output_schema` 设为 `{"type":"object"}`） |
+| `icons` | `vector<Icon>` | — | 工具图标 |
+| `meta` | `optional<JsonValue>` | — | 附加元数据 |
+
+注解字段（传播到 `ToolAnnotations`）：
+
+| 字段 | 类型 | 说明 |
+|-------|------|------|
 | `destructive` | `optional<bool>` | 标记工具为破坏性操作 |
 | `idempotent` | `optional<bool>` | 多次调用效果等同于一次 |
 | `read_only_hint` | `optional<bool>` | 工具不修改状态 |
@@ -58,7 +88,7 @@ result.structured_content = JsonValue::Parse(R"({
 })");
 ```
 
-`structured_content` 字段是 2026-07-28 协议特性。在 `ToolOptions` 上设置 `use_structured_content = true` 以选择启用，这会设置 `output_schema` 为 `{"type": "object"}`。
+`structured_content` 字段是 2026-07-28 协议特性。在 `ToolOptions` 上设置 `use_structured_content = true` 以选择启用（将 `output_schema` 设为 `{"type": "object"}`）。也可以直接设置 `output_schema` 以实现更精细的模式控制。
 
 ## 输入模式
 

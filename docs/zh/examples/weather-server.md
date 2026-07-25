@@ -7,12 +7,12 @@
 ## 特性
 
 - **工具**：`get_alerts` — 返回某个美国州的模拟天气预警
-- **工具**：`get_forecast` — 返回带有位置参数的模拟天气预报
+- **工具**：`get_forecast` — 返回带有 state、latitude、longitude 参数的模拟天气预报
 
 ## 运行
 
 ```bash
-cmake --preset debug
+cmake --preset debug -DMCP_BUILD_EXAMPLES=ON
 cmake --build --preset debug
 build/debug/examples/WeatherServer/WeatherServer
 ```

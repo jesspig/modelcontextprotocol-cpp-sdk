@@ -1,4 +1,5 @@
 #pragma once
+// StreamableHttpClientTransport.hpp — HTTP client transport (Streamable HTTP / SSE)
 
 #include <mcp/Transport.hpp>
 #include <mcp/transport/HttpTransportMode.hpp>

@@ -1,3 +1,5 @@
+// HttpServerTests — unit tests for HttpServer, EventStore, and StreamableHttp transports
+
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
@@ -10,7 +12,7 @@
 #include <chrono>
 #include <thread>
 
-// ponytail: no using namespace mcp; — HttpRequest/HttpResponse clash hv vs mcp
+// Avoid `using namespace mcp;` — HttpRequest/HttpResponse clash between hv and mcp
 using MCP_Request = mcp::HttpRequest;
 using MCP_Response = mcp::HttpResponse;
 

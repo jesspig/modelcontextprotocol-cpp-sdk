@@ -37,5 +37,5 @@ server->RegisterResourceTemplate(
 ```
 
 ::: note
-`ResourceOptions` 会被注册 API 接受，但 `description` 和 `mime_type` 当前不会传播到通过 `resources/list` 暴露的协议级资源。`ListResourcesResult` 中返回的 `Resource` 结构仅包含 `uri` 和 `name`。
+`ResourceOptions` 中的字段（`description`、`title`、`mime_type`、`icons`）会传播到通过 `resources/list` 和 `resources/templates/list` 返回的协议级 `Resource` 和 `ResourceTemplate` 结构中。
 :::

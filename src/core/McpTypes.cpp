@@ -1,3 +1,5 @@
+// McpTypes.cpp — Protocol data model serialization/deserialization
+
 #include <mcp/McpTypes.hpp>
 #include <detail/JsonSerializer.hpp>
 
@@ -117,6 +119,31 @@ ToolAnnotations DeserializeToolAnnotations(const JsonValue& j) {
     return v;
 }
 
+// ── ToolExecution ──
+
+JsonValue SerializeToolExecution(const ToolExecution& v) {
+    JsonValue obj(JsonValue::object_tag);
+    switch (v.mode) {
+        case ToolExecutionMode::Auto: obj["mode"] = JsonValue("auto"); break;
+        case ToolExecutionMode::Manual: obj["mode"] = JsonValue("manual"); break;
+        case ToolExecutionMode::Task: obj["mode"] = JsonValue("task"); break;
+    }
+    detail::SerializeOptional(obj, "humanUse", v.human_use);
+    return obj;
+}
+
+ToolExecution DeserializeToolExecution(const JsonValue& j) {
+    ToolExecution v;
+    if (auto* m = j.Find("mode")) {
+        auto s = m->GetString();
+        if (s == "manual") v.mode = ToolExecutionMode::Manual;
+        else if (s == "task") v.mode = ToolExecutionMode::Task;
+        else v.mode = ToolExecutionMode::Auto;
+    }
+    detail::DeserializeOptional(j, "humanUse", v.human_use);
+    return v;
+}
+
 // ── ResourceAnnotations ──
 
 JsonValue SerializeResourceAnnotations(const ResourceAnnotations& v) {
@@ -188,6 +215,7 @@ JsonValue SerializeTool(const Tool& v) {
     obj["inputSchema"] = v.input_schema;
     detail::SerializeOptional(obj, "outputSchema", v.output_schema);
     if (v.annotations) obj["annotations"] = SerializeToolAnnotations(*v.annotations);
+    if (v.execution) obj["execution"] = SerializeToolExecution(*v.execution);
     if (!v.icons.empty()) {
         JsonValue::Array arr;
         for (const auto& icon : v.icons) arr.push_back(SerializeIcon(icon));
@@ -206,6 +234,8 @@ Tool DeserializeTool(const JsonValue& j) {
     detail::DeserializeOptional(j, "outputSchema", v.output_schema);
     auto* ann = j.Find("annotations");
     if (ann) v.annotations = DeserializeToolAnnotations(*ann);
+    auto* e = j.Find("execution");
+    if (e) v.execution = DeserializeToolExecution(*e);
     auto* icons = j.Find("icons");
     if (icons && icons->IsArray()) {
         std::vector<Icon> vec;

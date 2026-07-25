@@ -1,3 +1,5 @@
+// FileTaskStore.cpp - JSON file-backed task store implementation
+
 #include <mcp/storage/FileTaskStore.hpp>
 #include <mcp/Log.hpp>
 
@@ -117,6 +119,16 @@ bool FileTaskStore::SetTaskStatus(const std::string& task_id, TaskStatus status)
     it->second.status = status;
     Flush();
     return true;
+}
+
+std::vector<TaskState> FileTaskStore::GetAllTasks() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<TaskState> result;
+    result.reserve(tasks_.size());
+    for (const auto& [_, state] : tasks_) {
+        result.push_back(state);
+    }
+    return result;
 }
 
 void FileTaskStore::Flush() {

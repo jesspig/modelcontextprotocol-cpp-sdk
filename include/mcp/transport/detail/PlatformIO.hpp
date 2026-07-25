@@ -1,4 +1,6 @@
 #pragma once
+// PlatformIO.hpp — platform-specific process and pipe abstractions (Win32/POSIX)
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -38,9 +40,9 @@ struct ProcessStartInfo {
 // ── Created process with pipes ──
 struct CreatedProcess {
     std::unique_ptr<ProcessHandle> process;
-    std::unique_ptr<PipeHandle> stdin_pipe;   // 父进程写入
-    std::unique_ptr<PipeHandle> stdout_pipe;  // 父进程读取
-    std::unique_ptr<PipeHandle> stderr_pipe;  // 父进程读取
+    std::unique_ptr<PipeHandle> stdin_pipe;   // Parent writes to child stdin
+    std::unique_ptr<PipeHandle> stdout_pipe;  // Parent reads from child stdout
+    std::unique_ptr<PipeHandle> stderr_pipe;  // Parent reads from child stderr
 };
 
 // ── Platform-specific factory ──

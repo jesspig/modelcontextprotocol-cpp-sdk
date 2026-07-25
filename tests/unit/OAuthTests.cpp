@@ -1,3 +1,5 @@
+// OAuthTests — unit tests for PKCE, token cache, and OAuth client provider
+
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
 

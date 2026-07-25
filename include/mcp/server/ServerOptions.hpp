@@ -1,3 +1,5 @@
+// ServerOptions.hpp - Server configuration and event callbacks
+
 #pragma once
 
 #include <mcp/Export.hpp>

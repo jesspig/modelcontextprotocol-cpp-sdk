@@ -24,7 +24,7 @@ ctest --preset debug --output-on-failure
 using namespace mcp;
 
 int main() {
-    auto transport = std::make_unique<StdioServerTransport>();
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
@@ -52,6 +52,7 @@ int main() {
 ## 最小客户端
 
 ```cpp
+#include <iostream>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 
@@ -60,7 +61,8 @@ using namespace mcp;
 int main() {
     StdioClientTransportOptions transport_opts;
     transport_opts.command = "./my-server";
-    auto transport = std::make_shared<StdioClientTransport>(transport_opts);
+    auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+    auto transport = factory->Connect();
 
     ClientOptions opts;
     opts.client_info = Implementation{"MyClient", "1.0.0"};
@@ -71,7 +73,7 @@ int main() {
     for (const auto& tool : tools.tools)
         std::cout << tool.name << "\n";
 
-    JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
+    JsonValue args(JsonValue::FromObject({{"text", "Hello, MCP!"}}));
     auto result = client->CallTool("echo", args);
     return 0;
 }

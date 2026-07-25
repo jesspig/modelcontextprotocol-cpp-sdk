@@ -1,3 +1,7 @@
+// ProtocolConformance — MCP protocol specification compliance tests
+// Covers JSON-RPC, WireCodec era-gating, version negotiation, type serialization,
+// elicitation, MRTR/InputRequired, subscriptions, tasks, logging, and extensions
+
 #include <mcp/McpCore.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 

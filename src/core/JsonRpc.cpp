@@ -1,3 +1,5 @@
+// JsonRpc.cpp — JSON-RPC 2.0 message serialization/deserialization
+
 #include <mcp/JsonRpc.hpp>
 #include <detail/JsonSerializer.hpp>
 
@@ -9,6 +11,7 @@ namespace mcp {
 
 namespace {
 
+// Validate that the jsonrpc field equals "2.0".
 void ValidateVersion(std::string_view ver) {
     if (ver != "2.0")
         throw std::runtime_error(std::string("invalid JSON-RPC version: ") + std::string(ver));
@@ -144,6 +147,7 @@ std::string SerializeMessage(const JsonRpcMessage& msg) {
     return jv.Dump();
 }
 
+// Parse a JSON string and dispatch to the correct message type based on field presence.
 JsonRpcMessage DeserializeMessage(std::string_view json) {
     auto jv = JsonValue::Parse(json);
 

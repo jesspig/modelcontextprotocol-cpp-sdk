@@ -1,5 +1,6 @@
 #pragma once
-
+// VersionNegotiation.hpp
+// Protocol version auto-detection and negotiation between client and server
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
 
