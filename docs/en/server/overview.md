@@ -9,10 +9,8 @@ auto transport = std::make_shared<StdioServerTransport>();
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
-opts.capabilities = ServerCapabilities{};
-opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts);
+auto server = McpServer::Create(transport, opts);
 server->Run();
 ```
 
@@ -27,10 +25,8 @@ auto transport = std::make_shared<StreamableHttpServerTransport>(http_opts);
 
 ServerOptions opts;
 opts.server_info = Implementation{"MyServer", "1.0.0"};
-opts.capabilities = ServerCapabilities{};
-opts.capabilities->tools = ToolsCapability{};
 
-auto server = McpServer::Create(std::move(transport), opts);
+auto server = McpServer::Create(transport, opts);
 server->Run();
 ```
 
@@ -67,12 +63,78 @@ server->Run();
 
 Shorthand callbacks (`on_method_called`, `on_protocol_error`) and full-message callbacks (`on_request`, `on_error`) are **chained** — both fire when set simultaneously.
 
+## RequestContext\<TParams\>
+
+Every tool handler receives a `RequestContext<CallToolRequestParams>` providing request context:
+
+| Member | Return Type | Description |
+|--------|-------------|-------------|
+| `Params()` | `const TParams&` | The deserialized request parameters |
+| `Server()` | `McpServer&` | Reference to the owning server instance |
+| `GetRequest()` | `const JsonRpcRequest&` | The raw JSON-RPC request |
+| `LogLevel()` | `optional<LoggingLevel>` | Per-request log level from `_meta` (2026-era) |
+| `Log(level, data)` | `void` | Sends a logging notification, filtered by `LogLevel()` |
+
+The `Log()` method respects per-request log levels: messages below the request's `LogLevel()` are silently dropped.
+
+## McpServerTool
+
+For reusable tool definitions, subclass `McpServerTool` or use `McpServerTool::Create`:
+
+```cpp
+auto tool = McpServerTool::Create("get_weather",
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // ...
+    },
+    ToolOptions{}.Description("Get weather"));
+server->RegisterTool(tool);
+```
+
+The `McpServerTool` abstract class exposes:
+- `ProtocolTool()` — returns the protocol-level `Tool` struct
+- `InvokeAsync(ctx, promise)` — override for custom async execution
+
+The lambda-based `RegisterTool` overload works identically — it creates an `McpServerTool` internally.
+
+## Properties
+
+| Method | Return Type | Description |
+|--------|-------------|-------------|
+| `GetClientCapabilities()` | `const ClientCapabilities*` | Client capabilities from `initialize` or first request meta (nullptr before connect) |
+| `GetClientInfo()` | `const Implementation*` | Client identity (nullptr before connect) |
+| `GetNegotiatedProtocolVersion()` | `string_view` | The negotiated protocol version string |
+| `GetCapabilities()` | `const ServerCapabilities&` | Server capabilities auto-derived from registered primitives |
+| `IsMrtrSupported()` | `bool` | Whether MRTR (Multi-Round Tool Retrieval) is supported |
+
+## Notifications
+
+| Method | Description |
+|--------|-------------|
+| `SendToolListChanged()` | Notifies clients of tool list changes |
+| `SendResourceListChanged()` | Notifies clients of resource list changes |
+| `SendPromptListChanged()` | Notifies clients of prompt list changes |
+| `SendLoggingMessage(level, data)` | Sends a logging message (respects client's `logging/setLevel`) |
+| `SendLoggingMessage(level, data, min_level)` | Overload with explicit minimum level override |
+
+## Completion Handler
+
+Register an optional handler for `completion/complete` requests (e.g., argument auto-complete):
+
+```cpp
+server->SetCompletionHandler(
+    [](const CompleteRequestParams& params) -> CompleteResult {
+        CompleteResult result;
+        result.completion = JsonValue::Parse(R"({"values":["value1","value2"]})");
+        return result;
+    });
+```
+
 ## Lifecycle
 
 1. **Construction**: `McpServer::Create` — creates the session handler, wires handlers, starts message loop
-2. **Registration**: Register tools, resources, prompts, extensions
-3. **Run**: `server->Run()` — blocks on `io_context.run()`
-4. **Shutdown**: `server->Close()` — cancels pending requests, closes transport
+2. **Registration**: Register tools, resources, prompts via `RegisterTool`, `RegisterResource`, `RegisterResourceTemplate`, `RegisterPrompt`
+3. **Run**: `server->Run()` — blocks until `Close()` is called; the session handler processes messages asynchronously
+4. **Shutdown**: `server->Close()` — waits for pending async calls, closes handler and transport
 
 ## Capability Derivation
 

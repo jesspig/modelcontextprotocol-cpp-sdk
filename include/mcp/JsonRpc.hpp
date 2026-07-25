@@ -1,5 +1,7 @@
 #pragma once
 
+// JsonRpc.hpp — JSON-RPC 2.0 message types and serialization
+
 #include <mcp/ProtocolVersion.hpp>
 #include <mcp/ErrorCodes.hpp>
 

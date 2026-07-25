@@ -1,4 +1,6 @@
 #pragma once
+// MessageChannel.hpp
+// Bounded async message queue with backpressure, replacing asio::experimental::channel
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>

@@ -41,8 +41,8 @@
 |---------------|---------|-------------------------------|
 | CMake         | 3.28    | 生成器：推荐 Ninja            |
 | C++ 编译器    | C++17   | MSVC、Clang、GCC             |
-| asio          | 1.30.2  | 自动下载                      |
-| nlohmann-json | 3.11.3  | 自动下载                      |
+| libhv         | 1.3.4   | 自动下载                      |
+| simdjson      | 3.12.3  | 自动下载                      |
 | OpenSSL       | (可选)  | TLS 必需（WebSocket、SSE HTTPS、OAuth）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 支持平台：**Windows** (MSVC、clang-cl)、**Linux** (GCC、Clang)、**macOS** (Clang)。
@@ -63,7 +63,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-可用库目标：`mcp-core`（头文件-only）、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`。
+可用库目标：`mcp-core`、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`。所有库均为静态库。
 
 ## 快速开始
 
@@ -81,32 +81,34 @@ ctest --preset debug --output-on-failure
 ┌─────────────────────────────────────┐
 │  mcp-server        mcp-client       │  服务器 & 客户端 API
 ├─────────────────────────────────────┤
-│  mcp-protocol                       │  WireCodec、版本协商
+│  mcp-protocol                       │  WireCodec、McpSessionHandler
 ├─────────────────────────────────────┤
-│  mcp-transport                      │  Stdio、SSE、WebSocket、Streamable HTTP
+│  mcp-transport       mcp-http       │  传输层、Streamable HTTP、SSE
 ├─────────────────────────────────────┤
-│  mcp-core            mcp-http       │  类型、JSON-RPC、HTTP 服务
+│  mcp-core                           │  类型、JSON-RPC、接口
 └─────────────────────────────────────┘
 ```
 
-库依赖链：`mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。
+库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。所有库均为静态库。
 
-- **mcp-core** — 头文件-only。所有 MCP 协议类型（`Tool`、`Resource`、`Prompt`、`ElicitResult` 等）、JSON-RPC 消息结构、错误码、能力声明、传输层接口。
-- **mcp-transport** — 传输层实现：stdio（客户端/服务器）、SSE 客户端、WebSocket（简化版）、进程内通信（用于测试）。
-- **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联、`MessageFilter` 管道。
-- **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit。
-- **mcp-client** — `McpClient`，含服务器发现、版本协商、OAuth（PKCE/DCR）、MRTR 驱动、工具缓存、`FileTokenCache`。
-- **mcp-http** — 用于 Streamable HTTP 模式和 SSE 端点服务的 HTTP 服务器。
+- **mcp-core** — 核心类型、JSON-RPC 消息结构、错误码、能力声明、内容类型、传输层接口。
+- **mcp-transport** — 传输层实现：StdioServerTransport、StdioClientTransport、SseClientTransport、InMemoryTransport、WebSocketClientTransport、StreamableHttpServerTransport、StreamableHttpClientTransport。平台相关 I/O 在 `detail/` 目录下（posix、win32）。
+- **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联与超时、`MessageFilter` 管道。
+- **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit、订阅管理。
+- **mcp-client** — `McpClient`，含服务器发现（`server/discover` → initialize 回退）、版本协商、OAuth（PKCE/DCR）、MRTR（InputRequired 循环）、工具缓存、`FileTokenCache`。
+- **mcp-http** — 用于 Streamable HTTP 模式的 HTTP 服务器：`HttpServer`、`EventStore`（SSE 事件持久化）、`StreamableHttpServerTransport`、`StreamableHttpClientTransport`。
 
 ### 所有传输层
 
-| 传输层          | 客户端 | 服务器 | 说明                                         |
-|----------------|--------|--------|----------------------------------------------|
-| Stdio          | 是     | 是     | stdin/stdout 管道                            |
-| Streamable HTTP| 是     | 是     | HTTP POST 带流式响应                         |
-| SSE            | 是     | 否     | 服务器推送事件（Server-Sent Events）          |
-| WebSocket      | 是     | 否     | TCP 双向通信（简化版 RFC 6455）              |
-| InMemory       | 是     | 是     | 进程内传输，用于测试                          |
+| 传输层          | 客户端 | 服务器 | 说明                                           |
+|----------------|--------|--------|------------------------------------------------|
+| Stdio          | 是     | 是     | stdin/stdout 管道，子进程通信                  |
+| Streamable HTTP| 是     | 是     | HTTP POST 配合 JSON/会话模式响应               |
+| SSE            | 是     | 是¹   | 用于推送通知的服务器发送事件                  |
+| WebSocket      | 是     | 否     | TCP 双向通信（libhv WebSocketClient）          |
+| InMemory       | 是     | 是     | 进程内传输，用于测试                           |
+
+> ¹ 服务端 SSE 通过 `StreamableHttpServerTransport` 提供，当 `enable_legacy_sse` 为 `true` 时，在同一端点上通过 HTTP GET 提供 SSE 流。
 
 ## 使用方式
 
@@ -115,25 +117,25 @@ ctest --preset debug --output-on-failure
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
 
-    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+    auto server = McpServer::Create(transport, opts);
 
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo input text back"),
         [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            std::string text;
+            if (ctx.Params().arguments) {
+                auto* v = ctx.Params().arguments->Find("text");
+                if (v) text = v->GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -154,18 +156,20 @@ using namespace mcp;
 
 StdioClientTransportOptions transport_opts;
 transport_opts.command = "path/to/server";
-auto transport = std::make_unique<StdioClientTransport>(transport_opts);
+auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+auto transport = factory->Connect();
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
-auto client = McpClient::Create(std::move(transport), opts);
+auto client = McpClient::Create(transport, opts);
 
 auto tools = client->ListTools();
 for (const auto& tool : tools.tools) {
     std::cout << tool.name << "\n";
 }
 
-auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
+auto result = client->CallTool("echo",
+    JsonValue::FromObject({{"text", "Hello, MCP!"}}));
 ```
 
 ## OAuth 支持
@@ -178,10 +182,13 @@ auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
 - 可插拔 Token 缓存（`ITokenCache`），内置持久化 `FileTokenCache`
 
 ```cpp
-auto oauth = std::make_shared<OAuthClientProvider>(
-    "https://auth.server.com/.well-known/oauth-authorization-server",
-    "client-id");
-auto client = McpClient::Create(transport, options, &io_ctx, oauth);
+OAuthClientOptions oauth_opts;
+oauth_opts.server_url = "https://auth.server.com/.well-known/oauth-authorization-server";
+oauth_opts.client_id = "client-id";
+oauth_opts.redirect_uri = "http://localhost:3000/callback";
+
+OAuthClientProvider auth(oauth_opts);
+auth.Authenticate();
 ```
 
 ## 协议版本
@@ -195,7 +202,7 @@ auto client = McpClient::Create(transport, options, &io_ctx, oauth);
 
 ## 一致性测试
 
-**122 个一致性测试**，覆盖两个时代的协议类型序列化：
+**113 个一致性测试**，覆盖两个时代的协议类型序列化：
 
 - JSON-RPC 消息往返（请求、通知、响应、错误）
 - WireCodec 时代门控（2025 与 2026 方法/通知集）

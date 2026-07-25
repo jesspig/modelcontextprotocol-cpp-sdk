@@ -1,27 +1,25 @@
 #pragma once
 
-// mcp-cpp-sdk — Model Context Protocol C++ SDK
+// McpCore.hpp — Core umbrella header including all core types
 //
 // C# reference: ModelContextProtocol.Core
-//
-// 总包含头 — 引入所有核心类型
 
-// ── 基础 ──
+// ── Foundation ──
 #include <mcp/Export.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/Methods.hpp>
 
-// ── JSON-RPC 消息 ──
+// ── JSON-RPC Messages ──
 #include <mcp/JsonRpc.hpp>
 
-// ── 协议数据模型 ──
+// ── Protocol Data Model ──
 #include <mcp/Implementation.hpp>
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
 #include <mcp/McpTypes.hpp>
 
-// ── 错误 ──
+// ── Errors ──
 #include <mcp/McpError.hpp>
 

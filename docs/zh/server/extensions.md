@@ -7,6 +7,8 @@
 在 `ServerOptions` 上设置 `task_store` 会自动启用扩展能力（空映射）：
 
 ```cpp
+auto transport = std::make_shared<StdioServerTransport>();
+
 ServerOptions opts;
 opts.task_store = std::make_shared<FileTaskStore>("tasks.json");
 

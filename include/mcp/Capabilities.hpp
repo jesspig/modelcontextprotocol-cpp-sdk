@@ -1,5 +1,7 @@
 #pragma once
 
+// Capabilities.hpp — MCP client/server capability types and serialization
+
 #include <mcp/JsonValue.hpp>
 
 #include <map>

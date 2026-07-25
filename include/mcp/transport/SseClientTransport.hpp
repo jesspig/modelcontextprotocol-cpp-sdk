@@ -1,4 +1,5 @@
 #pragma once
+// SseClientTransport.hpp — SSE-based client transport
 
 #include <mcp/Export.hpp>
 

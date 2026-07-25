@@ -3,7 +3,6 @@
 > **中文版文档**：[README_zh.md](README_zh.md)
 
 C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), providing both client and server libraries for building MCP-based AI tooling integrations.
-[![MCP](https://badge.mcpx.dev/?type=plugin&plugin_id=github.com/jesspig/GodotMind&logo=true)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)
@@ -41,8 +40,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 |----------------|----------------|------------------------------|
 | CMake          | 3.28           | Generator: Ninja recommended |
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
-| asio           | 1.30.2         | Fetched automatically        |
-| nlohmann-json  | 3.11.3         | Fetched automatically        |
+| libhv          | 1.3.4          | Fetched automatically        |
+| simdjson       | 3.12.3         | Fetched automatically        |
 | OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS, OAuth). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
@@ -63,7 +62,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Available library targets: `mcp-core` (header-only), `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`.
+Available library targets: `mcp-core`, `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`. All libraries are static.
 
 ## Quick Start
 
@@ -81,32 +80,34 @@ Configure presets: `debug`, `release`. Ninja generator required.
 ┌─────────────────────────────────────┐
 │  mcp-server        mcp-client       │  Server & Client API
 ├─────────────────────────────────────┤
-│  mcp-protocol                       │  WireCodec, version negotiation
+│  mcp-protocol                       │  WireCodec, McpSessionHandler
 ├─────────────────────────────────────┤
-│  mcp-transport                      │  Stdio, SSE, WebSocket, Streamable HTTP
+│  mcp-transport       mcp-http       │  Transports, Streamable HTTP, SSE
 ├─────────────────────────────────────┤
-│  mcp-core            mcp-http       │  Types, JSON-RPC, HTTP serving
+│  mcp-core                           │  Types, JSON-RPC, interfaces
 └─────────────────────────────────────┘
 ```
 
-Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`.
+Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All libraries are static.
 
-- **mcp-core** — Header-only. All MCP protocol types (`Tool`, `Resource`, `Prompt`, `ElicitResult`, etc.), JSON-RPC message structures, error codes, capabilities, transport interfaces.
-- **mcp-transport** — Transport implementations: stdio (client/server), SSE client, WebSocket (simplified), in-memory for testing.
-- **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation, `MessageFilter` pipeline.
-- **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation.
-- **mcp-client** — `McpClient` with server discovery, version negotiation, OAuth (PKCE/DCR), MRTR driver, tool cache, `FileTokenCache`.
-- **mcp-http** — HTTP server for Streamable HTTP mode and SSE endpoint serving.
+- **mcp-core** — Core types, JSON-RPC message structures, error codes, capabilities, content types, transport interfaces.
+- **mcp-transport** — Transport implementations: StdioServerTransport, StdioClientTransport, SseClientTransport, InMemoryTransport, WebSocketClientTransport, StreamableHttpServerTransport, StreamableHttpClientTransport. Platform-specific I/O in `detail/` (posix, win32).
+- **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation with timeout, `MessageFilter` pipeline.
+- **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation, subscription management.
+- **mcp-client** — `McpClient` with server discovery (`server/discover` → initialize fallback), version negotiation, OAuth (PKCE/DCR), MRTR (InputRequired loop), tool cache, `FileTokenCache`.
+- **mcp-http** — HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence), `StreamableHttpServerTransport`, `StreamableHttpClientTransport`.
 
 ### All transports
 
-| Transport       | Client | Server | Description                                   |
-|-----------------|--------|--------|-----------------------------------------------|
-| Stdio           | Yes    | Yes    | stdin/stdout pipes                            |
-| Streamable HTTP | Yes    | Yes    | HTTP POST with streaming responses            |
-| SSE             | Yes    | No     | Server-Sent Events for server → client push   |
-| WebSocket       | Yes    | No     | TCP-based bidirectional (simplified)          |
-| InMemory        | Yes    | Yes    | In-process transport for testing              |
+| Transport       | Client | Server | Description                                      |
+|-----------------|--------|--------|--------------------------------------------------|
+| Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication     |
+| Streamable HTTP | Yes    | Yes    | HTTP POST with JSON/session-mode responses       |
+| SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications        |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient)  |
+| InMemory        | Yes    | Yes    | In-process transport for testing                 |
+
+> ¹ SSE server-side is provided through `StreamableHttpServerTransport` when `enable_legacy_sse` is `true`, which serves an SSE stream via HTTP GET.
 
 ## Usage
 
@@ -115,25 +116,25 @@ Library dependency chain: `mcp-core` (INTERFACE) → `mcp-transport` → `mcp-pr
 ```cpp
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
-#include <asio/io_context.hpp>
 
 using namespace mcp;
 
 int main() {
-    asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioServerTransport>(io_ctx);
+    auto transport = std::make_shared<StdioServerTransport>();
 
     ServerOptions opts;
     opts.server_info = Implementation{"MyServer", "1.0.0"};
 
-    auto server = McpServer::Create(std::move(transport), opts, &io_ctx);
+    auto server = McpServer::Create(transport, opts);
 
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo input text back"),
         [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
-            auto text = ctx.Params().arguments
-                ? ctx.Params().arguments->value("text", "")
-                : "";
+            std::string text;
+            if (ctx.Params().arguments) {
+                auto* v = ctx.Params().arguments->Find("text");
+                if (v) text = v->GetString();
+            }
             CallToolResult result;
             result.content.push_back(TextContent{"text", text});
             return result;
@@ -154,18 +155,20 @@ using namespace mcp;
 
 StdioClientTransportOptions transport_opts;
 transport_opts.command = "path/to/server";
-auto transport = std::make_unique<StdioClientTransport>(transport_opts);
+auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+auto transport = factory->Connect();
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
-auto client = McpClient::Create(std::move(transport), opts);
+auto client = McpClient::Create(transport, opts);
 
 auto tools = client->ListTools();
 for (const auto& tool : tools.tools) {
     std::cout << tool.name << "\n";
 }
 
-auto result = client->CallTool("echo", nlohmann::json{{"text", "Hello, MCP!"}});
+auto result = client->CallTool("echo",
+    JsonValue::FromObject({{"text", "Hello, MCP!"}}));
 ```
 
 ## OAuth Support
@@ -178,10 +181,13 @@ The client supports the MCP OAuth authorization flow:
 - Pluggable token cache (`ITokenCache`), persistent `FileTokenCache` included
 
 ```cpp
-auto oauth = std::make_shared<OAuthClientProvider>(
-    "https://auth.server.com/.well-known/oauth-authorization-server",
-    "client-id");
-auto client = McpClient::Create(transport, options, &io_ctx, oauth);
+OAuthClientOptions oauth_opts;
+oauth_opts.server_url = "https://auth.server.com/.well-known/oauth-authorization-server";
+oauth_opts.client_id = "client-id";
+oauth_opts.redirect_uri = "http://localhost:3000/callback";
+
+OAuthClientProvider auth(oauth_opts);
+auth.Authenticate();
 ```
 
 ## Protocol Versions
@@ -195,7 +201,7 @@ The `WireCodec` factory auto-selects the correct codec for the negotiated versio
 
 ## Conformance Tests
 
-**122 conformance tests** covering protocol type serialization across both eras:
+**113 conformance tests** covering protocol type serialization across both eras:
 
 - JSON-RPC message round-trips (request, notification, response, error)
 - WireCodec era-gating (2025 vs 2026 method/notification sets)

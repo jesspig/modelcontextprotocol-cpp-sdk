@@ -1,5 +1,6 @@
 #pragma once
-
+// TokenCache.hpp
+// OAuth token storage interfaces and metadata structures
 #include <mcp/McpTypes.hpp>
 
 #include <memory>

@@ -7,7 +7,8 @@ The `McpClient` class connects to MCP servers, negotiates protocol versions, and
 ```cpp
 StdioClientTransportOptions transport_opts;
 transport_opts.command = "path/to/server";
-auto transport = std::make_shared<StdioClientTransport>(transport_opts);
+auto factory = std::make_shared<StdioClientTransport>(transport_opts);
+auto transport = factory->Connect();
 ClientOptions opts;
 opts.client_info = Implementation{"MyClient", "1.0.0"};
 
@@ -18,41 +19,59 @@ auto client = McpClient::Create(transport, opts);
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `client_info` | `Implementation` | Client identity |
+| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.1.0"}`) |
 | `capabilities` | `optional<ClientCapabilities>` | Declared capabilities |
 | `connect_mode` | `ConnectMode` | `Auto` (discover → initialize), `Legacy`, `Pin` |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
 | `pin_protocol_version` | `optional<string>` | Pin to a specific protocol version (used with `Pin` mode) |
 | `discover_probe_timeout` | `chrono::seconds` | Server discovery probe timeout (default 5s) |
-| `supported_protocol_versions` | `vector<string>` | Protocol versions the client advertises |
-| `input_required_config` | `InputRequiredConfig` | Configuration for MRTR elicitation responses |
-| `cache_config` | `CacheConfig` | Client-side caching configuration |
+| `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation config: `auto_fulfill=true`, `max_rounds=8`, `round_timeout=600s` |
 | `extensions` | `optional<JsonValue>` | Protocol extension declarations |
-| `enforce_strict_capabilities` | `bool` | Reject unknown capabilities (default false) |
-| `list_max_pages` | `int` | Max pages for paginated list operations (default 64) |
 
 ## Making Requests
 
 ```cpp
-// List tools
+// List tools (with optional cursor for pagination)
 auto tools = client->ListTools();
 
-// Call a tool
+// Call a tool (with optional arguments, RequestOptions, and MRTR support)
 auto result = client->CallTool("echo",
     JsonValue(JsonValue::Object{{"text", "Hello"}}));
 
-// Read a resource
+// Read a resource (with CacheableRequestOptions)
 auto resource = client->ReadResource("file:///config.json");
 
-// Get a prompt
+// Get a prompt (with optional arguments and RequestOptions)
 auto prompt = client->GetPrompt("code_review",
     JsonValue(JsonValue::Object{{"diff", "..."}}));
 
 // Complete a prompt/resource reference
 auto completion = client->Complete(params);
 
-// Ping (heartbeat)
+// Ping (heartbeat, deprecated in 2026-07-28)
 client->Ping();
+
+// Discover server capabilities (re-negotiate)
+auto discover = client->Discover();
+
+// List resources and templates
+auto resources = client->ListResources();
+auto templates = client->ListResourceTemplates();
+
+// List prompts
+auto prompts = client->ListPrompts();
+
+// Subscribe/unsubscribe to resource changes
+client->SubscribeResource("file:///config.json");
+client->UnsubscribeResource("file:///config.json");
+
+// Task operations
+auto task = client->GetTask("task-123");
+client->UpdateTask("task-123", result_json);
+client->CancelTask("task-123", "no longer needed");
+
+// Poll task until completion (with configurable interval and timeout)
+auto completed = client->PollTaskToCompletionAsync("task-123");
 ```
 
 ## Server-to-Client Handlers
@@ -77,6 +96,16 @@ client->SetRootsHandler(
     [](const ListRootsRequestParams& params) -> ListRootsResult {
         // Deprecated: provide root directories
     });
+
+client->SetNotificationHandler("custom/notification",
+    [](const JsonRpcNotification& notif) {
+        // Handle server-sent notifications
+    });
+
+client->SetLoggingHandler(
+    [](const LoggingMessageNotificationParams& params) {
+        // Handle logging messages from server
+    });
 ```
 
 ## Subscriptions
@@ -86,6 +115,7 @@ client->SetRootsHandler(
 SubscriptionsListenRequestParams subs;
 subs.notifications.tools_list_changed = true;
 subs.notifications.resources_list_changed = true;
+subs.notifications.resource_subscriptions = {"file:///config.json"};
 client->SubscribeAsync(subs);
 ```
 
@@ -94,5 +124,5 @@ client->SubscribeAsync(subs);
 The client auto-negotiates the protocol version:
 
 1. **Auto** (default): Probe `server/discover`, fallback to `initialize` handshake
-2. **Pin**: Force a specific version
+2. **Pin**: Force a specific version (via `pin_protocol_version`, defaults to latest `kLatestProtocolVersion`)
 3. **Legacy**: Only `initialize` handshake

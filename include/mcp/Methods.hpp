@@ -1,5 +1,7 @@
 #pragma once
 
+// Methods.hpp — MCP method and notification name constants
+
 #include <string_view>
 
 namespace mcp {
@@ -37,6 +39,9 @@ inline constexpr std::string_view kGetTask = "tasks/get";
 inline constexpr std::string_view kUpdateTask = "tasks/update";
 inline constexpr std::string_view kCancelTask = "tasks/cancel";
 
+inline constexpr std::string_view kGetTaskPayload = "tasks/result";
+inline constexpr std::string_view kListTasks = "tasks/list";
+
 inline constexpr std::string_view kSetLoggingLevel = "logging/setLevel";
 
 inline constexpr std::string_view kListExtensions = "server/extensions/list";
@@ -53,6 +58,17 @@ inline constexpr std::string_view kResourceListChanged = "notifications/resource
 inline constexpr std::string_view kToolListChanged = "notifications/tools/list_changed";
 inline constexpr std::string_view kPromptListChanged = "notifications/prompts/list_changed";
 inline constexpr std::string_view kMessage = "notifications/message";
+
+inline constexpr std::string_view kProgress = "notifications/progress";
+inline constexpr std::string_view kRootsListChanged = "notifications/roots/list_changed";
+inline constexpr std::string_view kElicitationComplete = "notifications/elicitation/complete";
+inline constexpr std::string_view kSubscriptionsAcknowledged = "notifications/subscriptions/acknowledged";
+inline constexpr std::string_view kTaskStatus = "notifications/tasks/status";
+inline constexpr std::string_view kTaskWorking = "notifications/tasks/working";
+inline constexpr std::string_view kTaskCompleted = "notifications/tasks/completed";
+inline constexpr std::string_view kTaskFailed = "notifications/tasks/failed";
+inline constexpr std::string_view kTaskCancelled = "notifications/tasks/cancelled";
+inline constexpr std::string_view kTaskInputRequired = "notifications/tasks/input_required";
 
 } // namespace notifications
 

@@ -1,13 +1,9 @@
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
-# 代理设置
+# 代理设置 — 仅从环境变量读取，不做自动探测
 if(DEFINED ENV{HTTP_PROXY})
     message(STATUS "[mcp] Using proxy from environment: $ENV{HTTP_PROXY}")
-elseif(EXISTS "$ENV{LOCALAPPDATA}/Clash")
-    set(ENV{HTTP_PROXY} "http://127.0.0.1:10808")
-    set(ENV{HTTPS_PROXY} "http://127.0.0.1:10808")
-    message(STATUS "[mcp] Auto-detected proxy: 127.0.0.1:10808")
 endif()
 
 # ====================================================================
@@ -20,6 +16,8 @@ FetchContent_Declare(simdjson
 set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
 set(SIMDJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(simdjson)
+# Suppress warnings from simdjson headers (e.g. unused parameter in fallback path)
+target_include_directories(simdjson SYSTEM INTERFACE "$<BUILD_INTERFACE:${simdjson_SOURCE_DIR}/include>")
 
 # ====================================================================
 # OpenSSL — 提前探测，影响 libhv 的 TLS 选项
@@ -44,8 +42,9 @@ FetchContent_Declare(libhv
 set(WITH_OPENSSL ${MCP_OPENSSL_FOUND} CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_UNITTEST OFF CACHE BOOL "" FORCE)
-# libhv 的 file(INSTALL ...) 在 configure 时会打印 ~90 行 "Up-to-date"
-# 在 MakeAvailable 前打补丁移除这两行
+# libhv's install(FILES ... DESTINATION include/hv) is replaced with file(COPY ...)
+# to generate the include/hv/ directory at configure time instead of install time.
+# This ensures hv_static's BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include resolves.
 FetchContent_GetProperties(libhv)
 if(NOT libhv_POPULATED)
     cmake_policy(PUSH)
@@ -55,13 +54,24 @@ if(NOT libhv_POPULATED)
     FetchContent_Populate(libhv)
     cmake_policy(POP)
     file(READ "${libhv_SOURCE_DIR}/CMakeLists.txt" _hv_cmake)
-    string(REGEX REPLACE "\nfile\\(INSTALL \\$\\{LIBHV_HEADERS\\} DESTINATION [^\n]+\\)" "" _hv_cmake "${_hv_cmake}")
+    string(REGEX REPLACE
+        "\n *install\\(FILES \\$\\{LIBHV_HEADERS\\} DESTINATION include/hv\\)"
+        "\nfile(COPY \${LIBHV_HEADERS} DESTINATION \${CMAKE_CURRENT_SOURCE_DIR}/include/hv)"
+        _hv_cmake "${_hv_cmake}")
     file(WRITE "${libhv_SOURCE_DIR}/CMakeLists.txt" "${_hv_cmake}")
 endif()
 FetchContent_MakeAvailable(libhv)
-# Ensure the subdirectory is added (CMake 4.x may skip it for already-populated content)
 if(NOT TARGET hv_static)
     add_subdirectory("${libhv_SOURCE_DIR}" "${libhv_BINARY_DIR}")
+endif()
+set(_hv_include "${libhv_SOURCE_DIR}/include/hv")
+if(EXISTS "${libhv_SOURCE_DIR}" AND NOT EXISTS "${_hv_include}")
+    file(MAKE_DIRECTORY "${_hv_include}")
+    foreach(_dir "" base ssl event util cpputil http http/server http/client)
+        file(GLOB _files "${libhv_SOURCE_DIR}/${_dir}/*.h" "${libhv_SOURCE_DIR}/${_dir}/*.hpp")
+        list(APPEND _hv_all ${_files})
+    endforeach()
+    file(COPY ${_hv_all} DESTINATION "${_hv_include}")
 endif()
 
 # ====================================================================

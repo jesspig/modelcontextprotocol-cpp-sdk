@@ -1,6 +1,6 @@
-// WeatherServer — 对应 C# QuickstartWeatherServer
-// 演示工具定义、参数描述、多工具注册
-// 使用 StdioServerTransport
+// WeatherServer — MCP server example
+// Demonstrates tool definition, parameter descriptions, and multi-tool registration
+// Uses StdioServerTransport
 
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>

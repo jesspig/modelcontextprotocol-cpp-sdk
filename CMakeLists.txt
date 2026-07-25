@@ -124,6 +124,7 @@ else()
     target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
 endif()
 target_link_libraries(mcp-transport PUBLIC mcp-core hv_static)
+target_include_directories(mcp-transport SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
@@ -183,6 +184,7 @@ if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
 target_link_libraries(mcp-http PUBLIC mcp-transport hv_static)
+target_include_directories(mcp-http SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 

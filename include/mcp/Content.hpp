@@ -1,5 +1,7 @@
 #pragma once
 
+// Content.hpp — MCP content types (text, image, audio, resource)
+
 #include <mcp/JsonValue.hpp>
 
 #include <optional>

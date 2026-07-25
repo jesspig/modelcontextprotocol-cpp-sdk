@@ -1,3 +1,5 @@
+// StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX libhv)
+
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>
@@ -24,6 +26,10 @@
 
 #ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
+#endif
+
+#ifndef _WIN32
+#include <hv/requests.h>
 #endif
 
 namespace mcp {
@@ -291,7 +297,6 @@ private:
 // POSIX implementation using libhv
 // ═══════════════════════════════════════════════════════════════════════
 #else
-#include <hv/requests.h>
 
 namespace {
 

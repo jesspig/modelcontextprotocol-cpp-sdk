@@ -1,20 +1,20 @@
 # Transports
 
-| Transport       | Client | Server | Description                                   |
-|-----------------|--------|--------|-----------------------------------------------|
-| Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication  |
-| Streamable HTTP | Yes    | Yes    | HTTP POST with streaming server-sent events   |
-| SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications     |
-| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient) |
-| InMemory        | Yes    | Yes    | In-process for testing                        |
+| Transport       | Client | Server | Description                                      |
+|-----------------|--------|--------|--------------------------------------------------|
+| Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication     |
+| Streamable HTTP | Yes    | Yes    | HTTP POST with JSON/session-mode responses       |
+| SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications        |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient)  |
+| InMemory        | Yes    | Yes    | In-process for testing                           |
 
 ## Streamable HTTP
 
 The Streamable HTTP transport implements the MCP Streamable HTTP specification. Each session uses an internal `StreamableHttpSessionTransport` (wrapping `ITransport`) with its own message channel and background thread.
 
-**Request flow**: Client sends a JSON-RPC message via HTTP POST. The server validates `Mcp-Method` and `Mcp-Name` headers against the body (SEP-2243), echoes them back on the response, and extracts `Mcp-Param-*` headers into `_meta.x-mcp-headers`. If the response is JSON, the server responds synchronously in **stateless** mode (with pending-response correlation via `std::promise`) or returns `202 Accepted` in session mode. If the response is SSE (`text/event-stream`), the server keeps the connection open and streams events.
+**Request flow**: Client sends a JSON-RPC message via HTTP POST. In **stateless** mode, the server processes the request synchronously and responds with a JSON response (correlated via `std::promise` with a 30-second timeout). In **session** mode, the server returns `202 Accepted` and delivers results asynchronously through SSE (via a separate GET endpoint). The server validates `Mcp-Method` and `Mcp-Name` headers against the body (SEP-2243), echoes them back on the response, and extracts `Mcp-Param-*` headers into `_meta.x-mcp-headers`.
 
-**SSE read loop**: On the client side, when the POST response has `Content-Type: text/event-stream`, a background thread (`SseReadLoop`) reads chunks, splits on `\n\n` delimiters, parses `data:` lines, and enqueues `JsonRpcMessage` into the `MessageChannel`.
+**SSE read loop**: On the client side, if the POST response includes SSE events (e.g., session-mode results), a background thread reads chunks, splits on `\n\n` delimiters, parses `data:` lines, and enqueues `JsonRpcMessage` into the `MessageChannel`.
 
 **Headers** (`StreamableHttpClientTransport`):
 - `MCP-Protocol-Version: 2026-07-28` — always sent
@@ -58,7 +58,7 @@ Controls how the HTTP client transport connects:
 |------------------------------|-------------------------------|----------|--------------------------------------|
 | `command`                    | `std::string`                 | required | Subprocess command                   |
 | `arguments`                  | `std::vector<std::string>`    | `{}`     | Command-line arguments               |
-| `name`                       | `std::string`                 | `"stdio"`| Transport name                       |
+| `name`                       | `std::string`                 | `""`    | Transport name (empty falls back to `"stdio"`) |
 | `working_directory`          | `std::string`                 | `""`     | Subprocess working directory         |
 | `inherit_environment_variables` | `bool`                     | `true`   | Inherit parent environment           |
 | `environment_variables`      | `std::map<std::string, std::string>` | `{}` | Additional env vars        |
@@ -98,5 +98,4 @@ struct Pair {
 `StreamableHttpServerTransport` supports stateless mode controlled by `StreamableHttpServerOptions::stateless` (default `false`). When `true`, `IsStateless()` returns `true` and:
 
 - **No sessions**: Each request is independent; the response is correlated synchronously via `std::promise` with a 30-second timeout.
-- **No SSE**: Server-initiated notifications are delivered inline via JSON response; `EventStore` append is skipped.
-- **MRTR disabled**: The server disables `InputRequiredResult` — requests must carry full context via `_meta` and `requestState` (opaque token for cross-request state recovery).
+- **No SSE**: No SSE broadcast or `EventStore` append; only responses correlated to pending requests are delivered via JSON.

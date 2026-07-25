@@ -29,4 +29,25 @@ gtest_discover_tests(mcp-transport-tests)
 
 add_executable(mcp-http-tests HttpServerTests.cpp)
 target_link_libraries(mcp-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
+target_include_directories(mcp-http-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 gtest_discover_tests(mcp-http-tests)
+
+add_executable(mcp-message-filter-tests MessageFilterTests.cpp)
+target_link_libraries(mcp-message-filter-tests PRIVATE mcp-protocol GTest::gtest_main)
+gtest_discover_tests(mcp-message-filter-tests)
+
+add_executable(mcp-token-cache-tests FileTokenCacheTests.cpp)
+target_link_libraries(mcp-token-cache-tests PRIVATE mcp-client GTest::gtest_main)
+gtest_discover_tests(mcp-token-cache-tests)
+
+add_executable(mcp-task-store-tests FileTaskStoreTests.cpp)
+target_link_libraries(mcp-task-store-tests PRIVATE mcp-server GTest::gtest_main)
+gtest_discover_tests(mcp-task-store-tests)
+
+add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp)
+target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
+gtest_discover_tests(mcp-streamable-http-tests)
+
+add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
+target_link_libraries(mcp-websocket-tests PRIVATE mcp-transport GTest::gtest_main)
+gtest_discover_tests(mcp-websocket-tests)

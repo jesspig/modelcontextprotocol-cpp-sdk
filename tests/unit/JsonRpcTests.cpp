@@ -1,3 +1,5 @@
+// JsonRpcTests — unit tests for JSON-RPC message serialization and variant dispatch
+
 #include <mcp/JsonRpc.hpp>
 
 #include <gtest/gtest.h>

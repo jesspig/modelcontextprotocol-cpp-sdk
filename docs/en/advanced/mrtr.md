@@ -44,8 +44,8 @@ Each `InputRequestElicit` has a `message` string and optional `requestedSchema` 
 Tool handlers can request user input via `Elicit`:
 
 ```cpp
-// Using Elicit directly (server sends elicit, awaits response)
-auto elicit_result = server->Elicit(
+// Using Elicit via RequestContext (inside a tool handler)
+auto elicit_result = ctx.Server().Elicit(
     ElicitRequestParams{"Confirm order?", /* requested_schema */}).get();
 
 CallToolResult result;
@@ -54,22 +54,17 @@ result.content.push_back(TextContent{"text",
 return result;
 ```
 
-Typed elicitation with JSON Schema inference:
+The `Elicit` method returns `std::future<ElicitResult>`.
+
+Users can construct a typed result manually using `ElicitResultTyped<T>`:
 
 ```cpp
-struct OrderConfirmation {
-    bool confirmed;
-    std::string notes;
-};
-
-auto typed_result = server->Elicit<OrderConfirmation>(
-    "Please confirm the order details").get();
-if (typed_result.is_accepted()) {
-    // typed_result.content->confirmed, typed_result.content->notes
-}
+ElicitResultTyped<JsonValue> typed;
+typed.action = "accept";
+JsonValue obj(JsonValue::object_tag);
+obj["confirmed"] = JsonValue(true);
+typed.content = std::move(obj);
 ```
-
-The `Elicit` method returns `std::future<ElicitResult>` (or `std::future<ElicitResultTyped<T>>` for the typed overload).
 
 ## Client Side
 
@@ -79,7 +74,9 @@ The client handles MRTR via `SetElicitationHandler`:
 client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         ElicitResult result;
-        result.values = JsonValue(JsonValue::Object{{"confirmed", JsonValue(true)}});
+        JsonValue obj(JsonValue::object_tag);
+        obj["confirmed"] = JsonValue(true);
+        result.values = std::move(obj);
         return result;
     });
 ```

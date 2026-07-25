@@ -1,5 +1,5 @@
-// 全链路 Client ↔ Server 集成测试
-// 使用 InMemoryTransport，覆盖所有主要 API
+// ClientServerRoundTrip — full-stack Client ↔ Server integration test
+// Uses InMemoryTransport, covering all major APIs
 
 #include <mcp/server/McpServer.hpp>
 #include <mcp/client/McpClient.hpp>
@@ -24,7 +24,7 @@ struct ClientServerFixture : ::testing::Test {
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
         server = McpServer::Create(pair.server, sopts);
 
-        // Register echo tool
+        // Register echo tool (text echo)
         server->RegisterTool("echo",
             ToolOptions{}.Description("Echo input"),
             std::function<CallToolResult(const Ctx&)>(
@@ -39,7 +39,7 @@ struct ClientServerFixture : ::testing::Test {
                     return r;
                 }));
 
-        // Register add tool (numeric)
+        // Register add tool (numeric addition)
         server->RegisterTool("add",
             ToolOptions{}.Description("Add two numbers"),
             std::function<CallToolResult(const Ctx&)>(
@@ -65,10 +65,10 @@ struct ClientServerFixture : ::testing::Test {
                 return rr;
             });
 
-        // Start server (runs the shared io_context, processing both sides)
+        // Start server in background thread
         server_thread = std::thread([this]() { server->Run(); });
 
-        // Create client with auto mode — discovers server info/capabilities
+        // Create client with auto mode to discover server info and capabilities
         ClientOptions cops;
         cops.client_info = Implementation{"TestClient", "1.0.0"};
         cops.connect_mode = ConnectMode::Auto;
@@ -82,12 +82,12 @@ struct ClientServerFixture : ::testing::Test {
     }
 };
 
-// ── 列出工具 ──
+// ── List tools ──
 TEST_F(ClientServerFixture, ListTools) {
     auto result = client->ListTools();
     ASSERT_GE(result.tools.size(), 2);
 
-    // Find echo tool
+    // Find echo and add tools in results
     bool found_echo = false, found_add = false;
     for (const auto& t : result.tools) {
         if (t.name == "echo") found_echo = true;
@@ -97,7 +97,7 @@ TEST_F(ClientServerFixture, ListTools) {
     EXPECT_TRUE(found_add);
 }
 
-// ── 调用 echo ──
+// ── Call echo tool ──
 TEST_F(ClientServerFixture, CallToolEcho) {
     auto result = client->CallTool("echo",
         JsonValue::Parse(R"({"text":"Hello MCP"})"));
@@ -109,7 +109,7 @@ TEST_F(ClientServerFixture, CallToolEcho) {
     EXPECT_FALSE(result.is_error);
 }
 
-// ── 调用 add ──
+// ── Call add tool ──
 TEST_F(ClientServerFixture, CallToolAdd) {
     auto result = client->CallTool("add",
         JsonValue::Parse(R"({"a":40,"b":2})"));
@@ -120,14 +120,14 @@ TEST_F(ClientServerFixture, CallToolAdd) {
     EXPECT_EQ(text->text, "42");
 }
 
-// ── 调用不存在的工具 ──
+// ── Call nonexistent tool ──
 TEST_F(ClientServerFixture, CallToolNotFound) {
     EXPECT_THROW(
         client->CallTool("nonexistent"),
         McpError);
 }
 
-// ── 读取资源 ──
+// ── Read resource ──
 TEST_F(ClientServerFixture, ReadResource) {
     ReadResourceResult result;
     ASSERT_NO_THROW(result = client->ReadResource("hello://world"));
@@ -138,13 +138,13 @@ TEST_F(ClientServerFixture, ReadResource) {
     EXPECT_EQ(text->text, "Hello, World!");
 }
 
-// ── Server 信息 ──
+// ── Server info ──
 TEST_F(ClientServerFixture, ServerInfo) {
     EXPECT_EQ(client->GetServerInfo().name, "TestServer");
     EXPECT_EQ(client->GetServerInfo().version, "1.0.0");
 }
 
-// ── Server 能力 (有 tools + resources) ──
+// ── Server capabilities (tools + resources) ──
 TEST_F(ClientServerFixture, ServerCapabilities) {
     auto& caps = client->GetServerCapabilities();
     EXPECT_TRUE(caps.tools.has_value());
@@ -152,7 +152,10 @@ TEST_F(ClientServerFixture, ServerCapabilities) {
     EXPECT_FALSE(caps.prompts.has_value());
 }
 
-// ── Ping ──
+// ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     EXPECT_NO_THROW(client->Ping());
+#pragma clang diagnostic pop
 }

@@ -1,3 +1,5 @@
+// SseClientTransport.cpp — SSE client transport implementation
+
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/detail/Url.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -102,9 +104,9 @@ class SseClientSessionTransport final : public TransportBase {
 public:
     SseClientSessionTransport(std::string server_url, std::string name)
         : TransportBase()
+        , http_client_(std::make_unique<hv::HttpClient>())
         , server_url_(std::move(server_url))
         , name_(std::move(name))
-        , http_client_(std::make_unique<hv::HttpClient>())
     {
     }
 

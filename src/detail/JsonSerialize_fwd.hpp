@@ -1,3 +1,5 @@
+// JsonSerialize_fwd.hpp - Forward declarations for JSON-RPC serialization functions
+
 #pragma once
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>

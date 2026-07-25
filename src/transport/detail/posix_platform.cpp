@@ -1,3 +1,5 @@
+// posix_platform.cpp — POSIX process and pipe implementations
+
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -8,6 +10,7 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
+#include <stdexcept>
 #ifdef __APPLE__
 #include <crt_externs.h>
 #endif

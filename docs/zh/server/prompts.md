@@ -42,5 +42,5 @@ p.arguments = {arg};
 ```
 
 ::: note
-`PromptOptions` 会被注册 API 接受，但 `description` 当前不会传播到通过 `prompts/list` 暴露的协议级提示。`ListPromptsResult` 中返回的 `Prompt` 结构仅包含 `name`。
+`PromptOptions` 中的字段（`description`、`title`、`icons`）会传播到通过 `prompts/list` 返回的协议级 `Prompt` 结构中。
 :::

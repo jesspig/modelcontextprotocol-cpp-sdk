@@ -16,7 +16,7 @@
 
 ### mcp-core (STATIC)
 
-Core protocol types and JSON infrastructure: `JsonValue` (recursive `std::variant`-based JSON), `JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcNotification`, `JsonRpcErrorResponse`, error codes, capability declarations (`ClientCapabilities`, `ServerCapabilities`), content types (`TextContent`, `ImageContent`, `EmbeddedResource`, `ResourceLink`), transport interfaces (`ITransport`, `IClientTransport`).
+Core protocol types and JSON infrastructure: `JsonValue` (recursive `std::variant`-based JSON), `JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcNotification`, `JsonRpcErrorResponse`, error codes, capability declarations (`ClientCapabilities`, `ServerCapabilities`), content types (`TextContent`, `ImageContent`, `AudioContent`, `EmbeddedResource`, `ResourceLink`), transport interfaces (`ITransport`, `IClientTransport`).
 
 ### mcp-transport (STATIC)
 
@@ -28,11 +28,11 @@ JSON-RPC engine (`McpSessionHandler`): async message loop over `MessageChannel`,
 
 ### mcp-server (STATIC)
 
-`McpServer`: tool/resource/prompt registration, `Extension` framework (SEP-2133), `IMcpTaskStore` (with `FileTaskStore` for persistence), server-to-client `Elicit`, MRTR (`InputRequiredResult`), subscription management, stateless mode for Streamable HTTP.
+`McpServer`: tool/resource/prompt registration, `IMcpTaskStore` (with `FileTaskStore` for persistence), server-to-client `Elicit`, MRTR (`InputRequiredResult`), subscription management, stateless mode for Streamable HTTP.
 
 ### mcp-client (STATIC)
 
-`McpClient`: server discovery (`server/discover` → initialize fallback), version negotiation, tool cache, MRTR driver (`MrtrDriver`), OAuth (PKCE, DCR, token refresh/revocation, `FileTokenCache`).
+`McpClient`: server discovery (`server/discover` → initialize fallback), version negotiation, tool cache, MRTR (InputRequired loop via `SendRequestWithMrtr`), OAuth (PKCE, DCR, token refresh/revocation, `FileTokenCache`).
 
 ### mcp-http (STATIC)
 
@@ -42,8 +42,7 @@ HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event pers
 
 ```
 mcp-core (STATIC)
-  ├── simdjson  (JSON parsing, internal)
-  └── libhv     (HTTP/WebSocket, via mcp-transport)
+  └── simdjson  (JSON parsing, internal)
 
 mcp-transport (STATIC)
   └── mcp-core + libhv

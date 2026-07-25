@@ -1,3 +1,5 @@
+// EventStore.cpp - Event sequence store implementation
+
 #include <mcp/http/EventStore.hpp>
 
 #include <algorithm>

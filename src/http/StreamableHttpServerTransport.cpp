@@ -1,10 +1,11 @@
+// StreamableHttpServerTransport.cpp - Streamable HTTP server transport implementation
+
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
 
-// TODO(libhv): full rewrite with libhv
-
 #include <sstream>
+#include <stdexcept>
 
 namespace mcp {
 
@@ -121,7 +122,7 @@ void StreamableHttpServerTransport::HandlePost(
 
     // Validate MCP headers match body
     std::string header_error;
-    if (!ValidateMcpHeaders(mcp_method, mcp_name, body_jv, header_error)) {
+    if (!ValidateMcpHeaders(mcp_method.value_or(""), mcp_name.value_or(""), body_jv, header_error)) {
         resp.status_code = 400;
         resp.status_text = "Bad Request";
         JsonValue::Object err_obj;
@@ -138,16 +139,16 @@ void StreamableHttpServerTransport::HandlePost(
     }
 
     // Set MCP protocol version in response
-    if (!proto_ver.empty()) {
-        resp.headers["mcp-protocol-version"] = proto_ver;
+    if (proto_ver.has_value()) {
+        resp.headers["mcp-protocol-version"] = proto_ver.value();
     }
 
     // Echo Mcp-Method and Mcp-Name headers in response (SEP-2243)
-    if (!mcp_method.empty()) {
-        resp.headers["mcp-method"] = mcp_method;
+    if (mcp_method.has_value()) {
+        resp.headers["mcp-method"] = mcp_method.value();
     }
-    if (!mcp_name.empty()) {
-        resp.headers["mcp-name"] = mcp_name;
+    if (mcp_name.has_value()) {
+        resp.headers["mcp-name"] = mcp_name.value();
     }
 
     // Extract Mcp-Param-* headers from request (case-insensitive) and store in meta
@@ -193,10 +194,8 @@ void StreamableHttpServerTransport::HandlePost(
                 channel_->Send(std::move(msg));
 
                 auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-                // TODO(libhv): replace io_ctx_.run_one() with proper event loop
-                while (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                while (future.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
                     if (std::chrono::steady_clock::now() >= deadline) break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
 
                 if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -257,20 +256,14 @@ void StreamableHttpServerTransport::HandlePost(
 void StreamableHttpServerTransport::HandleGet(
     const HttpRequest& /*req*/, HttpResponse& resp)
 {
-    // SSE stream response
     resp.is_sse = true;
     resp.headers["content-type"] = "text/event-stream";
     resp.headers["cache-control"] = "no-cache";
 
-    // Defer endpoint event — SendResponse registers the SSE client after
-    // HandleGet returns, so a deferred BroadcastSse reaches the new client.
-    std::string endpoint_event = "event: endpoint\ndata: " +
-        options_.endpoint + "\n\n";
-    auto self = std::static_pointer_cast<StreamableHttpServerTransport>(shared_from_this());
-    // TODO(libhv): replace asio::post with direct invocation or thread pool
-    if (self->http_server_) {
-        self->http_server_->BroadcastSse(endpoint_event);
-    }
+    // libhv sends resp.body after HandleGet returns, at which point the SSE
+    // client has been registered. Setting the body as the endpoint event
+    // ensures it arrives as the first SSE message.
+    resp.body = "event: endpoint\ndata: " + options_.endpoint + "\n\n";
 }
 
 // ── Send message (server-initiated notification via SSE) ──
@@ -327,14 +320,14 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
 }
 
 // ── Header helper ──
-std::string StreamableHttpServerTransport::GetMcpHeader(
+std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(
     const HttpRequest& req, std::string_view header_name) const
 {
     auto key = std::string(header_name);
     for (auto& c : key) c = std::tolower(c);
     auto it = req.headers.find(key);
-    if (it != req.headers.end()) return it->second;
-    return {};
+    if (it != req.headers.end()) return std::optional<std::string>(it->second);
+    return std::nullopt;
 }
 
 } // namespace mcp

@@ -1,5 +1,6 @@
 #pragma once
-
+// WireCodec.hpp
+// Per-era wire vocabulary interface for method membership, validation, and meta handling
 #include <mcp/Export.hpp>
 #include <mcp/McpTypes.hpp>
 #include <mcp/JsonValue.hpp>

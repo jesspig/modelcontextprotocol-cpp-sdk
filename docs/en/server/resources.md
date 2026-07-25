@@ -37,5 +37,5 @@ server->RegisterResourceTemplate(
 ```
 
 ::: note
-`ResourceOptions` is accepted by the registration API but `description` and `mime_type` are currently not propagated to the protocol-level resource exposed via `resources/list`. The `Resource` struct returned in `ListResourcesResult` only includes `uri` and `name`.
+`ResourceOptions` fields (`description`, `title`, `mime_type`, `icons`) are propagated to the protocol-level `Resource` and `ResourceTemplate` structs returned via `resources/list` and `resources/templates/list`.
 :::

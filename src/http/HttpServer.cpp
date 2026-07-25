@@ -1,3 +1,5 @@
+// HttpServer.cpp - HTTP server implementation (libhv PIMPL)
+
 #include <mcp/http/HttpServer.hpp>
 
 #include <hv/HttpService.h>
@@ -88,6 +90,12 @@ void HttpServer::Start() {
                         RemoveSseClient(id);
                     };
 
+                    if (options_.on_connect) {
+                        try {
+                            options_.on_connect();
+                        } catch (...) {}
+                    }
+
                     // NOT calling End() - connection stays open for SSE
                 } else {
                     for (auto& [k, v] : our_resp.headers)
@@ -143,6 +151,11 @@ HttpServer::SseClientId HttpServer::AddSseClient(
 void HttpServer::RemoveSseClient(SseClientId id) {
     std::lock_guard<std::mutex> lock(sse_mutex_);
     sse_clients_.erase(id);
+    if (options_.on_disconnect) {
+        try {
+            options_.on_disconnect();
+        } catch (...) {}
+    }
 }
 
 void HttpServer::BroadcastSse(std::string_view event) {

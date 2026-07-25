@@ -1,5 +1,6 @@
 #pragma once
-
+// OAuthClientProvider.hpp
+// OAuth 2.0 client provider with PKCE flow and token management
 #include <mcp/JsonValue.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
 #include <mcp/McpTypes.hpp>
