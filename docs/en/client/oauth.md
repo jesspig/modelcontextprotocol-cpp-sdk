@@ -17,13 +17,10 @@ The client supports the MCP OAuth authorization flow for servers that require au
 | `redirect_uri` | `string` | OAuth redirect URI |
 | `client_id` | `optional<string>` | Client identifier (auto-registered if absent) |
 | `client_secret` | `optional<string>` | Client secret (optional) |
-| `client_metadata_document_uri` | `optional<string>` | External metadata document URI |
 | `scopes` | `vector<string>` | Requested OAuth scopes |
 | `token_cache` | `shared_ptr<ITokenCache>` | Token persistence (default: `InMemoryTokenCache`) |
-| `auth_server_url` | `optional<string>` | Explicit authorization server URL (overrides metadata discovery) |
-| `timeout_seconds` | `int` | HTTP request timeout (default 30) |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | Callback to open the authorization URL |
-| `authorization_code_callback` | `function<optional<string>()>` | Callback to return the authorization code |
+| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | Callback returning the authorization code plus the echoed `state` (`AuthorizationCodeResult{code, state}`), `nullopt` on failure |
 
 ## Setup
 
@@ -38,8 +35,10 @@ oauth_opts.authorization_redirect_handler =
         // Open URL in browser for user to authorize
     };
 oauth_opts.authorization_code_callback =
-    []() -> std::optional<std::string> {
-        // Return authorization code from redirect
+    []() -> std::optional<AuthorizationCodeResult> {
+        // Return the authorization code plus the `state` echoed back
+        // by the authorization server (CSRF protection)
+        return AuthorizationCodeResult{"auth-code", "state"};
     };
 
 auto auth = std::make_shared<OAuthClientProvider>(oauth_opts);
