@@ -12,6 +12,10 @@ namespace mcp {
 // MessageFilter pipeline — similar to C# McpSessionHandler filters
 // ═══════════════════════════════════════════════════════════════════════
 
+// Filter function; next must be invoked synchronously before the filter
+// function returns. Storing next for later invocation is unsupported: the
+// FilterPipeline's chain (and final handler) may be destroyed once Execute
+// returns, leaving a dangling reference.
 using MessageFilterFunc = std::function<void(
     const JsonRpcMessage&,
     std::function<void(const JsonRpcMessage&)>)>;

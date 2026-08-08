@@ -25,7 +25,7 @@ public:
         : max_buffer_(max_buffer) {}
 
     // Async receive — calls callback when a message is available
-    // The callback is invoked from within the lock; caller should not block.
+    // The callback is invoked outside the lock; caller should not block.
     template <typename Callback>
     void AsyncReceive(Callback&& cb) {
         JsonRpcMessage msg;
@@ -46,15 +46,17 @@ public:
         cb(std::error_code{}, std::move(msg));
     }
 
-    // Send a message into the channel (blocks if buffer is full)
-    void Send(JsonRpcMessage message) {
+    // Send a message into the channel (blocks if buffer is full).
+    // Returns false if the channel is closed and the message was dropped.
+    bool Send(JsonRpcMessage message) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_send_.wait(lock, [this] { return queue_.size() < max_buffer_ || closed_; });
-            if (closed_) return;
+            if (closed_) return false;
             queue_.push(std::move(message));
         }
         cv_.notify_one();
+        return true;
     }
 
     // Try to send without blocking; returns false if buffer is full

@@ -1,6 +1,10 @@
 // WireCodec.cpp
 // Per-era WireCodec implementations (2025-11-25 and 2026-07-28)
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/Content.hpp>
+#include <mcp/Capabilities.hpp>
+#include <mcp/ErrorCodes.hpp>
+#include <mcp/ProtocolVersion.hpp>
 
 #include <cstdint>
 #include <unordered_set>
@@ -8,43 +12,9 @@
 namespace mcp {
 namespace {
 
-// ── Conversion helpers ──
-JsonValue ImplementationToJson(const Implementation& v) {
-    JsonValue j(JsonValue::object_tag);
-    j["name"] = JsonValue(v.name);
-    j["version"] = JsonValue(v.version);
-    if (v.title)       j["title"] = JsonValue(*v.title);
-    if (v.description) j["description"] = JsonValue(*v.description);
-    if (v.website_url) j["websiteUrl"] = JsonValue(*v.website_url);
-    return j;
-}
-
-Implementation ImplementationFromJson(const JsonValue& j) {
-    Implementation v;
-    v.name = j.At("name").GetString();
-    v.version = j.At("version").GetString();
-    if (auto* t = j.Find("title"))       v.title = t->GetString();
-    if (auto* d = j.Find("description")) v.description = d->GetString();
-    if (auto* w = j.Find("websiteUrl"))  v.website_url = w->GetString();
-    return v;
-}
-
-JsonValue ClientCapabilitiesToJson(const ClientCapabilities& v) {
-    JsonValue j(JsonValue::object_tag);
-    if (v.roots)     { JsonValue sub(JsonValue::object_tag); j["roots"] = std::move(sub); }
-    if (v.sampling)  { JsonValue sub(JsonValue::object_tag); j["sampling"] = std::move(sub); }
-    return j;
-}
-
-ClientCapabilities ClientCapabilitiesFromJson(const JsonValue& j) {
-    ClientCapabilities v;
-    if (j.Find("roots"))    v.roots = RootsCapability{};
-    if (j.Find("sampling")) v.sampling = SamplingCapability{};
-    return v;
-}
-
 // Shared methods — supported by both 2025 and 2026 era
 inline const std::unordered_set<std::string> kCommonRequestMethods = {
+    "ping",
     "tools/list", "tools/call",
     "resources/list", "resources/read", "resources/templates/list",
     "prompts/list", "prompts/get",
@@ -53,7 +23,7 @@ inline const std::unordered_set<std::string> kCommonRequestMethods = {
 };
 
 inline const std::unordered_set<std::string> k2025OnlyRequestMethods = {
-    "ping", "initialize",
+    "initialize",
     "resources/subscribe", "resources/unsubscribe",
     "logging/setLevel", "roots/list", "sampling/createMessage",
 };
@@ -155,11 +125,6 @@ public:
         return std::nullopt;
     }
 
-    JsonValue DecodeResult(
-        std::string_view /*method*/, const JsonValue& raw) const override {
-        return raw;
-    }
-
     JsonValue EncodeResult(
         std::string_view /*method*/, const JsonValue& result) const override {
         return result;
@@ -241,10 +206,10 @@ public:
         JsonValue meta_obj(JsonValue::object_tag);
         meta_obj[kProtocolVersionKey] = JsonValue(meta.protocol_version);
         if (meta.client_info) {
-            meta_obj[kClientInfoKey] = ImplementationToJson(*meta.client_info);
+            meta_obj[kClientInfoKey] = SerializeImplementation(*meta.client_info);
         }
         if (meta.client_capabilities) {
-            meta_obj[kClientCapabilitiesKey] = ClientCapabilitiesToJson(*meta.client_capabilities);
+            meta_obj[kClientCapabilitiesKey] = SerializeClientCapabilities(*meta.client_capabilities);
         }
         body["_meta"] = std::move(meta_obj);
     }
@@ -258,18 +223,13 @@ public:
         if (auto* v = m->Find(kProtocolVersionKey))
             meta.protocol_version = v->GetString();
         if (auto* v = m->Find(kClientInfoKey))
-            meta.client_info = ImplementationFromJson(*v);
+            meta.client_info = DeserializeImplementation(*v);
         if (auto* v = m->Find(kClientCapabilitiesKey))
-            meta.client_capabilities = ClientCapabilitiesFromJson(*v);
+            meta.client_capabilities = DeserializeClientCapabilities(*v);
         if (auto* v = m->Find("traceparent")) meta.traceparent = v->GetString();
         if (auto* v = m->Find("tracestate")) meta.tracestate = v->GetString();
         if (auto* v = m->Find("baggage")) meta.baggage = v->GetString();
         return meta;
-    }
-
-    JsonValue DecodeResult(
-        std::string_view /*method*/, const JsonValue& raw) const override {
-        return raw;
     }
 
     JsonValue EncodeResult(
@@ -283,10 +243,14 @@ public:
 
     int32_t EncodeErrorCode(int32_t code) const override {
         switch (code) {
-            case -32001: return -32020;
-            case -32003: return -32021;
-            case -32004: return -32022;
-            default:     return code;
+            case static_cast<int32_t>(McpErrorCode::RequestTimeout):
+                return static_cast<int32_t>(McpErrorCode::HeaderMismatch);
+            case static_cast<int32_t>(McpErrorCode::ConnectionRefused):
+                return static_cast<int32_t>(McpErrorCode::MissingRequiredClientCapability);
+            case static_cast<int32_t>(McpErrorCode::TlsHandshakeFailed):
+                return static_cast<int32_t>(McpErrorCode::UnsupportedProtocolVersion);
+            default:
+                return code;
         }
     }
 
@@ -297,7 +261,7 @@ public:
 
 // ── Factory ──
 std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version) {
-    if (protocol_version >= "2026-07-28") {
+    if (protocol_version >= kLatestProtocolVersion) {
         return std::make_unique<Rev2026Codec>();
     }
     return std::make_unique<Rev2025Codec>();
