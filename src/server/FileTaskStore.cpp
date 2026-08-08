@@ -55,6 +55,14 @@ FileTaskStore::FileTaskStore(std::filesystem::path storage_path)
         }
     } catch (const std::exception& e) {
         MCP_LOG(Error, "task store: failed to load " + storage_path_.string() + ": " + e.what());
+        auto backup_path = storage_path_;
+        backup_path += ".corrupt";
+        std::error_code ec;
+        std::filesystem::copy_file(storage_path_, backup_path,
+            std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            MCP_LOG(Error, "task store: failed to back up corrupt file to " + backup_path.string());
+        }
     }
 }
 
@@ -76,6 +84,7 @@ TaskState FileTaskStore::CreateTask(const std::string& task_id) {
     state.created_at = std::to_string(now_ms);
     tasks_[task_id] = state;
     if (!Flush()) {
+        tasks_.erase(task_id);
         throw std::runtime_error("task store: failed to persist task " + task_id);
     }
     return state;
@@ -95,9 +104,14 @@ bool FileTaskStore::UpdateTask(
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it == tasks_.end()) return false;
+    auto original = it->second;
     it->second.result = result;
     it->second.status = result ? TaskStatus::Completed : TaskStatus::Working;
-    return Flush();
+    if (!Flush()) {
+        it->second = std::move(original);
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
+    return true;
 }
 
 bool FileTaskStore::CancelTask(
@@ -107,17 +121,27 @@ bool FileTaskStore::CancelTask(
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it == tasks_.end()) return false;
+    auto original = it->second;
     it->second.status = TaskStatus::Cancelled;
     it->second.error_message = reason;
-    return Flush();
+    if (!Flush()) {
+        it->second = std::move(original);
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
+    return true;
 }
 
 bool FileTaskStore::SetTaskStatus(const std::string& task_id, TaskStatus status) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it == tasks_.end()) return false;
+    auto original = it->second;
     it->second.status = status;
-    return Flush();
+    if (!Flush()) {
+        it->second = std::move(original);
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
+    return true;
 }
 
 std::vector<TaskState> FileTaskStore::GetAllTasks() {

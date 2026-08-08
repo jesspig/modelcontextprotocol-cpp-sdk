@@ -87,24 +87,7 @@ void FileTokenCache::Load() {
     auto json_str = UnprotectData(buf);
 
     if (json_str.empty()) {
-        // Fallback: try plaintext JSON (migration from unencrypted cache)
-        std::ifstream plain_file(cache_path_);
-        if (!plain_file.is_open()) return;
-        try {
-            std::string content((std::istreambuf_iterator<char>(plain_file)), std::istreambuf_iterator<char>());
-            auto json = JsonValue::Parse(content);
-            if (json.IsNull()) return;
-            TokenContainer tc;
-            if (auto* v = json.Find("access_token")) tc.access_token = v->GetString();
-            if (auto* v = json.Find("refresh_token")) tc.refresh_token = v->GetString();
-            if (auto* v = json.Find("token_type")) tc.token_type = v->GetString();
-            if (auto* v = json.Find("expires_at")) tc.expires_at = v->GetInt();
-            if (auto* v = json.Find("scopes"); v && v->IsArray()) {
-                for (const auto& s : v->GetArray())
-                    tc.scopes.push_back(s.GetString());
-            }
-            tokens_ = std::move(tc);
-        } catch (...) { MCP_LOG(Warning, "token cache fallback parse failed"); }
+        MCP_LOG(Error, "token cache: DPAPI decryption failed for " + cache_path_.string() + "; token cache ignored");
         return;
     }
 
@@ -175,8 +158,10 @@ void FileTokenCache::Save() {
         MCP_LOG(Error, "token cache: CryptProtectData failed for " + cache_path_.string());
         return;
     }
-    detail::WriteAtomic(cache_path_,
-        std::string(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()));
+    if (!detail::WriteAtomic(cache_path_,
+            std::string(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()))) {
+        MCP_LOG(Error, "token cache: failed to write " + cache_path_.string());
+    }
 #else
     if (detail::WriteAtomic(cache_path_, dump_str)) {
         if (chmod(cache_path_.string().c_str(), 0600) != 0) {
@@ -187,6 +172,7 @@ void FileTokenCache::Save() {
 }
 
 std::optional<OAuthTokenResponse> FileTokenCache::LoadTokenResponse() {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto resp_path = cache_path_;
     resp_path += ".token_response";
     if (!std::filesystem::exists(resp_path)) return std::nullopt;
@@ -206,6 +192,11 @@ std::optional<OAuthTokenResponse> FileTokenCache::LoadTokenResponse() {
         if (auto* v = json.Find("expires_in")) resp.expires_in = v->GetInt();
         if (auto* v = json.Find("token_type")) resp.token_type = v->GetString();
         if (auto* v = json.Find("scope")) resp.scope = v->GetString();
+#ifndef _WIN32
+        if (chmod(resp_path.string().c_str(), 0600) != 0) {
+            MCP_LOG(Error, "token response cache: chmod failed for " + resp_path.string());
+        }
+#endif
         return resp;
     } catch (...) {
         MCP_LOG(Error, "token response cache parse failed");
@@ -214,6 +205,7 @@ std::optional<OAuthTokenResponse> FileTokenCache::LoadTokenResponse() {
 }
 
 std::optional<ClientRegistrationInfo> FileTokenCache::LoadClientRegistration() {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto reg_path = cache_path_;
     reg_path += ".client_registration";
     if (!std::filesystem::exists(reg_path)) return std::nullopt;
@@ -242,6 +234,11 @@ std::optional<ClientRegistrationInfo> FileTokenCache::LoadClientRegistration() {
                     if (item.IsString()) info.redirect_uris.push_back(item.GetString());
             }
         }
+#ifndef _WIN32
+        if (chmod(reg_path.string().c_str(), 0600) != 0) {
+            MCP_LOG(Error, "client registration cache: chmod failed for " + reg_path.string());
+        }
+#endif
         return info;
     } catch (...) {
         MCP_LOG(Error, "client registration cache parse failed");

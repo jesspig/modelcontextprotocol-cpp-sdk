@@ -196,10 +196,15 @@ bool OAuthClientProvider::DiscoverMetadata() {
 bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     if (!metadata_) return false;
     auto* it = response.Find("iss");
-    if (!it) {
-        return true;
+    if (!it || !it->IsString()) {
+        MCP_LOG(Error, "OAuth token response missing required 'iss' claim (RFC 9207)");
+        return false;
     }
-    return it->GetString() == metadata_->issuer;
+    if (it->GetString() != metadata_->issuer) {
+        MCP_LOG(Error, "OAuth token response issuer mismatch");
+        return false;
+    }
+    return true;
 }
 
 bool OAuthClientProvider::RegisterClient() {
@@ -290,7 +295,8 @@ bool OAuthClientProvider::RefreshTokens() {
     if (!ValidateTokenIssuer(json)) return false;
 
     TokenContainer tokens;
-    tokens.access_token = json.Find("access_token") ? json.Find("access_token")->GetString() : cached->access_token;
+    if (auto* v = json.Find("access_token")) tokens.access_token = v->GetString();
+    // refresh_token is retained when absent (RFC 6749 non-rotating refresh tokens)
     tokens.refresh_token = json.Find("refresh_token") ? json.Find("refresh_token")->GetString() : cached->refresh_token;
     if (auto* v = json.Find("token_type")) tokens.token_type = v->GetString();
     auto expires_in = json.Find("expires_in") ? json.Find("expires_in")->GetInt() : 3600;
@@ -299,6 +305,10 @@ bool OAuthClientProvider::RefreshTokens() {
             std::chrono::system_clock::now().time_since_epoch()).count() +
         expires_in * 1000;
 
+    if (tokens.access_token.empty()) {
+        MCP_LOG(Error, "OAuth refresh response missing access_token");
+        return false;
+    }
     token_cache_->StoreTokens(tokens);
     return true;
 }
