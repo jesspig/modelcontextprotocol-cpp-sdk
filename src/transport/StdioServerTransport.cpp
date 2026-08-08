@@ -2,6 +2,7 @@
 
 #include <mcp/transport/StdioServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
+#include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
 
@@ -32,8 +33,7 @@ void StdioServerTransport::Close() {
     if (stdin_pipe_) stdin_pipe_->Close();
     if (stdout_pipe_) stdout_pipe_->Close();
 
-    if (read_thread_.joinable())
-        read_thread_.join();
+    detail::JoinThreadSafely(read_thread_);
 
     if (channel_) channel_->Close();
     SetDisconnected();
@@ -57,7 +57,10 @@ void StdioServerTransport::ReadLoop() {
         char buf[detail::kReadBufferSize];
 
         size_t bytes_read = stdin_pipe_->Read(buf, sizeof(buf) - 1);
-        if (bytes_read == 0) break;
+        if (bytes_read == 0) {
+            if (stdin_pipe_->IsEof()) break;
+            continue;
+        }
 
         buf[bytes_read] = '\0';
         buffer.append(buf, bytes_read);

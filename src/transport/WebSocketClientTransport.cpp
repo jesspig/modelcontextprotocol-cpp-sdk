@@ -35,15 +35,16 @@ WebSocketSessionTransport::WebSocketSessionTransport(std::string url)
 WebSocketSessionTransport::~WebSocketSessionTransport() { Close(); }
 
 void WebSocketSessionTransport::Start() {
-    ws_.onopen = [this]() { running_ = true; SetConnected(); };
-    ws_.onclose = [this]() { running_ = false; SetDisconnected(); };
-    ws_.onmessage = [this](const std::string& msg) {
+    auto self = std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this());
+    ws_.onopen = [self]() { self->running_ = true; self->SetConnected(); };
+    ws_.onclose = [self]() { self->running_ = false; self->SetDisconnected(); };
+    ws_.onmessage = [self](const std::string& msg) {
         try {
             auto parsed = DeserializeMessage(msg);
-            WriteMessage(std::move(parsed));
+            self->WriteMessage(std::move(parsed));
         } catch (const std::exception& e) {
             MCP_LOG(Error, std::string("WebSocket parse error: ") + e.what());
-            NotifyError(std::string("WebSocket parse error: ") + e.what());
+            self->NotifyError(std::string("WebSocket parse error: ") + e.what());
         }
     };
 

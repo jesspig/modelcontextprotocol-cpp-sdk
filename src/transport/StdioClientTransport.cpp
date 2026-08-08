@@ -1,5 +1,6 @@
 // StdioClientTransport.cpp — stdio client transport implementation
 
+#include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Limits.hpp>
@@ -48,7 +49,7 @@ public:
         if (process_) process_->Terminate(5000);
         if (stdout_pipe_) stdout_pipe_->Close();
 
-        if (read_thread_.joinable()) read_thread_.join();
+        detail::JoinThreadSafely(read_thread_);
 
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -77,7 +78,10 @@ private:
                 MCP_LOG(Error, std::string("stdio read thread failed: ") + e.what());
                 break;
             }
-            if (bytes_read == 0) break;
+            if (bytes_read == 0) {
+                if (stdout_pipe_->IsEof()) break;
+                continue;
+            }
 
             buf[bytes_read] = '\0';
             buffer.append(buf, bytes_read);

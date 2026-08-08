@@ -1,5 +1,6 @@
 // SseClientTransport.cpp — SSE client transport implementation
 
+#include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/detail/Url.hpp>
 #include <mcp/transport/detail/Limits.hpp>
@@ -118,10 +119,8 @@ public:
         if (http_client_)
             http_client_->close();
 
-        if (send_thread_.joinable())
-            send_thread_.join();
-        if (sse_thread_.joinable())
-            sse_thread_.join();
+        detail::JoinThreadSafely(send_thread_);
+        detail::JoinThreadSafely(sse_thread_);
 
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -206,8 +205,7 @@ private:
                 send_cv_.wait(lock, [this] {
                     return !send_queue_.empty() || !running_;
                 });
-                if (!running_ || send_queue_.empty())
-                    continue;
+                if (!running_) break;
                 body = std::move(send_queue_.front());
                 send_queue_.pop();
             }
