@@ -57,7 +57,7 @@ server->RegisterTool(tool);
 
 | 字段 | 类型 | 默认值 | 说明 |
 |-------|------|---------|------|
-| `name` | `optional<string>` | — | 覆盖工具名称 |
+| `name` | `optional<string>` | — | 工具的注册名以 `RegisterTool` 的第一个参数（或 `McpServerTool::Create` 的 name 参数）为准，此字段当前未被消费 |
 | `title` | `optional<string>` | — | 人类可读的标题 |
 | `description` | `optional<string>` | — | 工具描述 |
 | `input_schema` | `optional<JsonValue>` | `{"type":"object","properties":{}}` | 输入参数的 JSON Schema |

@@ -78,7 +78,7 @@ The `IncomingRequestMeta` struct extracts these fields from the 2026-era `_meta`
 | `tracestate`      | `tracestate` |
 | `baggage`         | `baggage` |
 
-The `StampOutgoingMeta` helper stamps `protocolVersion`, `clientInfo`, `clientCapabilities`, and `logLevel` onto outgoing request `_meta`. Trace/distributed tracing fields (`traceparent`, `tracestate`, `baggage`) are not auto-stamped by this helper.
+Outgoing request `_meta` is written by `McpSessionHandler::SendRequest` via `SerializeRequestMeta`, which serializes `protocolVersion`, `clientInfo`, and `clientCapabilities` (`WireCodec::StampOutgoingRequest` likewise stamps only these three fields, and has no call sites). Trace/distributed tracing fields (`traceparent`, `tracestate`, `baggage`) are serialized only when explicitly set on the request meta.
 
 ### Era-Gated Methods
 
@@ -86,9 +86,11 @@ The codec defines per-era method sets:
 
 | Set | Methods |
 |-----|---------|
-| Common (both eras) | `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete`, `elicitation/create` |
-| 2025-only | `ping`, `initialize`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage` |
+| Common (both eras) | `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete`, `elicitation/create` |
+| 2025-only | `initialize`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage` |
 | 2026-only | `server/discover`, `server/extensions/list`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel`, `tasks/result`, `tasks/list` |
+
+Note that `ping` is a common method: calling `ping` is valid in the 2026 era too (checked against the `kCommonRequestMethods` set).
 
 ### Era-Gated Notifications
 
@@ -143,7 +145,7 @@ Used by `McpSessionHandler` for the async message loop.
 
 ```cpp
 auto pipeline = std::make_shared<FilterPipeline>();
-pipeline->AddFilter(std::make_shared<IncomingMessageFilter>(
+pipeline->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
     [](const JsonRpcMessage& msg, MessageFilterNext next) {
         // Inspect/modify, then call next(filtered) or short-circuit
         next(msg);

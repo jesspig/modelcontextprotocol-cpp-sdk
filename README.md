@@ -42,7 +42,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
 | libhv          | 1.3.4          | Fetched automatically        |
 | simdjson       | 3.12.3         | Fetched automatically        |
-| OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS, OAuth). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
+| OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS); OAuth PKCE works without it (built-in SHA-256 fallback). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
 
@@ -54,8 +54,8 @@ Consume the SDK in your own CMake project via `FetchContent`:
 include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
-    GIT_REPOSITORY https://github.com/modelcontextprotocol/cpp-sdk
-    GIT_TAG        main
+    GIT_REPOSITORY https://github.com/jesspig/modelcontextprotocol-cpp-sdk.git
+    GIT_TAG        master
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 

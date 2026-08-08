@@ -4,7 +4,7 @@ MRTR (SEP-2322) allows server handlers to request additional input from the clie
 
 ## How It Works
 
-In the stateless (2026-era) pattern, the server returns an `InputRequiredResult` with `resultType: "input_required"`. The client resolves the request internally via its `ElicitationHandler`, then retries the original tool call with `input_responses` and `requestState`:
+In the stateless (2026-era) pattern, the server returns an `InputRequiredResult` with `resultType: "input_required"`. The client resolves the request internally via its `ElicitationHandler`, then retries the original tool call with `inputResponses` and `requestState`:
 
 ```
 Client                    Server
@@ -24,8 +24,8 @@ Client                    Server
   │  (client resolves via   │
   │   ElicitationHandler)   │
   │                         │
-  ├── tools/call ──────────►│  (retry with input_responses
-  │    (with input_responses│   + requestState)
+  ├── tools/call ──────────►│  (retry with inputResponses
+  │    (with inputResponses│   + requestState)
   │     + requestState)     │
   │◄── result: {...}        │
 ```
@@ -90,7 +90,7 @@ InputRequiredResult ir;
 ir.input_requests.elicit = InputRequestElicit{"Provide value"};
 ir.request_state = "state-token";
 // Server returns this as the tools/call result
-// Client resolves and retries with input_responses + requestState
+// Client resolves and retries with inputResponses + requestState
 ```
 
 ## Helper Functions
@@ -137,5 +137,5 @@ opts.input_required_config = ClientOptions::InputRequiredConfig{
 |--------|--------|--------|-------------|
 | `max_rounds` | Yes | Yes | Maximum MRTR rounds (default: 8) |
 | `round_timeout` | Yes | Yes | Per-round timeout (default: 600s) |
-| `legacy_shim` | Yes | No | Enable legacy 2025-era shim |
+| `legacy_shim` | Yes | No | Placeholder field, not yet implemented |
 | `auto_fulfill` | No | Yes | Auto-fulfill without prompting if possible |

@@ -7,7 +7,7 @@ The client supports the MCP OAuth authorization flow for servers that require au
 1. **Authorization Code + PKCE** with S256 code challenge
 2. **Dynamic Client Registration** (DCR) for first-time clients (HTTP POST to registration endpoint)
 3. **Token refresh** via preemptive expiry check (not 401-driven)
-4. **Token revocation** via manual `Revoke()` call
+4. **Token revocation** via manual `Revoke()` call (best-effort call to the RFC 7009 revocation endpoint; failure does not affect local token clearing)
 
 ## OAuthClientOptions
 
@@ -53,13 +53,13 @@ auto token = auth->GetAccessToken();
 | Method | Description |
 |--------|-------------|
 | `Authenticate()` | Full OAuth flow: discover → register → authorize → token exchange |
-| `GetAccessToken()` | Returns valid access token, auto-refreshes if expiring soon |
+| `GetAccessToken()` | Returns valid access token, auto-refreshes if expiring soon; throws `McpError` (InternalError) on refresh failure |
 | `RefreshTokens()` | Force-refresh using stored refresh token |
 | `IsAuthenticated()` | Check if stored token is present and not expired |
 | `HasToken()` | Check if any token exists (may be expired) |
 | `GetAuthorizationHeader()` | Returns `"Bearer {token}"` string |
 | `StepUpAuthorization(scopes)` | Re-authorize with additional scopes |
-| `Revoke()` | Clear stored tokens (does not call revocation endpoint) |
+| `Revoke()` | Best-effort call to the RFC 7009 revocation endpoint (when `revocation_endpoint` is configured); clears local tokens regardless of outcome |
 
 ## PKCE Helpers
 
