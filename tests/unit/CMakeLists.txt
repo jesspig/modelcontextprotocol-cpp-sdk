@@ -7,7 +7,9 @@ add_executable(mcp-core-tests
 target_link_libraries(mcp-core-tests PRIVATE mcp-core GTest::gtest_main)
 gtest_discover_tests(mcp-core-tests)
 
-add_executable(mcp-wire-codec-tests WireCodecTests.cpp)
+add_executable(mcp-wire-codec-tests
+    WireCodecTests.cpp
+    SessionHandlerTests.cpp)
 target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol GTest::gtest_main)
 gtest_discover_tests(mcp-wire-codec-tests)
 
@@ -46,6 +48,7 @@ gtest_discover_tests(mcp-task-store-tests)
 
 add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp)
 target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
+target_include_directories(mcp-streamable-http-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 gtest_discover_tests(mcp-streamable-http-tests)
 
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
