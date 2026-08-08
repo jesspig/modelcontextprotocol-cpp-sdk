@@ -8,7 +8,7 @@
 | C++ 编译器      | C++17      | MSVC、Clang、GCC               |
 | simdjson       | 3.12.3     | 自动拉取                        |
 | libhv          | 1.3.4      | 自动拉取                        |
-| OpenSSL        | （可选）     | OAuth PKCE 所需                |
+| OpenSSL        | （可选）     | 可选依赖；用于 TLS 加密（WebSocket、SSE HTTPS 等）。OAuth PKCE 无需 OpenSSL，有内置 SHA-256 回退 |
 
 ## 通过 FetchContent 引用
 

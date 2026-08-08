@@ -53,7 +53,7 @@ server->Run();
 | `on_notification` | `function` | Called on each incoming JSON-RPC notification |
 | `on_method_called` | `function(string_view)` | Shorthand — method name only (fires alongside `on_request`) |
 | `on_protocol_error` | `function(string_view)` | Shorthand — error message only (fires alongside `on_error`) |
-| `on_client_connected` | `function(Implementation)` | Called when a client completes `initialize` |
+| `on_client_connected` | `function(const Implementation&)` | Called when a client completes `initialize` |
 | `on_initialized` | `function()` | Called when client sends `notifications/initialized` |
 | `on_transport_close` | `function()` | Called when the transport connection closes |
 | `on_transport_error` | `function(string_view)` | Called on transport-level errors |
@@ -99,7 +99,7 @@ The lambda-based `RegisterTool` overload works identically — it creates an `Mc
 
 | Method | Return Type | Description |
 |--------|-------------|-------------|
-| `GetClientCapabilities()` | `const ClientCapabilities*` | Client capabilities from `initialize` or first request meta (nullptr before connect) |
+| `GetClientCapabilities()` | `const ClientCapabilities*` | Only populated during a 2025-era client `initialize` handshake; always nullptr in the 2026 era (no initialize) |
 | `GetClientInfo()` | `const Implementation*` | Client identity (nullptr before connect) |
 | `GetNegotiatedProtocolVersion()` | `string_view` | The negotiated protocol version string |
 | `GetCapabilities()` | `const ServerCapabilities&` | Server capabilities auto-derived from registered primitives |

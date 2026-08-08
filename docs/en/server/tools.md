@@ -57,7 +57,7 @@ All `ToolOptions` fields:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `optional<string>` | — | Override tool name |
+| `name` | `optional<string>` | — | The registered tool name comes from the first argument of `RegisterTool` (or the `name` argument of `McpServerTool::Create`); this field is currently not consumed |
 | `title` | `optional<string>` | — | Human-readable title |
 | `description` | `optional<string>` | — | Tool description |
 | `input_schema` | `optional<JsonValue>` | `{"type":"object","properties":{}}` | JSON Schema for input parameters |

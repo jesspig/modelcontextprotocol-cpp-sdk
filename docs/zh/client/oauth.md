@@ -7,7 +7,7 @@
 1. **授权码 + PKCE**，使用 S256 代码质询
 2. **动态客户端注册**（DCR），用于首次使用的客户端（HTTP POST 到注册端点）
 3. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
-4. **令牌撤销**，通过手动调用 `Revoke()`
+4. **令牌撤销**，通过手动调用 `Revoke()`（best-effort 调用 RFC 7009 撤销端点，失败不影响本地令牌清除）
 
 ## OAuthClientOptions
 
@@ -52,13 +52,13 @@ auto token = auth->GetAccessToken();
 | 方法 | 描述 |
 |--------|-------------|
 | `Authenticate()` | 完整 OAuth 流程：发现 → 注册 → 授权 → 令牌交换 |
-| `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新 |
+| `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新；刷新失败抛出 `McpError`（InternalError） |
 | `RefreshTokens()` | 使用存储的刷新令牌强制刷新 |
 | `IsAuthenticated()` | 检查令牌是否存在且未过期 |
 | `HasToken()` | 检查是否存在任何令牌（可能已过期） |
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
 | `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权 |
-| `Revoke()` | 清除存储的令牌（不调用撤销端点） |
+| `Revoke()` | best-effort 调用 RFC 7009 撤销端点（配置了 `revocation_endpoint` 时），无论成败都清除本地令牌 |
 
 ## PKCE 辅助函数
 

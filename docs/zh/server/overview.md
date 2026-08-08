@@ -53,7 +53,7 @@ server->Run();
 | `on_notification` | `function` | 收到每个入站 JSON-RPC 通知时回调 |
 | `on_method_called` | `function(string_view)` | 简写——仅方法名（与 `on_request` 同时触发） |
 | `on_protocol_error` | `function(string_view)` | 简写——仅错误消息（与 `on_error` 同时触发） |
-| `on_client_connected` | `function(Implementation)` | 客户端完成 `initialize` 时回调 |
+| `on_client_connected` | `function(const Implementation&)` | 客户端完成 `initialize` 时回调 |
 | `on_initialized` | `function()` | 客户端发送 `notifications/initialized` 时回调 |
 | `on_transport_close` | `function()` | 传输连接关闭时回调 |
 | `on_transport_error` | `function(string_view)` | 传输层错误时回调 |
@@ -99,7 +99,7 @@ server->RegisterTool(tool);
 
 | 方法 | 返回类型 | 说明 |
 |--------|-------------|------|
-| `GetClientCapabilities()` | `const ClientCapabilities*` | 来自 `initialize` 或首次请求元数据的客户端能力（连接前为 nullptr） |
+| `GetClientCapabilities()` | `const ClientCapabilities*` | 仅在 2025 时代客户端 `initialize` 握手时填充；2026 时代（无 initialize）下恒为 nullptr |
 | `GetClientInfo()` | `const Implementation*` | 客户端标识（连接前为 nullptr） |
 | `GetNegotiatedProtocolVersion()` | `string_view` | 协商后的协议版本字符串 |
 | `GetCapabilities()` | `const ServerCapabilities&` | 从注册原语自动推导的服务端能力 |

@@ -4,7 +4,7 @@ MRTR（SEP-2322）允许服务器处理程序在工具执行期间向客户端�
 
 ## 工作原理
 
-在无状态（2026 时代）模式中，服务端返回一个 `InputRequiredResult`，其 `resultType: "input_required"`。客户端通过其 `ElicitationHandler` 在内部解析响应，然后使用 `input_responses` 和 `requestState` 重试原始工具调用：
+在无状态（2026 时代）模式中，服务端返回一个 `InputRequiredResult`，其 `resultType: "input_required"`。客户端通过其 `ElicitationHandler` 在内部解析响应，然后使用 `inputResponses` 和 `requestState` 重试原始工具调用：
 
 ```
 客户端                    服务器
@@ -25,8 +25,8 @@ MRTR（SEP-2322）允许服务器处理程序在工具执行期间向客户端�
   │   ElicitationHandler    │
   │   解析)                 │
   │                         │
-  ├── tools/call ──────────►│  (使用 input_responses
-  │    (携带 input_responses│   + requestState 重试)
+  ├── tools/call ──────────►│  (使用 inputResponses
+  │    (携带 inputResponses│   + requestState 重试)
   │     + requestState)     │
   │◄── 结果：{...}           │
 ```
@@ -91,7 +91,7 @@ InputRequiredResult ir;
 ir.input_requests.elicit = InputRequestElicit{"提供值"};
 ir.request_state = "state-token";
 // 服务器将其作为 tools/call 的结果返回
-// 客户端解析并使用 input_responses + requestState 重试
+// 客户端解析并使用 inputResponses + requestState 重试
 ```
 
 ## 辅助函数
@@ -138,5 +138,5 @@ opts.input_required_config = ClientOptions::InputRequiredConfig{
 |--------|--------|--------|-------------|
 | `max_rounds` | 是 | 是 | 最大 MRTR 轮数（默认：8） |
 | `round_timeout` | 是 | 是 | 每轮超时（默认：600 秒） |
-| `legacy_shim` | 是 | 否 | 启用旧版 2025 时代兼容层 |
+| `legacy_shim` | 是 | 否 | 占位字段，当前尚未生效 |
 | `auto_fulfill` | 否 | 是 | 如可能则自动填充，无需提示 |
