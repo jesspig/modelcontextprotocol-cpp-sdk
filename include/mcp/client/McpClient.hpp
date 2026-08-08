@@ -4,16 +4,34 @@
 #include <mcp/Export.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
-#include <mcp/client/ClientHandlers.hpp>
-#include <mcp/client/McpClientTool.hpp>
 #include <mcp/client/VersionNegotiation.hpp>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace mcp {
+
+// ── Server-to-client request handlers ──
+
+// SamplingHandler is deprecated in 2026-07-28 (SEP-2577).
+// Use ElicitationHandler instead.
+using SamplingHandler = std::function<CreateMessageResult(
+    const CreateMessageRequestParams&)>;
+
+// Roots (deprecated): server requests root directory list
+using RootsHandler = std::function<ListRootsResult(
+    const ListRootsRequestParams&)>;
+
+// Elicitation: server requests user input
+using ElicitationHandler = std::function<ElicitResult(
+    const ElicitRequestParams&)>;
+
+// Notification handler: server sends notification
+using ClientNotificationHandler = std::function<void(
+    const JsonRpcNotification&)>;
 
 // ── McpClient (对应 C# McpClient) ──
 class MCP_API McpClient {
@@ -73,7 +91,7 @@ public:
         std::optional<std::string> reason = std::nullopt);
 
     // Poll task until completion
-    GetTaskResult PollTaskToCompletionAsync(
+    GetTaskResult PollTaskToCompletion(
         const std::string& task_id,
         std::chrono::milliseconds poll_interval = std::chrono::milliseconds(500),
         std::chrono::seconds timeout = std::chrono::seconds(300));
@@ -134,7 +152,6 @@ private:
     std::optional<SamplingHandler> sampling_handler_;
     std::optional<RootsHandler> roots_handler_;
     std::optional<ElicitationHandler> elicitation_handler_;
-    std::vector<std::pair<std::string, ClientNotificationHandler>> notif_handlers_;
     std::optional<std::function<void(const LoggingMessageNotificationParams&)>> logging_handler_;
 
 
