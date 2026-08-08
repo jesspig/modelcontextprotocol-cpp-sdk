@@ -25,7 +25,7 @@ enum class LoggingLevel {
 // ═══════════════════════════════════════════════════════════════════════
 struct RequestMeta {
     std::optional<ProgressToken> progress_token;
-    std::string protocol_version{kLatestProtocolVersion.data()};
+    std::string protocol_version{std::string(kLatestProtocolVersion)};
     std::optional<Implementation> client_info;
     std::optional<ClientCapabilities> client_capabilities;
     std::optional<LoggingLevel> log_level;

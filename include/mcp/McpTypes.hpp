@@ -393,13 +393,14 @@ struct SetLevelRequestParams {
 // ====================================================================
 // Tasks
 // ====================================================================
-struct GetTaskResult : Result {
+struct GetTaskResult {
     std::string task_id;
     std::string status;
     std::string task_result_type{"task"};
     std::optional<JsonValue> result;
     std::optional<std::string> error_message;
     std::optional<JsonValue> input_required;
+    std::optional<JsonValue> meta;
 };
 
 using UpdateTaskResult = EmptyResult;
@@ -471,8 +472,6 @@ ToolExecution DeserializeToolExecution(const JsonValue& j);
 JsonValue SerializeResourceAnnotations(const ResourceAnnotations& v);
 ResourceAnnotations DeserializeResourceAnnotations(const JsonValue& j);
 
-JsonValue SerializeResult(const Result& v);
-Result DeserializeResult(const JsonValue& j);
 JsonValue SerializeEmptyResult(const EmptyResult& v);
 EmptyResult DeserializeEmptyResult(const JsonValue& j);
 JsonValue SerializeTool(const Tool& v);
@@ -487,8 +486,6 @@ JsonValue SerializePrompt(const Prompt& v);
 Prompt DeserializePrompt(const JsonValue& j);
 JsonValue SerializePromptMessage(const PromptMessage& v);
 PromptMessage DeserializePromptMessage(const JsonValue& j);
-JsonValue SerializePagination(const Pagination& v);
-Pagination DeserializePagination(const JsonValue& j);
 
 JsonValue SerializePaginatedRequestParams(const PaginatedRequestParams& v);
 PaginatedRequestParams DeserializePaginatedRequestParams(const JsonValue& j);
