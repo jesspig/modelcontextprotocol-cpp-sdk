@@ -28,6 +28,7 @@ cmake --build --preset debug --target mcp-server-tests   # 单个目标
 - **Ninja job 池自动调优**（编译 ≈ `mem/1500MB`，链接上限 2）。内存受限机器可用 `-DMCP_COMPILE_JOBS` / `-DMCP_LINK_JOBS` 覆盖。
 - **`-march=native` 仅本地添加，CI 中从不启用**（`MCP_IS_CI` 门控）—— debug 二进制不可移植出构建机。
 - **`mcp-core` 是 STATIC**（JsonValue.cpp、JsonRpc.cpp 等）—— 修改序列化会重编译大量依赖方。
+- **`src/` 是私有 include 路径**：`mcp-core`/`mcp-server`/`mcp-client`/`mcp-protocol` 各有 PRIVATE `src/`——`src/detail/` 下的内部头（`JsonFields.hpp`、`JsonSerializer.hpp`）经 `#include <detail/...>` 包含。**注意两个 "detail" 目录**：`<mcp/detail/...>`（公共头，如 `ThreadUtils.hpp`）与 `<detail/...>`（src/detail 私有头）不是同一个。
 
 ### 跨平台陷阱
 
@@ -87,14 +88,18 @@ IClientTransport（连接工厂）
 
 ### HttpServer（`mcp-http`）
 
-基于 libhv `HttpService` 的 PIMPL 模式。关键细节：`HttpServerOptions::on_connect` 与 `on_disconnect` **已接线**——分别在 SSE 客户端添加/移除时触发。
+基于 libhv `HttpService` 的 PIMPL 模式。关键细节：
+- `HttpServerOptions::on_connect` 与 `on_disconnect` **已接线**——分别在 SSE 客户端添加/移除时触发；`on_disconnect` 是拷贝语义（每个连接触发一次，勿用 move 取走）。
+- worker 线程 8；stateless 模式并发上限 8（超出返回 503 `"server busy"`），同步等待超时返回 **504**（非 500）。
+- SSE 广播事件带 `id:` 行；SSE GET 支持 `Last-Event-ID` 头断线回放（`EventStore::GetEventsSince`）。
+- `BroadcastSse` 对已断开连接写失败会**自动移除**该客户端（写失败抛异常 → 按 entry 自清理）；注册前有 `isClosed()` 预检。
 
 ### 版本协商（关键）
 
 - **`HandleInitialize` 必须回显客户端的旧版版本号**：返回客户端发送的版本（如 `"2025-11-25"`）。切勿返回 `kLatestProtocolVersion`（`"2026-07-28"`）——TS SDK v2 会校验 `result.protocolVersion` 是否在其旧版列表中。
 - **现代版本（2026-07-28+）绝不通过 `initialize` 协商**：只能通过 `server/discover`。
 - `McpClient` 连接模式：`Auto`（默认，探测 `server/discover`，失败回退 `initialize`）、`Legacy`（仅 initialize）、`Pin`（固定版本）。
-- `SetNegotiatedProtocolVersion(version)` 存储版本并重建 `WireCodec`。
+- `SetNegotiatedProtocolVersion(version)` **线程安全**：存储版本并重建 `WireCodec`（`codec_` 为 `shared_ptr` + `codec_mutex_`），消息循环运行中可调用——`McpClient` 就是在 `Start()` 之后协商的。
 
 ## 关键协议模式
 
@@ -106,16 +111,33 @@ IClientTransport（连接工厂）
 
 ## 通知处理器
 
-全部 17 种通知类型注册于 `WireCodec.cpp` 编解码器集合。服务端处理器在 `McpServer::WireHandlers()` 接线；客户端处理器在 `McpClient::WireClientHandlers()`。通知经 `McpSessionHandler::OnNotification()` 分发——未知通知**静默丢弃**（无 catch-all 处理器）。
+全部 17 种通知类型注册于 `WireCodec.cpp` 编解码器集合。服务端处理器在 `McpServer::WireHandlers()` 接线；客户端**不注册任何通知处理器**（`WireClientHandlers()` 仅注册 elicit 请求处理器）——客户端收到通知后静默丢弃，须自行 `SetNotificationHandler`。通知经 `McpSessionHandler::OnNotification()` 分发——未知通知**静默丢弃**（无 catch-all 处理器）。
 
 **注意事项**：
 - `notifications/cancelled` 在 `OnNotification()` 中硬编码处理，先于处理器表查找（并非 `SetNotificationHandler` 注册）。
 - `logging/setLevel` 是**请求**（非通知）——新增服务端时必须注册到 `WireHandlers()`。
-- 进度通知处理器调用 `ResetTimeoutByProgressToken()`，通过 `progress_token_map_` → `pending_` 查找将截止时间延长 30 秒。定义于 `McpSessionHandler`，在 `McpServer::WireHandlers()` 中接线。
+- 进度通知处理器调用 `ResetTimeoutByProgressToken()`，通过 `progress_token_map_` → `pending_` 查找将截止时间延长 30 秒。定义于 `McpSessionHandler`，在 `McpServer::WireHandlers()` 中接线。**客户端侧不自动接线**：`McpClient` 不注册任何通知处理器——客户端要处理 progress（含超时延长）须自行 `SetNotificationHandler`。
 
 ## 服务端选项与事件钩子
 
 `ServerOptions` 暴露四层回调：简写（`on_method_called`、`on_protocol_error`）、完整消息（`on_request`、`on_response`、`on_error`、`on_notification`）、生命周期（`on_client_connected`、`on_initialized`）、传输层（`on_transport_close`、`on_transport_error`）。做认证/审计/限流时，通过 `incoming_filters`/`outgoing_filters` 注入 `FilterPipeline`。
+
+`McpServer::GetClientCapabilities()/GetClientInfo()` 返回 `shared_ptr<const T>`（非裸指针）——调用方须持有返回值再访问。
+
+## 并发与生命周期（易翻车点）
+
+- **IO 线程回调内调用 `Close()` 会 self-join**：stdio/SSE/HTTP 传输的 IO 线程会直接执行用户回调（`on_transport_close`/`on_transport_error`），用户在回调里调 `McpServer::Close()` 会触发传输 `Close()` join 自身线程（`std::thread::join()` 抛异常）。所有传输与 `McpSessionHandler` 的 `Close()` 必须用 `detail::JoinThreadSafely`（`include/mcp/detail/ThreadUtils.hpp`：self 时 detach，否则 join）。
+- **`PipeHandle::Read` 返回 0 不一定是 EOF**：`PosixPipe` 用 poll 轮询（100ms 超时），无数据时返回 0。读循环必须用 `IsEof()` 区分"超时无数据"（继续轮询，检查 `running_`）与"真 EOF"（退出），否则正常空闲时被误判为断连。
+- **handler 抛 `McpError` 保留错误码**：`OnRequest` 对 `McpError` 直接回 `e.Code()` 错误响应；其他异常一律 `InternalError`（"handler error: ..."）。新 handler 抛 `McpError(InvalidParams, ...)` 即得正确的 JSON-RPC 错误码（如非法 cursor）。
+- **`TransportBase::SetConnected` 仅 `Initial→Connected`**（CAS 校验）；已 `Disconnected` 后调用被忽略并记 Warning。
+- **`HttpServer::SetHandler` 必须在 `Start()` 之前**：运行期调用抛 `std::logic_error`。
+
+## 存储与认证行为（失败语义）
+
+- **`FileTaskStore`**：`Flush()` 失败抛 `std::runtime_error` 并回滚内存修改（`CreateTask`/`UpdateTask`/`CancelTask`/`SetTaskStatus` 返回 `false` 仅表示任务不存在）；加载损坏文件会备份为 `<path>.corrupt` 再继续，不会覆盖原数据。
+- **`AtomicJsonFile::WriteAtomic`**：临时文件名为 `<path>.tmp.<pid>`（多进程不踩踏），写后 `fsync`（POSIX）/`FlushFileBuffers`（Windows）再 rename；失败返回 false。
+- **`FileTokenCache`**：Windows 上 DPAPI 解密失败**不回落明文**（记录 Error 并忽略缓存，重新认证即可）。
+- **OAuth**：`ValidateTokenIssuer` 强制 RFC 9207——token/refresh 响应缺 `iss` 或与 metadata issuer 不匹配即拒绝；`RefreshTokens` 响应缺 `access_token` 视为失败（不回退旧 token）。
 
 ## 编码规范
 
@@ -130,12 +152,18 @@ IClientTransport（连接工厂）
 - 日志级别经 `MCP_LOG_LEVEL` 环境变量：0=Off，1=Error，2=Warning，3=Info，4=Debug，5=Trace。
 - 带参数的工具有 `ToolOptions::InputSchema(JsonValue s)`（默认空 schema）。
 - `StreamableHttpClientTransport::Name()` 在 `options_.name` 为空时返回 `"streamable-http"`。
+- JSON 字段/协议键常量放 `src/detail/JsonFields.hpp`（`detail::kXxxKey`，含 `kMeta*Key` 系列）——新增键加在那里，禁止硬编码 `"io.modelcontextprotocol/..."` 字符串。
 
 ## 测试
 
 `InMemoryTransport` 是**同步**的——消息在 `Send()`/`AsyncReceive()` 时交付（`MessageChannel` 是有界队列，默认 64），无外部事件循环。
 
 **OpenSSL 陷阱**：PKCE 内置 SHA-256 回退（`include/mcp/detail/sha256.hpp`），但 `src/client/auth/OAuthClientProvider.cpp` 有无保护的 `#include <openssl/rand.h>`——未安装 OpenSSL 开发头文件的机器无论如何都无法编译 `mcp-client`。
+
+**测试注意事项**：
+- 集成测试的 `RunWithTimeout`：body 挂起超过 10s 会 `std::_Exit(1)` 使进程直接失败（快于永久阻塞）——新增集成测试应继续用它。
+- 关键协议行为已有盲区守护测试：`RejectsRequestsBeforeInitialized`、`InitializeEchoesClientVersion`（回显旧版版本号）、`ProgressNotificationExtendsDeadline`、`IncomingFilterInterceptsRequests`——改动这些行为时测试会失败。
+- `WireCodec::ValidateResponse`/`StampOutgoingRequest`/`ExtractIncomingMeta` 生产代码无调用者但**有测试守护**（WireCodecTests/Conformance）——不是死代码，勿删。
 
 | 套件 | 目标 | 关键文件 |
 |-------|--------|----------|

@@ -153,11 +153,11 @@ TEST(EventStoreTest, AppendAndRetrieve) {
 
     auto events = store.GetEventsSince("sess1", id1);
     ASSERT_EQ(events.size(), 1);
-    EXPECT_EQ(events[0], "event2");
+    EXPECT_EQ(events[0].second, "event2");
 
-    EXPECT_TRUE(store.HasEvents("sess1"));
+    EXPECT_FALSE(store.GetEventsSince("sess1", 0).empty());
     store.Clear("sess1");
-    EXPECT_FALSE(store.HasEvents("sess1"));
+    EXPECT_TRUE(store.GetEventsSince("sess1", 0).empty());
 }
 
 TEST(EventStoreTest, MaxCapacity) {

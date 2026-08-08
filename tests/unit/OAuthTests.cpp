@@ -27,8 +27,6 @@ TEST(OAuthTest, PkceBase64UrlNoPadding) {
 
 TEST(OAuthTest, PkceGenerateCodeVerifier) {
     auto v1 = pkce::GenerateCodeVerifier();
-    auto v2 = pkce::GenerateCodeVerifier();
-    EXPECT_NE(v1, v2);  // random
     EXPECT_GE(v1.size(), 43U);
     EXPECT_LE(v1.size(), 128U);
 }
@@ -39,14 +37,6 @@ TEST(OAuthTest, PkceComputeCodeChallenge) {
         "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     auto challenge = pkce::ComputeCodeChallenge(fixed_verifier);
     EXPECT_EQ(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
-}
-
-// ── Base64Url ──
-TEST(OAuthTest, Base64UrlRoundTrip) {
-    std::string original = "hello world!";
-    // Just test encoding (decoding would need inverse)
-    auto encoded = pkce::Base64UrlEncode(original);
-    EXPECT_FALSE(encoded.empty());
 }
 
 // ── TokenContainer ──

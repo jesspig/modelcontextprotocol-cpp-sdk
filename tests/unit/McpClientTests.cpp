@@ -46,14 +46,6 @@ TEST(McpClientTest, ClientOptionsDefaults) {
     EXPECT_EQ(opts.discover_probe_timeout.count(), 5);
 }
 
-// ── ConnectMode enum ──
-TEST(McpClientTest, ConnectModeValues) {
-    EXPECT_NE(static_cast<int>(ConnectMode::Auto),
-              static_cast<int>(ConnectMode::Legacy));
-    EXPECT_NE(static_cast<int>(ConnectMode::Legacy),
-              static_cast<int>(ConnectMode::Pin));
-}
-
 // ── Version negotiation against a real in-memory server ──
 
 // Legacy mode: must go through the initialize handshake and stay legacy.

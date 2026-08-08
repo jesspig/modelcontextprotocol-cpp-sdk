@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <future>
 #include <thread>
 
@@ -21,8 +23,11 @@ namespace {
 template <typename F>
 void RunWithTimeout(F&& body) {
     auto future = std::async(std::launch::async, std::forward<F>(body));
-    ASSERT_TRUE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready)
-        << "test body hung: call did not complete within 10s";
+    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+        std::fprintf(stderr,
+            "[  FAILED  ] test body hung: call did not complete within 10s\n");
+        std::_Exit(1);
+    }
     future.get();
 }
 

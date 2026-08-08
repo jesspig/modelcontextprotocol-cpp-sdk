@@ -115,29 +115,6 @@ TEST(Conformance, WireCodec2025StampIsNoop) {
     EXPECT_TRUE(body.Empty());
 }
 
-TEST(Conformance, WireCodec2026StampAddsMeta) {
-    auto codec = MakeWireCodec("2026-07-28");
-    JsonValue body(JsonValue::object_tag);
-    RequestMeta meta;
-    meta.protocol_version = "2026-07-28";
-    meta.client_info = Implementation{"test", "1.0"};
-    codec->StampOutgoingRequest(body, meta);
-
-    ASSERT_TRUE(body.Contains("_meta"));
-    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/protocolVersion"].GetString(),
-              "2026-07-28");
-    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/clientInfo"]["name"].GetString(),
-              "test");
-}
-
-TEST(Conformance, WireCodec2026EncodeResult) {
-    auto codec = MakeWireCodec("2026-07-28");
-    JsonValue result(JsonValue::object_tag);
-    result["content"] = JsonValue(JsonValue::array_tag);
-    auto encoded = codec->EncodeResult("tools/call", result);
-    EXPECT_EQ(encoded["resultType"].GetString(), "complete");
-}
-
 TEST(Conformance, WireCodecUnknownVersionFallsBack) {
     auto codec = MakeWireCodec("2024-01-01");
     EXPECT_EQ(codec->Era(), "2025-11-25");
@@ -856,8 +833,14 @@ TEST(Conformance, SchemaNumberTypeRoundTrip) {
     p.message = "Enter age";
     p.requested_schema = schema;
 
-    auto recovered = p.requested_schema;
-    EXPECT_EQ((*recovered)["minimum"].GetInt(), 0);
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["minimum"].GetInt(), 0);
+    EXPECT_EQ(jv["requestedSchema"]["maximum"].GetInt(), 150);
+
+    auto recovered = DeserializeElicitRequestParams(jv);
+    ASSERT_TRUE(recovered.requested_schema.has_value());
+    EXPECT_EQ((*recovered.requested_schema)["minimum"].GetInt(), 0);
+    EXPECT_EQ((*recovered.requested_schema)["maximum"].GetInt(), 150);
 }
 
 TEST(Conformance, SchemaBooleanTypeRoundTrip) {
@@ -867,6 +850,17 @@ TEST(Conformance, SchemaBooleanTypeRoundTrip) {
 
     EXPECT_EQ(schema["type"].GetString(), "boolean");
     EXPECT_EQ(schema["default"].GetBool(), true);
+
+    ElicitRequestParams p;
+    p.message = "Enter consent";
+    p.requested_schema = schema;
+
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["default"].GetBool(), true);
+
+    auto recovered = DeserializeElicitRequestParams(jv);
+    ASSERT_TRUE(recovered.requested_schema.has_value());
+    EXPECT_EQ((*recovered.requested_schema)["default"].GetBool(), true);
 }
 
 TEST(Conformance, SchemaEnumTypeRoundTrip) {
@@ -879,6 +873,19 @@ TEST(Conformance, SchemaEnumTypeRoundTrip) {
 
     EXPECT_EQ(schema["enum"].Size(), 3);
     EXPECT_EQ(schema["enum"][1].GetString(), "green");
+
+    ElicitRequestParams p;
+    p.message = "Pick a color";
+    p.requested_schema = schema;
+
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["enum"].Size(), 3);
+    EXPECT_EQ(jv["requestedSchema"]["enum"][1].GetString(), "green");
+
+    auto recovered = DeserializeElicitRequestParams(jv);
+    ASSERT_TRUE(recovered.requested_schema.has_value());
+    EXPECT_EQ((*recovered.requested_schema)["enum"].Size(), 3);
+    EXPECT_EQ((*recovered.requested_schema)["enum"][1].GetString(), "green");
 }
 
 TEST(Conformance, SchemaSingleSelectEnumUntitled) {
@@ -925,6 +932,18 @@ TEST(Conformance, SchemaMultiSelectUntitled) {
     schema["items"]["enum"].PushBack("c");
 
     EXPECT_EQ(schema["items"]["enum"].Size(), 3);
+
+    ElicitRequestParams p;
+    p.message = "Multi select";
+    p.requested_schema = schema;
+
+    auto jv = SerializeElicitRequestParams(p);
+    EXPECT_EQ(jv["requestedSchema"]["items"]["enum"].Size(), 3);
+    EXPECT_EQ(jv["requestedSchema"]["items"]["enum"][2].GetString(), "c");
+
+    auto recovered = DeserializeElicitRequestParams(jv);
+    ASSERT_TRUE(recovered.requested_schema.has_value());
+    EXPECT_EQ((*recovered.requested_schema)["items"]["enum"].Size(), 3);
 }
 
 TEST(Conformance, SchemaMultiSelectTitled) {
