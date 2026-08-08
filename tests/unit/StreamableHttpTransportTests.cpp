@@ -28,7 +28,7 @@ TEST(StreamableHttpTransportTest, ClientEndpointUrl) {
     opts.endpoint = "https://mcp.example.com/stream";
     opts.transport_mode = HttpTransportMode::StreamableHttp;
     StreamableHttpClientTransport transport(opts);
-    (void)transport;
+    EXPECT_EQ(transport.Name(), "streamable-http");
 }
 
 TEST(StreamableHttpTransportTest, ClientSseMode) {

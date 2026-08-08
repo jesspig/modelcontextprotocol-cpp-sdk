@@ -3,8 +3,9 @@
 #include <mcp/Content.hpp>
 #include <mcp/Implementation.hpp>
 #include <mcp/Meta.hpp>
+#include <mcp/McpError.hpp>
+#include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
-#include <stdexcept>
 
 namespace mcp {
 
@@ -12,16 +13,33 @@ namespace mcp {
 JsonValue SerializeClientCapabilities(const ClientCapabilities& v);
 ClientCapabilities DeserializeClientCapabilities(const JsonValue& j);
 
+namespace {
+
+// Known RequestMeta field keys that are stored in dedicated members rather
+// than in the extensions bag (mirrors SerializeRequestMeta's output).
+bool RequestMetaFieldIsKnown(std::string_view key) {
+    return key == detail::kProgressToken
+        || key == "io.modelcontextprotocol/protocolVersion"
+        || key == "io.modelcontextprotocol/clientInfo"
+        || key == "io.modelcontextprotocol/clientCapabilities"
+        || key == "io.modelcontextprotocol/logLevel"
+        || key == "io.modelcontextprotocol/subscriptionId"
+        || key == "traceparent"
+        || key == "tracestate"
+        || key == "baggage";
+}
+
+} // namespace
+
 // ── Icon ──
 
 JsonValue SerializeIcon(const Icon& v) {
     JsonValue obj(JsonValue::object_tag);
     obj["src"] = JsonValue(v.src);
-    detail::SerializeOptional(obj, "mimeType", v.mime_type);
+    detail::SerializeOptional(obj, detail::kMimeType, v.mime_type);
     if (v.sizes) {
-        JsonValue::Array arr;
-        for (const auto& s : *v.sizes) arr.push_back(JsonValue(s));
-        obj["sizes"] = JsonValue(std::move(arr));
+        detail::SerializeVector(obj, "sizes", *v.sizes,
+            [](const std::string& s) { return JsonValue(s); });
     }
     detail::SerializeOptional(obj, "theme", v.theme);
     return obj;
@@ -30,12 +48,11 @@ JsonValue SerializeIcon(const Icon& v) {
 Icon DeserializeIcon(const JsonValue& j) {
     Icon v;
     v.src = j["src"].GetString();
-    detail::DeserializeOptional(j, "mimeType", v.mime_type);
+    detail::DeserializeOptional(j, detail::kMimeType, v.mime_type);
     auto* sz = j.Find("sizes");
     if (sz && sz->IsArray()) {
-        std::vector<std::string> sizes;
-        for (const auto& s : sz->GetArray()) sizes.push_back(s.GetString());
-        v.sizes = std::move(sizes);
+        v.sizes = detail::DeserializeVector<std::string>(*sz,
+            [](const JsonValue& s) { return s.GetString(); });
     }
     detail::DeserializeOptional(j, "theme", v.theme);
     return v;
@@ -46,25 +63,23 @@ Icon DeserializeIcon(const JsonValue& j) {
 JsonValue SerializeAnnotations(const Annotations& v) {
     JsonValue obj(JsonValue::object_tag);
     if (v.audience) {
-        JsonValue::Array arr;
-        for (const auto& s : *v.audience) arr.push_back(JsonValue(s));
-        obj["audience"] = JsonValue(std::move(arr));
+        detail::SerializeVector(obj, detail::kAudience, *v.audience,
+            [](const std::string& s) { return JsonValue(s); });
     }
-    detail::SerializeOptional(obj, "priority", v.priority);
-    detail::SerializeOptional(obj, "lastModified", v.last_modified);
+    detail::SerializeOptional(obj, detail::kPriority, v.priority);
+    detail::SerializeOptional(obj, detail::kLastModified, v.last_modified);
     return obj;
 }
 
 Annotations DeserializeAnnotations(const JsonValue& j) {
     Annotations v;
-    auto* aud = j.Find("audience");
+    auto* aud = j.Find(detail::kAudience);
     if (aud && aud->IsArray()) {
-        std::vector<std::string> audience;
-        for (const auto& s : aud->GetArray()) audience.push_back(s.GetString());
-        v.audience = std::move(audience);
+        v.audience = detail::DeserializeVector<std::string>(*aud,
+            [](const JsonValue& s) { return s.GetString(); });
     }
-    detail::DeserializeOptional(j, "priority", v.priority);
-    detail::DeserializeOptional(j, "lastModified", v.last_modified);
+    detail::DeserializeOptional(j, detail::kPriority, v.priority);
+    detail::DeserializeOptional(j, detail::kLastModified, v.last_modified);
     return v;
 }
 
@@ -72,19 +87,19 @@ Annotations DeserializeAnnotations(const JsonValue& j) {
 
 JsonValue SerializeTextResourceContents(const TextResourceContents& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["uri"] = JsonValue(v.uri);
-    obj["text"] = JsonValue(v.text);
-    detail::SerializeOptional(obj, "mimeType", v.mime_type);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kUri] = JsonValue(v.uri);
+    obj[detail::kText] = JsonValue(v.text);
+    detail::SerializeOptional(obj, detail::kMimeType, v.mime_type);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 TextResourceContents DeserializeTextResourceContents(const JsonValue& j) {
     TextResourceContents v;
-    v.uri = j["uri"].GetString();
-    v.text = j["text"].GetString();
-    detail::DeserializeOptional(j, "mimeType", v.mime_type);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    v.uri = j[detail::kUri].GetString();
+    v.text = j[detail::kText].GetString();
+    detail::DeserializeOptional(j, detail::kMimeType, v.mime_type);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -92,19 +107,19 @@ TextResourceContents DeserializeTextResourceContents(const JsonValue& j) {
 
 JsonValue SerializeBlobResourceContents(const BlobResourceContents& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["uri"] = JsonValue(v.uri);
-    obj["blob"] = JsonValue(v.blob);
-    detail::SerializeOptional(obj, "mimeType", v.mime_type);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kUri] = JsonValue(v.uri);
+    obj[detail::kBlob] = JsonValue(v.blob);
+    detail::SerializeOptional(obj, detail::kMimeType, v.mime_type);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 BlobResourceContents DeserializeBlobResourceContents(const JsonValue& j) {
     BlobResourceContents v;
-    v.uri = j["uri"].GetString();
-    v.blob = j["blob"].GetString();
-    detail::DeserializeOptional(j, "mimeType", v.mime_type);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    v.uri = j[detail::kUri].GetString();
+    v.blob = j[detail::kBlob].GetString();
+    detail::DeserializeOptional(j, detail::kMimeType, v.mime_type);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -122,31 +137,33 @@ JsonValue SerializeResourceContents(const ResourceContents& rc) {
 
 // Heuristic dispatch: presence of "text" or "blob" determines resource content type.
 ResourceContents DeserializeResourceContents(const JsonValue& j) {
-    if (j.Find("text")) return DeserializeTextResourceContents(j);
-    if (j.Find("blob")) return DeserializeBlobResourceContents(j);
-    throw std::runtime_error("unknown ResourceContents type");
+    if (j.Find(detail::kText)) return DeserializeTextResourceContents(j);
+    if (j.Find(detail::kBlob)) return DeserializeBlobResourceContents(j);
+    throw McpError(McpErrorCode::DeserializeFailed,
+        std::string("unknown ResourceContents type: neither 'text' nor 'blob' field present, got ") +
+        detail::JsonValueTypeName(j));
 }
 
 // ── TextContent ──
 
 JsonValue SerializeTextContent(const TextContent& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["type"] = JsonValue(v.type);
-    obj["text"] = JsonValue(v.text);
-    detail::SerializeOptional(obj, "mimeType", v.mime_type);
-    if (v.annotations) obj["annotations"] = SerializeAnnotations(*v.annotations);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kType] = JsonValue(v.type);
+    obj[detail::kText] = JsonValue(v.text);
+    detail::SerializeOptional(obj, detail::kMimeType, v.mime_type);
+    if (v.annotations) obj[detail::kAnnotations] = SerializeAnnotations(*v.annotations);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 TextContent DeserializeTextContent(const JsonValue& j) {
     TextContent v;
-    v.type = j["type"].GetString();
-    v.text = j["text"].GetString();
-    detail::DeserializeOptional(j, "mimeType", v.mime_type);
-    auto* ann = j.Find("annotations");
+    v.type = j[detail::kType].GetString();
+    v.text = j[detail::kText].GetString();
+    detail::DeserializeOptional(j, detail::kMimeType, v.mime_type);
+    auto* ann = j.Find(detail::kAnnotations);
     if (ann) v.annotations = DeserializeAnnotations(*ann);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -154,22 +171,22 @@ TextContent DeserializeTextContent(const JsonValue& j) {
 
 JsonValue SerializeImageContent(const ImageContent& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["type"] = JsonValue(v.type);
-    obj["data"] = JsonValue(v.data);
-    obj["mimeType"] = JsonValue(v.mime_type);
-    if (v.annotations) obj["annotations"] = SerializeAnnotations(*v.annotations);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kType] = JsonValue(v.type);
+    obj[detail::kData] = JsonValue(v.data);
+    obj[detail::kMimeType] = JsonValue(v.mime_type);
+    if (v.annotations) obj[detail::kAnnotations] = SerializeAnnotations(*v.annotations);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 ImageContent DeserializeImageContent(const JsonValue& j) {
     ImageContent v;
-    v.type = j["type"].GetString();
-    v.data = j["data"].GetString();
-    v.mime_type = j["mimeType"].GetString();
-    auto* ann = j.Find("annotations");
+    v.type = j[detail::kType].GetString();
+    v.data = j[detail::kData].GetString();
+    v.mime_type = j[detail::kMimeType].GetString();
+    auto* ann = j.Find(detail::kAnnotations);
     if (ann) v.annotations = DeserializeAnnotations(*ann);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -177,22 +194,22 @@ ImageContent DeserializeImageContent(const JsonValue& j) {
 
 JsonValue SerializeAudioContent(const AudioContent& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["type"] = JsonValue(v.type);
-    obj["data"] = JsonValue(v.data);
-    obj["mimeType"] = JsonValue(v.mime_type);
-    if (v.annotations) obj["annotations"] = SerializeAnnotations(*v.annotations);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kType] = JsonValue(v.type);
+    obj[detail::kData] = JsonValue(v.data);
+    obj[detail::kMimeType] = JsonValue(v.mime_type);
+    if (v.annotations) obj[detail::kAnnotations] = SerializeAnnotations(*v.annotations);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 AudioContent DeserializeAudioContent(const JsonValue& j) {
     AudioContent v;
-    v.type = j["type"].GetString();
-    v.data = j["data"].GetString();
-    v.mime_type = j["mimeType"].GetString();
-    auto* ann = j.Find("annotations");
+    v.type = j[detail::kType].GetString();
+    v.data = j[detail::kData].GetString();
+    v.mime_type = j[detail::kMimeType].GetString();
+    auto* ann = j.Find(detail::kAnnotations);
     if (ann) v.annotations = DeserializeAnnotations(*ann);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -200,21 +217,21 @@ AudioContent DeserializeAudioContent(const JsonValue& j) {
 
 JsonValue SerializeEmbeddedResource(const EmbeddedResource& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["type"] = JsonValue(v.type);
-    obj["resource"] = SerializeResourceContents(v.resource);
-    if (v.annotations) obj["annotations"] = SerializeAnnotations(*v.annotations);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kType] = JsonValue(v.type);
+    obj[detail::kResource] = SerializeResourceContents(v.resource);
+    if (v.annotations) obj[detail::kAnnotations] = SerializeAnnotations(*v.annotations);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 EmbeddedResource DeserializeEmbeddedResource(const JsonValue& j) {
     EmbeddedResource v;
-    v.type = j["type"].GetString();
-    auto* res = j.Find("resource");
+    v.type = j[detail::kType].GetString();
+    auto* res = j.Find(detail::kResource);
     if (res) v.resource = DeserializeResourceContents(*res);
-    auto* ann = j.Find("annotations");
+    auto* ann = j.Find(detail::kAnnotations);
     if (ann) v.annotations = DeserializeAnnotations(*ann);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -222,22 +239,22 @@ EmbeddedResource DeserializeEmbeddedResource(const JsonValue& j) {
 
 JsonValue SerializeResourceLink(const ResourceLink& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["type"] = JsonValue(v.type);
-    obj["uri"] = JsonValue(v.uri);
-    detail::SerializeOptional(obj, "title", v.title);
-    if (v.annotations) obj["annotations"] = SerializeAnnotations(*v.annotations);
-    detail::SerializeOptional(obj, "_meta", v.meta);
+    obj[detail::kType] = JsonValue(v.type);
+    obj[detail::kUri] = JsonValue(v.uri);
+    detail::SerializeOptional(obj, detail::kTitle, v.title);
+    if (v.annotations) obj[detail::kAnnotations] = SerializeAnnotations(*v.annotations);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
 
 ResourceLink DeserializeResourceLink(const JsonValue& j) {
     ResourceLink v;
-    v.type = j["type"].GetString();
-    v.uri = j["uri"].GetString();
-    detail::DeserializeOptional(j, "title", v.title);
-    auto* ann = j.Find("annotations");
+    v.type = j[detail::kType].GetString();
+    v.uri = j[detail::kUri].GetString();
+    detail::DeserializeOptional(j, detail::kTitle, v.title);
+    auto* ann = j.Find(detail::kAnnotations);
     if (ann) v.annotations = DeserializeAnnotations(*ann);
-    detail::DeserializeOptional(j, "_meta", v.meta);
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
 
@@ -261,44 +278,38 @@ JsonValue SerializeContentVariant(const ContentVariant& content) {
 
 // Dispatch to the correct content deserializer based on the "type" field.
 ContentVariant DeserializeContentVariant(const JsonValue& j) {
-    auto type = j["type"].GetString();
+    auto type = j[detail::kType].GetString();
     if (type == "text")          return DeserializeTextContent(j);
     if (type == "image")         return DeserializeImageContent(j);
     if (type == "audio")         return DeserializeAudioContent(j);
     if (type == "resource")      return DeserializeEmbeddedResource(j);
     if (type == "resource_link") return DeserializeResourceLink(j);
-    throw std::runtime_error(std::string("unknown Content type: ") + type);
+    throw McpError(McpErrorCode::DeserializeFailed,
+        std::string("unknown Content type: ") + type);
 }
 
 // ── Implementation ──
 
 JsonValue SerializeImplementation(const Implementation& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["name"] = JsonValue(v.name);
+    obj[detail::kName] = JsonValue(v.name);
     obj["version"] = JsonValue(v.version);
-    detail::SerializeOptional(obj, "title", v.title);
-    if (!v.icons.empty()) {
-        JsonValue::Array arr;
-        for (const auto& icon : v.icons) arr.push_back(SerializeIcon(icon));
-        obj["icons"] = JsonValue(std::move(arr));
-    }
-    detail::SerializeOptional(obj, "description", v.description);
+    detail::SerializeOptional(obj, detail::kTitle, v.title);
+    detail::SerializeVector(obj, detail::kIcons, v.icons,
+        [](const Icon& icon) { return SerializeIcon(icon); });
+    detail::SerializeOptional(obj, detail::kDescription, v.description);
     detail::SerializeOptional(obj, "websiteUrl", v.website_url);
     return obj;
 }
 
 Implementation DeserializeImplementation(const JsonValue& j) {
     Implementation v;
-    v.name = j["name"].GetString();
+    v.name = j[detail::kName].GetString();
     v.version = j["version"].GetString();
-    detail::DeserializeOptional(j, "title", v.title);
-    auto* icons = j.Find("icons");
-    if (icons && icons->IsArray()) {
-        std::vector<Icon> ivec;
-        for (const auto& iv : icons->GetArray()) ivec.push_back(DeserializeIcon(iv));
-        v.icons = std::move(ivec);
-    }
-    detail::DeserializeOptional(j, "description", v.description);
+    detail::DeserializeOptional(j, detail::kTitle, v.title);
+    v.icons = detail::DeserializeVector<Icon>(j, detail::kIcons,
+        [](const JsonValue& iv) { return DeserializeIcon(iv); });
+    detail::DeserializeOptional(j, detail::kDescription, v.description);
     detail::DeserializeOptional(j, "websiteUrl", v.website_url);
     return v;
 }
@@ -307,11 +318,7 @@ Implementation DeserializeImplementation(const JsonValue& j) {
 
 JsonValue SerializeProgressToken(const ProgressToken& pt) {
     return std::visit([](const auto& v) -> JsonValue {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, std::string>)
-            return JsonValue(v);
-        else
-            return JsonValue(v);
+        return JsonValue(v);
     }, pt);
 }
 
@@ -328,7 +335,10 @@ static const char* kLoggingLevelNames[] = {
 
 JsonValue SerializeLoggingLevel(LoggingLevel l) {
     auto i = static_cast<int>(l);
-    return JsonValue((i >= 0 && i < 8) ? kLoggingLevelNames[i] : "debug");
+    if (i < 0 || i >= 8)
+        throw McpError(McpErrorCode::InvalidParams,
+            "SerializeLoggingLevel: out of range value: " + std::to_string(i));
+    return JsonValue(kLoggingLevelNames[i]);
 }
 
 LoggingLevel DeserializeLoggingLevel(const JsonValue& j) {
@@ -336,7 +346,8 @@ LoggingLevel DeserializeLoggingLevel(const JsonValue& j) {
     for (int i = 0; i < 8; ++i) {
         if (s == kLoggingLevelNames[i]) return static_cast<LoggingLevel>(i);
     }
-    throw std::runtime_error(std::string("unknown LoggingLevel: ") + s);
+    throw McpError(McpErrorCode::InvalidParams,
+        std::string("DeserializeLoggingLevel: unknown level string: '") + s + "'");
 }
 
 // ── CacheHint ──
@@ -359,7 +370,7 @@ CacheHint DeserializeCacheHint(const JsonValue& j) {
 
 JsonValue SerializeRequestMeta(const RequestMeta& v) {
     JsonValue obj(JsonValue::object_tag);
-    if (v.progress_token) obj["progressToken"] = SerializeProgressToken(*v.progress_token);
+    if (v.progress_token) obj[detail::kProgressToken] = SerializeProgressToken(*v.progress_token);
     obj["io.modelcontextprotocol/protocolVersion"] = JsonValue(v.protocol_version);
     if (v.client_info) obj["io.modelcontextprotocol/clientInfo"] = SerializeImplementation(*v.client_info);
     if (v.client_capabilities) obj["io.modelcontextprotocol/clientCapabilities"] = SerializeClientCapabilities(*v.client_capabilities);
@@ -375,7 +386,7 @@ JsonValue SerializeRequestMeta(const RequestMeta& v) {
 
 RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     RequestMeta v;
-    auto* pt = j.Find("progressToken");
+    auto* pt = j.Find(detail::kProgressToken);
     if (pt) v.progress_token = DeserializeProgressToken(*pt);
     auto* pv = j.Find("io.modelcontextprotocol/protocolVersion");
     if (pv) v.protocol_version = pv->GetString();
@@ -385,10 +396,17 @@ RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     if (cc) v.client_capabilities = DeserializeClientCapabilities(*cc);
     auto* ll = j.Find("io.modelcontextprotocol/logLevel");
     if (ll) v.log_level = DeserializeLoggingLevel(*ll);
-    // Extensions are not read back during deserialization (legacy behavior).
     if (auto* tp = j.Find("traceparent")) v.traceparent = tp->GetString();
     if (auto* ts = j.Find("tracestate")) v.tracestate = ts->GetString();
     if (auto* bg = j.Find("baggage")) v.baggage = bg->GetString();
+
+    // Round-trip symmetry with SerializeRequestMeta: keys that are not
+    // dedicated members are preserved in the extensions bag.
+    JsonValue ext(JsonValue::object_tag);
+    for (const auto& [k, val] : j.GetObject()) {
+        if (!RequestMetaFieldIsKnown(k)) ext[k] = val;
+    }
+    if (!ext.Empty()) v.extensions = std::move(ext);
     return v;
 }
 

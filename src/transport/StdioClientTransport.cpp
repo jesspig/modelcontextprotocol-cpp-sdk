@@ -2,17 +2,16 @@
 
 #include <mcp/transport/StdioClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 
 #include <atomic>
+#include <exception>
 #include <thread>
 #include <vector>
 
 namespace mcp {
-
-// JSON parse safety limits
-#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-
 
 namespace {
 
@@ -59,19 +58,23 @@ public:
         if (!running_) return;
 
         auto line = SerializeMessage(message) + "\n";
-        if (stdin_pipe_) stdin_pipe_->Write(line.data(), line.size());
+        if (stdin_pipe_ && stdin_pipe_->Write(line.data(), line.size()) != line.size()) {
+            MCP_LOG(Error, "failed to write to child stdin pipe");
+            NotifyError("failed to write to child stdin pipe");
+        }
     }
 
 private:
     void ReadThread() {
         std::string buffer;
-        char buf[4096];
+        char buf[detail::kReadBufferSize];
 
         while (running_) {
             size_t bytes_read = 0;
             try {
                 bytes_read = stdout_pipe_->Read(buf, sizeof(buf) - 1);
-            } catch (...) {
+            } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("stdio read thread failed: ") + e.what());
                 break;
             }
             if (bytes_read == 0) break;
@@ -86,14 +89,15 @@ private:
 
                 if (line.empty()) continue;
 
-                if (line.size() > K_MAX_MESSAGE_SIZE) {
+                if (line.size() > detail::kMaxMessageSize) {
                     NotifyError("message size exceeds maximum allowed size");
                     continue;
                 }
 
                 try {
                     auto msg = DeserializeMessage(line);
-                    if (channel_) channel_->Send(std::move(msg));
+                    if (channel_ && !channel_->Send(std::move(msg)))
+                        MCP_LOG(Warning, "message dropped: channel closed");
                 } catch (const std::exception& e) {
                     NotifyError(e.what());
                 }
@@ -128,7 +132,6 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
     }
 
     auto created = detail::CreateProcess(info);
-    if (!created.process) return nullptr;
 
     auto session = std::make_shared<StdioClientSessionTransport>(
         std::move(created.process),

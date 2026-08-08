@@ -14,18 +14,22 @@ protected:
 
     void SetUp() override {
         auto temp_dir = std::filesystem::temp_directory_path();
-        cache_path = temp_dir / "mcp_test_tokens.json";
-        RemoveFile();
+        cache_path = temp_dir / ("mcp_test_tokens_" +
+            std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) +
+            ".json");
+        RemoveFiles();
     }
 
     void TearDown() override {
-        RemoveFile();
+        RemoveFiles();
     }
 
 private:
-    void RemoveFile() {
+    void RemoveFiles() {
         std::error_code ec;
         std::filesystem::remove(cache_path, ec);
+        std::filesystem::remove(cache_path.string() + ".token_response", ec);
+        std::filesystem::remove(cache_path.string() + ".client_registration", ec);
     }
 };
 
@@ -103,6 +107,8 @@ TEST_F(FileTokenCacheTest, PersistAcrossInstances) {
 }
 
 // ── Corrupt file handling ──
+// A corrupt cache file must not throw in the constructor's Load() and
+// yields no tokens.
 TEST_F(FileTokenCacheTest, CorruptFileHandling) {
     {
         std::ofstream ofs(cache_path);
@@ -112,6 +118,5 @@ TEST_F(FileTokenCacheTest, CorruptFileHandling) {
 
     FileTokenCache cache(cache_path);
 
-    auto response = cache.LoadTokenResponse();
-    EXPECT_FALSE(response.has_value());
+    EXPECT_FALSE(cache.GetTokens().has_value());
 }

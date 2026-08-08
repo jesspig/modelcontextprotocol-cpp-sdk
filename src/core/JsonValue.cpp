@@ -1,12 +1,14 @@
 // JsonValue.cpp — JsonValue parsing and serialization implementation
 
 #include <mcp/JsonValue.hpp>
+#include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
 
 #include <simdjson.h>
 
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -23,8 +25,13 @@ static JsonValue FromDomElement(const dom::element& el) {
         return JsonValue(bool(el));
     case dom::element_type::INT64:
         return JsonValue(int64_t(el));
-    case dom::element_type::UINT64:
-        return JsonValue(int64_t(uint64_t(el)));
+    case dom::element_type::UINT64: {
+        uint64_t u = uint64_t(el);
+        if (u > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+            throw McpError(McpErrorCode::DeserializeFailed,
+                std::string("JSON parse error: uint64 value out of int64 range: ") + std::to_string(u));
+        return JsonValue(static_cast<int64_t>(u));
+    }
     case dom::element_type::DOUBLE:
         return JsonValue(double(el));
     case dom::element_type::STRING: {
@@ -49,78 +56,13 @@ static JsonValue FromDomElement(const dom::element& el) {
     return JsonValue(nullptr);
 }
 
-// Recursively convert a simdjson on-demand value to a JsonValue by probing types in order.
-JsonValue FromSimdJsonValue(ondemand::value val) {
-    // Try each type in order
-    {
-        int64_t i;
-        if (val.get_int64().get(i) == SUCCESS)
-            return JsonValue(i);
-    }
-    {
-        uint64_t u;
-        if (val.get_uint64().get(u) == SUCCESS)
-            return JsonValue(static_cast<int64_t>(u));
-    }
-    {
-        double d;
-        if (val.get_double().get(d) == SUCCESS)
-            return JsonValue(d);
-    }
-    {
-        std::string_view s;
-        if (val.get_string().get(s) == SUCCESS)
-            return JsonValue(std::string(s));
-    }
-    {
-        bool b;
-        if (val.get_bool().get(b) == SUCCESS)
-            return JsonValue(b);
-    }
-    if (val.is_null()) {
-        return JsonValue(nullptr);
-    }
-    // Array
-    {
-        ondemand::array arr;
-        if (val.get_array().get(arr) == SUCCESS) {
-            JsonValue::Array result;
-            for (auto elem_result : arr) {
-                ondemand::value elem;
-                if (elem_result.get(elem) == SUCCESS)
-                    result.push_back(FromSimdJsonValue(elem));
-            }
-            return JsonValue(std::move(result));
-        }
-    }
-    // Object
-    {
-        ondemand::object obj;
-        if (val.get_object().get(obj) == SUCCESS) {
-            JsonValue::Object result;
-            for (auto field_result : obj) {
-                ondemand::field field;
-                if (std::move(field_result).get(field) == SUCCESS) {
-                    std::string_view key;
-                    if (field.unescaped_key().get(key) == SUCCESS) {
-                        ondemand::value fval = field.value();
-                        result.emplace(std::string(key),
-                                       FromSimdJsonValue(fval));
-                    }
-                }
-            }
-            return JsonValue(std::move(result));
-        }
-    }
-    return JsonValue(nullptr);
-}
-
 JsonValue ParseJsonString(std::string_view json) {
     dom::parser parser;
     dom::element doc;
     auto error = parser.parse(json).get(doc);
     if (error) {
-        throw std::runtime_error("JSON parse error");
+        throw McpError(McpErrorCode::ParseError,
+            std::string("JSON parse error: ") + error_message(error));
     }
     return FromDomElement(doc);
 }
@@ -165,7 +107,11 @@ static void DumpValue(std::ostream& os, const JsonValue& jv, int indent, int dep
     } else if (jv.IsDouble()) {
         double d = jv.GetDouble();
         if (std::isfinite(d)) {
-            os << d;
+            std::ostringstream tmp;
+            tmp << std::setprecision(std::numeric_limits<double>::max_digits10) << d;
+            std::string repr = tmp.str();
+            if (repr.find_first_of(".eE") == std::string::npos) repr += ".0";
+            os << repr;
         } else {
             os << "null";
         }
@@ -250,34 +196,58 @@ std::string JsonValue::Dump(int indent) const {
 // ── Accessors ──
 
 bool JsonValue::GetBool() const {
+    if (!IsBool())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetBool: expected bool, got ") + detail::JsonValueTypeName(*this));
     return std::get<bool>(data_);
 }
 
 int64_t JsonValue::GetInt() const {
+    if (!IsInt())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetInt: expected int, got ") + detail::JsonValueTypeName(*this));
     return std::get<int64_t>(data_);
 }
 
 double JsonValue::GetDouble() const {
+    if (!IsDouble())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetDouble: expected double, got ") + detail::JsonValueTypeName(*this));
     return std::get<double>(data_);
 }
 
 const std::string& JsonValue::GetString() const {
+    if (!IsString())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetString: expected string, got ") + detail::JsonValueTypeName(*this));
     return std::get<std::string>(data_);
 }
 
 const JsonValue::Array& JsonValue::GetArray() const {
+    if (!IsArray())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetArray: expected array, got ") + detail::JsonValueTypeName(*this));
     return std::get<Array>(data_);
 }
 
 JsonValue::Array& JsonValue::GetArray() {
+    if (!IsArray())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetArray: expected array, got ") + detail::JsonValueTypeName(*this));
     return std::get<Array>(data_);
 }
 
 const JsonValue::Object& JsonValue::GetObject() const {
+    if (!IsObject())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetObject: expected object, got ") + detail::JsonValueTypeName(*this));
     return std::get<Object>(data_);
 }
 
 JsonValue::Object& JsonValue::GetObject() {
+    if (!IsObject())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::GetObject: expected object, got ") + detail::JsonValueTypeName(*this));
     return std::get<Object>(data_);
 }
 
@@ -315,7 +285,12 @@ JsonValue& JsonValue::operator[](std::string_view key) {
 }
 
 const JsonValue& JsonValue::operator[](std::string_view key) const {
-    return GetObject().at(std::string(key));
+    auto& obj = GetObject();
+    auto it = obj.find(key);
+    if (it == obj.end())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue: key not found: '") + std::string(key) + "'");
+    return it->second;
 }
 
 const JsonValue* JsonValue::Find(std::string_view key) const {
@@ -331,11 +306,21 @@ JsonValue* JsonValue::Find(std::string_view key) {
 }
 
 const JsonValue& JsonValue::At(std::string_view key) const {
-    return GetObject().at(std::string(key));
+    auto& obj = GetObject();
+    auto it = obj.find(key);
+    if (it == obj.end())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::At: key not found: '") + std::string(key) + "'");
+    return it->second;
 }
 
 JsonValue& JsonValue::At(std::string_view key) {
-    return GetObject().at(std::string(key));
+    auto& obj = GetObject();
+    auto it = obj.find(key);
+    if (it == obj.end())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JsonValue::At: key not found: '") + std::string(key) + "'");
+    return it->second;
 }
 
 void JsonValue::PushBack(JsonValue val) {

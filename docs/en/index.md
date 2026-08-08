@@ -23,7 +23,7 @@ features:
   - title: C++17 Native
     details: No GC, no heavy frameworks. Uses std::variant and smart pointers for type-safe, zero-cost abstractions.
   - title: Tier 1 Ready
-    details: 215 tests, 113 conformance tests, OAuth PKCE, persistent storage backends, MessageFilter pipeline.
+    details: 260+ tests, 113 conformance tests, OAuth PKCE, persistent storage backends, MessageFilter pipeline.
   - title: Cross-Platform
-    details: Windows (MSVC, clang-cl), Linux (GCC, Clang), macOS (Clang). Single CMake preset for all platforms.
+    details: Windows (MSVC, clang-cl), Linux (GCC, Clang), macOS (Clang). Unified CMake presets for all platforms (debug/release).
 ---

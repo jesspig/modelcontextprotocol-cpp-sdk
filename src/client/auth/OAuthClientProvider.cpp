@@ -2,6 +2,8 @@
 // OAuth PKCE flow, token refresh, and metadata discovery implementation
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/JsonValue.hpp>
+#include <mcp/Log.hpp>
+#include <mcp/McpError.hpp>
 #include <mcp/detail/sha256.hpp>
 
 #include <hv/requests.h>
@@ -11,6 +13,7 @@
 
 #include <random>
 #include <sstream>
+#include <stdexcept>
 
 namespace {
 
@@ -51,28 +54,30 @@ std::string Base64UrlEncode(std::string_view input) {
     result.reserve(((input.size() + 2) / 3) * 4);
 
     for (size_t i = 0; i < input.size(); i += 3) {
-        uint32_t octet_a = i < input.size() ? (unsigned char)input[i] : 0;
-        uint32_t octet_b = i + 1 < input.size() ? (unsigned char)input[i + 1] : 0;
-        uint32_t octet_c = i + 2 < input.size() ? (unsigned char)input[i + 2] : 0;
+        size_t remaining = input.size() - i;
+        uint32_t octet_a = (unsigned char)input[i];
+        uint32_t octet_b = remaining > 1 ? (unsigned char)input[i + 1] : 0;
+        uint32_t octet_c = remaining > 2 ? (unsigned char)input[i + 2] : 0;
         uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
         result.push_back(b64_chars[(triple >> 18) & 0x3F]);
         result.push_back(b64_chars[(triple >> 12) & 0x3F]);
-        result.push_back(b64_chars[(triple >> 6) & 0x3F]);
-        result.push_back(b64_chars[triple & 0x3F]);
+        if (remaining > 1) result.push_back(b64_chars[(triple >> 6) & 0x3F]);
+        if (remaining > 2) result.push_back(b64_chars[triple & 0x3F]);
     }
-    auto pad = result.find_last_not_of('=');
-    if (pad != std::string::npos) result.resize(pad + 1);
     return result;
 }
 
 std::string GenerateCodeVerifier() {
+    std::vector<unsigned char> random_bytes(32);
 #ifdef MCP_HAVE_OPENSSL
-    std::vector<unsigned char> random_bytes(32);
-    RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size()));
+    if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1) {
+        throw std::runtime_error("pkce: RAND_bytes failed");
+    }
 #else
-    std::vector<unsigned char> random_bytes(32);
     std::random_device rd;
-    for (auto& b : random_bytes) b = static_cast<unsigned char>(rd());
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dist(0, 255);
+    for (auto& b : random_bytes) b = static_cast<unsigned char>(dist(gen));
 #endif
     return Base64UrlEncode(
         std::string_view(reinterpret_cast<const char*>(random_bytes.data()),
@@ -171,9 +176,15 @@ bool OAuthClientProvider::DiscoverMetadata() {
     // Try RFC 8414 well-known discovery first, fall back to hardcoded URLs
     if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
         metadata_ = std::move(discovered);
+        if (metadata_->issuer.empty()) metadata_->issuer = options_.server_url;
         return true;
     }
 
+    if (options_.server_url.empty()) {
+        MCP_LOG(Error, "OAuth metadata discovery failed and server_url is empty");
+        return false;
+    }
+    MCP_LOG(Warning, "OAuth metadata discovery failed; falling back to server_url defaults");
     OAuthMetadata meta;
     meta.issuer = options_.server_url;
     meta.authorization_endpoint = options_.server_url + "/authorize";
@@ -184,9 +195,6 @@ bool OAuthClientProvider::DiscoverMetadata() {
 
 bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     if (!metadata_) return false;
-    if (metadata_->issuer.empty()) {
-        const_cast<OAuthMetadata&>(*metadata_).issuer = options_.server_url;
-    }
     auto* it = response.Find("iss");
     if (!it) {
         return true;
@@ -207,30 +215,34 @@ bool OAuthClientProvider::RegisterClient() {
 bool OAuthClientProvider::StartAuthorizationFlow() {
     code_verifier_ = pkce::GenerateCodeVerifier();
     code_challenge_ = pkce::ComputeCodeChallenge(code_verifier_);
+    state_ = pkce::GenerateCodeVerifier();
 
     std::string auth_url = metadata_->authorization_endpoint;
     auth_url += "?response_type=code";
-    auth_url += "&client_id=" + (options_.client_id.value_or(
+    auth_url += "&client_id=" + UrlEncode(options_.client_id.value_or(
         registration_ ? registration_->client_id : ""));
-    auth_url += "&redirect_uri=" + options_.redirect_uri;
+    auth_url += "&redirect_uri=" + UrlEncode(options_.redirect_uri);
     auth_url += "&code_challenge=" + code_challenge_;
     auth_url += "&code_challenge_method=S256";
+    auth_url += "&state=" + UrlEncode(state_);
     if (!options_.scopes.empty()) {
         std::string scope_str;
         for (auto& s : options_.scopes) {
             if (!scope_str.empty()) scope_str += " ";
             scope_str += s;
         }
-        auth_url += "&scope=" + scope_str;
+        auth_url += "&scope=" + UrlEncode(scope_str);
     }
 
     if (options_.authorization_redirect_handler)
         options_.authorization_redirect_handler(auth_url);
     if (!options_.authorization_code_callback) return false;
-    auto code = options_.authorization_code_callback();
-    if (!code) return false;
+    auto callback_result = options_.authorization_code_callback();
+    if (!callback_result) return false;
+    // CSRF check: the state echoed back must match what we sent (RFC 6749 §10.12)
+    if (callback_result->state != state_) return false;
 
-    return ExchangeCodeForToken(*code, code_verifier_);
+    return ExchangeCodeForToken(callback_result->code, code_verifier_);
 }
 
 bool OAuthClientProvider::ExchangeCodeForToken(
@@ -296,14 +308,28 @@ std::string OAuthClientProvider::GetAccessToken() {
     if (!tokens) return {};
     if (tokens->WillExpireSoon()) {
         if (!tokens->refresh_token.empty()) {
-            if (!RefreshTokens()) return {};
+            if (!RefreshTokens()) {
+                throw McpError(McpErrorCode::InternalError,
+                    "OAuth token refresh failed");
+            }
         }
         tokens = token_cache_->GetTokens();
     }
     return tokens ? tokens->access_token : std::string{};
 }
 
-void OAuthClientProvider::Revoke() { token_cache_->ClearTokens(); }
+void OAuthClientProvider::Revoke() {
+    auto tokens = token_cache_->GetTokens();
+    if (tokens && !tokens->access_token.empty() &&
+        metadata_ && metadata_->revocation_endpoint) {
+        std::map<std::string, std::string> form;
+        form["token"] = tokens->access_token;
+        // Best-effort server-side revocation (RFC 7009); the local cache is
+        // cleared regardless of the HTTP result.
+        HttpPost(*metadata_->revocation_endpoint, form);
+    }
+    token_cache_->ClearTokens();
+}
 bool OAuthClientProvider::IsAuthenticated() const {
     auto tokens = token_cache_->GetTokens();
     return tokens.has_value() && !tokens->IsExpired();
@@ -373,11 +399,7 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
         }
     }
 
-    OAuthMetadata meta;
-    meta.issuer = std::string(server_url);
-    meta.authorization_endpoint = std::string(server_url) + "/authorize";
-    meta.token_endpoint = std::string(server_url) + "/token";
-    return meta;
+    return std::nullopt;
 }
 
 std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(

@@ -3,6 +3,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/storage/FileTokenCache.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/AtomicJsonFile.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -144,7 +145,9 @@ void FileTokenCache::Load() {
         MCP_LOG(Warning, "token cache parse failed");
     }
     file.close();
-    chmod(cache_path_.string().c_str(), 0600);
+    if (chmod(cache_path_.string().c_str(), 0600) != 0) {
+        MCP_LOG(Error, "token cache: chmod failed for " + cache_path_.string());
+    }
 #endif
 }
 
@@ -165,36 +168,21 @@ void FileTokenCache::Save() {
         obj["scopes"] = JsonValue(std::move(scopes_arr));
     }
     auto dump_str = JsonValue(std::move(obj)).Dump(2);
-    auto tmp_path = cache_path_;
-    tmp_path += ".tmp";
 #ifdef _WIN32
     auto plaintext = dump_str;
     auto encrypted = ProtectData(plaintext);
     if (encrypted.empty()) {
-        std::filesystem::remove(tmp_path);
+        MCP_LOG(Error, "token cache: CryptProtectData failed for " + cache_path_.string());
         return;
     }
-    {
-        std::ofstream file(tmp_path, std::ios::binary);
-        if (!file.is_open()) {
-            std::filesystem::remove(tmp_path);
-            return;
-        }
-        file.write(reinterpret_cast<const char*>(encrypted.data()), encrypted.size());
-    }
-    std::filesystem::rename(tmp_path, cache_path_);
+    detail::WriteAtomic(cache_path_,
+        std::string(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()));
 #else
-    {
-        std::ofstream file(tmp_path);
-        if (!file.is_open()) {
-            std::filesystem::remove(tmp_path);
-            return;
+    if (detail::WriteAtomic(cache_path_, dump_str)) {
+        if (chmod(cache_path_.string().c_str(), 0600) != 0) {
+            MCP_LOG(Error, "token cache: chmod failed for " + cache_path_.string());
         }
-        file << dump_str;
-        file.close();
-        chmod(tmp_path.string().c_str(), 0600);
     }
-    std::filesystem::rename(tmp_path, cache_path_);
 #endif
 }
 

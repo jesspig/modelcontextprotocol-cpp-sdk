@@ -9,7 +9,7 @@ cmake --preset debug
 # Build
 cmake --build --preset debug
 
-# Run all 215 tests
+# Run all tests
 ctest --preset debug --output-on-failure
 ```
 

@@ -78,7 +78,7 @@ auto codec = MakeWireCodec("2026-07-28");
 | `tracestate`      | `tracestate` |
 | `baggage`         | `baggage` |
 
-`StampOutgoingMeta` 辅助函数将 `protocolVersion`、`clientInfo`、`clientCapabilities` 和 `logLevel` 标记到传出请求的 `_meta` 中。分布式追踪字段（`traceparent`、`tracestate`、`baggage`）不会被此辅助函数自动标记。
+出站请求的 `_meta` 由 `McpSessionHandler::SendRequest` 通过 `SerializeRequestMeta` 写入，序列化 `protocolVersion`、`clientInfo` 和 `clientCapabilities`（`WireCodec::StampOutgoingRequest` 同样只 stamp 这三个字段，且无调用点）。追踪字段（`traceparent`、`tracestate`、`baggage`）仅在请求元数据中显式设置时才会被序列化。
 
 ### 按时代划分的方法
 
@@ -86,9 +86,11 @@ auto codec = MakeWireCodec("2026-07-28");
 
 | 集合 | 方法 |
 |-----|---------|
-| 公共（两个时代） | `tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`、`prompts/list`、`prompts/get`、`completion/complete`、`elicitation/create` |
-| 仅 2025 | `ping`、`initialize`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage` |
+| 公共（两个时代） | `ping`、`tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`、`prompts/list`、`prompts/get`、`completion/complete`、`elicitation/create` |
+| 仅 2025 | `initialize`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage` |
 | 仅 2026 | `server/discover`、`server/extensions/list`、`subscriptions/listen`、`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` |
+
+注意 `ping` 是公共方法：2026 时代调用 `ping` 同样合法（经 `kCommonRequestMethods` 集合检查）。
 
 ### 按时代划分的通知
 
@@ -143,7 +145,7 @@ bool IsJuly2026OrLater() const;
 
 ```cpp
 auto pipeline = std::make_shared<FilterPipeline>();
-pipeline->AddFilter(std::make_shared<IncomingMessageFilter>(
+pipeline->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
     [](const JsonRpcMessage& msg, MessageFilterNext next) {
         // 检查/修改，然后调用 next(filtered) 或短路
         next(msg);

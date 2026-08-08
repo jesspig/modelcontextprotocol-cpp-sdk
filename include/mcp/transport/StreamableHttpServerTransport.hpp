@@ -16,9 +16,12 @@
 
 namespace mcp {
 
+// ── Defaults for StreamableHttpServerTransport ──
+inline constexpr uint16_t kDefaultPort = 3001;
+
 // ── Options for StreamableHttpServerTransport ──
 struct StreamableHttpServerOptions {
-    uint16_t port{3001};
+    uint16_t port{kDefaultPort};
     std::string endpoint{"/mcp"};
 
     // 2026-07-28: stateless mode (no sessions)

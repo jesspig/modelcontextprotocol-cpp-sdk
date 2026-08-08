@@ -44,11 +44,6 @@ public:
         if (options.description) tool_.description = std::move(options.description);
         if (options.icons.size()) tool_.icons = std::move(options.icons);
         if (options.meta) tool_.meta = std::move(options.meta);
-        if (options.use_structured_content) {
-            JsonValue::Object os;
-            os["type"] = JsonValue("object");
-            tool_.output_schema = JsonValue(std::move(os));
-        }
         if (options.input_schema.has_value()) {
             tool_.input_schema = *options.input_schema;
         } else {
@@ -56,6 +51,13 @@ public:
             is["type"] = JsonValue("object");
             is["properties"] = JsonValue(JsonValue::object_tag);
             tool_.input_schema = JsonValue(std::move(is));
+        }
+        if (options.output_schema) {
+            tool_.output_schema = options.output_schema;
+        } else if (options.use_structured_content) {
+            JsonValue::Object os;
+            os["type"] = JsonValue("object");
+            tool_.output_schema = JsonValue(std::move(os));
         }
         if (options.read_only_hint || options.idempotent ||
             options.destructive || options.open_world_hint)
@@ -67,7 +69,6 @@ public:
             ann.open_world_hint = options.open_world_hint;
             tool_.annotations = std::move(ann);
         }
-        if (options.output_schema) tool_.output_schema = options.output_schema;
     }
 
     const Tool& ProtocolTool() const override { return tool_; }

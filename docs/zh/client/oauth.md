@@ -7,7 +7,7 @@
 1. **授权码 + PKCE**，使用 S256 代码质询
 2. **动态客户端注册**（DCR），用于首次使用的客户端（HTTP POST 到注册端点）
 3. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
-4. **令牌撤销**，通过手动调用 `Revoke()`
+4. **令牌撤销**，通过手动调用 `Revoke()`（best-effort 调用 RFC 7009 撤销端点，失败不影响本地令牌清除）
 
 ## OAuthClientOptions
 
@@ -17,13 +17,10 @@
 | `redirect_uri` | `string` | OAuth 重定向 URI |
 | `client_id` | `optional<string>` | 客户端标识（未提供时自动注册） |
 | `client_secret` | `optional<string>` | 客户端密钥（可选） |
-| `client_metadata_document_uri` | `optional<string>` | 外部元数据文档 URI |
 | `scopes` | `vector<string>` | 请求的 OAuth 作用域 |
 | `token_cache` | `shared_ptr<ITokenCache>` | 令牌持久化（默认：`InMemoryTokenCache`） |
-| `auth_server_url` | `optional<string>` | 显式授权服务器 URL（覆盖元数据发现） |
-| `timeout_seconds` | `int` | HTTP 请求超时（默认 30） |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
-| `authorization_code_callback` | `function<optional<string>()>` | 返回授权码的回调 |
+| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码及服务器回显的 `state`（`AuthorizationCodeResult{code, state}`），失败时返回 `nullopt` |
 
 ## 设置
 
@@ -38,8 +35,9 @@ oauth_opts.authorization_redirect_handler =
         // 在浏览器中打开 URL 让用户授权
     };
 oauth_opts.authorization_code_callback =
-    []() -> std::optional<std::string> {
-        // 从重定向返回授权码
+    []() -> std::optional<AuthorizationCodeResult> {
+        // 返回授权码及授权服务器回显的 `state`（CSRF 防护）
+        return AuthorizationCodeResult{"auth-code", "state"};
     };
 
 auto auth = std::make_shared<OAuthClientProvider>(oauth_opts);
@@ -54,13 +52,13 @@ auto token = auth->GetAccessToken();
 | 方法 | 描述 |
 |--------|-------------|
 | `Authenticate()` | 完整 OAuth 流程：发现 → 注册 → 授权 → 令牌交换 |
-| `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新 |
+| `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新；刷新失败抛出 `McpError`（InternalError） |
 | `RefreshTokens()` | 使用存储的刷新令牌强制刷新 |
 | `IsAuthenticated()` | 检查令牌是否存在且未过期 |
 | `HasToken()` | 检查是否存在任何令牌（可能已过期） |
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
 | `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权 |
-| `Revoke()` | 清除存储的令牌（不调用撤销端点） |
+| `Revoke()` | best-effort 调用 RFC 7009 撤销端点（配置了 `revocation_endpoint` 时），无论成败都清除本地令牌 |
 
 ## PKCE 辅助函数
 

@@ -40,12 +40,11 @@ int main() {
     std::thread server_thread([&server]() { server->Run(); });
     server_thread.detach();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
     // ── 客户端 ──
+    // Create 阻塞直到协商完成,无需手动等待服务器就绪
     ClientOptions cl_opts;
     cl_opts.client_info = Implementation{"SimpleClient", "1.0.0"};
-    cl_opts.connect_mode = ConnectMode::Pin;
+    cl_opts.connect_mode = ConnectMode::Auto;
 
     auto client = McpClient::Create(
         std::move(transport_pair.client), cl_opts);

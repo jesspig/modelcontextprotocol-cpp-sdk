@@ -28,8 +28,8 @@ public:
     std::vector<TaskState> GetAllTasks() override;
 
 private:
-    void Flush();
-    TaskState& GetOrCreate(const std::string& task_id);
+    // Returns false if the on-disk persistence failed; callers must propagate.
+    bool Flush();
 
     std::filesystem::path storage_path_;
     std::unordered_map<std::string, TaskState> tasks_;

@@ -15,7 +15,7 @@ opts.task_store = std::make_shared<FileTaskStore>("tasks.json");
 auto server = McpServer::Create(transport, opts);
 ```
 
-`ServerOptions` 上的 `capabilities` 字段已声明但当前不会被服务端消费。仅在设置了 `task_store` 时才会自动推导扩展。
+`ServerOptions` 没有 `capabilities` 字段。仅在设置了 `task_store` 时才会自动推导扩展。
 
 ## 扩展约定
 

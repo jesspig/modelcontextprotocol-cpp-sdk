@@ -1,172 +1,175 @@
-# Repository Guidelines
+# 仓库指南
 
-## Build & Test
+## 构建与测试
 
 ```bash
-cmake --preset debug                          # Configure (Ninja, Debug)
-cmake --build --preset debug                  # Build
-ctest --preset debug --output-on-failure      # All tests
-ctest -R WireCodec                            # Single suite
-cmake --build --preset debug --target mcp-server-tests   # Single target
+cmake --preset debug                          # 配置（Ninja，Debug）
+cmake --build --preset debug                  # 构建
+ctest --preset debug --output-on-failure      # 全部测试
+ctest -R WireCodec                            # 单个测试套件
+cmake --build --preset debug --target mcp-server-tests   # 单个目标
 ```
 
-Presets: `debug`, `release`. Ninja generator only. CI: push/PR to `develop` (ci.yml, 3 OS × 2 build types).
+预设：`debug`、`release`。仅 Ninja 生成器。CI：push/PR 到 `develop`（ci.yml，3 个 OS × 2 种构建类型）。
 
-Examples are OFF by default: add `-DMCP_BUILD_EXAMPLES=ON` to configure to build examples.
+示例默认关闭：配置时加 `-DMCP_BUILD_EXAMPLES=ON` 即可构建示例。
 
-No formatter/linter config — `-Wextra -Wpedantic` for Clang/GCC, `/W4` for MSVC/clang-cl.
+无格式化/静态检查配置 —— Clang/GCC 用 `-Wextra -Wpedantic`，MSVC/clang-cl 用 `/W4`。
 
-### Non‑obvious build facts
+### 不易察觉的构建事实
 
-- **Unity (jumbo) builds ON** by default. Override `-DMCP_UNITY_BUILD=OFF`.
-- `mcp-transport` and `mcp-protocol` have Unity explicitly disabled (anonymous namespace symbols clash). `mcp-client` uses `UNITY_BUILD_UNIQUE_ID ON` (OAuth symbols).
-- **Compiler auto-detection** runs before `project()`: clang-cl (Win) > clang++-N + matching clang-N (Linux) > system default. Skips if `CMAKE_CXX_COMPILER` already set.
-- **LTO**: auto-enabled in Release (clang-cl: LTCG, Clang: ThinLTO, GCC: IPO).
-- **Compiler cache**: sccache > ccache > none. sccache supports MSVC/clang-cl; ccache skips MSVC.
-- **Dependencies cached in `build/<preset>/_deps/`**. Deleting `build/` is expensive.
-- **Werror**: only with `-DMCP_WERROR=ON` (CI). CI adds this automatically.
-- **`mcp-core` is STATIC** (JsonValue.cpp, JsonRpc.cpp, etc.) — changing serialization recompiles many dependents.
+- **Unity（jumbo）构建默认开启**。可用 `-DMCP_UNITY_BUILD=OFF` 覆盖。
+- `mcp-transport` 与 `mcp-protocol` 显式关闭 Unity（匿名命名空间符号冲突）。`mcp-client` 使用 `UNITY_BUILD_UNIQUE_ID ON`（OAuth 符号）。
+- **编译器自动探测**在 `project()` 之前执行：clang-cl（Win）> clang++-N + 匹配版本 clang-N（Linux）> 系统默认。若 `CMAKE_CXX_COMPILER` 已设置则跳过。
+- **LTO**：Release 自动启用（clang-cl：LTCG，Clang：ThinLTO，GCC：IPO）。
+- **编译器缓存**：sccache > ccache > 无。sccache 支持 MSVC/clang-cl；ccache 跳过 MSVC。
+- **依赖缓存于 `build/<preset>/_deps/`**。删除 `build/` 代价高昂。
+- **Werror**：仅在 `-DMCP_WERROR=ON` 时启用（CI 自动添加此选项）。
+- **Ninja job 池自动调优**（编译 ≈ `mem/1500MB`，链接上限 2）。内存受限机器可用 `-DMCP_COMPILE_JOBS` / `-DMCP_LINK_JOBS` 覆盖。
+- **`-march=native` 仅本地添加，CI 中从不启用**（`MCP_IS_CI` 门控）—— debug 二进制不可移植出构建机。
+- **`mcp-core` 是 STATIC**（JsonValue.cpp、JsonRpc.cpp 等）—— 修改序列化会重编译大量依赖方。
 
-### Cross‑platform traps
+### 跨平台陷阱
 
-- macOS: `environ` in anonymous namespaces creates mangled `mcp::detail::environ`. Use `_NSGetEnviron()`.
-- macOS: `pthread_setname_np` is single-arg — guard with `#ifdef __APPLE__`.
-- GCC: `(void)`-cast does **not suppress** `warn_unused_result` (Clang only). Affects `chdir()`, `close()`, `dup2()`, `pipe()`.
-- Apple Clang enables `-Wunused-private-field` by default — with `-Werror` any unused private member is a hard error.
-- clang-cl silently accepts both MSVC (`/W4`) and GCC (`-Wall`) flags — typos pass through.
-- `CMake CMP0169`: guarded with `if(POLICY CMP0169)` — not available before CMake 3.30.
+- macOS：匿名命名空间中的 `environ` 会产生 mangled 的 `mcp::detail::environ`。改用 `_NSGetEnviron()`。
+- macOS：`pthread_setname_np` 是单参数——用 `#ifdef __APPLE__` 保护。
+- GCC：`(void)` 强转**不能**抑制 `warn_unused_result`（仅 Clang 可以）。影响 `chdir()`、`close()`、`dup2()`、`pipe()`。
+- Apple Clang 默认启用 `-Wunused-private-field`——配合 `-Werror` 时任何未使用的私有成员都是硬错误。
+- clang-cl 静默接受 MSVC（`/W4`）和 GCC（`-Wall`）两种标志——拼写错误会直接通过。
+- `CMake CMP0169`：用 `if(POLICY CMP0169)` 保护——CMake 3.30 之前不可用。
 
-### Unity build traps
+### Unity 构建陷阱
 
-- **Header self-containment is mandatory**: Unity merges `.cpp` files; headers relying on prior `#include` order break.
-- **Debugging**: error line numbers point to the generated Unity batch file, not the original source. Disable with `-DMCP_UNITY_BUILD=OFF`.
-- GCC may trigger `-Wunused-function` in Unity files — guard anonymous namespace functions with `[[maybe_unused]]`.
+- **头文件自包含是强制要求**：Unity 会合并 `.cpp` 文件；依赖先前 `#include` 顺序的头文件会编译失败。
+- **调试**：错误行号指向生成的 Unity 批处理文件而非原始源码。可用 `-DMCP_UNITY_BUILD=OFF` 关闭。
+- GCC 在 Unity 文件中可能触发 `-Wunused-function`——用 `[[maybe_unused]]` 保护匿名命名空间函数。
 
-### libhv FetchContent patch
+### libhv FetchContent 补丁
 
-`cmake/FetchDependencies.cmake` patches libhv's CMakeLists.txt: the `install(FILES ... DESTINATION include/hv)` is replaced with `file(COPY ...)` so the `include/hv/` directory exists at configure time (matching `hv_static`'s `BUILD_INTERFACE`). If an agent adds a new preset or modifies dependency fetching, this patch must be preserved.
+`cmake/FetchDependencies.cmake` 会修补 libhv 的 CMakeLists.txt：将 `install(FILES ... DESTINATION include/hv)` 替换为 `file(COPY ...)`，使 `include/hv/` 目录在配置期即存在（匹配 `hv_static` 的 `BUILD_INTERFACE`）。若代理新增预设或修改依赖拉取，此补丁必须保留。
 
-## Architecture
-
-```
-include/mcp/       — Public headers
-src/client/        — McpClient, OAuth, FileTokenCache
-src/server/        — McpServer, FileTaskStore
-src/protocol/      — McpSessionHandler (JSON-RPC engine), WireCodec (dual-era)
-src/transport/     — Stdio, SSE, InMemory, WebSocket, StreamableHttp impls
-src/http/          — HttpServer, EventStore, StreamableHttp*
-tests/             — unit/ (gtest), integration/, conformance/
-examples/          — EchoServer, WeatherServer, SimpleClient
-```
-
-Library dep chain: `mcp-core` → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All STATIC. No INTERFACE / header-only libraries.
-
-### Transport hierarchy
+## 架构
 
 ```
-ITransport — TransportBase (3-state: Initial→Connected→Disconnected)
+include/mcp/       — 公共头文件
+src/client/        — McpClient、OAuth、FileTokenCache
+src/server/        — McpServer、FileTaskStore
+src/protocol/      — McpSessionHandler（JSON-RPC 引擎）、WireCodec（双时代）
+src/transport/     — Stdio、SSE、InMemory、WebSocket、StreamableHttp 实现
+src/http/          — HttpServer、EventStore、StreamableHttp*
+tests/             — unit/（gtest）、integration/、conformance/
+examples/          — EchoServer、WeatherServer、SimpleClient
+```
+
+库依赖链：`mcp-core` → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。全部 STATIC。无 INTERFACE / header-only 库。
+
+### 传输层层级
+
+```
+ITransport — TransportBase（三态：Initial→Connected→Disconnected）
   ├── StdioServerTransport
   ├── InMemoryTransportImpl
   ├── StreamableHttpServerTransport
-  └── *SessionTransport (internal, anonymous namespace or enable_shared_from_this)
+  └── *SessionTransport（内部，匿名命名空间或 enable_shared_from_this）
 
-IClientTransport (connection factory)
-  ├── StdioClientTransport (PlatformIO, merged Win32+POSIX)
-  ├── SseClientTransport (libhv HttpClient)
-  ├── StreamableHttpClientTransport (libhv requests / WinHTTP)
-  └── WebSocketClientTransport (libhv WebSocketClient)
+IClientTransport（连接工厂）
+  ├── StdioClientTransport（PlatformIO，合并 Win32+POSIX）
+  ├── SseClientTransport（libhv HttpClient）
+  ├── StreamableHttpClientTransport（libhv requests / WinHTTP）
+  └── WebSocketClientTransport（libhv WebSocketClient）
 ```
 
-No asio dependency — raw threads + stdlib primitives (mutex, condition_variable) or libhv event loop.
+无 asio 依赖——裸线程 + 标准库原语（mutex、condition_variable）或 libhv 事件循环。
 
-`MessageChannel` (`include/mcp/protocol/MessageChannel.hpp`) is a bounded async queue (`std::queue + mutex + condition_variable`) replacing `asio::experimental::channel`.
+`MessageChannel`（`include/mcp/protocol/MessageChannel.hpp`）是有界异步队列（`std::queue + mutex + condition_variable`），替代 `asio::experimental::channel`。
 
-`InMemoryTransport::CreatePair()` returns `shared_ptr<ITransport>`. Use `dynamic_cast<TransportBase*>` to access state machine.
+`InMemoryTransport::CreatePair()` 返回 `Pair{client, server}`（各为 `shared_ptr<ITransport>`）。用 `dynamic_cast<TransportBase*>` 访问状态机。
 
-### HttpServer (`mcp-http`)
+### HttpServer（`mcp-http`）
 
-PIMPL pattern over libhv `HttpService`. Key detail: `HttpServerOptions::on_connect` and `on_disconnect` are **now wired** — they fire on SSE client add/remove respectively.
+基于 libhv `HttpService` 的 PIMPL 模式。关键细节：`HttpServerOptions::on_connect` 与 `on_disconnect` **已接线**——分别在 SSE 客户端添加/移除时触发。
 
-### Version negotiation (critical)
+### 版本协商（关键）
 
-- **`HandleInitialize` must echo the client's legacy version**: Return the version the client sent (e.g., `"2025-11-25"`). Never return `kLatestProtocolVersion` (`"2026-07-28"`) — TS SDK v2 validates `result.protocolVersion` against its legacy list.
-- **Modern versions (2026-07-28+) are NEVER negotiated via `initialize`**: Only via `server/discover`.
-- `McpClient` connect modes: `Auto` (default, probes `server/discover`, falls back to `initialize`), `Legacy` (initialize only), `Pin` (pinned version).
-- `SetNegotiatedProtocolVersion(version)` stores the version and recreates the `WireCodec`.
+- **`HandleInitialize` 必须回显客户端的旧版版本号**：返回客户端发送的版本（如 `"2025-11-25"`）。切勿返回 `kLatestProtocolVersion`（`"2026-07-28"`）——TS SDK v2 会校验 `result.protocolVersion` 是否在其旧版列表中。
+- **现代版本（2026-07-28+）绝不通过 `initialize` 协商**：只能通过 `server/discover`。
+- `McpClient` 连接模式：`Auto`（默认，探测 `server/discover`，失败回退 `initialize`）、`Legacy`（仅 initialize）、`Pin`（固定版本）。
+- `SetNegotiatedProtocolVersion(version)` 存储版本并重建 `WireCodec`。
 
-## Key protocol patterns
+## 关键协议模式
 
-- **2026-07-28+ (modern)**: Stateless. `server/discover` replaces `initialize`/`initialized`. Per-request `_meta` carries `protocolVersion`, `clientInfo`, `clientCapabilities`, `logLevel`.
-- **MRTR**: Server-initiated elicitation embedded as `InputRequiredResult`.
-- **Subscriptions**: `subscriptions/listen` replaces `resources/subscribe`.
-- **Caching**: `CacheHint` with `ttlMs`/`cacheScope`.
-- **Mcp-Method header**: Dynamic, derived from JSON-RPC body method field (for Streamable HTTP + SSE).
+- **2026-07-28+（现代）**：无状态。`server/discover` 取代 `initialize`/`initialized`。每请求 `_meta` 携带 `protocolVersion`、`clientInfo`、`clientCapabilities`、`logLevel`。
+- **MRTR**：服务端发起的 elicitation 以 `InputRequiredResult` 内嵌。
+- **订阅**：`subscriptions/listen` 取代 `resources/subscribe`。
+- **缓存**：带 `ttlMs`/`cacheScope` 的 `CacheHint`。
+- **Mcp-Method 头**：动态生成，取自 JSON-RPC 消息体的 method 字段（用于 Streamable HTTP + SSE）。
 
-## Notification handlers
+## 通知处理器
 
-All 17 notification types are registered in `WireCodec.cpp` codec collections. Server‑side handlers are wired in `McpServer::WireHandlers()`; client‑side handlers in `McpClient::WireClientHandlers()`. Notifications are dispatched via `McpSessionHandler::OnNotification()` — unregistered notifications are logged (catch‑all added in OnNotification).
+全部 17 种通知类型注册于 `WireCodec.cpp` 编解码器集合。服务端处理器在 `McpServer::WireHandlers()` 接线；客户端处理器在 `McpClient::WireClientHandlers()`。通知经 `McpSessionHandler::OnNotification()` 分发——未知通知**静默丢弃**（无 catch-all 处理器）。
 
-**Gotchas**:
-- `notifications/cancelled` is hard‑coded in `OnNotification()` before the handler map lookup (not a `SetNotificationHandler` registration).
-- `logging/setLevel` is a **request** (not notification) — if adding a server, it must be registered in `WireHandlers()`.
-- Progress notification handler calls `ResetTimeoutByProgressToken()` which extends the deadline by 30s via `progress_token_map_` → `pending_` lookup. Defined in `McpSessionHandler`, wired in `McpServer::WireHandlers()`.
+**注意事项**：
+- `notifications/cancelled` 在 `OnNotification()` 中硬编码处理，先于处理器表查找（并非 `SetNotificationHandler` 注册）。
+- `logging/setLevel` 是**请求**（非通知）——新增服务端时必须注册到 `WireHandlers()`。
+- 进度通知处理器调用 `ResetTimeoutByProgressToken()`，通过 `progress_token_map_` → `pending_` 查找将截止时间延长 30 秒。定义于 `McpSessionHandler`，在 `McpServer::WireHandlers()` 中接线。
 
-## Server options and event hooks
+## 服务端选项与事件钩子
 
-`ServerOptions` exposes four callback layers: shorthand (`on_method_called`, `on_protocol_error`), full message (`on_request`, `on_response`, `on_error`, `on_notification`), lifecycle (`on_client_connected`, `on_initialized`), transport (`on_transport_close`, `on_transport_error`). For auth/audit/rate‑limiting, inject `FilterPipeline` via `incoming_filters`/`outgoing_filters`.
+`ServerOptions` 暴露四层回调：简写（`on_method_called`、`on_protocol_error`）、完整消息（`on_request`、`on_response`、`on_error`、`on_notification`）、生命周期（`on_client_connected`、`on_initialized`）、传输层（`on_transport_close`、`on_transport_error`）。做认证/审计/限流时，通过 `incoming_filters`/`outgoing_filters` 注入 `FilterPipeline`。
 
-## Coding conventions
+## 编码规范
 
-- **C++17**, `#pragma once`, 4‑space indent. No auto‑formatter.
-- Types/functions: PascalCase. Constants: `k` + PascalCase. Members: snake_case + underscore (`io_ctx_`).
-- Namespace: flat `mcp`. Sub‑namespaces: `mcp::methods`, `mcp::notifications`.
-- **No external JSON in public headers**: `JsonValue` (`std::variant`-based) is the sole JSON type. Parsing uses simdjson DOM (internal). Serialization is hand‑written `Dump()`.
-- `Prompt` has no `annotations` field — per spec.
-- Server guards all handlers with `initialized_` flag until `notifications/initialized` received.
-- `ContentVariant` includes `ResourceLink`, `ToolUseContent`, `ToolResultContent` — dispatch on `type` string.
-- `JsonRpcErrorResponse::id` is `optional<RequestId>` (per JSON‑RPC 2.0 §5.1).
-- Log levels via `MCP_LOG_LEVEL` env var: 0=Off, 1=Error, 2=Warning, 3=Info, 4=Debug, 5=Trace.
-- OAuth HTTP/1.1 uses `Connection: close` — each token exchange opens a new TCP connection.
-- `ToolOptions::InputSchema(JsonValue s)` is required for tools with parameters (default is empty schema).
-- `StreamableHttpClientTransport::Name()` returns `"streamable-http"` when `options_.name` is empty.
+- **C++17**、`#pragma once`、4 空格缩进。无自动格式化工具。
+- 类型/函数：PascalCase。常量：`k` + PascalCase。成员：snake_case + 下划线（`io_ctx_`）。
+- 命名空间：扁平 `mcp`。子命名空间：`mcp::methods`、`mcp::notifications`。
+- **公共头文件无外部 JSON**：`JsonValue`（基于 `std::variant`）是唯一 JSON 类型。解析用 simdjson DOM（内部）。序列化为手写 `Dump()`。
+- `Prompt` 无 `annotations` 字段——按规范。
+- 服务端在收到 `notifications/initialized` 前，用 `initialized_` 标志守护所有处理器。
+- `ContentVariant` 为 `std::variant<TextContent, ImageContent, AudioContent, EmbeddedResource, ResourceLink>`——按 `type` 字符串分派。
+- `JsonRpcErrorResponse::id` 是 `optional<RequestId>`（按 JSON-RPC 2.0 §5.1）。
+- 日志级别经 `MCP_LOG_LEVEL` 环境变量：0=Off，1=Error，2=Warning，3=Info，4=Debug，5=Trace。
+- 带参数的工具有 `ToolOptions::InputSchema(JsonValue s)`（默认空 schema）。
+- `StreamableHttpClientTransport::Name()` 在 `options_.name` 为空时返回 `"streamable-http"`。
 
-## Testing
+## 测试
 
-`InMemoryTransport` is **synchronous** — messages deliver on `Send()`/`AsyncReceive()`, no external event loop. All tests compile and pass without OpenSSL.
+`InMemoryTransport` 是**同步**的——消息在 `Send()`/`AsyncReceive()` 时交付（`MessageChannel` 是有界队列，默认 64），无外部事件循环。
 
-| Suite | Target | Key file |
+**OpenSSL 陷阱**：PKCE 内置 SHA-256 回退（`include/mcp/detail/sha256.hpp`），但 `src/client/auth/OAuthClientProvider.cpp` 有无保护的 `#include <openssl/rand.h>`——未安装 OpenSSL 开发头文件的机器无论如何都无法编译 `mcp-client`。
+
+| 套件 | 目标 | 关键文件 |
 |-------|--------|----------|
-| JsonRpcTest | `mcp-core-tests` | Serialization + variant dispatch |
-| McpTypesTest | `mcp-core-tests` | Type round‑trips |
-| WireCodecTest | `mcp-wire-codec-tests` | Era‑gating codec |
-| McpServerTest | `mcp-server-tests` | Registration, capabilities |
-| McpClientTest | `mcp-client-tests` | Client creation, connect modes |
-| OAuthTest | `mcp-oauth-tests` | PKCE, token cache |
-| TransportTest | `mcp-transport-tests` | InMemory + state machine via `dynamic_cast<TransportBase*>` |
-| HttpServer/EventStore/StreamableHttp | `mcp-http-tests` | HTTP server, SSE, headers |
-| Conformance | `mcp-conformance-tests` | MCP spec compliance |
-| ClientServerFixture | `mcp-integration-tests` | Client‑server round‑trip via InMemoryTransport |
-| MessageFilterTest | `mcp-message-filter-tests` | FilterPipeline chain, stop, modify |
-| FileTokenCacheTest | `mcp-token-cache-tests` | Persistence, corruption handling |
-| FileTaskStoreTest | `mcp-task-store-tests` | Task CRUD, status transitions |
-| StreamableHttpTransportTest | `mcp-streamable-http-tests` | Client/server construction, header validation |
-| WebSocketTransportTest | `mcp-websocket-tests` | Construction, default name |
+| JsonRpcTest | `mcp-core-tests` | 序列化 + 变体分派 |
+| McpTypesTest | `mcp-core-tests` | 类型往返 |
+| WireCodecTest | `mcp-wire-codec-tests` | 按时代门控的编解码器 |
+| McpServerTest | `mcp-server-tests` | 注册、能力 |
+| McpClientTest | `mcp-client-tests` | 客户端创建、连接模式 |
+| OAuthTest | `mcp-oauth-tests` | PKCE、令牌缓存 |
+| TransportTest | `mcp-transport-tests` | InMemory + 经 `dynamic_cast<TransportBase*>` 访问状态机 |
+| HttpServer/EventStore/StreamableHttp | `mcp-http-tests` | HTTP 服务器、SSE、头 |
+| Conformance | `mcp-conformance-tests` | MCP 规范符合性 |
+| ClientServerFixture | `mcp-integration-tests` | 经 InMemoryTransport 的客户端-服务端往返 |
+| MessageFilterTest | `mcp-message-filter-tests` | FilterPipeline 链、停止、修改 |
+| FileTokenCacheTest | `mcp-token-cache-tests` | 持久化、损坏处理 |
+| FileTaskStoreTest | `mcp-task-store-tests` | 任务 CRUD、状态迁移 |
+| StreamableHttpTransportTest | `mcp-streamable-http-tests` | 客户端/服务端构造、头校验 |
+| WebSocketTransportTest | `mcp-websocket-tests` | 构造、默认名称 |
 
-## Dependencies (auto‑fetched)
+## 依赖（自动拉取）
 
-| Dep | Version | Notes |
+| 依赖 | 版本 | 说明 |
 |-----|---------|-------|
-| libhv | 1.3.4 | HTTP client/server, WebSocket, event loop; `hv_static` target |
-| simdjson | 3.12.3 | JSON parsing (internal, not in public headers) |
-| GoogleTest | 1.15.2 | Only when `MCP_BUILD_TESTS=ON` |
-| OpenSSL | system | Optional: TLS, PKCE SHA‑256 (falls back to built‑in) |
+| libhv | 1.3.4 | HTTP 客户端/服务端、WebSocket、事件循环；`hv_static` 目标 |
+| simdjson | 3.12.3 | JSON 解析（内部，不出现于公共头文件） |
+| GoogleTest | 1.15.2 | 仅当 `MCP_BUILD_TESTS=ON` 时 |
+| OpenSSL | 系统 | 可选：TLS、PKCE SHA-256（回退到内置实现） |
 
-No asio. No nlohmann‑json. Both fully removed.
+无 asio。无 nlohmann-json。两者已完全移除。
 
-## Documentation
+## 文档
 
-`docs/` is a vitepress site (`pnpm dev` to serve locally, `pnpm build` to build). Bilingual: `en/` and `zh/` directories. The SDK uses this for user-facing docs; generated API docs are in `docs/.vitepress/dist/`.
+`docs/` 是 vitepress 站点（本地预览用 `pnpm dev`，构建用 `pnpm build`）。双语：`en/` 与 `zh/` 目录。SDK 用它作为面向用户的文档；生成的 API 文档在 `docs/.vitepress/dist/`。注意：文档 CI（docs.yml）在 push 到 `master` 时部署 GitHub Pages，而 ci.yml 门控在 `develop`。
 
-## Commits
+## 提交
 
-Conventional Commits with scope: `feat(transport):`, `fix(server):`, etc. Scopes: `client`, `server`, `protocol`, `transport`, `http`, `core`, `build`, `test`, `examples`.
+带 scope 的 Conventional Commits：`feat(transport):`、`fix(server):` 等。scope：`client`、`server`、`protocol`、`transport`、`http`、`core`、`build`、`test`、`examples`。

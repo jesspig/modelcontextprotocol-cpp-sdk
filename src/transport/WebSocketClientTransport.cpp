@@ -14,7 +14,7 @@ namespace mcp {
 
 namespace {
 
-class WebSocketSessionTransport : public TransportBase, public std::enable_shared_from_this<WebSocketSessionTransport> {
+class WebSocketSessionTransport : public TransportBase {
 public:
     explicit WebSocketSessionTransport(std::string url);
     ~WebSocketSessionTransport() override;
@@ -35,7 +35,7 @@ WebSocketSessionTransport::WebSocketSessionTransport(std::string url)
 WebSocketSessionTransport::~WebSocketSessionTransport() { Close(); }
 
 void WebSocketSessionTransport::Start() {
-    ws_.onopen = [this]() { SetConnected(); };
+    ws_.onopen = [this]() { running_ = true; SetConnected(); };
     ws_.onclose = [this]() { running_ = false; SetDisconnected(); };
     ws_.onmessage = [this](const std::string& msg) {
         try {
@@ -48,7 +48,6 @@ void WebSocketSessionTransport::Start() {
     };
 
     ws_.open(url_.c_str());
-    running_ = true;
 }
 
 void WebSocketSessionTransport::Close() {

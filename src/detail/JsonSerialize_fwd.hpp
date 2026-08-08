@@ -84,11 +84,6 @@ JsonValue SerializeRequestMeta(const RequestMeta& v);
 RequestMeta DeserializeRequestMeta(const JsonValue& j);
 JsonValue SerializeCacheHint(const CacheHint& v);
 CacheHint DeserializeCacheHint(const JsonValue& j);
-JsonValue SerializePagination(const Pagination& v);
-
-// Logging
-JsonValue SerializeLoggingLevelValue(LoggingLevel l);
-LoggingLevel DeserializeLoggingLevelValue(const JsonValue& j);
 
 // Content
 JsonValue SerializePromptMessage(const PromptMessage& v);

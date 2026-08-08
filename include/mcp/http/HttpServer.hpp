@@ -8,7 +8,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -80,12 +79,8 @@ private:
     // Handlers: (method, path) → handler
     std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;
 
-    // SSE clients
-    std::unordered_map<SseClientId, std::function<void(std::string_view)>> sse_clients_;
-    SseClientId next_sse_id_{1};
-    std::mutex sse_mutex_;
-
-    std::unique_ptr<HttpServerImpl> impl_;
+    // shared_ptr so SSE onclose callbacks can capture the impl safely
+    std::shared_ptr<HttpServerImpl> impl_;
 };
 
 } // namespace mcp

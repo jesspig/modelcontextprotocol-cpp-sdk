@@ -15,7 +15,7 @@ opts.task_store = std::make_shared<FileTaskStore>("tasks.json");
 auto server = McpServer::Create(transport, opts);
 ```
 
-The `capabilities` field on `ServerOptions` is declared but currently not consumed by the server. Extensions are always auto-derived when a `task_store` is present.
+There is no `ServerOptions.capabilities` field — extensions are always auto-derived when a `task_store` is present.
 
 ## Extension Convention
 
