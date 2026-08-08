@@ -1,9 +1,11 @@
 // StreamableHttpServerTransport.cpp - Streamable HTTP server transport implementation
 
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
 
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <sstream>
@@ -11,12 +13,28 @@
 
 namespace mcp {
 
-#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)
-
 namespace {
-constexpr size_t kChannelQueueCapacity = 64;
 constexpr std::chrono::seconds kStatelessTimeout(30);
 const char* kMcpParamHeaderPrefix = "mcp-param-";
+constexpr size_t kMaxStatelessInflight = 8;
+
+struct StatelessInflightGuard {
+    explicit StatelessInflightGuard(std::atomic<size_t>& counter)
+        : counter(counter) {}
+    ~StatelessInflightGuard() { counter.fetch_sub(1); }
+private:
+    std::atomic<size_t>& counter;
+};
+
+std::string SseEscapeData(std::string_view data) {
+    std::string out;
+    out.reserve(data.size());
+    for (char c : data) {
+        if (c == '\n') out += "\ndata: ";
+        else out += c;
+    }
+    return out;
+}
 } // namespace
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
@@ -30,8 +48,6 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
 {
     session_id_ = "srv-" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count());
-
-    channel_ = std::make_unique<MessageChannel>(kChannelQueueCapacity);
 
     // Wire HTTP handlers
     http_server_->SetHandler("POST", options_.endpoint,
@@ -57,6 +73,7 @@ void StreamableHttpServerTransport::Start() {
 
 void StreamableHttpServerTransport::Close() {
     if (http_server_) http_server_->Stop();
+    if (!options_.stateless && event_store_) event_store_->Clear(session_id_);
     if (channel_) channel_->Close();
     SetDisconnected();
 }
@@ -82,9 +99,9 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
         auto* params = body.Find("params");
         std::string body_name;
         if (params && params->IsObject()) {
-            if (auto* n = params->Find("name")) body_name = n->GetString();
+            if (auto* n = params->Find("name"); n && n->IsString()) body_name = n->GetString();
             if (body_name.empty())
-                if (auto* u = params->Find("uri")) body_name = u->GetString();
+                if (auto* u = params->Find("uri"); u && u->IsString()) body_name = u->GetString();
         }
         if (!body_name.empty() && name_header != body_name) {
             error_out = "Mcp-Name header '" + name_header +
@@ -108,7 +125,7 @@ void StreamableHttpServerTransport::HandlePost(
     // Parse JSON-RPC message from body (single parse inside DeserializeMessage)
     JsonRpcMessage msg;
     try {
-        if (req.body.size() > K_MAX_MESSAGE_SIZE) {
+        if (req.body.size() > detail::kMaxMessageSize) {
             resp.status_code = 413;
             resp.status_text = "Payload Too Large";
             resp.body = R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Message size exceeds maximum allowed size"}})";
@@ -208,6 +225,15 @@ void StreamableHttpServerTransport::HandlePost(
             return;
         }
         if (options_.stateless && req_id) {
+            if (stateless_inflight_.load() >= kMaxStatelessInflight) {
+                resp.status_code = 503;
+                resp.status_text = "Service Unavailable";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server busy"}})";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
+            stateless_inflight_.fetch_add(1);
+            StatelessInflightGuard guard(stateless_inflight_);
             // Stateless mode: wait for response synchronously
             auto id_str = RequestIdToString(*req_id);
             auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
@@ -234,9 +260,17 @@ void StreamableHttpServerTransport::HandlePost(
                     std::lock_guard<std::mutex> lock(pending_mutex_);
                     pending_responses_.erase(id_str);
                 }
-                resp.status_code = 500;
-                resp.status_text = "Internal Server Error";
-                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout"}})";
+                resp.status_code = 504;
+                resp.status_text = "Gateway Timeout";
+                JsonValue::Object err_obj;
+                err_obj["jsonrpc"] = JsonValue("2.0");
+                {
+                    JsonValue::Object err_err;
+                    err_err["code"] = JsonValue(static_cast<int64_t>(-32000));
+                    err_err["message"] = JsonValue("Request timeout for request " + id_str);
+                    err_obj["error"] = JsonValue(std::move(err_err));
+                }
+                resp.body = JsonValue(std::move(err_obj)).Dump();
                 resp.headers["content-type"] = "application/json";
                 return;
             }
@@ -272,29 +306,11 @@ void StreamableHttpServerTransport::HandlePost(
         resp.body = "{}";
         resp.headers["content-type"] = "application/json";
     }
-
-    // Check response body for x-mcp-header annotations → Mcp-Param-* headers
-    if (!resp.body.empty() && resp.body.size() <= K_MAX_MESSAGE_SIZE) {
-        try {
-            auto resp_jv = JsonValue::Parse(resp.body);
-            if (!resp_jv.IsNull()) {
-                auto* meta = resp_jv.Find("_meta");
-                if (meta && meta->IsObject()) {
-                    auto* xhc = meta->Find("x-mcp-header");
-                    if (xhc && xhc->IsObject()) {
-                        for (const auto& [hk, hv] : *xhc) {
-                            resp.headers["mcp-param-" + hk] = hv.IsString() ? hv.GetString() : hv.Dump();
-                        }
-                    }
-                }
-            }
-        } catch (...) { MCP_LOG(Warning, "response meta parse failed"); }
-    }
 }
 
 // ── Handle GET (SSE stream) ──
 void StreamableHttpServerTransport::HandleGet(
-    const HttpRequest& /*req*/, HttpResponse& resp)
+    const HttpRequest& req, HttpResponse& resp)
 {
     resp.is_sse = true;
     resp.headers["content-type"] = "text/event-stream";
@@ -302,7 +318,23 @@ void StreamableHttpServerTransport::HandleGet(
 
     // The body carries the endpoint event; HttpServer writes it to the SSE
     // stream explicitly after flushing the headers.
-    resp.body = "event: endpoint\ndata: " + options_.endpoint + "\n\n";
+    resp.body = "event: endpoint\ndata: " + SseEscapeData(options_.endpoint) + "\n\n";
+
+    // Resume: replay missed events after the client's Last-Event-ID
+    if (!options_.stateless) {
+        auto last_id = GetMcpHeader(req, "last-event-id");
+        if (last_id && !last_id->empty()) {
+            try {
+                auto from = std::stoull(*last_id);
+                for (const auto& [ev_id, ev_data] :
+                        event_store_->GetEventsSince(session_id_, from)) {
+                    resp.body += "id: " + std::to_string(ev_id) + "\n" + ev_data;
+                }
+            } catch (const std::exception&) {
+                MCP_LOG(Warning, "invalid Last-Event-ID header; ignoring");
+            }
+        }
+    }
 }
 
 // ── Send message (server-initiated notification via SSE) ──
@@ -335,7 +367,8 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     // Normal path: store event and broadcast via SSE
     auto event_data = BuildSseEvent(message);
     if (!options_.stateless) {
-        event_store_->Append(session_id_, event_data);
+        auto event_id = event_store_->Append(session_id_, event_data);
+        event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
     }
     if (http_server_) {
         http_server_->BroadcastSse(event_data);
@@ -354,7 +387,7 @@ std::string StreamableHttpServerTransport::RequestIdToString(const RequestId& id
 std::string StreamableHttpServerTransport::BuildSseEvent(
     const JsonRpcMessage& msg)
 {
-    std::string data = "event: message\ndata: " + SerializeMessage(msg) + "\n\n";
+    std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(msg)) + "\n\n";
     return data;
 }
 

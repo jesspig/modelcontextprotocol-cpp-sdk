@@ -1,12 +1,13 @@
 // StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX libhv)
 
+#include <mcp/detail/ThreadUtils.hpp>
+#include <mcp/JsonRpc.hpp>
+#include <mcp/JsonValue.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>
-#include <mcp/JsonRpc.hpp>
-#include <mcp/JsonValue.hpp>
-#include <mcp/Log.hpp>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -35,14 +36,13 @@
 
 namespace mcp {
 
-// JSON parse safety limits
-#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-
 // ═══════════════════════════════════════════════════════════════════════
 // Win32 implementation (WinHTTP)
 // ═══════════════════════════════════════════════════════════════════════
 #ifdef _WIN32
 namespace {
+
+constexpr DWORD kHttpTimeoutMs = 30000;
 
 std::wstring ToWideStr(const std::string& s) {
     if (s.empty()) return {};
@@ -63,7 +63,6 @@ public:
         : TransportBase()
         , options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -85,12 +84,12 @@ public:
         // Interrupt a blocked WinHttpReadData so the SSE thread can exit.
         // sse_request_ is owned exclusively by the SSE thread; Close only
         // signals it and joins, it never closes the handle itself.
-        auto sse_req = sse_request_.load();
+        auto sse_req = sse_request_.exchange(nullptr);
         if (sse_req) {
             WinHttpSetTimeouts(sse_req, 0, 0, 0, 500);
         }
-        if (sse_thread_.joinable()) sse_thread_.join();
-        if (send_thread_.joinable()) send_thread_.join();
+        detail::JoinThreadSafely(sse_thread_);
+        detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
         SetDisconnected();
     }
@@ -155,6 +154,10 @@ private:
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
             return;
+        }
+        if (!WinHttpSetTimeouts(hRequest, kHttpTimeoutMs, kHttpTimeoutMs,
+                                kHttpTimeoutMs, kHttpTimeoutMs)) {
+            MCP_LOG(Warning, "WinHttpSetTimeouts failed");
         }
 
         // Headers per MCP Streamable HTTP spec
@@ -263,7 +266,9 @@ private:
             }
             // Try to parse as JSON-RPC response and enqueue
             if (!resp_body.empty()) {
-                if (resp_body.size() > K_MAX_MESSAGE_SIZE) {
+                if (resp_body.size() > detail::kMaxMessageSize) {
+                    MCP_LOG(Error, "HTTP response exceeded max message size");
+                    NotifyError("HTTP response exceeded max message size");
                     WinHttpCloseHandle(hRequest);
                     WinHttpCloseHandle(hConnect);
                     WinHttpCloseHandle(hSession);
@@ -297,6 +302,15 @@ private:
                 DispatchSseBlock(block);
             }
         }
+
+        if (running_.exchange(false)) {
+            {
+                std::lock_guard<std::mutex> lk(send_mutex_);
+                send_cv_.notify_one();
+            }
+            if (channel_) channel_->Close();
+            SetDisconnected();
+        }
     }
 
     void DispatchSseBlock(const std::string& block) {
@@ -315,7 +329,11 @@ private:
             }
         }
         if (!data.empty()) {
-            if (data.size() > K_MAX_MESSAGE_SIZE) return;
+            if (data.size() > detail::kMaxMessageSize) {
+                MCP_LOG(Error, "HTTP SSE block exceeded max message size");
+                NotifyError("HTTP SSE block exceeded max message size");
+                return;
+            }
             try {
                 JsonRpcMessage msg = DeserializeMessage(data);
                 if (channel_) channel_->Send(std::move(msg));
@@ -343,13 +361,14 @@ private:
 
 namespace {
 
+constexpr int kHttpRequestTimeoutSeconds = 30;
+
 class StreamableHttpSessionTransport : public TransportBase {
 public:
     explicit StreamableHttpSessionTransport(
         HttpClientTransportOptions options)
         : options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -363,7 +382,7 @@ public:
     void Close() override {
         if (!running_.exchange(false)) return;
         { std::lock_guard<std::mutex> lk(send_mutex_); send_cv_.notify_one(); }
-        if (send_thread_.joinable()) send_thread_.join();
+        detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
         SetDisconnected();
     }
@@ -404,7 +423,13 @@ private:
         for (auto& [k, v] : options_.additional_headers)
             headers[k] = v;
 
-        auto resp = requests::post(options_.endpoint.c_str(), body, headers);
+        auto req = std::make_shared<HttpRequest>();
+        req->method = HTTP_POST;
+        req->url = options_.endpoint;
+        req->body = body;
+        req->timeout = kHttpRequestTimeoutSeconds;
+        req->headers = headers;
+        auto resp = requests::request(req);
         if (!resp) {
             MCP_LOG(Error, "HTTP POST failed");
             NotifyError("HTTP POST failed");
@@ -428,7 +453,11 @@ private:
             }
         } else {
             if (resp->body.empty()) return;
-            if (resp->body.size() > K_MAX_MESSAGE_SIZE) return;
+            if (resp->body.size() > detail::kMaxMessageSize) {
+                MCP_LOG(Error, "HTTP response exceeded max message size");
+                NotifyError("HTTP response exceeded max message size");
+                return;
+            }
             try {
                 JsonRpcMessage msg = DeserializeMessage(resp->body);
                 if (channel_) channel_->Send(std::move(msg));
@@ -453,7 +482,11 @@ private:
             }
         }
         if (!data.empty()) {
-            if (data.size() > K_MAX_MESSAGE_SIZE) return;
+            if (data.size() > detail::kMaxMessageSize) {
+                MCP_LOG(Error, "HTTP SSE block exceeded max message size");
+                NotifyError("HTTP SSE block exceeded max message size");
+                return;
+            }
             try {
                 JsonRpcMessage msg = DeserializeMessage(data);
                 if (channel_) channel_->Send(std::move(msg));
