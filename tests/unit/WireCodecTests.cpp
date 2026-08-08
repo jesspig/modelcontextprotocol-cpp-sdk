@@ -26,6 +26,25 @@ TEST(WireCodecTest, FactoryFallbackForUnknown) {
     EXPECT_EQ(codec->Era(), "2025-11-25");
 }
 
+// ── Factory version comparison boundaries ──
+TEST(WireCodecTest, FactoryBoundaryJustBeforeLatest) {
+    auto codec = MakeWireCodec("2026-07-27");
+    ASSERT_NE(codec, nullptr);
+    EXPECT_EQ(codec->Era(), "2025-11-25");
+}
+
+TEST(WireCodecTest, FactoryBoundaryPrefixGreaterThanLatest) {
+    auto codec = MakeWireCodec("2026-08");
+    ASSERT_NE(codec, nullptr);
+    EXPECT_EQ(codec->Era(), "2026-07-28");
+}
+
+TEST(WireCodecTest, FactoryBoundaryExactLatest) {
+    auto codec = MakeWireCodec("2026-07-28");
+    ASSERT_NE(codec, nullptr);
+    EXPECT_EQ(codec->Era(), "2026-07-28");
+}
+
 // ── 2025-era codec ──
 TEST(WireCodecTest, Rev2025HasRequestMethod) {
     auto codec = MakeWireCodec("2025-11-25");
@@ -128,6 +147,63 @@ TEST(WireCodecTest, Rev2026ErrorCodeRemapping) {
     EXPECT_EQ(codec->EncodeErrorCode(-32003), -32021);
     EXPECT_EQ(codec->EncodeErrorCode(-32004), -32022);
     EXPECT_EQ(codec->EncodeErrorCode(-32601), -32601);  // unchanged
+}
+
+// ── 2026 notification method membership ──
+TEST(WireCodecTest, Rev2026HasTaskAndSubscriptionNotifications) {
+    auto codec = MakeWireCodec("2026-07-28");
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/status"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/working"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/completed"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/failed"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/cancelled"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/input_required"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/subscriptions/acknowledged"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/initialized"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/message"));
+}
+
+// ── 2026 response validation ──
+TEST(WireCodecTest, Rev2026ValidateResponse) {
+    auto codec = MakeWireCodec("2026-07-28");
+
+    JsonValue bare(JsonValue::object_tag);
+    EXPECT_EQ(codec->ValidateResponse("tools/list", bare),
+              WireValidation::Invalid);
+
+    JsonValue complete(JsonValue::object_tag);
+    complete["resultType"] = "complete";
+    EXPECT_EQ(codec->ValidateResponse("tools/list", complete),
+              WireValidation::Ok);
+    EXPECT_EQ(codec->ValidateResponse("tools/call", complete),
+              WireValidation::Ok);
+
+    JsonValue input_required(JsonValue::object_tag);
+    input_required["resultType"] = "input_required";
+    EXPECT_EQ(codec->ValidateResponse("tools/list", input_required),
+              WireValidation::Invalid);
+    EXPECT_EQ(codec->ValidateResponse("tools/call", input_required),
+              WireValidation::Ok);
+}
+
+// ── 2026 notification validation ──
+TEST(WireCodecTest, Rev2026ValidateNotification) {
+    auto codec = MakeWireCodec("2026-07-28");
+
+    JsonValue clean(JsonValue::object_tag);
+    clean["params"] = JsonValue(JsonValue::object_tag);
+    EXPECT_EQ(codec->ValidateNotification("notifications/progress", clean),
+              WireValidation::Ok);
+
+    JsonValue with_id(JsonValue::object_tag);
+    with_id["id"] = JsonValue(int64_t(1));
+    EXPECT_EQ(codec->ValidateNotification("notifications/progress", with_id),
+              WireValidation::Invalid);
+
+    JsonValue with_error(JsonValue::object_tag);
+    with_error["error"] = JsonValue(JsonValue::object_tag);
+    EXPECT_EQ(codec->ValidateNotification("notifications/progress", with_error),
+              WireValidation::Invalid);
 }
 
 // ── JsonRpcRequest with _meta ──

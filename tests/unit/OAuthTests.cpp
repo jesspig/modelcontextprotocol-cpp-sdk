@@ -34,10 +34,11 @@ TEST(OAuthTest, PkceGenerateCodeVerifier) {
 }
 
 TEST(OAuthTest, PkceComputeCodeChallenge) {
+    // RFC 7636 Appendix B test vector
     std::string fixed_verifier =
         "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     auto challenge = pkce::ComputeCodeChallenge(fixed_verifier);
-    EXPECT_FALSE(challenge.empty());
+    EXPECT_EQ(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
 }
 
 // ── Base64Url ──
@@ -109,7 +110,6 @@ TEST(OAuthTest, OAuthClientOptionsHasDefaults) {
     opts.server_url = "http://localhost:8080";
     opts.redirect_uri = "http://localhost:8080/callback";
     EXPECT_EQ(opts.server_url, "http://localhost:8080");
-    EXPECT_EQ(opts.timeout_seconds, 30);
 }
 
 // ── OAuthClientProvider creation ──

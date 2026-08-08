@@ -7,10 +7,26 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <future>
 #include <thread>
 
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
+
+namespace {
+
+// Run the test body with a hard timeout guard: a hung call fails the test
+// instead of blocking forever. Assertions inside the body keep their semantics.
+template <typename F>
+void RunWithTimeout(F&& body) {
+    auto future = std::async(std::launch::async, std::forward<F>(body));
+    ASSERT_TRUE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready)
+        << "test body hung: call did not complete within 10s";
+    future.get();
+}
+
+} // namespace
 
 struct ClientServerFixture : ::testing::Test {
     std::unique_ptr<McpServer> server;
@@ -84,78 +100,94 @@ struct ClientServerFixture : ::testing::Test {
 
 // ── List tools ──
 TEST_F(ClientServerFixture, ListTools) {
-    auto result = client->ListTools();
-    ASSERT_GE(result.tools.size(), 2);
+    RunWithTimeout([this]() {
+        auto result = client->ListTools();
+        ASSERT_GE(result.tools.size(), 2);
 
-    // Find echo and add tools in results
-    bool found_echo = false, found_add = false;
-    for (const auto& t : result.tools) {
-        if (t.name == "echo") found_echo = true;
-        if (t.name == "add") found_add = true;
-    }
-    EXPECT_TRUE(found_echo);
-    EXPECT_TRUE(found_add);
+        // Find echo and add tools in results
+        bool found_echo = false, found_add = false;
+        for (const auto& t : result.tools) {
+            if (t.name == "echo") found_echo = true;
+            if (t.name == "add") found_add = true;
+        }
+        EXPECT_TRUE(found_echo);
+        EXPECT_TRUE(found_add);
+    });
 }
 
 // ── Call echo tool ──
 TEST_F(ClientServerFixture, CallToolEcho) {
-    auto result = client->CallTool("echo",
-        JsonValue::Parse(R"({"text":"Hello MCP"})"));
+    RunWithTimeout([this]() {
+        auto result = client->CallTool("echo",
+            JsonValue::Parse(R"({"text":"Hello MCP"})"));
 
-    ASSERT_GE(result.content.size(), 1);
-    auto* text = std::get_if<TextContent>(&result.content[0]);
-    ASSERT_NE(text, nullptr);
-    EXPECT_EQ(text->text, "Hello MCP");
-    EXPECT_FALSE(result.is_error);
+        ASSERT_GE(result.content.size(), 1);
+        auto* text = std::get_if<TextContent>(&result.content[0]);
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(text->text, "Hello MCP");
+        EXPECT_FALSE(result.is_error);
+    });
 }
 
 // ── Call add tool ──
 TEST_F(ClientServerFixture, CallToolAdd) {
-    auto result = client->CallTool("add",
-        JsonValue::Parse(R"({"a":40,"b":2})"));
+    RunWithTimeout([this]() {
+        auto result = client->CallTool("add",
+            JsonValue::Parse(R"({"a":40,"b":2})"));
 
-    ASSERT_GE(result.content.size(), 1);
-    auto* text = std::get_if<TextContent>(&result.content[0]);
-    ASSERT_NE(text, nullptr);
-    EXPECT_EQ(text->text, "42");
+        ASSERT_GE(result.content.size(), 1);
+        auto* text = std::get_if<TextContent>(&result.content[0]);
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(text->text, "42");
+    });
 }
 
 // ── Call nonexistent tool ──
 TEST_F(ClientServerFixture, CallToolNotFound) {
-    EXPECT_THROW(
-        client->CallTool("nonexistent"),
-        McpError);
+    RunWithTimeout([this]() {
+        EXPECT_THROW(
+            client->CallTool("nonexistent"),
+            McpError);
+    });
 }
 
 // ── Read resource ──
 TEST_F(ClientServerFixture, ReadResource) {
-    ReadResourceResult result;
-    ASSERT_NO_THROW(result = client->ReadResource("hello://world"));
-    ASSERT_GE(result.contents.size(), 1);
+    RunWithTimeout([this]() {
+        ReadResourceResult result;
+        ASSERT_NO_THROW(result = client->ReadResource("hello://world"));
+        ASSERT_GE(result.contents.size(), 1);
 
-    auto* text = std::get_if<TextResourceContents>(&result.contents[0]);
-    ASSERT_NE(text, nullptr);
-    EXPECT_EQ(text->text, "Hello, World!");
+        auto* text = std::get_if<TextResourceContents>(&result.contents[0]);
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(text->text, "Hello, World!");
+    });
 }
 
 // ── Server info ──
 TEST_F(ClientServerFixture, ServerInfo) {
-    EXPECT_EQ(client->GetServerInfo().name, "TestServer");
-    EXPECT_EQ(client->GetServerInfo().version, "1.0.0");
+    RunWithTimeout([this]() {
+        EXPECT_EQ(client->GetServerInfo().name, "TestServer");
+        EXPECT_EQ(client->GetServerInfo().version, "1.0.0");
+    });
 }
 
 // ── Server capabilities (tools + resources) ──
 TEST_F(ClientServerFixture, ServerCapabilities) {
-    auto& caps = client->GetServerCapabilities();
-    EXPECT_TRUE(caps.tools.has_value());
-    EXPECT_TRUE(caps.resources.has_value());
-    EXPECT_FALSE(caps.prompts.has_value());
+    RunWithTimeout([this]() {
+        auto& caps = client->GetServerCapabilities();
+        EXPECT_TRUE(caps.tools.has_value());
+        EXPECT_TRUE(caps.resources.has_value());
+        EXPECT_FALSE(caps.prompts.has_value());
+    });
 }
 
 // ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
+    RunWithTimeout([this]() {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    EXPECT_NO_THROW(client->Ping());
+        EXPECT_NO_THROW(client->Ping());
 #pragma clang diagnostic pop
+    });
 }

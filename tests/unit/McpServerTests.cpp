@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <functional>
+#include <future>
+
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
@@ -132,16 +136,45 @@ TEST(McpServerTest, McpServerToolFactory) {
     EXPECT_EQ(tool->ProtocolTool().description, "Calculator");
 }
 
-// ── SendToolListChanged ──
+// ── SendToolListChanged & friends deliver notifications to the peer ──
+namespace {
+
+void ExpectNotificationArrives(
+    const std::shared_ptr<McpSessionHandler>& client,
+    std::string_view method,
+    const std::function<void()>& send)
+{
+    std::promise<void> received;
+    auto received_future = received.get_future();
+    client->SetNotificationHandler(method,
+        [&received](const JsonRpcNotification&) { received.set_value(); });
+    send();
+    EXPECT_EQ(received_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready)
+        << "notification " << method << " was not delivered";
+}
+
+} // namespace
+
 TEST(McpServerTest, SendToolListChanged) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
 
-    server->SendToolListChanged();
-    server->SendResourceListChanged();
-    server->SendPromptListChanged();
-    server->SendLoggingMessage(LoggingLevel::Info, "test");
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    ExpectNotificationArrives(client, notifications::kToolListChanged,
+        [&] { server->SendToolListChanged(); });
+    ExpectNotificationArrives(client, notifications::kResourceListChanged,
+        [&] { server->SendResourceListChanged(); });
+    ExpectNotificationArrives(client, notifications::kPromptListChanged,
+        [&] { server->SendPromptListChanged(); });
+    ExpectNotificationArrives(client, notifications::kMessage,
+        [&] { server->SendLoggingMessage(LoggingLevel::Info, "test"); });
+
     server->Close();
+    client->Close();
 }
 
 // ── Null client capabilities initially ──
