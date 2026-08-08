@@ -145,6 +145,7 @@ target_sources(mcp-protocol PRIVATE
     src/protocol/WireCodec.cpp
     src/protocol/McpSessionHandler.cpp)
 target_link_libraries(mcp-protocol PUBLIC mcp-transport)
+target_include_directories(mcp-protocol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # McpSessionHandler.cpp and WireCodec.cpp share anonymous namespace helpers
 # Unity builds merge them causing duplicate symbol errors
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD OFF)

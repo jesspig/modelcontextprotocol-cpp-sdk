@@ -84,8 +84,8 @@ public:
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
 
     // ── Properties ──
-    const ClientCapabilities* GetClientCapabilities() const;
-    const Implementation* GetClientInfo() const;
+    std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
+    std::shared_ptr<const Implementation> GetClientInfo() const;
     std::string_view GetNegotiatedProtocolVersion() const;
     const ServerCapabilities& GetCapabilities() const;
     bool IsMrtrSupported() const;
@@ -157,8 +157,9 @@ private:
     std::vector<PromptEntry> prompts_;
 
     // Client info (set on first request in 2026-era, or from initialize)
-    std::optional<ClientCapabilities> client_capabilities_;
-    std::optional<Implementation> client_info_;
+    std::shared_ptr<const ClientCapabilities> client_capabilities_;
+    std::shared_ptr<const Implementation> client_info_;
+    mutable std::mutex client_info_mutex_;
 
     // Completion handler (optional user-registered)
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
@@ -171,6 +172,7 @@ private:
     std::atomic<bool> initialized_{false};
 
     // Current logging level (set via logging/setLevel)
+    mutable std::mutex log_level_mutex_;
     std::optional<LoggingLevel> current_log_level_;
 
     // Stateless mode (no session persistence, no MRTR)

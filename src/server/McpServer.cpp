@@ -27,7 +27,11 @@ namespace {
 
     size_t ParseCursor(const std::optional<std::string>& cursor) {
         if (!cursor || cursor->empty()) return 0;
-        return std::stoul(*cursor);
+        try {
+            return std::stoul(*cursor);
+        } catch (const std::exception&) {
+            throw McpError(McpErrorCode::InvalidParams, "invalid cursor: " + *cursor);
+        }
     }
 
     std::string MakeNextCursor(size_t next_index) {
@@ -165,7 +169,10 @@ void McpServer::Close() {
 // ====================================================================
 void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     const auto& t = tool->ProtocolTool();
-    tools_[t.name] = std::move(tool);
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        tools_[t.name] = std::move(tool);
+    }
     // Re-wire handlers
     WireHandlers();
     DeriveCapabilities();
@@ -189,7 +196,10 @@ void McpServer::RegisterResource(
     entry.mime_type = opts.mime_type;
     entry.icons = opts.icons;
     entry.handler = std::move(handler);
-    resources_.push_back(std::move(entry));
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        resources_.push_back(std::move(entry));
+    }
     WireHandlers();
     DeriveCapabilities();
 }
@@ -211,7 +221,10 @@ void McpServer::RegisterResourceTemplate(
     entry.mime_type = opts.mime_type;
     entry.icons = opts.icons;
     entry.template_handler = std::move(handler);
-    resources_.push_back(std::move(entry));
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        resources_.push_back(std::move(entry));
+    }
     WireHandlers();
     DeriveCapabilities();
 }
@@ -232,7 +245,10 @@ void McpServer::RegisterPrompt(
     entry.title = opts.title;
     entry.icons = opts.icons;
     entry.handler = std::move(handler);
-    prompts_.push_back(std::move(entry));
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        prompts_.push_back(std::move(entry));
+    }
     WireHandlers();
     DeriveCapabilities();
 }
@@ -256,7 +272,12 @@ void McpServer::SendPromptListChanged() {
 }
 
 void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
-    if (current_log_level_ && static_cast<int>(level) < static_cast<int>(*current_log_level_))
+    std::optional<LoggingLevel> current_level;
+    {
+        std::lock_guard<std::mutex> lock(log_level_mutex_);
+        current_level = current_log_level_;
+    }
+    if (current_level && static_cast<int>(level) < static_cast<int>(*current_level))
         return;
     JsonValue params(JsonValue::object_tag);
     params["level"] = JsonValue(static_cast<int64_t>(level));
@@ -439,7 +460,10 @@ void McpServer::WireHandlers() {
             if (!RequireInitialized(initialized_, p)) return;
             SetLevelRequestParams params;
             if (req.params) params = DeserializeSetLevelRequestParams(*req.params);
-            current_log_level_ = params.level;
+            {
+                std::lock_guard<std::mutex> lock(log_level_mutex_);
+                current_log_level_ = params.level;
+            }
             EmptyResult r;
             p.set_value(SerializeEmptyResult(r));
         });
@@ -508,7 +532,19 @@ void McpServer::WireHandlers() {
                 }
                 UpdateTaskRequestParams params;
                 if (req.params) params = DeserializeUpdateTaskRequestParams(*req.params);
-                store->UpdateTask(params.task_id, params.result);
+                try {
+                    if (!store->UpdateTask(params.task_id, params.result)) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InvalidParams,
+                                     "task not found: " + params.task_id)));
+                        return;
+                    }
+                } catch (const std::exception& e) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InternalError,
+                                 std::string("task persist failed: ") + e.what())));
+                    return;
+                }
                 UpdateTaskResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
@@ -522,7 +558,19 @@ void McpServer::WireHandlers() {
                 }
                 CancelTaskRequestParams params;
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
-                store->CancelTask(params.task_id, params.reason);
+                try {
+                    if (!store->CancelTask(params.task_id, params.reason)) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InvalidParams,
+                                     "task not found: " + params.task_id)));
+                        return;
+                    }
+                } catch (const std::exception& e) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InternalError,
+                                 std::string("task persist failed: ") + e.what())));
+                    return;
+                }
                 CancelTaskResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
@@ -895,11 +943,19 @@ void McpServer::HandleInitialize(
     }
 
     // Store client info
-    client_capabilities_ = params.capabilities;
-    client_info_ = params.client_info;
+    {
+        std::lock_guard<std::mutex> lock(client_info_mutex_);
+        client_capabilities_ = std::make_shared<const ClientCapabilities>(params.capabilities);
+        client_info_ = std::make_shared<const Implementation>(params.client_info);
+    }
 
-    if (options_.on_client_connected && client_info_) {
-        options_.on_client_connected(*client_info_);
+    std::shared_ptr<const Implementation> client_info;
+    {
+        std::lock_guard<std::mutex> lock(client_info_mutex_);
+        client_info = client_info_;
+    }
+    if (options_.on_client_connected && client_info) {
+        options_.on_client_connected(*client_info);
     }
 
     // Negotiate protocol version
@@ -971,12 +1027,14 @@ void McpServer::HandleSubscriptionsListen(
 // ====================================================================
 // Properties
 // ====================================================================
-const ClientCapabilities* McpServer::GetClientCapabilities() const {
-    return client_capabilities_ ? &*client_capabilities_ : nullptr;
+std::shared_ptr<const ClientCapabilities> McpServer::GetClientCapabilities() const {
+    std::lock_guard<std::mutex> lock(client_info_mutex_);
+    return client_capabilities_;
 }
 
-const Implementation* McpServer::GetClientInfo() const {
-    return client_info_ ? &*client_info_ : nullptr;
+std::shared_ptr<const Implementation> McpServer::GetClientInfo() const {
+    std::lock_guard<std::mutex> lock(client_info_mutex_);
+    return client_info_;
 }
 
 std::string_view McpServer::GetNegotiatedProtocolVersion() const {
@@ -991,7 +1049,7 @@ const ServerCapabilities& McpServer::GetCapabilities() const {
 bool McpServer::IsMrtrSupported() const {
     // MRTR requires stateful transport
     if (is_stateless_) return false;
-    auto* caps = GetClientCapabilities();
+    auto caps = GetClientCapabilities();
     return caps && caps->elicitation.has_value();
 }
 

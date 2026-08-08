@@ -5,6 +5,7 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/ProtocolVersion.hpp>
+#include <detail/JsonFields.hpp>
 
 #include <cstdint>
 #include <unordered_set>
@@ -143,12 +144,6 @@ public:
 class Rev2026Codec : public WireCodec {
 public:
     static constexpr std::string_view kEra = "2026-07-28";
-    static constexpr std::string_view kProtocolVersionKey =
-        "io.modelcontextprotocol/protocolVersion";
-    static constexpr std::string_view kClientInfoKey =
-        "io.modelcontextprotocol/clientInfo";
-    static constexpr std::string_view kClientCapabilitiesKey =
-        "io.modelcontextprotocol/clientCapabilities";
 
     bool HasRequestMethod(std::string_view method) const override {
         static const auto methods = MakeEraMethods(
@@ -204,12 +199,12 @@ public:
         JsonValue& body,
         const RequestMeta& meta) const override {
         JsonValue meta_obj(JsonValue::object_tag);
-        meta_obj[kProtocolVersionKey] = JsonValue(meta.protocol_version);
+        meta_obj[detail::kMetaProtocolVersionKey] = JsonValue(meta.protocol_version);
         if (meta.client_info) {
-            meta_obj[kClientInfoKey] = SerializeImplementation(*meta.client_info);
+            meta_obj[detail::kMetaClientInfoKey] = SerializeImplementation(*meta.client_info);
         }
         if (meta.client_capabilities) {
-            meta_obj[kClientCapabilitiesKey] = SerializeClientCapabilities(*meta.client_capabilities);
+            meta_obj[detail::kMetaClientCapabilitiesKey] = SerializeClientCapabilities(*meta.client_capabilities);
         }
         body["_meta"] = std::move(meta_obj);
     }
@@ -220,11 +215,11 @@ public:
         if (!m) return std::nullopt;
 
         RequestMeta meta;
-        if (auto* v = m->Find(kProtocolVersionKey))
+        if (auto* v = m->Find(detail::kMetaProtocolVersionKey))
             meta.protocol_version = v->GetString();
-        if (auto* v = m->Find(kClientInfoKey))
+        if (auto* v = m->Find(detail::kMetaClientInfoKey))
             meta.client_info = DeserializeImplementation(*v);
-        if (auto* v = m->Find(kClientCapabilitiesKey))
+        if (auto* v = m->Find(detail::kMetaClientCapabilitiesKey))
             meta.client_capabilities = DeserializeClientCapabilities(*v);
         if (auto* v = m->Find("traceparent")) meta.traceparent = v->GetString();
         if (auto* v = m->Find("tracestate")) meta.tracestate = v->GetString();

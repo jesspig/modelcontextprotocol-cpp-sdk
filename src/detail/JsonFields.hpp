@@ -69,6 +69,13 @@ inline constexpr char kInputRequests[] = "inputRequests";
 inline constexpr char kResource[] = "resource";
 inline constexpr char kListChanged[] = "listChanged";
 
+// _meta envelope keys (2026-era)
+inline constexpr char kMetaProtocolVersionKey[] = "io.modelcontextprotocol/protocolVersion";
+inline constexpr char kMetaClientInfoKey[] = "io.modelcontextprotocol/clientInfo";
+inline constexpr char kMetaClientCapabilitiesKey[] = "io.modelcontextprotocol/clientCapabilities";
+inline constexpr char kMetaLogLevelKey[] = "io.modelcontextprotocol/logLevel";
+inline constexpr char kMetaSubscriptionIdKey[] = "io.modelcontextprotocol/subscriptionId";
+
 // ResultType enum value strings
 inline constexpr char kInputRequiredValue[] = "input_required";
 inline constexpr char kCompleteValue[] = "complete";

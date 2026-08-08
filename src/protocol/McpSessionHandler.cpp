@@ -1,5 +1,7 @@
 // McpSessionHandler.cpp
 // Implementation of the JSON-RPC session handler
+#include <detail/JsonFields.hpp>
+#include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/McpError.hpp>
@@ -91,8 +93,8 @@ void McpSessionHandler::Close() {
     // Wake up message loop by closing the channel
     transport_->GetMessageChannel().Close();
 
-    if (message_loop_thread_.joinable()) message_loop_thread_.join();
-    if (timeout_thread_.joinable()) timeout_thread_.join();
+    detail::JoinThreadSafely(message_loop_thread_);
+    detail::JoinThreadSafely(timeout_thread_);
 
     // Fail all pending requests; callbacks fire outside the lock
     std::vector<std::shared_ptr<PendingRequest>> to_fire;
@@ -205,7 +207,12 @@ void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
 // Request handling
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
-    auto validation = codec_->ValidateRequest(req.method, SerializeJsonRpcRequest(req));
+    std::shared_ptr<WireCodec> codec;
+    {
+        std::lock_guard<std::mutex> lock(codec_mutex_);
+        codec = codec_;
+    }
+    auto validation = codec->ValidateRequest(req.method, SerializeJsonRpcRequest(req));
     // initialize is exempt: a modern server must still answer legacy handshakes
     if (validation == WireValidation::NotInEra && req.method != methods::kInitialize) {
         SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
@@ -220,9 +227,15 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         InvokeSafely([&] { on_request_cb_(req.method, req); }, "on-request");
     }
 
-    std::shared_lock<std::shared_mutex> lock(handler_mutex_);
-    auto it = request_handlers_.find(req.method);
-    if (it == request_handlers_.end()) {
+    RequestHandler handler;
+    {
+        std::shared_lock<std::shared_mutex> lock(handler_mutex_);
+        auto it = request_handlers_.find(req.method);
+        if (it != request_handlers_.end()) {
+            handler = it->second;
+        }
+    }
+    if (!handler) {
         SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
@@ -246,7 +259,10 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     auto future = promise->get_future();
 
     try {
-        it->second(req, std::move(*promise));
+        handler(req, std::move(*promise));
+    } catch (const McpError& e) {
+        SendErrorResponse(req.id, e.Code(), std::string(e.what()));
+        return;
     } catch (const std::exception& e) {
         SendErrorResponse(req.id, McpErrorCode::InternalError, std::string("handler error: ") + e.what());
         return;
@@ -272,20 +288,25 @@ bool McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::s
 void McpSessionHandler::SendResponseAsync(const JsonRpcRequest& req, std::future<JsonValue> future) {
     auto self = shared_from_this();
     auto task = std::async(std::launch::async, [self, req, future = std::move(future)]() mutable {
+        std::shared_ptr<WireCodec> codec;
+        {
+            std::lock_guard<std::mutex> lock(self->codec_mutex_);
+            codec = self->codec_;
+        }
         try {
             auto result = future.get();
             if (self->closed_.load()) return;
 
             JsonRpcResponse resp;
             resp.id = req.id;
-            resp.result = self->codec_->EncodeResult(req.method, result);
+            resp.result = codec->EncodeResult(req.method, result);
             self->SendMessage(JsonRpcMessage{std::move(resp)});
         } catch (const McpError& e) {
             if (self->closed_.load()) return;
             JsonRpcErrorResponse err_resp;
             err_resp.id = req.id;
             err_resp.error.code = static_cast<McpErrorCode>(
-                self->codec_->EncodeErrorCode(static_cast<int32_t>(e.Code())));
+                codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
             err_resp.error.message = e.what();
             self->SendMessage(JsonRpcMessage{std::move(err_resp)});
         } catch (const std::exception& e) {
@@ -293,7 +314,7 @@ void McpSessionHandler::SendResponseAsync(const JsonRpcRequest& req, std::future
             JsonRpcErrorResponse err_resp;
             err_resp.id = req.id;
             err_resp.error.code = static_cast<McpErrorCode>(
-                self->codec_->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
+                codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
             err_resp.error.message = std::string("internal error: ") + e.what();
             self->SendMessage(JsonRpcMessage{std::move(err_resp)});
         }
@@ -360,7 +381,12 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
 // Notification handling
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
-    auto validation = codec_->ValidateNotification(notif.method, SerializeJsonRpcNotification(notif));
+    std::shared_ptr<WireCodec> codec;
+    {
+        std::lock_guard<std::mutex> lock(codec_mutex_);
+        codec = codec_;
+    }
+    auto validation = codec->ValidateNotification(notif.method, SerializeJsonRpcNotification(notif));
     if (validation != WireValidation::Ok) {
         LogContext ctx;
         ctx.method = notif.method;
@@ -378,10 +404,16 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
         return;
     }
 
-    std::shared_lock<std::shared_mutex> lock(handler_mutex_);
-    auto it = notif_handlers_.find(notif.method);
-    if (it != notif_handlers_.end()) {
-        it->second(notif);
+    NotificationHandler handler;
+    {
+        std::shared_lock<std::shared_mutex> lock(handler_mutex_);
+        auto it = notif_handlers_.find(notif.method);
+        if (it != notif_handlers_.end()) {
+            handler = it->second;
+        }
+    }
+    if (handler) {
+        handler(notif);
     }
 }
 
@@ -491,8 +523,15 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
         return IncomingRequestMeta{};
     }
 
-    if (auto* sid = req.meta->Find("io.modelcontextprotocol/subscriptionId"))
-        meta.subscription_id = sid->GetString();
+    if (auto* sid = req.meta->Find(detail::kMetaSubscriptionIdKey)) {
+        if (sid->IsString()) {
+            meta.subscription_id = sid->GetString();
+        } else {
+            LogContext ctx;
+            ctx.method = req.method;
+            MCP_LOG_CTX(Warning, ctx, "subscriptionId is not a string; ignored");
+        }
+    }
     return meta;
 }
 
@@ -554,7 +593,7 @@ void McpSessionHandler::NotifySubscribers(
             notif.params = params;
 
             JsonValue meta(JsonValue::object_tag);
-            meta["io.modelcontextprotocol/subscriptionId"] = JsonValue(id);
+            meta[detail::kMetaSubscriptionIdKey] = JsonValue(id);
             notif.meta = std::move(meta);
 
             outgoing.emplace_back(std::move(notif));
@@ -570,10 +609,15 @@ void McpSessionHandler::NotifySubscribers(
 // Error response helper
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data) {
+    std::shared_ptr<WireCodec> codec;
+    {
+        std::lock_guard<std::mutex> lock(codec_mutex_);
+        codec = codec_;
+    }
     JsonRpcErrorResponse err_resp;
     err_resp.id = id;
     err_resp.error.code = static_cast<McpErrorCode>(
-        codec_->EncodeErrorCode(static_cast<int32_t>(code)));
+        codec->EncodeErrorCode(static_cast<int32_t>(code)));
     err_resp.error.message = std::string(message);
     if (data) err_resp.error.data = std::move(*data);
     SendMessage(JsonRpcMessage{std::move(err_resp)});
@@ -705,8 +749,10 @@ void McpSessionHandler::SetClientCapabilities(ClientCapabilities caps) {
 // Version
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view version) {
+    auto new_codec = MakeWireCodec(version);
+    std::lock_guard<std::mutex> lock(codec_mutex_);
     negotiated_version_ = std::string(version);
-    codec_ = MakeWireCodec(version);
+    codec_ = std::move(new_codec);
 }
 
 } // namespace mcp

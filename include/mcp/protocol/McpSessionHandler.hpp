@@ -123,14 +123,13 @@ public:
     void SetRequestStateVerifier(std::function<bool(std::string_view)> verifier);
 
     // ── Version negotiation ──
-    // Must be called before Start() (or before Close() re-Starts); the message
-    // loop reads negotiated_version_ without synchronization.
+    // Thread-safe: replaces codec_ under codec_mutex_, so it may be called
+    // while the message loop is running.
     void SetNegotiatedProtocolVersion(std::string_view version);
 
     // ── Protocol-era gates (semantic helpers, matching C# McpProtocolVersions) ──
     std::string_view NegotiatedProtocolVersion() const { return negotiated_version_; }
     bool IsJuly2026OrLater() const { return mcp::IsModernProtocolVersion(negotiated_version_); }
-    WireCodec& GetCodec() { return *codec_; }
     ITransport& GetTransport() { return *transport_; }
 
 private:
@@ -159,7 +158,8 @@ private:
 
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
-    std::unique_ptr<WireCodec> codec_;
+    std::shared_ptr<WireCodec> codec_;
+    std::mutex codec_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::string negotiated_version_;

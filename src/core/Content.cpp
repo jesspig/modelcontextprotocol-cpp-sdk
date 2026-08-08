@@ -19,11 +19,11 @@ namespace {
 // than in the extensions bag (mirrors SerializeRequestMeta's output).
 bool RequestMetaFieldIsKnown(std::string_view key) {
     return key == detail::kProgressToken
-        || key == "io.modelcontextprotocol/protocolVersion"
-        || key == "io.modelcontextprotocol/clientInfo"
-        || key == "io.modelcontextprotocol/clientCapabilities"
-        || key == "io.modelcontextprotocol/logLevel"
-        || key == "io.modelcontextprotocol/subscriptionId"
+        || key == detail::kMetaProtocolVersionKey
+        || key == detail::kMetaClientInfoKey
+        || key == detail::kMetaClientCapabilitiesKey
+        || key == detail::kMetaLogLevelKey
+        || key == detail::kMetaSubscriptionIdKey
         || key == "traceparent"
         || key == "tracestate"
         || key == "baggage";
@@ -371,10 +371,10 @@ CacheHint DeserializeCacheHint(const JsonValue& j) {
 JsonValue SerializeRequestMeta(const RequestMeta& v) {
     JsonValue obj(JsonValue::object_tag);
     if (v.progress_token) obj[detail::kProgressToken] = SerializeProgressToken(*v.progress_token);
-    obj["io.modelcontextprotocol/protocolVersion"] = JsonValue(v.protocol_version);
-    if (v.client_info) obj["io.modelcontextprotocol/clientInfo"] = SerializeImplementation(*v.client_info);
-    if (v.client_capabilities) obj["io.modelcontextprotocol/clientCapabilities"] = SerializeClientCapabilities(*v.client_capabilities);
-    if (v.log_level) obj["io.modelcontextprotocol/logLevel"] = SerializeLoggingLevel(*v.log_level);
+    obj[detail::kMetaProtocolVersionKey] = JsonValue(v.protocol_version);
+    if (v.client_info) obj[detail::kMetaClientInfoKey] = SerializeImplementation(*v.client_info);
+    if (v.client_capabilities) obj[detail::kMetaClientCapabilitiesKey] = SerializeClientCapabilities(*v.client_capabilities);
+    if (v.log_level) obj[detail::kMetaLogLevelKey] = SerializeLoggingLevel(*v.log_level);
     if (v.extensions) {
         for (const auto& [k, val] : v.extensions->GetObject()) obj[k] = val;
     }
@@ -388,13 +388,13 @@ RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     RequestMeta v;
     auto* pt = j.Find(detail::kProgressToken);
     if (pt) v.progress_token = DeserializeProgressToken(*pt);
-    auto* pv = j.Find("io.modelcontextprotocol/protocolVersion");
+    auto* pv = j.Find(detail::kMetaProtocolVersionKey);
     if (pv) v.protocol_version = pv->GetString();
-    auto* ci = j.Find("io.modelcontextprotocol/clientInfo");
+    auto* ci = j.Find(detail::kMetaClientInfoKey);
     if (ci) v.client_info = DeserializeImplementation(*ci);
-    auto* cc = j.Find("io.modelcontextprotocol/clientCapabilities");
+    auto* cc = j.Find(detail::kMetaClientCapabilitiesKey);
     if (cc) v.client_capabilities = DeserializeClientCapabilities(*cc);
-    auto* ll = j.Find("io.modelcontextprotocol/logLevel");
+    auto* ll = j.Find(detail::kMetaLogLevelKey);
     if (ll) v.log_level = DeserializeLoggingLevel(*ll);
     if (auto* tp = j.Find("traceparent")) v.traceparent = tp->GetString();
     if (auto* ts = j.Find("tracestate")) v.tracestate = ts->GetString();

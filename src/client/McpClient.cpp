@@ -256,38 +256,6 @@ void McpClient::WireClientHandlers() {
                 p.set_exception(std::current_exception());
             }
         });
-
-    // ── Client-side notification handlers ──
-    handler_->SetNotificationHandler(notifications::kResourceUpdated,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kResourceListChanged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kToolListChanged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kPromptListChanged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kMessage,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kProgress,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kRootsListChanged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kElicitationComplete,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskStatus,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskWorking,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskCompleted,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskFailed,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskCancelled,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskInputRequired,
-        [](const JsonRpcNotification&) {});
 }
 
 // ====================================================================
