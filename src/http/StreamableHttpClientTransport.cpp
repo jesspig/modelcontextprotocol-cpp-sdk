@@ -1,6 +1,7 @@
 // StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX libhv)
 
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -62,7 +63,7 @@ public:
         : TransportBase()
         , options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(64);
+        channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -81,9 +82,12 @@ public:
             std::lock_guard<std::mutex> lk(send_mutex_);
             send_cv_.notify_one();
         }
-        if (sse_request_) {
-            WinHttpCloseHandle(sse_request_);
-            sse_request_ = nullptr;
+        // Interrupt a blocked WinHttpReadData so the SSE thread can exit.
+        // sse_request_ is owned exclusively by the SSE thread; Close only
+        // signals it and joins, it never closes the handle itself.
+        auto sse_req = sse_request_.load();
+        if (sse_req) {
+            WinHttpSetTimeouts(sse_req, 0, 0, 0, 500);
         }
         if (sse_thread_.joinable()) sse_thread_.join();
         if (send_thread_.joinable()) send_thread_.join();
@@ -122,7 +126,11 @@ private:
         HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession) return;
+        if (!hSession) {
+            MCP_LOG(Error, "WinHttpOpen failed");
+            NotifyError("WinHttpOpen failed");
+            return;
+        }
 
         auto url = detail::ParseUrl(options_.endpoint);
         auto wh = ToWideStr(url.host);
@@ -130,13 +138,20 @@ private:
         if (wp.empty()) wp = L"/";
 
         HINTERNET hConnect = WinHttpConnect(hSession, wh.c_str(), url.port, 0);
-        if (!hConnect) { WinHttpCloseHandle(hSession); return; }
+        if (!hConnect) {
+            MCP_LOG(Error, "WinHttpConnect failed");
+            NotifyError("WinHttpConnect failed");
+            WinHttpCloseHandle(hSession);
+            return;
+        }
 
         DWORD flags = (url.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
         HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST",
             wp.c_str(), nullptr, WINHTTP_NO_REFERER,
             WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
         if (!hRequest) {
+            MCP_LOG(Error, "WinHttpOpenRequest failed");
+            NotifyError("WinHttpOpenRequest failed");
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
             return;
@@ -184,54 +199,81 @@ private:
             static_cast<DWORD>(body.size()),
             static_cast<DWORD>(body.size()), 0);
 
-        if (sent && WinHttpReceiveResponse(hRequest, nullptr)) {
-            // Read response headers to determine content type
-            wchar_t contentType[64] = {};
-            DWORD ctSize = sizeof(contentType);
-            bool isSse = false;
-            if (WinHttpQueryHeaders(hRequest,
-                    WINHTTP_QUERY_CONTENT_TYPE, nullptr,
-                    contentType, &ctSize, nullptr)) {
-                isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
-            }
+        if (!sent) {
+            MCP_LOG(Error, "WinHttpSendRequest failed");
+            NotifyError("WinHttpSendRequest failed");
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return;
+        }
+        if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+            MCP_LOG(Error, "WinHttpReceiveResponse failed");
+            NotifyError("WinHttpReceiveResponse failed");
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return;
+        }
 
-            if (isSse && !sse_thread_.joinable()) {
+        // Check response status code; 4xx/5xx responses are not JSON-RPC payloads
+        DWORD status_code = 0;
+        DWORD scSize = sizeof(status_code);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE,
+                nullptr, &status_code, &scSize, nullptr) &&
+            status_code >= 400)
+        {
+            MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(status_code));
+            NotifyError("HTTP POST returned status " + std::to_string(status_code));
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return;
+        }
+
+        // Read response headers to determine content type
+        wchar_t contentType[64] = {};
+        DWORD ctSize = sizeof(contentType);
+        bool isSse = false;
+        if (WinHttpQueryHeaders(hRequest,
+                WINHTTP_QUERY_CONTENT_TYPE, nullptr,
+                contentType, &ctSize, nullptr)) {
+            isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
+        }
+
+        if (isSse && !sse_thread_.joinable()) {
+            sse_thread_ = std::thread([this, hRequest, hConnect, hSession]() {
+                detail::SetThreadName("mcp-worker");
+                // SSE thread owns the request handle for its whole lifetime
                 sse_request_ = hRequest;
-                sse_thread_ = std::thread([this, hRequest, hConnect, hSession]() {
-                    detail::SetThreadName("mcp-worker");
-                    SseReadLoop(hRequest);
-                    WinHttpCloseHandle(hRequest);
-                    WinHttpCloseHandle(hConnect);
-                    WinHttpCloseHandle(hSession);
-                    sse_request_ = nullptr;
-                });
-            } else {
-                // Drain response (single JSON response)
-                std::string resp_body;
-                char buf[4096];
-                DWORD read = 0;
-                while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
-                    resp_body.append(buf, read);
-                    read = 0;
-                }
-                // Try to parse as JSON-RPC response and enqueue
-                if (!resp_body.empty()) {
-                    if (resp_body.size() > K_MAX_MESSAGE_SIZE) {
-                        WinHttpCloseHandle(hRequest);
-                        WinHttpCloseHandle(hConnect);
-                        WinHttpCloseHandle(hSession);
-                        return;
-                    }
-                    try {
-                        JsonRpcMessage msg = DeserializeMessage(resp_body);
-                        if (channel_) channel_->Send(std::move(msg));
-                    } catch (...) { MCP_LOG(Error, "HTTP response parse failed"); }
-                }
+                SseReadLoop(hRequest);
+                sse_request_ = nullptr;
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
-            }
+            });
         } else {
+            // Drain response (single JSON response)
+            std::string resp_body;
+            char buf[4096];
+            DWORD read = 0;
+            while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
+                resp_body.append(buf, read);
+                read = 0;
+            }
+            // Try to parse as JSON-RPC response and enqueue
+            if (!resp_body.empty()) {
+                if (resp_body.size() > K_MAX_MESSAGE_SIZE) {
+                    WinHttpCloseHandle(hRequest);
+                    WinHttpCloseHandle(hConnect);
+                    WinHttpCloseHandle(hSession);
+                    return;
+                }
+                try {
+                    JsonRpcMessage msg = DeserializeMessage(resp_body);
+                    if (channel_) channel_->Send(std::move(msg));
+                } catch (...) { MCP_LOG(Error, "HTTP response parse failed"); }
+            }
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
@@ -288,7 +330,8 @@ private:
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;
     std::atomic<bool> running_{false};
-    HINTERNET sse_request_ = nullptr;
+    // Owned exclusively by the SSE thread; Close() only reads it to interrupt
+    std::atomic<HINTERNET> sse_request_{nullptr};
 };
 
 } // namespace
@@ -306,7 +349,7 @@ public:
         HttpClientTransportOptions options)
         : options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(64);
+        channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -364,6 +407,13 @@ private:
         auto resp = requests::post(options_.endpoint.c_str(), body, headers);
         if (!resp) {
             MCP_LOG(Error, "HTTP POST failed");
+            NotifyError("HTTP POST failed");
+            return;
+        }
+
+        if (resp->status_code >= 400) {
+            MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp->status_code));
+            NotifyError("HTTP POST returned status " + std::to_string(resp->status_code));
             return;
         }
 
