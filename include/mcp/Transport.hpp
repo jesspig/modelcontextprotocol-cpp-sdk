@@ -3,7 +3,9 @@
 
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <memory>
 #include <string_view>
 #include <functional>
@@ -43,7 +45,7 @@ public:
 
     // Lifecycle
     void SetConnected();
-    void SetDisconnected(std::exception_ptr error = nullptr);
+    void SetDisconnected();
     TransportState GetState() const { return static_cast<TransportState>(state_.load()); }
 
     // Callbacks
@@ -56,6 +58,7 @@ protected:
     void WriteMessage(JsonRpcMessage message);
 
     std::unique_ptr<MessageChannel> channel_;
+    // Set only by StreamableHttpServerTransport; empty for all other transports
     std::string session_id_;
     std::atomic<int> state_{0}; // 0=Initial, 1=Connected, 2=Disconnected
     std::function<void()> on_close_;
@@ -74,20 +77,25 @@ public:
 
 // TransportBase inline implementation
 inline TransportBase::TransportBase() {
-    channel_ = std::make_unique<MessageChannel>(64);
+    channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
 }
 inline TransportBase::~TransportBase() = default;
 
 inline void TransportBase::SetConnected() { state_ = static_cast<int>(TransportState::Connected); }
 
-inline void TransportBase::SetDisconnected(std::exception_ptr /*error*/) {
-    state_ = static_cast<int>(TransportState::Disconnected);
+inline void TransportBase::SetDisconnected() {
+    if (state_.exchange(static_cast<int>(TransportState::Disconnected)) ==
+        static_cast<int>(TransportState::Disconnected))
+        return;
     NotifyClose();
 }
 
 // Callback helpers
 inline void TransportBase::NotifyClose() { if (on_close_) on_close_(); }
 inline void TransportBase::NotifyError(std::string_view msg) { if (on_error_) on_error_(msg); }
-inline void TransportBase::WriteMessage(JsonRpcMessage message) { if (channel_) channel_->Send(std::move(message)); }
+inline void TransportBase::WriteMessage(JsonRpcMessage message) {
+    if (channel_ && !channel_->Send(std::move(message)))
+        MCP_LOG(Warning, "message dropped: channel closed");
+}
 
 } // namespace mcp

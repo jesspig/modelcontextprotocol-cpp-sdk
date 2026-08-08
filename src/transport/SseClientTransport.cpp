@@ -2,11 +2,10 @@
 
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/detail/Url.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/JsonRpc.hpp>
 
 #include <hv/HttpClient.h>
-#include <hv/requests.h>
-#include <hv/hlog.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -16,11 +15,8 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <vector>
 
 namespace mcp {
-
-#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
 
 namespace {
 
@@ -29,7 +25,8 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
         return endpoint;
 
     auto srv = detail::ParseUrl(server_url);
-    std::string base = srv.scheme + "://" + srv.host;
+    std::string host = srv.host.find(':') != std::string::npos ? "[" + srv.host + "]" : srv.host;
+    std::string base = srv.scheme + "://" + host;
     if (!((srv.scheme == "https" && srv.port == 443) ||
           (srv.scheme == "http" && srv.port == 80)))
     {
@@ -49,8 +46,6 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
 struct SseEvent {
     std::string event_type;
     std::string data;
-    std::string id;
-    std::optional<int> retry;
 };
 
 SseEvent ParseSseEvent(const std::string& block) {
@@ -80,22 +75,6 @@ SseEvent ParseSseEvent(const std::string& block) {
             if (!evt.data.empty()) evt.data += "\n";
             evt.data += val;
         }
-        else if (line.size() > 3 && line.compare(0, 3, "id:") == 0) {
-            auto val = line.substr(3);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            else val.clear();
-            evt.id = std::move(val);
-        }
-        else if (line.size() > 6 && line.compare(0, 6, "retry:") == 0) {
-            auto val = line.substr(6);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            try {
-                evt.retry = std::stoi(val);
-            } catch (...) {
-            }
-        }
     }
     return evt;
 }
@@ -105,6 +84,7 @@ public:
     SseClientSessionTransport(std::string server_url, std::string name)
         : TransportBase()
         , http_client_(std::make_unique<hv::HttpClient>())
+        , post_client_(std::make_unique<hv::HttpClient>())
         , server_url_(std::move(server_url))
         , name_(std::move(name))
     {
@@ -118,7 +98,6 @@ public:
         if (running_.exchange(true))
             return;
 
-        url_ = detail::ParseUrl(server_url_);
         sse_thread_ = std::thread([this] { SseReadLoop(); });
         send_thread_ = std::thread([this] { SendLoop(); });
         SetConnected();
@@ -133,6 +112,9 @@ public:
             send_cv_.notify_one();
         }
 
+        // Closing both clients unblocks the SSE read and POST sends
+        if (post_client_)
+            post_client_->close();
         if (http_client_)
             http_client_->close();
 
@@ -195,13 +177,15 @@ private:
     void DispatchSseEvent(const std::string& block) {
         auto evt = ParseSseEvent(block);
 
-        if (!evt.id.empty())
-            last_event_id_ = evt.id;
-
         if (evt.event_type == "endpoint") {
-            endpoint_url_ = ResolveEndpoint(server_url_, evt.data);
+            try {
+                std::lock_guard<std::mutex> lock(send_mutex_);
+                endpoint_url_ = ResolveEndpoint(server_url_, evt.data);
+            } catch (const std::exception& e) {
+                NotifyError(std::string("invalid endpoint URL: ") + e.what());
+            }
         } else if (evt.event_type == "message" && !evt.data.empty()) {
-            if (evt.data.size() > K_MAX_MESSAGE_SIZE) {
+            if (evt.data.size() > detail::kMaxMessageSize) {
                 NotifyError("message size exceeds maximum allowed size");
                 return;
             }
@@ -228,24 +212,31 @@ private:
                 send_queue_.pop();
             }
 
-            if (!endpoint_url_.empty())
-                DoPost(body);
+            std::string endpoint;
+            {
+                std::lock_guard<std::mutex> lock(send_mutex_);
+                endpoint = endpoint_url_;
+            }
+            if (!endpoint.empty())
+                DoPost(endpoint, body);
         }
     }
 
-    void DoPost(const std::string& body) {
-        if (endpoint_url_.empty()) return;
-        http_headers headers;
-        headers["Content-Type"] = "application/json";
-        requests::post(endpoint_url_.c_str(), body, headers);
+    void DoPost(const std::string& endpoint, const std::string& body) {
+        HttpRequest req;
+        req.method = HTTP_POST;
+        req.url = endpoint;
+        req.headers["Content-Type"] = "application/json";
+        req.body = body;
+        HttpResponse resp;
+        post_client_->send(&req, &resp);
     }
 
     std::unique_ptr<hv::HttpClient> http_client_;
+    std::unique_ptr<hv::HttpClient> post_client_;
     std::string server_url_;
     std::string name_;
     std::string endpoint_url_;
-    std::string last_event_id_;
-    detail::UrlParts url_;
     std::string sse_buffer_;
 
     std::thread sse_thread_;

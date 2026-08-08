@@ -34,8 +34,17 @@ public:
 
     size_t Write(const char* data, size_t size) override {
         if (fd_ < 0) return 0;
-        ssize_t n = write(fd_, data, size);
-        return n > 0 ? static_cast<size_t>(n) : 0;
+        size_t total = 0;
+        while (total < size) {
+            ssize_t n = write(fd_, data + total, size - total);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return total;
+            }
+            if (n == 0) return total;
+            total += static_cast<size_t>(n);
+        }
+        return total;
     }
 
     void Close() override {
@@ -46,14 +55,6 @@ public:
     }
 
     uintptr_t native_handle() const override { return (uintptr_t)fd_; }
-
-    bool WaitForData(int timeout_ms) override {
-        if (fd_ < 0) return false;
-        struct pollfd pfd;
-        pfd.fd = fd_;
-        pfd.events = POLLIN;
-        return poll(&pfd, 1, timeout_ms) > 0;
-    }
 };
 
 class PosixProcess : public ProcessHandle {

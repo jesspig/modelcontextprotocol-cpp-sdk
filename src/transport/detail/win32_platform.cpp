@@ -1,14 +1,39 @@
 // win32_platform.cpp — Win32 process and pipe implementations
 
 #include <mcp/transport/detail/PlatformIO.hpp>
+#include <mcp/Log.hpp>
 #include <windows.h>
 #include <processthreadsapi.h>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace mcp { namespace detail {
 
 namespace {
+
+std::string ArgvToCommandLine(const std::string& command, const std::vector<std::string>& args) {
+    std::string line;
+    bool first = true;
+    auto append = [&line, &first](const std::string& arg) {
+        if (!first) line += ' ';
+        first = false;
+        if (arg.find_first_of(" \t\"") == std::string::npos) {
+            line += arg;
+            return;
+        }
+        line += '"';
+        for (char ch : arg) {
+            if (ch == '"') line += '\\';
+            line += ch;
+        }
+        line += '"';
+    };
+    append(command);
+    for (const auto& arg : args) append(arg);
+    return line;
+}
+
 class Win32Pipe : public PipeHandle {
     HANDLE handle_ = INVALID_HANDLE_VALUE;
 public:
@@ -18,9 +43,6 @@ public:
     size_t Write(const char* data, size_t size) override;
     void Close() override;
     uintptr_t native_handle() const override { return (uintptr_t)handle_; }
-    bool WaitForData(int timeout_ms) override {
-        return WaitForSingleObject(handle_, timeout_ms) == WAIT_OBJECT_0;
-    }
 };
 
 class Win32Process : public ProcessHandle {
@@ -44,9 +66,16 @@ size_t Win32Pipe::Read(char* buffer, size_t size) {
 }
 
 size_t Win32Pipe::Write(const char* data, size_t size) {
-    DWORD written = 0;
-    WriteFile(handle_, data, static_cast<DWORD>(size), &written, nullptr);
-    return written;
+    size_t total = 0;
+    while (total < size) {
+        DWORD written = 0;
+        if (!WriteFile(handle_, data + total, static_cast<DWORD>(size - total), &written, nullptr))
+            return total;
+        if (written == 0)
+            return total;
+        total += written;
+    }
+    return total;
 }
 
 void Win32Pipe::Close() {
@@ -93,11 +122,7 @@ int Win32Process::WaitForExit(int timeout_ms) {
 
 // Factory implementation
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
-    std::string cmd_line = "cmd.exe /c \"" + info.command;
-    for (const auto& arg : info.arguments) {
-        cmd_line += " " + arg;
-    }
-    cmd_line += "\"";
+    std::string cmd_line = ArgvToCommandLine(info.command, info.arguments);
 
     SECURITY_ATTRIBUTES sa = {};
     sa.nLength = sizeof(sa);
@@ -106,16 +131,18 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
     HANDLE stdout_read = nullptr, stdout_write = nullptr;
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
-        return CreatedProcess{};
-    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+        throw std::runtime_error("CreatePipe failed for stdout");
+    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0))
+        MCP_LOG(Warning, "SetHandleInformation failed for stdout read pipe");
 
     HANDLE stdin_read = nullptr, stdin_write = nullptr;
     if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0)) {
         CloseHandle(stdout_read);
         CloseHandle(stdout_write);
-        return CreatedProcess{};
+        throw std::runtime_error("CreatePipe failed for stdin");
     }
-    SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+    if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0))
+        MCP_LOG(Warning, "SetHandleInformation failed for stdin write pipe");
 
     STARTUPINFOA si = {};
     si.cb = sizeof(si);
@@ -160,7 +187,8 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     if (!success) {
         CloseHandle(stdout_read);
         CloseHandle(stdin_write);
-        return CreatedProcess{};
+        throw std::runtime_error("CreateProcess failed for '" + info.command +
+            "': Windows error " + std::to_string(GetLastError()));
     }
 
     CreatedProcess result;
@@ -189,12 +217,14 @@ void SetThreadName(const char* name) {
     typedef HRESULT(WINAPI* SetThreadDescriptionFunc)(HANDLE, PCWSTR);
     auto set_thread_desc = (SetThreadDescriptionFunc)GetProcAddress(
         GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
-    if (set_thread_desc) {
-        int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
-        std::wstring wname(len, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
-        set_thread_desc(GetCurrentThread(), wname.c_str());
+    if (!set_thread_desc) {
+        MCP_LOG(Debug, "SetThreadDescription not available; thread name not set");
+        return;
     }
+    int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+    std::wstring wname(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
+    set_thread_desc(GetCurrentThread(), wname.c_str());
 }
 
 }} // namespace mcp::detail
