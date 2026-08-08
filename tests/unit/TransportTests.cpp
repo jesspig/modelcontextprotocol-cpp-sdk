@@ -24,8 +24,6 @@ TEST(TransportTest, InMemoryCreate) {
 
     pair.client->Close();
     pair.server->Close();
-
-    pair.client->SendMessageAsync(JsonRpcMessage{req});
 }
 
 TEST(TransportTest, InMemoryPairMove) {
@@ -66,7 +64,8 @@ TEST(TransportTest, TransportBaseErrorPropagation) {
     EXPECT_EQ(tb->GetState(), TransportState::Disconnected);
 }
 
-// Verify message send/receive does not crash (asynchronous delivery driven by stdio)
+// InMemoryTransport delivers synchronously on SendMessageAsync: the peer
+// receives the message from its MessageChannel without an external event loop.
 TEST(TransportTest, InMemoryMessageSendNoCrash) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -75,6 +74,34 @@ TEST(TransportTest, InMemoryMessageSendNoCrash) {
     req.method = "tools/list";
 
     pair.client->SendMessageAsync(JsonRpcMessage{req});
+
+    std::error_code ec;
+    JsonRpcMessage received;
+    pair.server->GetMessageChannel().AsyncReceive(
+        [&](std::error_code recv_ec, JsonRpcMessage msg) {
+            ec = recv_ec;
+            received = std::move(msg);
+        });
+
+    ASSERT_FALSE(ec);
+    const auto& req2 = std::get<JsonRpcRequest>(received);
+    EXPECT_EQ(req2.method, "tools/list");
+    EXPECT_EQ(req2.id, RequestId{int64_t(42)});
+
     pair.client->Close();
     pair.server->Close();
+}
+
+// After Close the channels are shut down: sending must not throw or crash,
+// and the message is dropped instead of delivered.
+TEST(TransportTest, CloseThenSendDoesNotThrow) {
+    auto pair = InMemoryTransport::CreatePair();
+    pair.client->Close();
+    pair.server->Close();
+
+    JsonRpcRequest req;
+    req.id = int64_t(1);
+    req.method = "ping";
+    EXPECT_NO_THROW(pair.client->SendMessageAsync(JsonRpcMessage{req}));
+    EXPECT_NO_THROW(pair.server->SendMessageAsync(JsonRpcMessage{req}));
 }

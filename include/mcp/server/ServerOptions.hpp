@@ -26,7 +26,6 @@ struct CacheHint;
 struct MCP_API ServerOptions {
     // Server identity
     std::optional<Implementation> server_info;
-    std::optional<ServerCapabilities> capabilities;
     std::optional<std::string> protocol_version;
     std::optional<std::string> server_instructions;
 

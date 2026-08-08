@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mcp {
@@ -38,12 +39,11 @@ public:
 private:
     struct StoredEvent {
         uint64_t id;
-        std::string session_id;
         std::string data;
     };
 
     mutable std::mutex mutex_;
-    std::vector<StoredEvent> events_;
+    std::unordered_map<std::string, std::vector<StoredEvent>> events_;
     uint64_t next_id_{1};
 };
 

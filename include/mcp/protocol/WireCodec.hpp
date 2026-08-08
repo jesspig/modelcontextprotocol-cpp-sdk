@@ -46,11 +46,7 @@ public:
     virtual std::optional<RequestMeta> ExtractIncomingMeta(
         const JsonValue& request_body) const = 0;
 
-    // ── Result encoding/decoding ──
-    // Decode wire result, handling resultType discrimination (2026)
-    virtual JsonValue DecodeResult(
-        std::string_view method, const JsonValue& raw) const = 0;
-
+    // ── Result encoding ──
     // Encode result, stamping resultType (2026)
     virtual JsonValue EncodeResult(
         std::string_view method, const JsonValue& result) const = 0;

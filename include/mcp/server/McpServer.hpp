@@ -14,6 +14,7 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -131,7 +132,8 @@ private:
     ServerOptions options_;
     ServerCapabilities capabilities_;
 
-    // Registered primitives
+    // Registered primitives (guarded by registry_mutex_, which also guards capabilities_)
+    mutable std::shared_mutex registry_mutex_;
     std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
     struct ResourceEntry {
         std::string name;
@@ -173,6 +175,9 @@ private:
 
     // Stateless mode (no session persistence, no MRTR)
     bool is_stateless_{false};
+
+    // Subscription ID allocation (monotonic, process-local)
+    std::atomic<uint64_t> next_subscription_id_{1};
 
     // Run loop synchronization
     std::mutex run_mutex_;

@@ -71,7 +71,7 @@ client->UpdateTask("task-123", result_json);
 client->CancelTask("task-123", "no longer needed");
 
 // Poll task until completion (with configurable interval and timeout)
-auto completed = client->PollTaskToCompletionAsync("task-123");
+auto completed = client->PollTaskToCompletion("task-123");
 ```
 
 ## Server-to-Client Handlers

@@ -2,7 +2,9 @@
 
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <queue>
 
@@ -27,7 +29,8 @@ public:
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
-        send_channel_->Send(std::move(message));
+        if (!send_channel_->Send(std::move(message)))
+            MCP_LOG(Warning, "message dropped: channel closed");
     }
 
     MessageChannel& GetMessageChannel() override { return *recv_channel_; }
@@ -41,8 +44,8 @@ private:
 
 InMemoryTransport::Pair InMemoryTransport::CreatePair() {
     // Client receives from s2c, writes to c2s; server receives from c2s, writes to s2c
-    auto c2s = std::make_shared<MessageChannel>(64);
-    auto s2c = std::make_shared<MessageChannel>(64);
+    auto c2s = std::make_shared<MessageChannel>(detail::kChannelCapacity);
+    auto s2c = std::make_shared<MessageChannel>(detail::kChannelCapacity);
 
     auto client = std::make_shared<InMemoryTransportImpl>(s2c, c2s);
     auto server = std::make_shared<InMemoryTransportImpl>(c2s, s2c);

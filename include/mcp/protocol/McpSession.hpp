@@ -8,6 +8,7 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
 #include <mcp/JsonValue.hpp>
+#include <chrono>
 #include <memory>
 #include <string_view>
 #include <functional>
@@ -19,6 +20,8 @@ namespace mcp {
 class ITransport;
 class MessageChannel;
 class McpSessionHandler;
+
+inline constexpr std::chrono::milliseconds kDefaultRequestTimeout{30000};
 
 // ═══════════════════════════════════════════════════════════════════════
 // McpSession — abstract base for both client and server sessions
@@ -44,7 +47,7 @@ public:
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},
-        std::chrono::milliseconds timeout = std::chrono::seconds(30)) = 0;
+        std::chrono::milliseconds timeout = kDefaultRequestTimeout) = 0;
 
     // Send notification (fire-and-forget)
     virtual void SendNotificationAsync(
@@ -64,8 +67,7 @@ public:
 
     // ── Version helpers ──
     bool IsJuly2026OrLater() const {
-        auto v = NegotiatedProtocolVersion();
-        return !v.empty() && v >= "2026-07-28";
+        return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion());
     }
 
 protected:

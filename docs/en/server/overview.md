@@ -35,7 +35,6 @@ server->Run();
 | Field | Type | Description |
 |-------|------|-------------|
 | `server_info` | `optional<Implementation>` | Server identity (name, version) |
-| `capabilities` | `optional<ServerCapabilities>` | Declared capabilities |
 | `protocol_version` | `optional<string>` | Pin to a specific version |
 | `server_instructions` | `optional<string>` | Instructions sent to client |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
@@ -138,4 +137,4 @@ server->SetCompletionHandler(
 
 ## Capability Derivation
 
-Capabilities are automatically derived from registered primitives. For example, registering a tool sets `capabilities.tools.list_changed = true`. The `ServerOptions.capabilities` field is declared but currently not consumed by the server — capabilities are always auto-derived from registered tools, resources, prompts, and task store.
+Capabilities are automatically derived from registered primitives. For example, registering a tool sets `capabilities.tools.list_changed = true`. There is no `ServerOptions.capabilities` field — capabilities are always auto-derived from registered tools, resources, prompts, and task store.

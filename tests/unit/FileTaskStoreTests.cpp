@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
+#include <stdexcept>
 
 using namespace mcp;
 
@@ -12,10 +14,19 @@ struct FileTaskStoreTest : ::testing::Test {
     std::filesystem::path store_path;
 
     void SetUp() override {
-        store_path = std::filesystem::temp_directory_path() / "mcp_test_tasks.json";
+        auto temp_dir = std::filesystem::temp_directory_path();
+        store_path = temp_dir / ("mcp_test_tasks_" +
+            std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) +
+            ".json");
+        RemoveFiles();
     }
 
     void TearDown() override {
+        RemoveFiles();
+    }
+
+private:
+    void RemoveFiles() {
         std::error_code ec;
         std::filesystem::remove(store_path, ec);
         std::filesystem::remove(store_path.string() + ".tmp", ec);
@@ -91,4 +102,44 @@ TEST_F(FileTaskStoreTest, SetTaskStatus) {
     auto task = store.GetTask("task-1");
     ASSERT_TRUE(task.has_value());
     EXPECT_EQ(task->status, TaskStatus::Working);
+}
+
+// ── Duplicate task ids are rejected (throws, not silent overwrite) ──
+TEST_F(FileTaskStoreTest, CreateDuplicateTaskThrows) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+    EXPECT_THROW(store.CreateTask("task-1"), std::runtime_error);
+}
+
+// ── State survives store destruction and reconstruction from the file ──
+TEST_F(FileTaskStoreTest, PersistsAcrossInstances) {
+    {
+        FileTaskStore store(store_path);
+        store.CreateTask("task-1");
+        store.SetTaskStatus("task-1", TaskStatus::Working);
+        JsonValue result(JsonValue::object_tag);
+        result["answer"] = JsonValue(42);
+        store.UpdateTask("task-1", result);
+    }
+
+    FileTaskStore restored(store_path);
+    auto tasks = restored.GetAllTasks();
+    ASSERT_EQ(tasks.size(), size_t{1});
+    EXPECT_EQ(tasks[0].task_id, "task-1");
+    EXPECT_EQ(tasks[0].status, TaskStatus::Completed);
+    ASSERT_TRUE(tasks[0].result.has_value());
+    EXPECT_EQ(tasks[0].result->At("answer").GetInt(), 42);
+}
+
+// ── A corrupt store file must not throw on construction; the store is empty ──
+TEST_F(FileTaskStoreTest, CorruptFileDoesNotThrow) {
+    {
+        std::ofstream ofs(store_path);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << "{ not valid json";
+    }
+
+    FileTaskStore store(store_path);
+    EXPECT_TRUE(store.GetAllTasks().empty());
+    EXPECT_FALSE(store.GetTask("task-1").has_value());
 }

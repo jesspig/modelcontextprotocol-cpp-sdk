@@ -3,18 +3,27 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/Log.hpp>
 #include <detail/JsonSerialize_fwd.hpp>
 
 #include <thread>
 #include <set>
 #include <algorithm>
 #include <mutex>
+#include <shared_mutex>
 
 namespace mcp {
 
 namespace {
     // ── Pagination helper ──
     constexpr size_t kDefaultPageSize = 100;
+
+    // ── Timeouts ──
+    constexpr std::chrono::seconds kElicitTimeout(600);
+    constexpr std::chrono::seconds kNoWait(0);
+
+    // ── Logging ──
+    constexpr std::string_view kDefaultLoggerName = "mcp-server";
 
     size_t ParseCursor(const std::optional<std::string>& cursor) {
         if (!cursor || cursor->empty()) return 0;
@@ -67,7 +76,7 @@ McpServer::McpServer(
     auto codec = MakeWireCodec(
         options_.protocol_version.value_or(std::string(kLatestProtocolVersion)));
     handler_ = std::make_shared<McpSessionHandler>(
-        transport_, std::move(codec), true,
+        transport_, std::move(codec),
         options_.incoming_filters,
         options_.outgoing_filters);
 
@@ -252,7 +261,7 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     JsonValue params(JsonValue::object_tag);
     params["level"] = JsonValue(static_cast<int64_t>(level));
     params["data"] = JsonValue(std::string(data));
-    params["logger"] = JsonValue("mcp-server");
+    params["logger"] = JsonValue(std::string(kDefaultLoggerName));
     handler_->SendNotification(notifications::kMessage, std::move(params));
 }
 
@@ -272,7 +281,10 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
         ? std::string(kLatestProtocolVersion) : std::string(vers);
 
     auto future = handler_->SendRequest(
-        methods::kElicit, SerializeElicitRequestParams(params), meta, std::chrono::seconds(600));
+        methods::kElicit, SerializeElicitRequestParams(params), meta,
+        options_.input_required_config
+            ? options_.input_required_config->round_timeout
+            : kElicitTimeout);
 
     auto result_future = std::async(std::launch::async, [future = std::move(future)]() mutable {
         auto jv = future.get();
@@ -292,6 +304,8 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
 // Handlers auto-wiring
 // ====================================================================
 void McpServer::WireHandlers() {
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+
     // ── tools/list ──
     if (!tools_.empty()) {
         handler_->SetRequestHandler(methods::kListTools,
@@ -413,7 +427,9 @@ void McpServer::WireHandlers() {
         [this](const JsonRpcNotification&) {
             initialized_ = true;
             if (options_.on_initialized) {
-                try { options_.on_initialized(); } catch (...) {}
+                try { options_.on_initialized(); } catch (...) {
+                    MCP_LOG(Error, "on_initialized callback threw an exception");
+                }
             }
         });
 
@@ -460,7 +476,7 @@ void McpServer::WireHandlers() {
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound, "tasks/get not available in this protocol version")));
                     return;
@@ -485,7 +501,7 @@ void McpServer::WireHandlers() {
 
         handler_->SetRequestHandler(methods::kUpdateTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound, "tasks/update not available in this protocol version")));
                     return;
@@ -499,7 +515,7 @@ void McpServer::WireHandlers() {
 
         handler_->SetRequestHandler(methods::kCancelTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound, "tasks/cancel not available in this protocol version")));
                     return;
@@ -513,7 +529,7 @@ void McpServer::WireHandlers() {
 
         handler_->SetRequestHandler(methods::kGetTaskPayload,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
                             "tasks/result not available in this protocol version")));
@@ -537,7 +553,7 @@ void McpServer::WireHandlers() {
 
         handler_->SetRequestHandler(methods::kListTasks,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
                             "tasks/list not available in this protocol version")));
@@ -570,6 +586,7 @@ void McpServer::WireHandlers() {
 // Capability derivation
 // ====================================================================
 void McpServer::DeriveCapabilities() {
+    std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
     if (!tools_.empty()) {
         capabilities_.tools = ToolsCapability{};
         capabilities_.tools->list_changed = true;
@@ -594,11 +611,8 @@ void McpServer::DeriveCapabilities() {
 void McpServer::HandleListTools(
     const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListToolsResult result;
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
@@ -611,11 +625,7 @@ void McpServer::HandleListTools(
 void McpServer::HandleCallTool(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
 
     // Parse params
     CallToolRequestParams params;
@@ -623,6 +633,7 @@ void McpServer::HandleCallTool(
         params = DeserializeCallToolRequestParams(*req.params);
     }
 
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     auto it = tools_.find(params.name);
     if (it == tools_.end()) {
         promise.set_exception(std::make_exception_ptr(
@@ -659,18 +670,15 @@ void McpServer::HandleCallTool(
     pending_async_futures_.push_back(fut.share());
     pending_async_futures_.erase(
         std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
-            [](const auto& f) { return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }),
+            [](const auto& f) { return f.wait_for(kNoWait) == std::future_status::ready; }),
         pending_async_futures_.end());
 }
 
 void McpServer::HandleListResources(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListResourcesResult result;
     size_t cursor_val = 0;
     if (req.params) {
@@ -703,11 +711,8 @@ void McpServer::HandleListResources(
 void McpServer::HandleListResourceTemplates(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListResourceTemplatesResult result;
     size_t cursor_val = 0;
     if (req.params) {
@@ -740,27 +745,22 @@ void McpServer::HandleListResourceTemplates(
 void McpServer::HandleReadResource(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
     ReadResourceRequestParams params;
     if (req.params) {
         params = DeserializeResourceRequestParams(*req.params);
     }
 
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     for (const auto& entry : resources_) {
         if (entry.is_template) continue;
         if (entry.uri_pattern == params.uri) {
             try {
                 auto result = entry.handler(params.uri);
-    auto hint = GetCacheHint(options_.cache_hints, "resources/read");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-promise.set_value(SerializeReadResourceResult(result));
+                auto hint = GetCacheHint(options_.cache_hints, "resources/read");
+                if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
+                promise.set_value(SerializeReadResourceResult(result));
                 return;
-            } catch (const McpError&) {
-                throw;
             } catch (...) {
                 promise.set_exception(std::current_exception());
                 return;
@@ -776,11 +776,8 @@ promise.set_value(SerializeReadResourceResult(result));
 void McpServer::HandleListPrompts(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListPromptsResult result;
     size_t cursor_val = 0;
     if (req.params) {
@@ -810,16 +807,13 @@ void McpServer::HandleListPrompts(
 void McpServer::HandleGetPrompt(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
     GetPromptRequestParams params;
     if (req.params) {
         params = DeserializeGetPromptRequestParams(*req.params);
     }
 
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     for (const auto& entry : prompts_) {
         if (entry.name == params.name) {
             try {
@@ -845,18 +839,14 @@ void McpServer::SetCompletionHandler(CompletionHandler handler) {
 void McpServer::HandleComplete(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!initialized_) {
-        promise.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return;
-    }
+    if (!RequireInitialized(initialized_, promise)) return;
     CompleteRequestParams params;
     if (req.params) params = DeserializeCompleteRequestParams(*req.params);
 
     if (completion_handler_) {
         try {
             auto result = completion_handler_(params);
-                promise.set_value(SerializeCompleteResult(result));
+            promise.set_value(SerializeCompleteResult(result));
             return;
         } catch (...) {
             promise.set_exception(std::current_exception());
@@ -864,20 +854,19 @@ void McpServer::HandleComplete(
         }
     }
 
-    JsonValue error;
-    error.GetObject()["code"] = JsonValue(-32601);
-    error.GetObject()["message"] = JsonValue("No completion handler registered");
-    promise.set_value(std::move(error));
+    promise.set_exception(std::make_exception_ptr(
+        McpError(McpErrorCode::MethodNotFound, "No completion handler registered")));
 }
 
 void McpServer::HandleDiscover(
     const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
     initialized_ = true;
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     DiscoverResult result;
     result.supported_versions = {
-        "2025-11-25",
-        kLatestProtocolVersion.data()
+        std::string(kLegacyProtocolVersion),
+        std::string(kLatestProtocolVersion)
     };
     result.capabilities = capabilities_;
     if (options_.server_info) {
@@ -914,13 +903,14 @@ void McpServer::HandleInitialize(
     }
 
     // Negotiate protocol version
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     if (options_.protocol_version) {
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
     } else {
         // Find a common legacy version with the client.
         // Modern versions (2026-07-28+) are NEVER negotiated via
         // initialize — only through server/discover.
-        std::string_view selected = "2025-11-25";
+        std::string_view selected = kLegacyProtocolVersion;
         for (auto v : kProtocolVersions) {
             if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
                 selected = v;
@@ -951,7 +941,7 @@ void McpServer::HandleInitialize(
 void McpServer::HandleSubscriptionsListen(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (handler_->NegotiatedProtocolVersion() < "2026-07-28") {
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
         promise.set_exception(std::make_exception_ptr(
             McpError(McpErrorCode::MethodNotFound,
                      "subscriptions/listen not available in this protocol version")));
@@ -964,9 +954,7 @@ void McpServer::HandleSubscriptionsListen(
     auto meta = handler_->ExtractIncomingMeta(req);
 
     SubscriptionEntry entry;
-    entry.id = std::to_string(
-        std::hash<std::string>{}(req.method + std::to_string(
-            std::chrono::system_clock::now().time_since_epoch().count())));
+    entry.id = std::to_string(next_subscription_id_++);
     entry.filter = std::move(params.notifications);
     entry.created_at = std::chrono::steady_clock::now();
 
@@ -996,6 +984,7 @@ std::string_view McpServer::GetNegotiatedProtocolVersion() const {
 }
 
 const ServerCapabilities& McpServer::GetCapabilities() const {
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     return capabilities_;
 }
 

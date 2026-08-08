@@ -10,8 +10,10 @@
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/JsonValue.hpp>
+#include <mcp/ProtocolVersion.hpp>
 
 #include <chrono>
+#include <future>
 #include <mutex>
 #include <shared_mutex>
 #include <atomic>
@@ -48,11 +50,13 @@ struct SubscriptionEntry {
 // cancellation, and filter pipelines.
 class MCP_API McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
 public:
+    inline static constexpr std::chrono::seconds kProgressTimeoutExtension{30};
+    inline static constexpr std::chrono::milliseconds kTimeoutPollInterval{100};
+
     // Construct with transport, wire codec, and optional filter pipeline
     McpSessionHandler(
         std::shared_ptr<ITransport> transport,
         std::unique_ptr<WireCodec> codec,
-        bool is_server,
         std::shared_ptr<FilterPipeline> incoming_filters = nullptr,
         std::shared_ptr<FilterPipeline> outgoing_filters = nullptr);
 
@@ -68,7 +72,7 @@ public:
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},
-        std::chrono::milliseconds timeout = std::chrono::seconds(30));
+        std::chrono::milliseconds timeout = kDefaultRequestTimeout);
 
     void SendNotification(std::string_view method, JsonValue params = {});
     void SendMessage(JsonRpcMessage message);
@@ -80,14 +84,16 @@ public:
     void RemoveNotificationHandler(std::string_view method);
 
     // ── Capability validation ──
+    // SetClientCapabilities must be called before Start(); the message loop
+    // reads client_capabilities_ without synchronization.
     static std::optional<std::string> RequiredClientCapability(std::string_view method);
     void SetClientCapabilities(ClientCapabilities caps);
 
     // ── Meta helpers (2026-era) ──
-    void StampOutgoingMeta(JsonValue& body, const RequestMeta& meta);
     IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
 
     // ── Subscription management ──
+    // AddSubscription converts a Subscription and delegates to AddSubscriptionEntry.
     void AddSubscription(Subscription sub);
     void AddSubscriptionEntry(SubscriptionEntry entry);
     void RemoveSubscription(std::string_view id);
@@ -112,14 +118,18 @@ public:
     void SetOnNotificationCallback(std::function<void(const JsonRpcNotification&)> cb);
 
     // ── Request state verification (HMAC/AEAD) ──
+    // Must be called before Start(); the message loop reads the verifier
+    // without synchronization.
     void SetRequestStateVerifier(std::function<bool(std::string_view)> verifier);
 
     // ── Version negotiation ──
+    // Must be called before Start() (or before Close() re-Starts); the message
+    // loop reads negotiated_version_ without synchronization.
     void SetNegotiatedProtocolVersion(std::string_view version);
 
     // ── Protocol-era gates (semantic helpers, matching C# McpProtocolVersions) ──
     std::string_view NegotiatedProtocolVersion() const { return negotiated_version_; }
-    bool IsJuly2026OrLater() const { return !negotiated_version_.empty() && negotiated_version_ >= "2026-07-28"; }
+    bool IsJuly2026OrLater() const { return mcp::IsModernProtocolVersion(negotiated_version_); }
     WireCodec& GetCodec() { return *codec_; }
     ITransport& GetTransport() { return *transport_; }
 
@@ -134,17 +144,22 @@ private:
     void OnError(const JsonRpcErrorResponse& err);
     void OnNotification(const JsonRpcNotification& notif);
 
+    // ── Request handling helpers ──
+    bool VerifyCapability(const JsonRpcRequest& req, const std::string& required);
+    void SendResponseAsync(const JsonRpcRequest& req, std::future<JsonValue> future);
+
     // ── Request/response correlation ──
     static std::string GetRequestIdKey(const RequestId& rid);
     std::atomic<int64_t> next_request_id_{1};
 
     // ── Internal ──
     void CheckTimeouts();
+    void EraseProgressTokens(const std::string& request_id);
+    void ReapCompletedResponses();
 
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
     std::unique_ptr<WireCodec> codec_;
-    [[maybe_unused]] bool is_server_;
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::string negotiated_version_;
@@ -164,6 +179,11 @@ private:
 
     // Progress token → request_id mapping (for timeout reset)
     std::unordered_map<std::string, std::string> progress_token_map_;
+
+    // Async response tasks; reaped once their future is ready so the
+    // destructor never blocks on an in-flight task.
+    std::vector<std::future<void>> pending_responses_;
+    std::mutex response_mutex_;
 
     // Subscriptions
     std::unordered_map<std::string, SubscriptionEntry> subscriptions_;

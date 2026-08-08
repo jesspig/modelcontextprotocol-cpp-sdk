@@ -2,7 +2,6 @@
 
 #include <mcp/http/EventStore.hpp>
 
-#include <algorithm>
 #include <mutex>
 
 namespace mcp {
@@ -12,13 +11,14 @@ uint64_t EventStore::Append(
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto id = next_id_++;
-    events_.push_back({id, std::string(session_id), std::move(event_data)});
+    auto& events = events_[std::string(session_id)];
+    events.push_back({id, std::move(event_data)});
 
-    // Trim excess events
-    if (events_.size() > kMaxEventsPerSession) {
-        events_.erase(
-            events_.begin(),
-            events_.begin() + (events_.size() - kMaxEventsPerSession));
+    // Trim excess events for this session only
+    if (events.size() > kMaxEventsPerSession) {
+        events.erase(
+            events.begin(),
+            events.begin() + (events.size() - kMaxEventsPerSession));
     }
     return id;
 }
@@ -28,8 +28,10 @@ std::vector<std::string> EventStore::GetEventsSince(
 {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> result;
-    for (const auto& ev : events_) {
-        if (ev.session_id == session_id && ev.id > last_event_id) {
+    auto it = events_.find(std::string(session_id));
+    if (it == events_.end()) return result;
+    for (const auto& ev : it->second) {
+        if (ev.id > last_event_id) {
             result.push_back(ev.data);
         }
     }
@@ -38,20 +40,12 @@ std::vector<std::string> EventStore::GetEventsSince(
 
 void EventStore::Clear(std::string_view session_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    events_.erase(
-        std::remove_if(events_.begin(), events_.end(),
-            [&](const StoredEvent& ev) {
-                return ev.session_id == session_id;
-            }),
-        events_.end());
+    events_.erase(std::string(session_id));
 }
 
 bool EventStore::HasEvents(std::string_view session_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return std::any_of(events_.begin(), events_.end(),
-        [&](const StoredEvent& ev) {
-            return ev.session_id == session_id;
-        });
+    return events_.find(std::string(session_id)) != events_.end();
 }
 
 } // namespace mcp

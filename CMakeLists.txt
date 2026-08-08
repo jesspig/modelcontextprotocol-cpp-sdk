@@ -48,6 +48,10 @@ project(mcp-cpp-sdk VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ── 构建选项 ──
+option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
+option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
+
 # ── 模块包含 ──
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -87,9 +91,15 @@ add_library(mcp-core STATIC)
 target_sources(mcp-core PRIVATE
     src/core/JsonValue.cpp
     src/core/JsonRpc.cpp
-    src/core/McpTypes.cpp
+    src/core/McpTypesTools.cpp
+    src/core/McpTypesResults.cpp
+    src/core/McpTypesNotifications.cpp
+    src/core/McpTypesOptions.cpp
+    src/core/McpTypesTasks.cpp
+    src/core/McpTypesParams.cpp
     src/core/Content.cpp
-    src/core/Capabilities.cpp)
+    src/core/Capabilities.cpp
+    src/detail/AtomicJsonFile.cpp)
 target_include_directories(mcp-core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)

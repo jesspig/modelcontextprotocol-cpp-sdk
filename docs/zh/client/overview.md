@@ -71,7 +71,7 @@ client->UpdateTask("task-123", result_json);
 client->CancelTask("task-123", "不再需要");
 
 // 轮询任务直到完成（可配置间隔和超时）
-auto completed = client->PollTaskToCompletionAsync("task-123");
+auto completed = client->PollTaskToCompletion("task-123");
 ```
 
 ## 服务端到客户端处理器

@@ -316,8 +316,11 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
 TEST(McpTypesTest, EmptyResultSerializes) {
     EmptyResult r;
     auto jv = SerializeEmptyResult(r);
+    ASSERT_TRUE(jv.Contains("resultType"));
+    EXPECT_EQ(jv["resultType"], JsonValue("complete"));
+
     auto r2 = DeserializeEmptyResult(jv);
-    SUCCEED();
+    EXPECT_EQ(r2.result_type, ResultType::Complete);
 }
 
 // ── CompleteResult ──

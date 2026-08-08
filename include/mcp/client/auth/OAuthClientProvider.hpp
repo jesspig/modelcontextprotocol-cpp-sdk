@@ -12,23 +12,29 @@
 
 namespace mcp {
 
+// Result of the authorization redirect: the authorization code and the
+// `state` value echoed back by the authorization server.
+struct AuthorizationCodeResult {
+    std::string code;
+    std::string state;
+};
+
 // ── OAuthClientOptions (对应 C# ClientOAuthOptions) ──
+// NOTE: OAuthClientProvider is NOT thread-safe — call its methods from a
+// single thread only.
 struct OAuthClientOptions {
     std::string server_url;
     std::string redirect_uri;
     std::optional<std::string> client_id;
     std::optional<std::string> client_secret;
-    std::optional<std::string> client_metadata_document_uri;
     std::vector<std::string> scopes;
     std::shared_ptr<ITokenCache> token_cache;
 
     // Callbacks
     std::function<void(std::string_view url)> authorization_redirect_handler;
-    std::function<std::optional<std::string>()> authorization_code_callback;
-
-    // Advanced
-    std::optional<std::string> auth_server_url;  // explicit AS URL
-    int timeout_seconds{30};
+    // Returns the authorization code plus the `state` echoed back by the
+    // authorization server (CSRF protection). Return nullopt on failure.
+    std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
 };
 
 // ── OAuthClientProvider (对应 C# ClientOAuthProvider) ──
@@ -99,6 +105,9 @@ private:
     // PKCE state
     std::string code_verifier_;
     std::string code_challenge_;
+
+    // CSRF state (RFC 6749 §10.12)
+    std::string state_;
 };
 
 // ── PKCE helpers ──

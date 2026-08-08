@@ -2,9 +2,10 @@
 
 #include <mcp/storage/FileTaskStore.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/AtomicJsonFile.hpp>
 
 #include <filesystem>
-#include <fstream>
+#include <stdexcept>
 
 namespace mcp {
 
@@ -45,19 +46,15 @@ TaskState DeserializeTaskState(const JsonValue& j) {
 FileTaskStore::FileTaskStore(std::filesystem::path storage_path)
     : storage_path_(std::move(storage_path))
 {
-    if (std::filesystem::exists(storage_path_)) {
-        std::ifstream file(storage_path_);
-        if (file.is_open()) {
-            try {
-                std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-                auto json = JsonValue::Parse(content);
-                if (auto* tasks = json.Find("tasks")) {
-                    for (auto& [key, val] : *tasks) {
-                        tasks_[key] = DeserializeTaskState(val);
-                    }
-                }
-            } catch (...) { MCP_LOG(Warning, "task store parse failed"); }
+    try {
+        auto json = detail::LoadJson(storage_path_);
+        if (auto* tasks = json.Find("tasks")) {
+            for (auto& [key, val] : *tasks) {
+                tasks_[key] = DeserializeTaskState(val);
+            }
         }
+    } catch (const std::exception& e) {
+        MCP_LOG(Error, "task store: failed to load " + storage_path_.string() + ": " + e.what());
     }
 }
 
@@ -67,6 +64,9 @@ FileTaskStore::~FileTaskStore() {
 
 TaskState FileTaskStore::CreateTask(const std::string& task_id) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (tasks_.find(task_id) != tasks_.end()) {
+        throw std::runtime_error("task already exists: " + task_id);
+    }
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     TaskState state;
@@ -75,7 +75,9 @@ TaskState FileTaskStore::CreateTask(const std::string& task_id) {
     state.progress = 0;
     state.created_at = std::to_string(now_ms);
     tasks_[task_id] = state;
-    Flush();
+    if (!Flush()) {
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
     return state;
 }
 
@@ -95,8 +97,7 @@ bool FileTaskStore::UpdateTask(
     if (it == tasks_.end()) return false;
     it->second.result = result;
     it->second.status = result ? TaskStatus::Completed : TaskStatus::Working;
-    Flush();
-    return true;
+    return Flush();
 }
 
 bool FileTaskStore::CancelTask(
@@ -108,8 +109,7 @@ bool FileTaskStore::CancelTask(
     if (it == tasks_.end()) return false;
     it->second.status = TaskStatus::Cancelled;
     it->second.error_message = reason;
-    Flush();
-    return true;
+    return Flush();
 }
 
 bool FileTaskStore::SetTaskStatus(const std::string& task_id, TaskStatus status) {
@@ -117,8 +117,7 @@ bool FileTaskStore::SetTaskStatus(const std::string& task_id, TaskStatus status)
     auto it = tasks_.find(task_id);
     if (it == tasks_.end()) return false;
     it->second.status = status;
-    Flush();
-    return true;
+    return Flush();
 }
 
 std::vector<TaskState> FileTaskStore::GetAllTasks() {
@@ -131,21 +130,14 @@ std::vector<TaskState> FileTaskStore::GetAllTasks() {
     return result;
 }
 
-void FileTaskStore::Flush() {
+bool FileTaskStore::Flush() {
     JsonValue::Object root_obj;
     JsonValue::Object tasks_obj;
     for (auto& [id, state] : tasks_) {
         tasks_obj[id] = SerializeTaskState(state);
     }
     root_obj["tasks"] = JsonValue(std::move(tasks_obj));
-    auto tmp_path = storage_path_;
-    tmp_path += ".tmp";
-    {
-        std::ofstream file(tmp_path);
-        if (!file.is_open()) return;
-        file << JsonValue(std::move(root_obj)).Dump(2);
-    }
-    std::filesystem::rename(tmp_path, storage_path_);
+    return detail::WriteAtomic(storage_path_, JsonValue(std::move(root_obj)));
 }
 
 } // namespace mcp

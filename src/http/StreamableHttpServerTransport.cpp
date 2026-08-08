@@ -4,12 +4,20 @@
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
 
+#include <cctype>
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
 
 namespace mcp {
 
 #define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)
+
+namespace {
+constexpr size_t kChannelQueueCapacity = 64;
+constexpr std::chrono::seconds kStatelessTimeout(30);
+const char* kMcpParamHeaderPrefix = "mcp-param-";
+} // namespace
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
     StreamableHttpServerOptions options)
@@ -23,7 +31,7 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     session_id_ = "srv-" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count());
 
-    channel_ = std::make_unique<MessageChannel>(64);
+    channel_ = std::make_unique<MessageChannel>(kChannelQueueCapacity);
 
     // Wire HTTP handlers
     http_server_->SetHandler("POST", options_.endpoint,
@@ -97,9 +105,8 @@ void StreamableHttpServerTransport::HandlePost(
     auto mcp_method = GetMcpHeader(req, "mcp-method");
     auto mcp_name = GetMcpHeader(req, "mcp-name");
 
-    // Parse JSON-RPC message from body
+    // Parse JSON-RPC message from body (single parse inside DeserializeMessage)
     JsonRpcMessage msg;
-    JsonValue body_jv;
     try {
         if (req.body.size() > K_MAX_MESSAGE_SIZE) {
             resp.status_code = 413;
@@ -108,8 +115,6 @@ void StreamableHttpServerTransport::HandlePost(
             resp.headers["content-type"] = "application/json";
             return;
         }
-        body_jv = JsonValue::Parse(req.body);
-        if (body_jv.IsNull()) throw std::runtime_error("parse failed");
         msg = DeserializeMessage(req.body);
     } catch (...) {
         MCP_LOG(Warning, "request body parse failed");
@@ -118,6 +123,20 @@ void StreamableHttpServerTransport::HandlePost(
         resp.body = R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}})";
         resp.headers["content-type"] = "application/json";
         return;
+    }
+
+    // Reuse the parsed message for header validation instead of re-parsing the body
+    JsonValue body_jv;
+    if (auto* req_ptr = std::get_if<JsonRpcRequest>(&msg)) {
+        JsonValue::Object body_obj;
+        body_obj["method"] = JsonValue(req_ptr->method);
+        if (req_ptr->params) body_obj["params"] = *req_ptr->params;
+        body_jv = JsonValue(std::move(body_obj));
+    } else if (auto* notif = std::get_if<JsonRpcNotification>(&msg)) {
+        JsonValue::Object body_obj;
+        body_obj["method"] = JsonValue(notif->method);
+        if (notif->params) body_obj["params"] = *notif->params;
+        body_jv = JsonValue(std::move(body_obj));
     }
 
     // Validate MCP headers match body
@@ -157,16 +176,16 @@ void StreamableHttpServerTransport::HandlePost(
         for (const auto& [key, val] : req.headers) {
             std::string key_lower = key;
             for (auto& c : key_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            const std::string prefix = "mcp-param-";
+            const std::string prefix = kMcpParamHeaderPrefix;
             if (key_lower.substr(0, prefix.size()) == prefix) {
                 auto param_name = key.substr(prefix.size());
                 meta_headers_obj[param_name] = JsonValue(val);
             }
         }
-            if (!meta_headers_obj.empty()) {
-                if (!req_ptr->meta) req_ptr->meta = JsonValue(JsonValue::object_tag);
-                (*req_ptr->meta)["x-mcp-headers"] = JsonValue(std::move(meta_headers_obj));
-            }
+        if (!meta_headers_obj.empty()) {
+            if (!req_ptr->meta) req_ptr->meta = JsonValue(JsonValue::object_tag);
+            (*req_ptr->meta)["x-mcp-headers"] = JsonValue(std::move(meta_headers_obj));
+        }
     }
 
     // Check if this is a request (needs response) or notification (no response)
@@ -181,51 +200,72 @@ void StreamableHttpServerTransport::HandlePost(
     }
 
     if (needs_response) {
-        if (channel_ && channel_->IsOpen()) {
-            if (options_.stateless && req_id) {
-                // Stateless mode: wait for response synchronously
-                auto id_str = RequestIdToString(*req_id);
-                auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
-                auto future = promise->get_future();
+        if (!(channel_ && channel_->IsOpen())) {
+            resp.status_code = 503;
+            resp.status_text = "Service Unavailable";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
+            resp.headers["content-type"] = "application/json";
+            return;
+        }
+        if (options_.stateless && req_id) {
+            // Stateless mode: wait for response synchronously
+            auto id_str = RequestIdToString(*req_id);
+            auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
+            auto future = promise->get_future();
+            {
+                std::lock_guard<std::mutex> lock(pending_mutex_);
+                pending_responses_[id_str] = promise;
+            }
+            if (!channel_->TrySend(std::move(msg))) {
                 {
                     std::lock_guard<std::mutex> lock(pending_mutex_);
-                    pending_responses_[id_str] = promise;
+                    pending_responses_.erase(id_str);
                 }
-                channel_->Send(std::move(msg));
-
-                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-                while (future.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
-                    if (std::chrono::steady_clock::now() >= deadline) break;
-                }
-
-                if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    auto response = future.get();
-                    resp.body = SerializeMessage(response);
-                    resp.status_code = 200;
-                    resp.status_text = "OK";
-                    resp.headers["content-type"] = "application/json";
-                } else {
-                    {
-                        std::lock_guard<std::mutex> lock(pending_mutex_);
-                        pending_responses_.erase(id_str);
-                    }
-                    resp.status_code = 500;
-                    resp.status_text = "Internal Server Error";
-                    resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout"}})";
-                    resp.headers["content-type"] = "application/json";
-                }
-            } else {
-                channel_->Send(std::move(msg));
-                resp.status_code = 202;
-                resp.status_text = "Accepted";
-                resp.body = R"({"jsonrpc":"2.0","result":{"resultType":"complete"}})";
+                resp.status_code = 503;
+                resp.status_text = "Service Unavailable";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
                 resp.headers["content-type"] = "application/json";
+                return;
             }
+
+            auto deadline = std::chrono::steady_clock::now() + kStatelessTimeout;
+            if (future.wait_until(deadline) != std::future_status::ready) {
+                {
+                    std::lock_guard<std::mutex> lock(pending_mutex_);
+                    pending_responses_.erase(id_str);
+                }
+                resp.status_code = 500;
+                resp.status_text = "Internal Server Error";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout"}})";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
+            auto response = future.get();
+            resp.body = SerializeMessage(response);
+            resp.status_code = 200;
+            resp.status_text = "OK";
+            resp.headers["content-type"] = "application/json";
+        } else {
+            if (!channel_->TrySend(std::move(msg))) {
+                resp.status_code = 503;
+                resp.status_text = "Service Unavailable";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
+            resp.status_code = 202;
+            resp.status_text = "Accepted";
+            resp.body = R"({"jsonrpc":"2.0","result":{"resultType":"complete"}})";
+            resp.headers["content-type"] = "application/json";
         }
     } else {
         // Notification: fire-and-forget
-        if (channel_ && channel_->IsOpen()) {
-            channel_->Send(std::move(msg));
+        if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
+            resp.status_code = 503;
+            resp.status_text = "Service Unavailable";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
+            resp.headers["content-type"] = "application/json";
+            return;
         }
         resp.status_code = 202;
         resp.status_text = "Accepted";
@@ -260,9 +300,8 @@ void StreamableHttpServerTransport::HandleGet(
     resp.headers["content-type"] = "text/event-stream";
     resp.headers["cache-control"] = "no-cache";
 
-    // libhv sends resp.body after HandleGet returns, at which point the SSE
-    // client has been registered. Setting the body as the endpoint event
-    // ensures it arrives as the first SSE message.
+    // The body carries the endpoint event; HttpServer writes it to the SSE
+    // stream explicitly after flushing the headers.
     resp.body = "event: endpoint\ndata: " + options_.endpoint + "\n\n";
 }
 
@@ -324,7 +363,7 @@ std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(
     const HttpRequest& req, std::string_view header_name) const
 {
     auto key = std::string(header_name);
-    for (auto& c : key) c = std::tolower(c);
+    for (auto& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     auto it = req.headers.find(key);
     if (it != req.headers.end()) return std::optional<std::string>(it->second);
     return std::nullopt;

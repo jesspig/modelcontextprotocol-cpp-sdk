@@ -17,13 +17,10 @@
 | `redirect_uri` | `string` | OAuth 重定向 URI |
 | `client_id` | `optional<string>` | 客户端标识（未提供时自动注册） |
 | `client_secret` | `optional<string>` | 客户端密钥（可选） |
-| `client_metadata_document_uri` | `optional<string>` | 外部元数据文档 URI |
 | `scopes` | `vector<string>` | 请求的 OAuth 作用域 |
 | `token_cache` | `shared_ptr<ITokenCache>` | 令牌持久化（默认：`InMemoryTokenCache`） |
-| `auth_server_url` | `optional<string>` | 显式授权服务器 URL（覆盖元数据发现） |
-| `timeout_seconds` | `int` | HTTP 请求超时（默认 30） |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
-| `authorization_code_callback` | `function<optional<string>()>` | 返回授权码的回调 |
+| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码及服务器回显的 `state`（`AuthorizationCodeResult{code, state}`），失败时返回 `nullopt` |
 
 ## 设置
 
@@ -38,8 +35,9 @@ oauth_opts.authorization_redirect_handler =
         // 在浏览器中打开 URL 让用户授权
     };
 oauth_opts.authorization_code_callback =
-    []() -> std::optional<std::string> {
-        // 从重定向返回授权码
+    []() -> std::optional<AuthorizationCodeResult> {
+        // 返回授权码及授权服务器回显的 `state`（CSRF 防护）
+        return AuthorizationCodeResult{"auth-code", "state"};
     };
 
 auto auth = std::make_shared<OAuthClientProvider>(oauth_opts);

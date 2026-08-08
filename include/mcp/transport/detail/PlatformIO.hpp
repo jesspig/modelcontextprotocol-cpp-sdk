@@ -25,7 +25,6 @@ struct PipeHandle {
     virtual size_t Write(const char* data, size_t size) = 0;
     virtual void Close() = 0;
     virtual uintptr_t native_handle() const = 0;
-    virtual bool WaitForData(int timeout_ms) = 0;
 };
 
 // ── Process startup info ──

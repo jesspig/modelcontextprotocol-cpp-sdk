@@ -31,48 +31,53 @@ inline LogLevel GetLogLevel() {
     return level;
 }
 
-inline void LogWrite(LogLevel level, std::string_view tag, std::string_view message) {
-    if (static_cast<int>(level) > static_cast<int>(GetLogLevel())) return;
+namespace detail {
 
+inline std::string FormatLogTimestamp() {
     auto now = std::chrono::system_clock::now();
     auto tt = std::chrono::system_clock::to_time_t(now);
     char time_buf[32] = {};
     std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", std::gmtime(&tt));
+    return time_buf;
+}
+
+} // namespace detail
+
+inline void LogWrite(LogLevel level, std::string_view tag, std::string_view message) {
+    if (static_cast<int>(level) > static_cast<int>(GetLogLevel())) return;
+
+    auto ts = detail::FormatLogTimestamp();
 
     if (!tag.empty())
-        std::fprintf(stderr, "[MCP][%s][%s] %.*s\n", time_buf, tag.data(),
+        std::fprintf(stderr, "[MCP][%s][%s] %.*s\n", ts.c_str(), tag.data(),
             static_cast<int>(message.size()), message.data());
     else
-        std::fprintf(stderr, "[MCP][%s] %.*s\n", time_buf,
+        std::fprintf(stderr, "[MCP][%s] %.*s\n", ts.c_str(),
             static_cast<int>(message.size()), message.data());
 }
 
 struct LogContext {
-    std::string_view request_id;
-    std::string_view method;
-    std::string_view session_id;
-    std::string_view peer;
+    std::string request_id;
+    std::string method;
+    std::string session_id;
+    std::string peer;
 };
 
 inline void LogMessage(LogLevel level, const char* file, int line, const LogContext& ctx, const std::string& msg) {
     if (static_cast<int>(level) > static_cast<int>(GetLogLevel())) return;
 
-    auto now = std::chrono::system_clock::now();
-    auto tt = std::chrono::system_clock::to_time_t(now);
-    char time_buf[32] = {};
-    std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", std::gmtime(&tt));
-
     std::string ctx_str;
     if (!ctx.request_id.empty())
-        ctx_str += " [req=" + std::string(ctx.request_id) + "]";
+        ctx_str += " [req=" + ctx.request_id + "]";
     if (!ctx.method.empty())
-        ctx_str += " [method=" + std::string(ctx.method) + "]";
+        ctx_str += " [method=" + ctx.method + "]";
     if (!ctx.session_id.empty())
-        ctx_str += " [session=" + std::string(ctx.session_id) + "]";
+        ctx_str += " [session=" + ctx.session_id + "]";
     if (!ctx.peer.empty())
-        ctx_str += " [peer=" + std::string(ctx.peer) + "]";
+        ctx_str += " [peer=" + ctx.peer + "]";
 
-    std::fprintf(stderr, "[MCP][%s]%s %s:%d %s\n", time_buf,
+    auto ts = detail::FormatLogTimestamp();
+    std::fprintf(stderr, "[MCP][%s]%s %s:%d %s\n", ts.c_str(),
         ctx_str.c_str(), file, line, msg.c_str());
 }
 
@@ -98,5 +103,3 @@ inline void LogMessage(LogLevel level, const char* file, int line, const LogCont
             ::mcp::LogMessage(::mcp::LogLevel::LEVEL, __FILE__, __LINE__, ctx, __VA_ARGS__); \
         } \
     } while(0)
-
-#define MCP_BUG(msg)      MCP_LOG_TAG(Error, "BUG", msg)
