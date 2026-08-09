@@ -5,6 +5,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/Log.hpp>
 #include <detail/JsonSerialize_fwd.hpp>
+#include <detail/JsonSchemaValidator.hpp>
 
 #include <thread>
 #include <set>
@@ -707,6 +708,17 @@ void McpServer::HandleCallTool(
             tool->InvokeAsync(ctx, std::move(*result_promise));
             try {
                 auto result = result_future.get();
+                const auto& tool_def = tool->ProtocolTool();
+                if (tool_def.output_schema && result.structured_content) {
+                    std::string schema_error;
+                    if (!detail::ValidateJsonSchema(*result.structured_content,
+                            *tool_def.output_schema, schema_error)) {
+                        captured_promise->set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InvalidParams,
+                                "tool output does not match outputSchema: " + schema_error)));
+                        return;
+                    }
+                }
                 captured_promise->set_value(SerializeCallToolResult(result));
             } catch (...) {
                 captured_promise->set_exception(std::current_exception());
