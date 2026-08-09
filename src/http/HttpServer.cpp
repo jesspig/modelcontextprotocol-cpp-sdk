@@ -15,6 +15,26 @@ namespace {
 
 constexpr int kHttpWorkerThreads = 8;
 
+// Strip an optional ":port" suffix and validate a localhost host literal.
+bool IsLocalhostHost(const std::string& host_with_port) {
+    std::string h = host_with_port;
+    auto colon = h.rfind(':');
+    if (colon != std::string::npos) {
+        if (h.front() == '[' && h.back() == ']') {
+            // bare IPv6 literal
+            h = h.substr(1, h.size() - 2);
+        } else if (h.front() == '[') {
+            // [::1]:port
+            auto close = h.find(']');
+            if (close != std::string::npos) h = h.substr(1, close - 1);
+        } else {
+            // host:port
+            h = h.substr(0, colon);
+        }
+    }
+    return h == "localhost" || h == "127.0.0.1" || h == "::1";
+}
+
 } // namespace
 
 namespace mcp {
@@ -92,12 +112,18 @@ void HttpServer::Start() {
 
                 // Call the registered handler
                 HttpResponse our_resp;
-                try {
-                    h(our_req, our_resp);
-                } catch (const std::exception& e) {
-                    MCP_LOG(Error, std::string("HTTP handler threw: ") + e.what());
-                    our_resp.status_code = 500;
-                    our_resp.status_text = "Internal Server Error";
+                if (!IsRequestAllowed(our_req)) {
+                    our_resp.status_code = 403;
+                    our_resp.status_text = "Forbidden";
+                    MCP_LOG(Warning, "HTTP request rejected: Host/Origin not allowed");
+                } else {
+                    try {
+                        h(our_req, our_resp);
+                    } catch (const std::exception& e) {
+                        MCP_LOG(Error, std::string("HTTP handler threw: ") + e.what());
+                        our_resp.status_code = 500;
+                        our_resp.status_text = "Internal Server Error";
+                    }
                 }
 
                 writer->Begin();
@@ -191,6 +217,28 @@ void HttpServer::Stop() {
         impl->service.reset();
     }
     std::atomic_store(&impl_, std::shared_ptr<HttpServerImpl>());
+}
+
+bool HttpServer::IsRequestAllowed(const HttpRequest& req) const {
+    auto host_it = req.headers.find("host");
+    if (host_it == req.headers.end()) return false;
+    bool host_ok = false;
+    if (!options_.allowed_hosts.empty()) {
+        for (const auto& allowed : options_.allowed_hosts) {
+            if (host_it->second == allowed) { host_ok = true; break; }
+        }
+    } else {
+        host_ok = IsLocalhostHost(host_it->second);
+    }
+    if (!host_ok) return false;
+
+    auto origin_it = req.headers.find("origin");
+    if (origin_it == req.headers.end() || options_.allowed_origins.empty())
+        return true;
+    for (const auto& allowed : options_.allowed_origins) {
+        if (origin_it->second == allowed) return true;
+    }
+    return false;
 }
 
 void HttpServer::SetHandler(std::string_view method, std::string_view path,

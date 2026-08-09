@@ -11,6 +11,15 @@
 #include <sstream>
 #include <stdexcept>
 
+#ifdef _WIN32
+// Windows.h defines a GetObject macro that clashes with JsonValue::GetObject
+// when translation units are merged (Unity build).
+#pragma push_macro("GetObject")
+#ifdef GetObject
+#undef GetObject
+#endif
+#endif
+
 namespace mcp {
 
 namespace {
@@ -61,6 +70,25 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
                 HandleGet(req, resp);
             });
     }
+
+    // Session termination (RFC 9110 DELETE). Stateless mode has no session:
+    // reject with 405. Closing the channel ends the session's message loop.
+    http_server_->SetHandler("DELETE", options_.endpoint,
+        [this](const HttpRequest&, HttpResponse& resp) {
+            if (options_.stateless) {
+                resp.status_code = 405;
+                resp.status_text = "Method Not Allowed";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32601,"message":"method not found"}})";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
+            if (channel_) channel_->Close();
+            SetDisconnected();
+            resp.status_code = 200;
+            resp.status_text = "OK";
+            resp.body = "{}";
+            resp.headers["content-type"] = "application/json";
+        });
 }
 
 StreamableHttpServerTransport::~StreamableHttpServerTransport() {
@@ -275,6 +303,20 @@ void StreamableHttpServerTransport::HandlePost(
                 return;
             }
             auto response = future.get();
+            // Mirror x-mcp-header annotations from the result meta into
+            // Mcp-Param-* response headers (SEP-2243).
+            if (const auto* r = std::get_if<JsonRpcResponse>(&response)) {
+                if (r->result.IsObject()) {
+                    if (auto* meta = r->result.Find("_meta"); meta && meta->IsObject()) {
+                        if (auto* xhc = meta->Find("x-mcp-header"); xhc && xhc->IsObject()) {
+                            for (const auto& [hk, hv] : xhc->GetObject()) {
+                                resp.headers["mcp-param-" + hk] =
+                                    hv.IsString() ? hv.GetString() : hv.Dump();
+                            }
+                        }
+                    }
+                }
+            }
             resp.body = SerializeMessage(response);
             resp.status_code = 200;
             resp.status_text = "OK";

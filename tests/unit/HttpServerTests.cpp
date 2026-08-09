@@ -1,13 +1,17 @@
 // HttpServerTests — unit tests for HttpServer, EventStore, and StreamableHttp transports
 
+#include <mcp/Methods.hpp>
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
+#include <mcp/protocol/McpSessionHandler.hpp>
+#include <mcp/protocol/WireCodec.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
 #include <hv/requests.h>
 
 #include <gtest/gtest.h>
+#include "TestServerUtil.hpp"
 
 #include <chrono>
 #include <string>
@@ -17,64 +21,11 @@
 using MCP_Request = mcp::HttpRequest;
 using MCP_Response = mcp::HttpResponse;
 
-static const uint16_t kBasePort = 18765;
-
-namespace {
-
-// Port availability probe: a fresh bind succeeds only when the port is free.
-bool PortIsFree(uint16_t port) {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) return false;
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int rc = bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    closesocket(s);
-    return rc == 0;
-#else
-    int s = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return false;
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int rc = ::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    ::close(s);
-    return rc == 0;
-#endif
-}
-
-// Pick a free port near the preferred one so parallel test runs don't collide.
-uint16_t PickFreePort(uint16_t preferred) {
-    for (uint16_t p = preferred; p < preferred + 100; ++p) {
-        if (PortIsFree(p)) return p;
-    }
-    return preferred;
-}
-
-// Poll until the server answers any request (ready) or the deadline passes.
-bool WaitUntilReady(uint16_t port) {
-    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/ready";
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (std::chrono::steady_clock::now() < deadline) {
-        auto r = requests::get(url.c_str());
-        if (r) return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    return false;
-}
-
-} // namespace
-
 // ============================================================
 // HttpServer
 // ============================================================
 TEST(HttpServerTest, GetPing) {
-    auto port = PickFreePort(kBasePort);
+    auto port = PickFreePort(kTestBasePort);
     mcp::HttpServer server(port);
     server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
         resp.body = "pong";
@@ -90,7 +41,7 @@ TEST(HttpServerTest, GetPing) {
 }
 
 TEST(HttpServerTest, PostEcho) {
-    auto port = PickFreePort(kBasePort);
+    auto port = PickFreePort(kTestBasePort);
     mcp::HttpServer server(port);
     server.SetHandler("POST", "/echo", [](const MCP_Request& req, MCP_Response& resp) {
         resp.body = req.body;
@@ -106,7 +57,7 @@ TEST(HttpServerTest, PostEcho) {
 }
 
 TEST(HttpServerTest, NotFound) {
-    auto port = PickFreePort(kBasePort);
+    auto port = PickFreePort(kTestBasePort);
     mcp::HttpServer server(port);
     server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
         resp.body = "pong";
@@ -121,7 +72,7 @@ TEST(HttpServerTest, NotFound) {
 }
 
 TEST(HttpServerTest, MultipleHandlers) {
-    auto port = PickFreePort(kBasePort);
+    auto port = PickFreePort(kTestBasePort);
     mcp::HttpServer server(port);
     server.SetHandler("GET", "/a", [](const MCP_Request&, MCP_Response& resp) { resp.body = "A"; });
     server.SetHandler("GET", "/b", [](const MCP_Request&, MCP_Response& resp) { resp.body = "B"; });
@@ -181,4 +132,118 @@ TEST(StreamableHttpTest, McpHeadersValidation) {
 
     EXPECT_FALSE(mcp::StreamableHttpServerTransport::ValidateMcpHeaders("tools/call", "", body, error));
     EXPECT_FALSE(error.empty());
+}
+
+// SEP-2243: a result meta "x-mcp-header" annotation is mirrored into
+// Mcp-Param-* response headers in stateless mode.
+TEST(StreamableHttpTest, StatelessResponseMirrorsMcpParamHeaders) {
+    auto port = PickFreePort(kTestBasePort + 500);
+
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = true;
+    opts.enable_legacy_sse = false;
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            mcp::JsonValue result(mcp::JsonValue::object_tag);
+            mcp::JsonValue meta(mcp::JsonValue::object_tag);
+            mcp::JsonValue xhc(mcp::JsonValue::object_tag);
+            xhc["foo"] = mcp::JsonValue("bar");
+            meta["x-mcp-header"] = std::move(xhc);
+            result["_meta"] = std::move(meta);
+            p.set_value(std::move(result));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    http_headers hdrs;
+    hdrs["Content-Type"] = "application/json";
+    hdrs["Mcp-Method"] = "tools/call";
+    auto r = requests::post(
+        ("http://127.0.0.1:" + std::to_string(port) + "/mcp").c_str(),
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
+        hdrs);
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->status_code, 200);
+    EXPECT_EQ(r->GetHeader("mcp-param-foo"), "bar");
+
+    handler->Close();
+    transport->Close();
+}
+
+// ── DNS rebinding protection: foreign Host headers are rejected ──
+TEST(HttpServerTest, HostValidationRejectsForeignHost) {
+    auto port = PickFreePort(kTestBasePort + 900);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto base = "http://127.0.0.1:" + std::to_string(port);
+    auto ok = requests::get((base + "/ping").c_str());
+    ASSERT_NE(ok, nullptr);
+    EXPECT_EQ(ok->status_code, 200);
+
+    http_headers hdrs;
+    hdrs["Host"] = "evil.example.com";
+    auto rejected = requests::get((base + "/ping").c_str(), hdrs);
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(rejected->status_code, 403);
+    server.Stop();
+}
+
+TEST(HttpServerTest, HostValidationAllowsConfiguredHosts) {
+    auto port = PickFreePort(kTestBasePort + 950);
+    mcp::HttpServerOptions opts;
+    opts.allowed_hosts = {"my-host:1234"};
+    mcp::HttpServer server(port, opts);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto base = "http://127.0.0.1:" + std::to_string(port);
+    http_headers hdrs;
+    hdrs["Host"] = "my-host:1234";
+    auto ok = requests::get((base + "/ping").c_str(), hdrs);
+    ASSERT_NE(ok, nullptr);
+    EXPECT_EQ(ok->status_code, 200);
+
+    auto rejected = requests::get((base + "/ping").c_str());
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(rejected->status_code, 403);
+    server.Stop();
+}
+
+// ── DELETE terminates a sessionful transport (405 in stateless mode) ──
+TEST(StreamableHttpTest, DeleteTerminatesSession) {
+    auto port = PickFreePort(kTestBasePort + 1000);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = false;
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto r = requests::Delete(
+        ("http://127.0.0.1:" + std::to_string(port) + "/mcp").c_str());
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->status_code, 200);
+
+    handler->Close();
+    transport->Close();
 }
