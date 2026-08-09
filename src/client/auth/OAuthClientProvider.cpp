@@ -42,6 +42,42 @@ std::string UrlEncode(std::string_view input) {
 
 namespace mcp {
 
+namespace {
+
+// Parse an OAuth authorization-server metadata document.
+OAuthMetadata ParseMetadataJson(const JsonValue& json) {
+    OAuthMetadata meta;
+    if (auto* v = json.Find("issuer"))
+        meta.issuer = v->GetString();
+    if (auto* v = json.Find("authorization_endpoint"))
+        meta.authorization_endpoint = v->GetString();
+    if (auto* v = json.Find("token_endpoint"))
+        meta.token_endpoint = v->GetString();
+    if (auto* v = json.Find("revocation_endpoint"))
+        meta.revocation_endpoint = v->GetString();
+    if (auto* v = json.Find("registration_endpoint"))
+        meta.registration_endpoint = v->GetString();
+    if (auto* v = json.Find("jwks_uri"))
+        meta.jwks_uri = v->GetString();
+
+    auto extract_vec = [&](const char* key, std::vector<std::string>& vec) {
+        if (auto* v = json.Find(key)) {
+            if (v->IsArray()) {
+                for (const auto& item : v->GetArray())
+                    if (item.IsString()) vec.push_back(item.GetString());
+            }
+        }
+    };
+    extract_vec("scopes_supported", meta.scopes_supported);
+    extract_vec("response_types_supported", meta.response_types_supported);
+    extract_vec("grant_types_supported", meta.grant_types_supported);
+    extract_vec("code_challenge_methods_supported", meta.code_challenge_methods_supported);
+
+    return meta;
+}
+
+} // anonymous namespace
+
 // ====================================================================
 // PKCE implementation
 // ====================================================================
@@ -172,6 +208,30 @@ bool OAuthClientProvider::Authenticate() {
     return StartAuthorizationFlow();
 }
 
+bool OAuthClientProvider::AuthenticateClientCredentials() {
+    if (!metadata_) {
+        if (!DiscoverMetadata()) return false;
+    }
+    if (!options_.client_id || !options_.client_secret ||
+        options_.client_secret->empty()) {
+        MCP_LOG(Error, "client_credentials requires client_id and client_secret");
+        return false;
+    }
+    std::map<std::string, std::string> form;
+    form["grant_type"] = "client_credentials";
+    form["client_id"] = *options_.client_id;
+    form["client_secret"] = *options_.client_secret;
+    for (auto& s : options_.scopes) {
+        if (!form["scope"].empty()) form["scope"] += " ";
+        form["scope"] += s;
+    }
+
+    auto json = HttpPost(metadata_->token_endpoint, form);
+    if (json.IsNull()) return false;
+    if (!ValidateTokenIssuer(json)) return false;
+    return ParseAndStoreTokenResponse(json);
+}
+
 bool OAuthClientProvider::DiscoverMetadata() {
     // Try RFC 8414 well-known discovery first, fall back to hardcoded URLs
     if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
@@ -264,7 +324,10 @@ bool OAuthClientProvider::ExchangeCodeForToken(
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;
     if (!ValidateTokenIssuer(json)) return false;
+    return ParseAndStoreTokenResponse(json);
+}
 
+bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
     TokenContainer tokens;
     if (auto* v = json.Find("access_token")) tokens.access_token = v->GetString();
     if (auto* v = json.Find("refresh_token")) tokens.refresh_token = v->GetString();
@@ -367,6 +430,41 @@ bool OAuthClientProvider::StepUpAuthorization(
     return StartAuthorizationFlow();
 }
 
+bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate) {
+    // RFC 9728: the challenge advertises "resource_metadata=\"<uri>\"".
+    auto header = std::string(www_authenticate);
+    auto pos = header.find("resource_metadata=");
+    if (pos == std::string::npos) return false;
+    pos = header.find('"', pos);
+    if (pos == std::string::npos) return false;
+    auto end = header.find('"', pos + 1);
+    if (end == std::string::npos) return false;
+    auto metadata_url = header.substr(pos + 1, end - pos - 1);
+
+    auto resp = requests::get(metadata_url.c_str());
+    if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
+    auto json = JsonValue::Parse(resp->body);
+    if (!json.IsObject()) return false;
+
+    auto meta = ParseMetadataJson(json);
+    if (meta.issuer.empty() && meta.authorization_endpoint.empty() &&
+        meta.token_endpoint.empty()) {
+        return false;
+    }
+    if (!metadata_) metadata_ = OAuthMetadata{};
+    if (!meta.issuer.empty()) metadata_->issuer = meta.issuer;
+    if (!meta.authorization_endpoint.empty()) metadata_->authorization_endpoint = meta.authorization_endpoint;
+    if (!meta.token_endpoint.empty()) metadata_->token_endpoint = meta.token_endpoint;
+    if (meta.revocation_endpoint) metadata_->revocation_endpoint = meta.revocation_endpoint;
+    if (meta.registration_endpoint) metadata_->registration_endpoint = meta.registration_endpoint;
+    if (meta.jwks_uri) metadata_->jwks_uri = meta.jwks_uri;
+    if (!meta.scopes_supported.empty()) metadata_->scopes_supported = meta.scopes_supported;
+    if (!meta.response_types_supported.empty()) metadata_->response_types_supported = meta.response_types_supported;
+    if (!meta.grant_types_supported.empty()) metadata_->grant_types_supported = meta.grant_types_supported;
+    if (!meta.code_challenge_methods_supported.empty()) metadata_->code_challenge_methods_supported = meta.code_challenge_methods_supported;
+    return true;
+}
+
 std::optional<OAuthMetadata> OAuthMetadata::Discover(
     std::string_view server_url)
 {
@@ -378,34 +476,7 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
     if (resp && resp->status_code >= 200 && resp->status_code < 300) {
         auto json = JsonValue::Parse(resp->body);
         if (json.IsObject()) {
-            OAuthMetadata meta;
-            if (auto* v = json.Find("issuer"))
-                meta.issuer = v->GetString();
-            if (auto* v = json.Find("authorization_endpoint"))
-                meta.authorization_endpoint = v->GetString();
-            if (auto* v = json.Find("token_endpoint"))
-                meta.token_endpoint = v->GetString();
-            if (auto* v = json.Find("revocation_endpoint"))
-                meta.revocation_endpoint = v->GetString();
-            if (auto* v = json.Find("registration_endpoint"))
-                meta.registration_endpoint = v->GetString();
-            if (auto* v = json.Find("jwks_uri"))
-                meta.jwks_uri = v->GetString();
-
-            auto extract_vec = [&](const char* key, std::vector<std::string>& vec) {
-                if (auto* v = json.Find(key)) {
-                    if (v->IsArray()) {
-                        for (const auto& item : v->GetArray())
-                            if (item.IsString()) vec.push_back(item.GetString());
-                    }
-                }
-            };
-            extract_vec("scopes_supported", meta.scopes_supported);
-            extract_vec("response_types_supported", meta.response_types_supported);
-            extract_vec("grant_types_supported", meta.grant_types_supported);
-            extract_vec("code_challenge_methods_supported", meta.code_challenge_methods_supported);
-
-            return meta;
+            return ParseMetadataJson(json);
         }
     }
 
