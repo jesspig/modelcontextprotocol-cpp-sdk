@@ -293,6 +293,11 @@ void McpSessionHandler::SendResponseAsync(const JsonRpcRequest& req, std::future
             std::lock_guard<std::mutex> lock(self->codec_mutex_);
             codec = self->codec_;
         }
+        // Wait for the handler's promise, aborting once the session closes so
+        // Close() never blocks on a promise that is never satisfied.
+        while (future.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
+            if (self->closed_.load()) return;
+        }
         try {
             auto result = future.get();
             if (self->closed_.load()) return;

@@ -9,6 +9,7 @@
 #include <hv/HttpClient.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -47,6 +48,7 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
 struct SseEvent {
     std::string event_type;
     std::string data;
+    std::string id;   // from the "id:" line
 };
 
 SseEvent ParseSseEvent(const std::string& block) {
@@ -75,6 +77,13 @@ SseEvent ParseSseEvent(const std::string& block) {
             else val.clear();
             if (!evt.data.empty()) evt.data += "\n";
             evt.data += val;
+        }
+        else if (line.size() > 3 && line.compare(0, 3, "id:") == 0) {
+            auto val = line.substr(3);
+            auto n = val.find_first_not_of(" \t");
+            if (n != std::string::npos) val = val.substr(n);
+            else val.clear();
+            evt.id = std::move(val);
         }
     }
     return evt;
@@ -141,27 +150,38 @@ public:
 
 private:
     void SseReadLoop() {
-        HttpRequest req;
-        req.method = HTTP_GET;
-        req.url = server_url_;
-        req.headers["Accept"] = "text/event-stream";
-
-        req.http_cb = [this](HttpMessage* /*msg*/, http_parser_state state,
-                             const char* data, size_t size) {
-            if (state == HP_BODY && data && size) {
-                sse_buffer_.append(data, size);
-
-                size_t pos;
-                while ((pos = sse_buffer_.find("\n\n")) != std::string::npos) {
-                    auto block = sse_buffer_.substr(0, pos);
-                    sse_buffer_.erase(0, pos + 2);
-                    DispatchSseEvent(block);
-                }
+        while (running_) {
+            HttpRequest req;
+            req.method = HTTP_GET;
+            req.url = server_url_;
+            req.headers["Accept"] = "text/event-stream";
+            if (!last_event_id_.empty()) {
+                req.headers["Last-Event-ID"] = last_event_id_;
             }
-        };
 
-        HttpResponse resp;
-        http_client_->send(&req, &resp);
+            req.http_cb = [this](HttpMessage* /*msg*/, http_parser_state state,
+                                 const char* data, size_t size) {
+                if (state == HP_BODY && data && size) {
+                    sse_buffer_.append(data, size);
+
+                    size_t pos;
+                    while ((pos = sse_buffer_.find("\n\n")) != std::string::npos) {
+                        auto block = sse_buffer_.substr(0, pos);
+                        sse_buffer_.erase(0, pos + 2);
+                        DispatchSseEvent(block);
+                    }
+                }
+            };
+
+            HttpResponse resp;
+            http_client_->send(&req, &resp);
+
+            // The stream ended. Exit on explicit Close, otherwise back off
+            // and reconnect (the server replays missed events via
+            // Last-Event-ID).
+            if (!running_) break;
+            if (!WaitForReconnect()) break;
+        }
 
         if (running_.exchange(false)) {
             {
@@ -173,8 +193,27 @@ private:
         }
     }
 
+    bool WaitForReconnect() {
+        constexpr std::chrono::milliseconds kBackoffBase(1000);
+        constexpr int kMaxBackoffSteps = 5;
+        for (int step = 0; step < kMaxBackoffSteps; ++step) {
+            auto deadline = std::chrono::steady_clock::now()
+                + kBackoffBase * (1 << step);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (!running_.load()) return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+        return false;
+    }
+
     void DispatchSseEvent(const std::string& block) {
         auto evt = ParseSseEvent(block);
+        if (evt.id.empty()) {
+            last_event_id_.clear();
+        } else {
+            last_event_id_ = std::move(evt.id);
+        }
 
         if (evt.event_type == "endpoint") {
             try {
@@ -236,6 +275,7 @@ private:
     std::string name_;
     std::string endpoint_url_;
     std::string sse_buffer_;
+    std::string last_event_id_;
 
     std::thread sse_thread_;
     std::thread send_thread_;
