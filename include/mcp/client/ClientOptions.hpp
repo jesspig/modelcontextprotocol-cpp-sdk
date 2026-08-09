@@ -41,6 +41,10 @@ struct MCP_API ClientOptions {
         bool auto_fulfill{true};
         int max_rounds{8};
         std::chrono::seconds round_timeout{600};
+
+        // Hard budget for the whole MRTR flow across all rounds. Zero
+        // disables the cap (round_timeout applies per round).
+        std::chrono::seconds max_total_timeout{0};
     };
     std::optional<InputRequiredConfig> input_required_config;
 

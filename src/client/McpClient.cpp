@@ -1,5 +1,7 @@
 // McpClient.cpp
 // McpClient and VersionNegotiation implementation
+#include <detail/JsonFields.hpp>
+#include <detail/ResponseCache.hpp>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Log.hpp>
@@ -28,6 +30,75 @@ namespace {
             caps.extensions = std::nullopt;
         }
     }
+
+    // ── Pagination ──
+    // Defensive cap: never page more than this many times (cursor loop guard).
+    constexpr size_t kMaxAutoPages = 64;
+
+    // ── Helper: send request and check for protocol errors ──
+    static JsonValue DoSendRequest(
+        McpSessionHandler& handler,
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout)
+    {
+        auto future = handler.SendRequest(method, std::move(params), meta, timeout);
+        auto result = future.get();
+
+        if (result.Contains("code") && result["code"].GetInt() < 0) {
+            std::string msg = "request failed";
+            if (result.Contains("message"))
+                msg = result["message"].GetString();
+            throw McpError(
+                static_cast<McpErrorCode>(result["code"].GetInt()),
+                std::move(msg));
+        }
+
+        return result;
+    }
+
+    // Fetch a paginated list method. With an explicit cursor a single page is
+    // returned (caller-driven pagination); without one all pages are merged
+    // automatically until nextCursor is exhausted.
+    JsonValue ListPages(
+        McpSessionHandler& handler,
+        std::string_view method,
+        std::string_view result_key,
+        const RequestMeta& meta,
+        const std::optional<std::string>& cursor)
+    {
+        if (cursor) {
+            PaginatedRequestParams params;
+            params.cursor = cursor;
+            return DoSendRequest(handler, method,
+                SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+        }
+
+        JsonValue::Array merged;
+        std::optional<std::string> current;
+        std::optional<JsonValue> first_hint;
+        for (size_t page = 0; page < kMaxAutoPages; ++page) {
+            PaginatedRequestParams params;
+            params.cursor = current;
+            auto result = DoSendRequest(handler, method,
+                SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+            if (page == 0) {
+                if (auto* hint = result.Find(detail::kCacheHint))
+                    first_hint = *hint;
+            }
+            if (auto* arr = result.Find(std::string(result_key)); arr && arr->IsArray()) {
+                for (const auto& item : arr->GetArray()) merged.push_back(item);
+            }
+            auto* nc = result.Find(detail::kNextCursor);
+            if (!nc || !nc->IsString() || nc->GetString().empty()) break;
+            current = nc->GetString();
+        }
+        JsonValue out(JsonValue::object_tag);
+        out[std::string(result_key)] = JsonValue(std::move(merged));
+        if (first_hint) out[detail::kCacheHint] = std::move(*first_hint);
+        return out;
+    }
 }
 
 // ── Helper: build RequestMeta from ClientOptions and version ──
@@ -46,29 +117,6 @@ static RequestMeta BuildClientMeta(
         ApplyExtensions(*meta.client_capabilities, options.extensions);
     }
     return meta;
-}
-
-// ── Helper: send request and check for protocol errors ──
-static JsonValue DoSendRequest(
-    McpSessionHandler& handler,
-    std::string_view method,
-    JsonValue params,
-    const RequestMeta& meta,
-    std::chrono::milliseconds timeout)
-{
-    auto future = handler.SendRequest(method, std::move(params), meta, timeout);
-    auto result = future.get();
-
-    if (result.Contains("code") && result["code"].GetInt() < 0) {
-        std::string msg = "request failed";
-        if (result.Contains("message"))
-            msg = result["message"].GetString();
-        throw McpError(
-            static_cast<McpErrorCode>(result["code"].GetInt()),
-            std::move(msg));
-    }
-
-    return result;
 }
 
 // ====================================================================
@@ -199,6 +247,7 @@ McpClient::McpClient(
     ClientOptions options)
     : transport_(std::move(transport))
     , options_(std::move(options))
+    , response_cache_(std::make_unique<detail::ResponseCache>())
 {
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(
@@ -256,6 +305,15 @@ void McpClient::WireClientHandlers() {
                 p.set_exception(std::current_exception());
             }
         });
+
+    // ── Client-side notification handlers: listChanged invalidates the
+    // response cache so subsequent calls observe the new listing ──
+    handler_->SetNotificationHandler(notifications::kToolListChanged,
+        [this](const JsonRpcNotification&) { response_cache_->Clear(); });
+    handler_->SetNotificationHandler(notifications::kResourceListChanged,
+        [this](const JsonRpcNotification&) { response_cache_->Clear(); });
+    handler_->SetNotificationHandler(notifications::kPromptListChanged,
+        [this](const JsonRpcNotification&) { response_cache_->Clear(); });
 }
 
 // ====================================================================
@@ -414,9 +472,22 @@ JsonValue McpClient::SendRequestWithMrtr(
 {
     auto& cfg = options_.input_required_config;
     int max_rounds = cfg ? cfg->max_rounds : 0;
-    auto effective_timeout = cfg ? cfg->round_timeout : timeout;
+    auto round_timeout = cfg ? cfg->round_timeout : timeout;
+    auto total_budget = cfg ? cfg->max_total_timeout : std::chrono::seconds(0);
+    auto flow_start = std::chrono::steady_clock::now();
 
     for (int round = 0; round <= max_rounds; ++round) {
+        auto effective_timeout = round_timeout;
+        if (total_budget.count() > 0) {
+            auto elapsed = std::chrono::steady_clock::now() - flow_start;
+            auto remaining = total_budget - elapsed;
+            if (remaining <= std::chrono::seconds(0)) {
+                throw McpError(McpErrorCode::RequestTimeout,
+                    "MRTR: exceeded max_total_timeout");
+            }
+            if (remaining < effective_timeout)
+                effective_timeout = std::chrono::duration_cast<std::chrono::seconds>(remaining);
+        }
         auto future = handler_->SendRequest(method, params_json, meta, effective_timeout);
         auto result_json = future.get();
 
@@ -448,17 +519,29 @@ JsonValue McpClient::SendRequestWithMrtr(
         "MRTR: exceeded max_rounds (" + std::to_string(max_rounds) + ")");
 }
 
+void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
+    auto* hint = result.Find(detail::kCacheHint);
+    if (!hint || !hint->IsObject()) return;
+    auto* ttl = hint->Find("ttlMs");
+    if (ttl && ttl->IsInt() && ttl->GetInt() > 0) {
+        response_cache_->Store(key, result, std::chrono::milliseconds(ttl->GetInt()));
+    }
+}
+
 // ====================================================================
 // Tools
 // ====================================================================
 ListToolsResult McpClient::ListTools(
     std::optional<std::string> cursor)
 {
-    ListToolsRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListTools,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("tools/list")) {
+            return DeserializeListToolsResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
+    if (!cursor) CacheIfHinted("tools/list", result);
     return DeserializeListToolsResult(result);
 }
 
@@ -528,22 +611,28 @@ CallToolResult McpClient::CallTool(
 ListResourcesResult McpClient::ListResources(
     std::optional<std::string> cursor)
 {
-    ListResourcesRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListResources,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("resources/list")) {
+            return DeserializeListResourcesResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListResources, "resources", meta, cursor);
+    if (!cursor) CacheIfHinted("resources/list", result);
     return DeserializeListResourcesResult(result);
 }
 
 ListResourceTemplatesResult McpClient::ListResourceTemplates(
     std::optional<std::string> cursor)
 {
-    ListResourceTemplatesRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListResourceTemplates,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("resources/templates/list")) {
+            return DeserializeListResourceTemplatesResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
+    if (!cursor) CacheIfHinted("resources/templates/list", result);
     return DeserializeListResourceTemplatesResult(result);
 }
 
@@ -588,11 +677,14 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
 ListPromptsResult McpClient::ListPrompts(
     std::optional<std::string> cursor)
 {
-    ListPromptsRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListPrompts,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("prompts/list")) {
+            return DeserializeListPromptsResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListPrompts, "prompts", meta, cursor);
+    if (!cursor) CacheIfHinted("prompts/list", result);
     return DeserializeListPromptsResult(result);
 }
 
