@@ -82,7 +82,7 @@ IClientTransport（连接工厂）
 
 无 asio 依赖——裸线程 + 标准库原语（mutex、condition_variable）或 libhv 事件循环。
 
-`MessageChannel`（`include/mcp/protocol/MessageChannel.hpp`）是有界异步队列（`std::queue + mutex + condition_variable`），替代 `asio::experimental::channel`。
+`MessageChannel`（`include/mcp/protocol/MessageChannel.hpp`）是有界异步队列（`std::queue + mutex + condition_variable`），替代 `asio::experimental::channel`。默认容量 64；`Send` 满则**阻塞**，`TrySend` 满则返回 false 不阻塞。
 
 `InMemoryTransport::CreatePair()` 返回 `Pair{client, server}`（各为 `shared_ptr<ITransport>`）。用 `dynamic_cast<TransportBase*>` 访问状态机。
 
@@ -98,13 +98,15 @@ IClientTransport（连接工厂）
 
 - **`HandleInitialize` 必须回显客户端的旧版版本号**：返回客户端发送的版本（如 `"2025-11-25"`）。切勿返回 `kLatestProtocolVersion`（`"2026-07-28"`）——TS SDK v2 会校验 `result.protocolVersion` 是否在其旧版列表中。
 - **现代版本（2026-07-28+）绝不通过 `initialize` 协商**：只能通过 `server/discover`。
-- `McpClient` 连接模式：`Auto`（默认，探测 `server/discover`，失败回退 `initialize`）、`Legacy`（仅 initialize）、`Pin`（固定版本）。
+- `McpClient` 连接模式：`Auto`（默认，探测 `server/discover`，失败回退 `initialize`）、`Legacy`（仅 initialize）、`Pin`（固定版本）。**注意：Auto 模式任何失败（含超时）都回退**——`VersionNegotiation.hpp` 头文件注释写的是 -32022/-32601，实际实现更宽松，勿按注释假设。
+- `McpClient::Create` **创建即阻塞**：构造后立即同步 `NegotiateProtocol()`，返回前协商完成。
 - `SetNegotiatedProtocolVersion(version)` **线程安全**：存储版本并重建 `WireCodec`（`codec_` 为 `shared_ptr` + `codec_mutex_`），消息循环运行中可调用——`McpClient` 就是在 `Start()` 之后协商的。
+- `WireCodec::EncodeErrorCode`（2026 时代）三映射：`RequestTimeout→HeaderMismatch`、`ConnectionRefused→MissingRequiredClientCapability`、`TlsHandshakeFailed→UnsupportedProtocolVersion`——依赖方按此解码错误。
 
 ## 关键协议模式
 
 - **2026-07-28+（现代）**：无状态。`server/discover` 取代 `initialize`/`initialized`。每请求 `_meta` 携带 `protocolVersion`、`clientInfo`、`clientCapabilities`、`logLevel`。
-- **MRTR**：服务端发起的 elicitation 以 `InputRequiredResult` 内嵌。
+- **MRTR**：服务端发起的 elicitation 以 `InputRequiredResult` 内嵌。客户端 `SendRequestWithMrtr` 默认预算：`max_rounds=8`、`round_timeout=600s`、`max_total_timeout=0`（0 = 不设总预算）。
 - **订阅**：`subscriptions/listen` 取代 `resources/subscribe`。
 - **缓存**：带 `ttlMs`/`cacheScope` 的 `CacheHint`。
 - **Mcp-Method 头**：动态生成，取自 JSON-RPC 消息体的 method 字段（用于 Streamable HTTP + SSE）。
@@ -197,6 +199,12 @@ IClientTransport（连接工厂）
 ## 文档
 
 `docs/` 是 vitepress 站点（本地预览用 `pnpm dev`，构建用 `pnpm build`）。双语：`en/` 与 `zh/` 目录。SDK 用它作为面向用户的文档；生成的 API 文档在 `docs/.vitepress/dist/`。注意：文档 CI（docs.yml）在 push 到 `master` 时部署 GitHub Pages，而 ci.yml 门控在 `develop`。
+
+## 项目知识库
+
+`wiki/` 是源码知识库（与 `docs/` 在线文档分离）。规则：每个概念一个 `.md` 文件 + YAML frontmatter；`index.md` 是目录、`log.md` 是摘要（最近 7 条）、`changelog/<YYYY-MM-DD>-log.md` 按天记日志（条目精确到小时）；全部内容基于源码实现细节，严禁推测，无法核实处标 `> [!todo] 待补充`；更新仅影响受影响的页面，彻底清除过时描述；互链：每页至少 1 条出站/入站相对路径链接。
+
+目录：`modules/`（库）、`classes/`（关键类）、`transports/`（传输实现）、`concepts/`（跨层概念）、`build.md`、`tests.md`。入口：`wiki/index.md`。知识库页面直接引用源码行号，与代码同步更新（功能完成/交付指南/提交前统一更新，微调不更新）。
 
 ## 提交
 
