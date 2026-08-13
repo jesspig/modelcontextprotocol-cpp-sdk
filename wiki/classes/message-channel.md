@@ -3,7 +3,7 @@ type: Class
 title: MessageChannel
 description: 有界异步消息队列（std::queue + mutex + condition_variable），替代 asio::experimental::channel。
 tags: [并发, 队列, 传输]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: include/mcp/protocol/MessageChannel.hpp
 ---
 

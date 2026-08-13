@@ -3,13 +3,13 @@ type: Concept
 title: OAuth 授权流程
 description: 授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存。
 tags: [oauth, pkce, 安全, rfc9207]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
 # OAuth 授权流程
 
-`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——**非线程安全**（头文件注释：单线程调用）。无 token_cache 时默认 `InMemoryTokenCache`。
+`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——头文件注释仍声明整体单线程使用；`GetAccessToken` 内部用 `refresh_mutex_` 串行化"读 token → 判断过期 → 刷新 → 写回"整段（防多线程用同一 `refresh_token` 并发刷新）。无 token_cache 时默认 `InMemoryTokenCache`。
 
 ## 流程（`Authenticate()`）
 
@@ -23,6 +23,10 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - **CSRF 校验**（RFC 6749 §10.12）：回调返回的 state 必须等于发送的 state
 - `ValidateTokenIssuer`（**RFC 9207 强制**）：token/refresh 响应缺 `iss` 或与 metadata issuer 不匹配即拒绝
 
+## HandleAuthChallenge（RFC 9728）
+
+解析 `resource_metadata="<uri>"` → 拉取资源元数据合并进 metadata_，随后 `VerifyResourceMatch` **事后校验**（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp:86)）：`OAuthMetadata.resource` 字段须与 `options_.server_url` **精确相等**或匹配其 **scheme+host** 前缀；字段缺失/空则放行；不匹配抛 `McpError(InternalError)`。
+
 ## 失败语义
 
 - 响应缺 `access_token` → 失败，**不回退旧 token**（`RefreshTokens` 亦然）
@@ -30,7 +34,6 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）触发自动刷新；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
-- `HandleAuthChallenge`（RFC 9728）：解析 `resource_metadata="<uri>"` → 拉取合并进 metadata_
 
 ## 相关页面
 

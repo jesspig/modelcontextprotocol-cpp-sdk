@@ -3,7 +3,7 @@ type: Module
 title: mcp-http HTTP 库
 description: HttpServer（libhv 封装）、EventStore（SSE 回放）、Streamable HTTP 双端传输。
 tags: [http, sse, webserver, libhv]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: src/http/HttpServer.cpp
 ---
 
@@ -27,6 +27,9 @@ resource: src/http/HttpServer.cpp
 - SSE 广播带 `id:` 行；GET 支持 `Last-Event-ID` 断线回放（stateless 不回放）
 - `Mcp-Method` 头动态生成：解析 JSON-RPC body 的 method 字段写入（SEP-2243）；`mcp-param-*` 头往返镜像
 - EventStore：每会话上限 1024 事件，超出从头部裁剪
+- `Stop()` 的关闭序列（server->stop + 释放 impl）移入独立 `std::thread` + `detail::JoinThreadSafely`（self-join 防护，[HttpServer.cpp:207](../../src/http/HttpServer.cpp)）
+- `running_` 为 `std::atomic<bool>`：`Start` 用 `exchange(true)`、`Stop` 用 `exchange(false)`、`SetHandler` 用 `load()` 检查
+- `on_disconnect` 三条移除路径（SSE `onclose` / `RemoveSseClient` / `BroadcastSse` 写失败）统一"恰好一次"：`removed` 标志保证回调只在真正移除时触发一次，且回调在锁外执行
 
 ## 相关页面
 

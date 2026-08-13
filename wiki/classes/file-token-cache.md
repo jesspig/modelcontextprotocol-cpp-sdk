@@ -1,9 +1,9 @@
 ---
 type: Class
 title: FileTokenCache
-description: OAuth 令牌文件缓存：Windows DPAPI 加密、POSIX 明文 + chmod 0600、辅助注册信息持久化。
+description: OAuth 令牌文件缓存：Windows DPAPI 加密、POSIX 明文 + chmod 0600。
 tags: [oauth, 缓存, dpapi, 安全]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: src/client/FileTokenCache.cpp
 ---
 
@@ -17,9 +17,6 @@ resource: src/client/FileTokenCache.cpp
 - **Windows（DPAPI）**：`CryptProtectData` 加密（描述符 `L"MCP Token Cache"`）后写二进制；加密失败仅记 Error 不写文件
 - **POSIX**：明文 JSON + `chmod 0600`
 - **Load（Windows）**：`CryptUnprotectData` 解密失败**不回落明文**（记 Error 忽略缓存，重新认证即可）
-- 辅助持久化（均明文、mutex 保护、损坏记 Error 返回 nullopt）：
-  - `<path>.token_response`：`LoadTokenResponse()`（access_token/refresh_token/expires_in/token_type/scope）
-  - `<path>.client_registration`：`LoadClientRegistration()`（client_id/client_secret/grant_types/redirect_uris）
 
 ## 相关页面
 

@@ -3,7 +3,7 @@ type: Transport
 title: InMemory 传输
 description: 测试用同步传输：CreatePair 生成 client/server 双向通道，消息即时交付。
 tags: [transport, 测试, 同步]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: src/transport/InMemoryTransport.cpp
 ---
 

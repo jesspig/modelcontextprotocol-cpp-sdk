@@ -3,7 +3,7 @@ type: Module
 title: mcp-protocol 协议库
 description: JSON-RPC 引擎（McpSessionHandler）与双时代线协议编解码（WireCodec）。
 tags: [protocol, jsonrpc, codec, 双时代]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: src/protocol/McpSessionHandler.cpp
 ---
 
@@ -23,12 +23,14 @@ resource: src/protocol/McpSessionHandler.cpp
 
 ## 通知处理器
 
-全部 17 种通知类型注册于 WireCodec 编解码器集合（公共 7 + 2025 独有 4 + 2026 独有 6，含 tasks 系列 6 种）。服务端在 `McpServer::WireHandlers()` 接线；客户端不注册任何通知处理器。`notifications/cancelled` 在 `OnNotification` 中硬编码处理，先于处理器表查找。
+WireCodec 编解码器集合共 **12 种**通知：公共 7 + 2025 独有 4（initialized、roots/list_changed、elicitation/complete、tasks/status）+ 2026 独有 1（subscriptions/acknowledged）。[Methods.hpp](../../include/mcp/Methods.hpp) 的 `notifications` 命名空间仍保留 17 个常量（含 5 个 `notifications/tasks/*` 独有通知），但编解码器只认上述 12 种——tasks 系列仅 `tasks/status` 可通行。服务端在 `McpServer::WireHandlers()` 接线；客户端不注册任何通知处理器。`notifications/cancelled` 在 `OnNotification` 中硬编码处理，先于处理器表查找。
 
 ## 关键语义
 
 - `McpSessionHandler::OnRequest` 对 handler 抛出的 `McpError` 直接回 `e.Code()`；其他异常一律 `InternalError`（"handler error: ..."）
 - 超时：默认 30s（`kDefaultRequestTimeout`），超时检查线程每 100ms 轮询；progress 通知延长截止时间 30s（仅当剩余时间 < 30s 时）
+- 响应回发：单一 `response_worker_` 线程 + 有界 `response_queue_`（`deque<std::function>`）取代每请求一线程；任务内 50ms 轮询 promise，`closed_` 时中止（保证 `Close()` 不阻塞）
+- `SendRequest` 注册 pending 后复查 `closed_`，已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:494](../../src/protocol/McpSessionHandler.cpp)）
 - 2026 时代 `SendRequest` 顶层 stamp `_meta`；`SendNotification` 的 meta 只带 `negotiated_version_`
 
 ## 相关页面

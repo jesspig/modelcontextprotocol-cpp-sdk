@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、回调四层接线、任务与 elicitation。
 tags: [server, 门面, 注册, 回调]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -13,7 +13,7 @@ resource: include/mcp/server/McpServer.hpp
 
 ## 注册 API
 
-- `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`：同名覆盖，每次注册后重跑 `WireHandlers()` + `DeriveCapabilities()`
+- `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`：同名覆盖，每次注册后重跑 `WireHandlers()`（拆为 7 个 `Wire*Handlers` 方法）+ `DeriveCapabilities()`；`RegisterTool` 同时把 `cached_tools_json_` 置 `nullopt` 失效（[McpServer.cpp:228](../../src/server/McpServer.cpp)）
 - 工具/资源/提示词条目内部结构见 [McpServer.hpp](../../include/mcp/server/McpServer.hpp)（ResourceEntry 含 uri_pattern/is_template 等）
 
 ## 回调接线（四层）
@@ -28,14 +28,16 @@ resource: include/mcp/server/McpServer.hpp
 ## 分发细节
 
 - `tools/call`：异步执行（std::async），future 存 `pending_async_futures_`，`Close()` 先全部 wait；工具声明 `output_schema` 且返回 `structured_content` 时用 `ValidateJsonSchema` 校验
-- 分页：`kDefaultPageSize = 100`，cursor 为数字字符串
-- 列表响应缓存提示：按方法名查 `options_.cache_hints`（6 个方法）
+- 分页：`kDefaultPageSize = 100`，cursor 为数字字符串；resources/templates/prompts 三处共用 `PaginateEntries` 模板（含 include 谓词）
+- 列表响应缓存提示：按方法名查 `options_.cache_hints`（6 个方法：tools/list、resources/list、resources/templates/list、resources/read、prompts/list、server/discover；`GetCacheHint` 用 `std::less<>` 透明比较器）
+- `tools/list` 序列化缓存：`cached_tools_json_` 在 `RegisterTool` 时失效，`HandleListTools` shared/unique 锁 double-check 重建（[McpServer.cpp:743](../../src/server/McpServer.cpp)）
 - `HandleInitialize` 版本协商只在非现代版本中选；`result.protocol_version` 回显协商结果
 - `HandleDiscover`：无条件置 `initialized_=true`；支持版本固定 `{kLegacy, kLatest}`
+- tasks 处理器守卫反转：仅 2025 及更早时代可用，`IsModernProtocolVersion` 时回 `MethodNotFound`（[McpServer.cpp:582](../../src/server/McpServer.cpp)）；任务 wire 状态为官方字符串 `TaskStatusToWireString`（working/input_required/completed/failed/cancelled，`Pending→working`，[McpServer.cpp:70](../../src/server/McpServer.cpp)）；`GetTaskResult` 填充提取为 `MakeGetTaskResultJson`（含 include_optional_fields 开关）
 - `subscriptions/listen`：仅现代版本，订阅 ID 单调分配（原子量从 1 起）
 - `SendLoggingMessage`：低于当前级别直接丢弃，logger 固定 `"mcp-server"`
 - `Elicit`：无 config 时超时 600s；结果 `code` 为负抛 McpError
-- `GetClientCapabilities()/GetClientInfo()` 返回 `shared_ptr<const T>`
+- `GetClientCapabilities()/GetClientInfo()` 返回 `shared_ptr<const T>`；`GetNegotiatedProtocolVersion()` 返回 `std::string`（转发自 handler）
 
 ## 相关页面
 

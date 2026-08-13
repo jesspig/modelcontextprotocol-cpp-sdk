@@ -20,7 +20,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/classes/mcp-server.md](/classes/mcp-server.md) — 服务端门面与四层回调接线
 - [/classes/mcp-client.md](/classes/mcp-client.md) — 客户端门面：创建即协商
 - [/classes/http-server.md](/classes/http-server.md) — libhv PIMPL HTTP 服务端与 SSE 广播
-- [/classes/file-task-store.md](/classes/file-task-store.md) — 任务存储：回滚与损坏备份
+- [/classes/file-task-store.md](/classes/file-task-store.md) — 任务存储：双锁与锁外写盘、回滚与损坏备份
 - [/classes/file-token-cache.md](/classes/file-token-cache.md) — 令牌缓存：DPAPI 与 0600
 
 ## 传输（transports）

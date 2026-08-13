@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、依赖拉取与 libhv 补丁。
 tags: [cmake, ninja, unity, lto, libhv]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: CMakePresets.json
 ---
 

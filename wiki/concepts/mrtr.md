@@ -3,7 +3,7 @@ type: Concept
 title: MRTR 多轮请求-响应
 description: 服务端发起的 elicitation：InputRequiredResult 内嵌、客户端自动补全循环与超时预算。
 tags: [协议, mrtr, elicitation, 多轮]
-timestamp: 2026-08-13T03:25:00+08:00
+timestamp: 2026-08-13T12:36:14+08:00
 resource: include/mcp/McpTypes.hpp
 ---
 
