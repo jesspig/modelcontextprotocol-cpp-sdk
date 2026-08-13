@@ -19,7 +19,7 @@ The Streamable HTTP transport implements the MCP Streamable HTTP specification. 
 **Headers** (`StreamableHttpClientTransport`):
 - `MCP-Protocol-Version: 2026-07-28` — always sent
 - `Mcp-Method` — dynamic, derived from JSON-RPC body method field
-- `Mcp-Param-*` — primitive params extracted for middleware routing (strings, integers, booleans only)
+- `Mcp-Param-*` — primitive params extracted for middleware routing (strings, integers, booleans, doubles only)
 - `Accept: application/json, text/event-stream` — allows server to pick response mode
 
 ## Transport Interfaces
@@ -49,7 +49,7 @@ Controls how the HTTP client transport connects:
 
 | Value          | Description                                              |
 |----------------|----------------------------------------------------------|
-| `AutoDetect`   | Probe `server/discover` first; fall back to SSE POST     |
+| `AutoDetect`   | Try Streamable HTTP (`server/discover`) first; fall back to SSE |
 | `StreamableHttp` | Use Streamable HTTP directly (requires 2026-07-28+)    |
 | `Sse`          | Use legacy SSE POST only                                 |
 
@@ -71,6 +71,7 @@ Controls how the HTTP client transport connects:
 | `name`                 | `std::string`                           | `""`            | Transport name                |
 | `known_session_id`     | `std::string`                           | `""`            | Session ID for resumption     |
 | `additional_headers`   | `std::map<std::string, std::string>`    | `{}`            | Extra HTTP headers            |
+| `auth_challenge_handler` | `std::function<std::string(std::string_view www_authenticate)>` | `nullptr` | Called with `WWW-Authenticate` on 401/403 (RFC 9728); a non-empty `Authorization` header retries exactly once |
 
 ### `StreamableHttpServerOptions`
 | Field                  | Type                               | Default      | Description                          |

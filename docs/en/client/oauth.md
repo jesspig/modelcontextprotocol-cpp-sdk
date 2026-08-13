@@ -59,6 +59,8 @@ auto token = auth->GetAccessToken();
 | `HasToken()` | Check if any token exists (may be expired) |
 | `GetAuthorizationHeader()` | Returns `"Bearer {token}"` string |
 | `StepUpAuthorization(scopes)` | Re-authorize with additional scopes |
+| `AuthenticateClientCredentials()` | Client credentials grant (RFC 6749 §4.4) for service-to-service scenarios without user interaction |
+| `HandleAuthChallenge(www_authenticate)` | Handles a 401/403 authentication challenge header (RFC 9728); retries the original request on success |
 | `Revoke()` | Best-effort call to the RFC 7009 revocation endpoint (when `revocation_endpoint` is configured); clears local tokens regardless of outcome |
 
 ## PKCE Helpers
@@ -78,7 +80,7 @@ The SDK provides two implementations of `ITokenCache` (defined in `<mcp/client/a
 | Implementation | Persistence | Protection |
 |----------------|-------------|------------|
 | `InMemoryTokenCache` | Runtime only | None |
-| `FileTokenCache` (`<mcp/storage/FileTokenCache.hpp>`) | JSON file (DPAPI encrypted on Windows) | `chmod 0600` on POSIX, `CryptProtectData` (DPAPI) on Windows; also exposes `LoadTokenResponse()` and `LoadClientRegistration()` for loading separately cached OAuth data |
+| `FileTokenCache` (`<mcp/storage/FileTokenCache.hpp>`) | JSON file (DPAPI encrypted on Windows) | `chmod 0600` on POSIX, `CryptProtectData` (DPAPI) on Windows |
 
 ```cpp
 #include <mcp/storage/FileTokenCache.hpp>
@@ -90,4 +92,4 @@ oauth_opts.token_cache = token_cache;
 
 ## Requirements
 
-OAuth PKCE uses `RAND_bytes` when built with OpenSSL (`MCP_HAVE_OPENSSL`), falling back to `std::random_device`. Install OpenSSL (`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`) for cryptographic-grade randomness in code verifier generation. TLS for token exchange is handled by libhv's HTTP client.
+OpenSSL development headers are a **hard requirement** for building `mcp-client` (`OAuthClientProvider.cpp` unconditionally includes `<openssl/rand.h>`; CMake locates OpenSSL via `find_package(OpenSSL QUIET)` — if not found, `MCP_HAVE_OPENSSL` is undefined, but compilation still fails for lack of headers). PKCE code verifier generation uses `RAND_bytes` when built with OpenSSL (`MCP_HAVE_OPENSSL`), falling back to `std::random_device`. Install OpenSSL (`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`) for TLS (handled by libhv's HTTP client) and cryptographic-grade randomness.

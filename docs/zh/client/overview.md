@@ -26,6 +26,7 @@ auto client = McpClient::Create(transport, opts);
 | `pin_protocol_version` | `optional<string>` | 固定到特定协议版本（用于 `Pin` 模式） |
 | `discover_probe_timeout` | `chrono::seconds` | 服务发现探测超时（默认 5s） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation 配置：`auto_fulfill=true`、`max_rounds=8`、`round_timeout=600s` |
+| `input_required_config.max_total_timeout` | `chrono::seconds` | 整个 MRTR 流程的硬预算（默认 `0` = 不限，`round_timeout` 按轮生效） |
 | `extensions` | `optional<JsonValue>` | 协议扩展声明 |
 
 ## 发起请求

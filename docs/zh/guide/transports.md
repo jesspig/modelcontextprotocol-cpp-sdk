@@ -19,7 +19,7 @@ Streamable HTTP 传输实现了 MCP Streamable HTTP 规范。每个会话使用�
 **请求头**（`StreamableHttpClientTransport`）：
 - `MCP-Protocol-Version: 2026-07-28` — 始终发送
 - `Mcp-Method` — 动态生成，从 JSON-RPC 消息体的 method 字段提取
-- `Mcp-Param-*` — 提取原始参数用于中间件路由（仅支持字符串、整数、布尔值）
+- `Mcp-Param-*` — 提取原始参数用于中间件路由（仅支持字符串、整数、布尔值、浮点数）
 - `Accept: application/json, text/event-stream` — 允许服务端选择响应模式
 
 ## 传输层接口
@@ -49,7 +49,7 @@ IClientTransport（连接工厂）
 
 | 值              | 描述                                                |
 |-----------------|-----------------------------------------------------|
-| `AutoDetect`    | 先探测 `server/discover`；回退到 SSE POST           |
+| `AutoDetect`    | 先尝试 Streamable HTTP（`server/discover`），失败回退到 SSE |
 | `StreamableHttp`| 直接使用 Streamable HTTP（需要 2026-07-28+）        |
 | `Sse`           | 仅使用传统 SSE POST                                 |
 
@@ -71,6 +71,7 @@ IClientTransport（连接工厂）
 | `name`              | `std::string`                            | `""`         | 传输层名称              |
 | `known_session_id`  | `std::string`                            | `""`         | 用于恢复的会话 ID       |
 | `additional_headers`| `std::map<std::string, std::string>`     | `{}`         | 附加 HTTP 头            |
+| `auth_challenge_handler` | `function<string(string_view www_authenticate)>` | `nullptr` | 收到 401/403 的 `WWW-Authenticate` 时回调（RFC 9728）；返回非空 `Authorization` 头则恰好重试一次 |
 
 ### `StreamableHttpServerOptions`
 | 字段               | 类型                               | 默认值          | 描述                          |
