@@ -90,6 +90,7 @@ endif()
 add_library(mcp-core STATIC)
 target_sources(mcp-core PRIVATE
     src/core/JsonValue.cpp
+    src/core/JsonParser.cpp
     src/core/JsonRpc.cpp
     src/core/McpTypesTools.cpp
     src/core/McpTypesResults.cpp
