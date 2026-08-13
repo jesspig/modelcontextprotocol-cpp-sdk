@@ -6,7 +6,8 @@ SDK 通过双 `WireCodec` 架构支持两个 MCP 协议时代。
 
 | 版本 | 状态 | 关键特性 |
 |-------------|---------|--------------|
-| 2024-11-05 | 旧版 | 原始规范 |
+| 2024-10-07 | 旧版 | 原始规范 |
+| 2024-11-05 | 旧版 | 原始规范修订 |
 | 2025-03-26 | 旧版 | 稳定握手 |
 | 2025-06-18 | 旧版 | 中间版本 |
 | 2025-11-25 | 旧版 | `initialize` 握手，独立的服务器到客户端请求 |
@@ -51,7 +52,7 @@ auto codec = MakeWireCodec("2026-07-28");
 
 `Rev2026Codec::ValidateResponse` 验证出站响应：
 1. **`resultType` 字段**：所有响应必须包含 `resultType`。缺失则返回 `Invalid`。
-2. **列表方法**：对于 `tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`、`server/extensions/list` 和 `tasks/list`，`resultType` 必须为 `"complete"`。列表结果不能是部分/input_required。
+2. **列表方法**：对于 `tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`，`resultType` 必须为 `"complete"`。列表结果不能是部分/input_required。
 
 ### 通知验证（2026 时代）
 
@@ -86,19 +87,21 @@ auto codec = MakeWireCodec("2026-07-28");
 
 | 集合 | 方法 |
 |-----|---------|
-| 公共（两个时代） | `ping`、`tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`、`prompts/list`、`prompts/get`、`completion/complete`、`elicitation/create` |
-| 仅 2025 | `initialize`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage` |
-| 仅 2026 | `server/discover`、`server/extensions/list`、`subscriptions/listen`、`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` |
+| 公共（两个时代） | `tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`、`prompts/list`、`prompts/get`、`completion/complete` |
+| 仅 2025 | `initialize`、`ping`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage`、`elicitation/create`、`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` |
+| 仅 2026 | `server/discover`、`subscriptions/listen` |
 
-注意 `ping` 是公共方法：2026 时代调用 `ping` 同样合法（经 `kCommonRequestMethods` 集合检查）。
+注意 `ping`、`elicitation/create` 与全部 `tasks/*` 方法仅属于 2025 时代：2026 时代不提供这些方法（`server/extensions/list` 不属于任何时代集合）。
 
 ### 按时代划分的通知
 
 | 集合 | 通知 |
 |-----|---------------|
-| 公共（两个时代） | `notifications/cancelled`、`notifications/progress`、`notifications/resources/updated`、`notifications/resources/list_changed`、`notifications/tools/list_changed`、`notifications/prompts/list_changed`、`notifications/subscriptions/acknowledged` |
-| 仅 2025 | `notifications/initialized`、`notifications/message`、`notifications/roots/list_changed`、`notifications/elicitation/complete` |
-| 仅 2026 | `notifications/tasks/status`、`notifications/tasks/working`、`notifications/tasks/completed`、`notifications/tasks/failed`、`notifications/tasks/cancelled`、`notifications/tasks/input_required` |
+| 公共（两个时代） | `notifications/cancelled`、`notifications/progress`、`notifications/message`、`notifications/resources/updated`、`notifications/resources/list_changed`、`notifications/tools/list_changed`、`notifications/prompts/list_changed` |
+| 仅 2025 | `notifications/initialized`、`notifications/roots/list_changed`、`notifications/elicitation/complete`、`notifications/tasks/status` |
+| 仅 2026 | `notifications/subscriptions/acknowledged` |
+
+其余 `notifications/tasks/working`、`notifications/tasks/completed`、`notifications/tasks/failed`、`notifications/tasks/cancelled`、`notifications/tasks/input_required` 通知常量仍保留（`Methods.hpp`），但不在任何时代的集合中。
 
 ### 订阅系统
 

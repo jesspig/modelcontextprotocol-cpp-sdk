@@ -4,6 +4,7 @@
 
 #include <mcp/JsonRpc.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -43,6 +44,14 @@ struct HttpServerOptions {
     HttpRequestCallback on_request;
     HttpConnectCallback on_connect;
     HttpDisconnectCallback on_disconnect;
+
+    // DNS rebinding protection: when non-empty, requests whose Host header is
+    // not in this list are rejected with 403. When empty, only localhost
+    // hosts (localhost / 127.0.0.1 / ::1) are allowed.
+    std::vector<std::string> allowed_hosts;
+    // When non-empty, requests carrying an Origin header must match one of
+    // these exact origins; otherwise the Origin header is ignored.
+    std::vector<std::string> allowed_origins;
 };
 
 // ── HttpServer — minimal HTTP server ──
@@ -73,8 +82,11 @@ public:
 
 private:
     uint16_t port_;
-    bool running_{false};
+    std::atomic<bool> running_{false};
     HttpServerOptions options_;
+
+    // DNS rebinding protection: validates Host (and Origin when configured).
+    bool IsRequestAllowed(const HttpRequest& req) const;
 
     // Handlers: (method, path) → handler
     std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;

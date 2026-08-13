@@ -301,7 +301,7 @@ struct CancelledNotificationParams {
 // ====================================================================
 struct LoggingMessageNotificationParams {
     LoggingLevel level;
-    std::string logger;
+    std::optional<std::string> logger;
     JsonValue data;
 };
 

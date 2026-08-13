@@ -5,6 +5,7 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
+#include <cctype>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -75,7 +76,7 @@ int main() {
                 text = (*args)["text"].GetString();
             }
             // Capitalize
-            for (auto& c : text) c = static_cast<char>(std::toupper(c));
+            for (auto& c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             GetPromptResult r;
             PromptMessage pm;
             pm.role = "user";

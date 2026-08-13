@@ -42,7 +42,7 @@ server->Run();
 | `validate_tool_output` | `bool` | 启用 JSON Schema 输出验证 |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | 任务持久化后端 |
 | `request_state_verifier` | `function<bool(string_view)>` | MRTR 的 HMAC/AEAD 验证器 |
-| `cache_hints` | `optional<map<string, CacheHint>>` | 按方法的缓存提示（ttlMs, cacheScope） |
+| `cache_hints` | `optional<map<string, CacheHint, less<>>>` | 按方法的缓存提示（ttlMs, cacheScope） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR/elicitation 行为的配置 |
 | `input_required_config.max_rounds` | `int` | 最大启发式收集轮次（默认 8） |
 | `input_required_config.round_timeout` | `chrono::seconds` | 每轮超时时间（默认 600s） |
@@ -99,9 +99,9 @@ server->RegisterTool(tool);
 
 | 方法 | 返回类型 | 说明 |
 |--------|-------------|------|
-| `GetClientCapabilities()` | `const ClientCapabilities*` | 仅在 2025 时代客户端 `initialize` 握手时填充；2026 时代（无 initialize）下恒为 nullptr |
-| `GetClientInfo()` | `const Implementation*` | 客户端标识（连接前为 nullptr） |
-| `GetNegotiatedProtocolVersion()` | `string_view` | 协商后的协议版本字符串 |
+| `GetClientCapabilities()` | `std::shared_ptr<const ClientCapabilities>` | 仅在 2025 时代客户端 `initialize` 握手时填充；2026 时代（无 initialize）下恒为 nullptr |
+| `GetClientInfo()` | `std::shared_ptr<const Implementation>` | 客户端标识（连接前为 nullptr） |
+| `GetNegotiatedProtocolVersion()` | `std::string` | 协商后的协议版本字符串 |
 | `GetCapabilities()` | `const ServerCapabilities&` | 从注册原语自动推导的服务端能力 |
 | `IsMrtrSupported()` | `bool` | 是否支持 MRTR（多轮工具检索） |
 

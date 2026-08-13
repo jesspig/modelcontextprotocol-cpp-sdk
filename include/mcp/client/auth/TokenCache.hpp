@@ -50,6 +50,7 @@ struct OAuthMetadata {
     std::optional<std::string> revocation_endpoint;
     std::optional<std::string> registration_endpoint;
     std::optional<std::string> jwks_uri;
+    std::optional<std::string> resource;
     std::vector<std::string> scopes_supported;
     std::vector<std::string> response_types_supported;
     std::vector<std::string> grant_types_supported;

@@ -7,6 +7,7 @@
 
 #include <mcp/JsonValue.hpp>
 
+#include <atomic>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -66,7 +67,7 @@ private:
     void HandleGet(const HttpRequest& req, HttpResponse& resp);
 
     // Build SSE event data from a JSON-RPC message
-    std::string BuildSseEvent(const JsonRpcMessage& msg);
+    std::string BuildSseEvent(JsonRpcMessage msg);
 
     // Parse MCP headers from request
     std::optional<std::string> GetMcpHeader(const HttpRequest& req,
@@ -79,6 +80,8 @@ private:
     std::unique_ptr<HttpServer> http_server_;
     std::shared_ptr<EventStore> event_store_;
 
+    // Stateless mode: in-flight synchronous response waiters (bounds worker occupancy)
+    std::atomic<size_t> stateless_inflight_{0};
     // Stateless mode: pending request-response correlation
     std::unordered_map<std::string, std::shared_ptr<std::promise<JsonRpcMessage>>> pending_responses_;
     std::mutex pending_mutex_;

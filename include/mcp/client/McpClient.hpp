@@ -14,6 +14,9 @@
 
 namespace mcp {
 
+// Client-side response cache (SEP-2549); defined in src/detail/ResponseCache.hpp.
+namespace detail { class ResponseCache; }
+
 // ── Server-to-client request handlers ──
 
 // SamplingHandler is deprecated in 2026-07-28 (SEP-2577).
@@ -140,6 +143,9 @@ private:
         const RequestMeta& meta,
         std::chrono::milliseconds timeout);
 
+    // Store the result in the cache when it carries a ttlMs cache hint.
+    void CacheIfHinted(std::string_view key, const JsonValue& result);
+
     // State
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
@@ -154,6 +160,9 @@ private:
     std::optional<ElicitationHandler> elicitation_handler_;
     std::optional<std::function<void(const LoggingMessageNotificationParams&)>> logging_handler_;
 
+    // Client-side response cache (SEP-2549); invalidated on listChanged
+    // notifications. Defined in src/detail/ResponseCache.hpp.
+    std::unique_ptr<detail::ResponseCache> response_cache_;
 
 };
 

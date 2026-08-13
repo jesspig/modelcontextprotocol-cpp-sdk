@@ -24,6 +24,7 @@ struct PipeHandle {
     virtual size_t Read(char* buffer, size_t size) = 0;
     virtual size_t Write(const char* data, size_t size) = 0;
     virtual void Close() = 0;
+    virtual bool IsEof() const { return true; }
     virtual uintptr_t native_handle() const = 0;
 };
 

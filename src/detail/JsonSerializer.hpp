@@ -44,51 +44,6 @@ inline void SerializeOptional(JsonValue& obj, const char* key,
     }
 }
 
-// string specialization
-template <>
-inline void SerializeOptional(JsonValue& obj, const char* key,
-                               const std::optional<std::string>& opt) {
-    if (opt.has_value()) {
-        obj[key] = JsonValue(*opt);
-    }
-}
-
-// bool specialization
-template <>
-inline void SerializeOptional(JsonValue& obj, const char* key,
-                               const std::optional<bool>& opt) {
-    if (opt.has_value()) {
-        obj[key] = JsonValue(opt.value());
-    }
-}
-
-// int64 specialization
-template <>
-inline void SerializeOptional(JsonValue& obj, const char* key,
-                               const std::optional<int64_t>& opt) {
-    if (opt.has_value()) {
-        obj[key] = JsonValue(opt.value());
-    }
-}
-
-// double specialization
-template <>
-inline void SerializeOptional(JsonValue& obj, const char* key,
-                               const std::optional<double>& opt) {
-    if (opt.has_value()) {
-        obj[key] = JsonValue(opt.value());
-    }
-}
-
-// JsonValue specialization (passthrough)
-template <>
-inline void SerializeOptional(JsonValue& obj, const char* key,
-                               const std::optional<JsonValue>& opt) {
-    if (opt.has_value()) {
-        obj[key] = *opt;
-    }
-}
-
 // ── Optional deserialization helpers ──
 // Generic template is intentionally not implemented: missing explicit
 // specializations fail at compile time instead of silently defaulting.
@@ -181,11 +136,14 @@ inline std::vector<T> DeserializeVector(const JsonValue& j, const char* key,
                                          DeserializeFn&& deser) {
     std::vector<T> result;
     auto* v = j.Find(key);
-    if (v && v->IsArray()) {
-        result.reserve(v->Size());
-        for (const auto& elem : v->GetArray()) {
-            result.push_back(deser(elem));
-        }
+    if (!v) return result;
+    if (!v->IsArray())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("DeserializeVector: field '") + key +
+            "' expected array, got " + JsonValueTypeName(*v));
+    result.reserve(v->Size());
+    for (const auto& elem : v->GetArray()) {
+        result.push_back(deser(elem));
     }
     return result;
 }

@@ -6,7 +6,8 @@ The SDK supports two MCP protocol eras via a dual `WireCodec` architecture.
 
 | Version     | Status  | Key Features |
 |-------------|---------|--------------|
-| 2024-11-05  | Legacy  | Original specification |
+| 2024-10-07  | Legacy  | Original specification |
+| 2024-11-05  | Legacy  | Original spec revision |
 | 2025-03-26  | Legacy  | Stable handshake |
 | 2025-06-18  | Legacy  | Intermediate |
 | 2025-11-25  | Legacy  | `initialize` handshake, standalone server-to-client requests |
@@ -51,7 +52,7 @@ This enforces the stateless protocol design where `server/discover` is the only 
 
 `Rev2026Codec::ValidateResponse` validates outgoing responses:
 1. **`resultType` field**: Must be present on all responses. Returns `Invalid` if missing.
-2. **List methods**: For `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, `server/extensions/list`, and `tasks/list`, the `resultType` must be `"complete"`. List results cannot be partial/input_required.
+2. **List methods**: For `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list`, the `resultType` must be `"complete"`. List results cannot be partial/input_required.
 
 ### Notification Validation (2026-era)
 
@@ -86,19 +87,21 @@ The codec defines per-era method sets:
 
 | Set | Methods |
 |-----|---------|
-| Common (both eras) | `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete`, `elicitation/create` |
-| 2025-only | `initialize`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage` |
-| 2026-only | `server/discover`, `server/extensions/list`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel`, `tasks/result`, `tasks/list` |
+| Common (both eras) | `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete` |
+| 2025-only | `initialize`, `ping`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage`, `elicitation/create`, `tasks/get`, `tasks/update`, `tasks/cancel`, `tasks/result`, `tasks/list` |
+| 2026-only | `server/discover`, `subscriptions/listen` |
 
-Note that `ping` is a common method: calling `ping` is valid in the 2026 era too (checked against the `kCommonRequestMethods` set).
+Note that `ping`, `elicitation/create`, and all `tasks/*` methods are 2025-only: they are not available in the 2026 era (`server/extensions/list` is in no era's method set).
 
 ### Era-Gated Notifications
 
 | Set | Notifications |
 |-----|---------------|
-| Common (both eras) | `notifications/cancelled`, `notifications/progress`, `notifications/resources/updated`, `notifications/resources/list_changed`, `notifications/tools/list_changed`, `notifications/prompts/list_changed`, `notifications/subscriptions/acknowledged` |
-| 2025-only | `notifications/initialized`, `notifications/message`, `notifications/roots/list_changed`, `notifications/elicitation/complete` |
-| 2026-only | `notifications/tasks/status`, `notifications/tasks/working`, `notifications/tasks/completed`, `notifications/tasks/failed`, `notifications/tasks/cancelled`, `notifications/tasks/input_required` |
+| Common (both eras) | `notifications/cancelled`, `notifications/progress`, `notifications/message`, `notifications/resources/updated`, `notifications/resources/list_changed`, `notifications/tools/list_changed`, `notifications/prompts/list_changed` |
+| 2025-only | `notifications/initialized`, `notifications/roots/list_changed`, `notifications/elicitation/complete`, `notifications/tasks/status` |
+| 2026-only | `notifications/subscriptions/acknowledged` |
+
+The remaining `notifications/tasks/working`, `notifications/tasks/completed`, `notifications/tasks/failed`, `notifications/tasks/cancelled`, and `notifications/tasks/input_required` notification constants are still defined (`Methods.hpp`) but belong to no era's set.
 
 ### Subscription System
 

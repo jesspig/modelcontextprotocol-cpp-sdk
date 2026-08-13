@@ -15,22 +15,34 @@
 #include <crt_externs.h>
 #endif
 #include <vector>
+#include <chrono>
+#include <thread>
 
 namespace mcp { namespace detail {
 
 namespace {
 
+constexpr int kPipeReadPollTimeoutMs = 100;
+
 class PosixPipe : public PipeHandle {
     int fd_ = -1;
+    bool eof_ = false;
 public:
     PosixPipe(int fd) : fd_(fd) {}
     ~PosixPipe() override { Close(); }
 
     size_t Read(char* buffer, size_t size) override {
         if (fd_ < 0) return 0;
-        ssize_t n = read(fd_, buffer, size);
+        struct pollfd pfd = { fd_, POLLIN, 0 };
+        int rc;
+        do { rc = ::poll(&pfd, 1, kPipeReadPollTimeoutMs); } while (rc < 0 && errno == EINTR);
+        if (rc <= 0 || !(pfd.revents & POLLIN)) return 0;
+        ssize_t n = ::read(fd_, buffer, size);
+        if (n == 0) eof_ = true;
         return n > 0 ? static_cast<size_t>(n) : 0;
     }
+
+    bool IsEof() const override { return fd_ < 0 || eof_; }
 
     size_t Write(const char* data, size_t size) override {
         if (fd_ < 0) return 0;
@@ -95,7 +107,7 @@ bool PosixProcess::Terminate(int timeout_ms) {
     int elapsed = 0;
     while (elapsed < timeout_ms) {
         if (!IsRunning()) return true;
-        usleep(10000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         elapsed += 10;
     }
 
@@ -125,7 +137,7 @@ int PosixProcess::WaitForExit(int timeout_ms) {
             pid_ = -1;
             return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         }
-        usleep(10000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         elapsed += 10;
     }
     return -1;

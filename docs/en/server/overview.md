@@ -42,7 +42,7 @@ server->Run();
 | `validate_tool_output` | `bool` | Enable JSON Schema output validation |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | Task persistence backend |
 | `request_state_verifier` | `function<bool(string_view)>` | HMAC/AEAD verifier for MRTR |
-| `cache_hints` | `optional<map<string, CacheHint>>` | Per-method cache hints (ttlMs, cacheScope) |
+| `cache_hints` | `optional<map<string, CacheHint, less<>>>` | Per-method cache hints (ttlMs, cacheScope) |
 | `input_required_config` | `optional<InputRequiredConfig>` | Configuration for MRTR/elicitation behavior |
 | `input_required_config.max_rounds` | `int` | Maximum elicitation rounds (default 8) |
 | `input_required_config.round_timeout` | `chrono::seconds` | Per-round timeout (default 600s) |
@@ -99,9 +99,9 @@ The lambda-based `RegisterTool` overload works identically — it creates an `Mc
 
 | Method | Return Type | Description |
 |--------|-------------|-------------|
-| `GetClientCapabilities()` | `const ClientCapabilities*` | Only populated during a 2025-era client `initialize` handshake; always nullptr in the 2026 era (no initialize) |
-| `GetClientInfo()` | `const Implementation*` | Client identity (nullptr before connect) |
-| `GetNegotiatedProtocolVersion()` | `string_view` | The negotiated protocol version string |
+| `GetClientCapabilities()` | `std::shared_ptr<const ClientCapabilities>` | Only populated during a 2025-era client `initialize` handshake; always nullptr in the 2026 era (no initialize) |
+| `GetClientInfo()` | `std::shared_ptr<const Implementation>` | Client identity (nullptr before connect) |
+| `GetNegotiatedProtocolVersion()` | `std::string` | The negotiated protocol version string |
 | `GetCapabilities()` | `const ServerCapabilities&` | Server capabilities auto-derived from registered primitives |
 | `IsMrtrSupported()` | `bool` | Whether MRTR (Multi-Round Tool Retrieval) is supported |
 

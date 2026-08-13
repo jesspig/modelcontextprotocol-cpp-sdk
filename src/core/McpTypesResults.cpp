@@ -7,31 +7,26 @@
 
 namespace mcp {
 
-// Forward declarations from other modules
-JsonValue SerializeTool(const Tool& v);
-Tool DeserializeTool(const JsonValue& j);
-JsonValue SerializeResource(const Resource& v);
-Resource DeserializeResource(const JsonValue& j);
-JsonValue SerializeResourceTemplate(const ResourceTemplate& v);
-ResourceTemplate DeserializeResourceTemplate(const JsonValue& j);
-JsonValue SerializePrompt(const Prompt& v);
-Prompt DeserializePrompt(const JsonValue& j);
-JsonValue SerializePromptMessage(const PromptMessage& v);
-PromptMessage DeserializePromptMessage(const JsonValue& j);
-JsonValue SerializeCacheHint(const CacheHint& v);
-CacheHint DeserializeCacheHint(const JsonValue& j);
-JsonValue SerializeServerCapabilities(const ServerCapabilities& v);
-ServerCapabilities DeserializeServerCapabilities(const JsonValue& j);
-JsonValue SerializeImplementation(const Implementation& v);
-Implementation DeserializeImplementation(const JsonValue& j);
-JsonValue SerializeResourceContents(const ResourceContents& v);
-ResourceContents DeserializeResourceContents(const JsonValue& j);
-JsonValue SerializeContentVariant(const ContentVariant& v);
-ContentVariant DeserializeContentVariant(const JsonValue& j);
-JsonValue SerializeRoot(const Root& v);
-Root DeserializeRoot(const JsonValue& j);
-JsonValue SerializeSamplingMessage(const SamplingMessage& v);
-SamplingMessage DeserializeSamplingMessage(const JsonValue& j);
+namespace {
+
+// Cache hint deserialization compatible with both wire shapes: the 2026 era
+// flattens ttlMs/cacheScope onto the result top level; the 2025 era nests
+// them under cacheHint.
+std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
+    auto* ttl = j.Find(detail::kTTLMs);
+    auto* scope = j.Find(detail::kCacheScope);
+    if (ttl || scope) {
+        CacheHint hint;
+        if (ttl && ttl->IsInt()) hint.ttl_ms = ttl->GetInt();
+        if (scope && scope->IsString()) hint.cache_scope = scope->GetString();
+        return hint;
+    }
+    auto* ch = j.Find(detail::kCacheHint);
+    if (ch) return DeserializeCacheHint(*ch);
+    return std::nullopt;
+}
+
+} // anonymous namespace
 
 // ── ResultType enum ──
 
@@ -52,6 +47,60 @@ ResultType DeserializeResultType(const JsonValue& j) {
     throw McpError(McpErrorCode::InvalidParams,
         std::string("DeserializeResultType: unknown string: '") + s + "'");
 }
+
+namespace {
+
+// ── List-style result serialization helpers ──
+// Shared by ListToolsResult / ListResourcesResult / ListResourceTemplatesResult /
+// ListPromptsResult and ReadResourceResult (which has no next_cursor).
+
+template <typename T, typename SerializeFn>
+void SerializeListItems(JsonValue& obj, const char* items_key,
+                        const std::vector<T>& items, SerializeFn&& ser) {
+    JsonValue::Array arr;
+    for (const auto& item : items) arr.push_back(ser(item));
+    obj[items_key] = JsonValue(std::move(arr));
+}
+
+// Common trailing fields of list-style results: nextCursor (omit when absent,
+// pass std::nullopt for results without one), cacheHint, meta, resultType.
+void WriteListResultCommon(JsonValue& obj,
+                           const std::optional<std::string>& next_cursor,
+                           const std::optional<CacheHint>& cache_hint,
+                           const std::optional<JsonValue>& meta,
+                           ResultType result_type) {
+    detail::SerializeOptional(obj, detail::kNextCursor, next_cursor);
+    if (cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
+    detail::SerializeOptional(obj, detail::kMeta, meta);
+    obj[detail::kResultType] = SerializeResultType(result_type);
+}
+
+template <typename T, typename DeserializeFn>
+std::vector<T> DeserializeListItems(const JsonValue& j, const char* items_key,
+                                    DeserializeFn&& deser) {
+    std::vector<T> result;
+    auto* v = j.Find(items_key);
+    if (v && v->IsArray()) {
+        for (const auto& elem : v->GetArray()) result.push_back(deser(elem));
+    }
+    return result;
+}
+
+// Common trailing fields of list-style results; next_cursor may be nullptr
+// for results without a cursor (e.g. ReadResourceResult).
+void ReadListResultCommon(const JsonValue& j,
+                          std::optional<std::string>* next_cursor,
+                          std::optional<CacheHint>& cache_hint,
+                          std::optional<JsonValue>& meta,
+                          ResultType& result_type) {
+    if (next_cursor) detail::DeserializeOptional(j, detail::kNextCursor, *next_cursor);
+    cache_hint = DeserializeCacheHintCompat(j);
+    detail::DeserializeOptional(j, detail::kMeta, meta);
+    auto* rt = j.Find(detail::kResultType);
+    if (rt) result_type = DeserializeResultType(*rt);
+}
+
+} // anonymous namespace
 
 // ── EmptyResult ──
 
@@ -107,32 +156,15 @@ CallToolResult DeserializeCallToolResult(const JsonValue& j) {
 
 JsonValue SerializeListToolsResult(const ListToolsResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    {
-        JsonValue::Array arr;
-        for (const auto& t : v.tools) arr.push_back(SerializeTool(t));
-        obj[detail::kTools] = JsonValue(std::move(arr));
-    }
-    detail::SerializeOptional(obj, detail::kNextCursor, v.next_cursor);
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    SerializeListItems(obj, detail::kTools, v.tools, SerializeTool);
+    WriteListResultCommon(obj, v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return obj;
 }
 
 ListToolsResult DeserializeListToolsResult(const JsonValue& j) {
     ListToolsResult v;
-    auto* tools = j.Find(detail::kTools);
-    if (tools && tools->IsArray()) {
-        std::vector<Tool> vec;
-        for (const auto& tv : tools->GetArray()) vec.push_back(DeserializeTool(tv));
-        v.tools = std::move(vec);
-    }
-    detail::DeserializeOptional(j, detail::kNextCursor, v.next_cursor);
-    auto* ch = j.Find(detail::kCacheHint);
-    if (ch) v.cache_hint = DeserializeCacheHint(*ch);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
+    v.tools = DeserializeListItems<Tool>(j, detail::kTools, DeserializeTool);
+    ReadListResultCommon(j, &v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return v;
 }
 
@@ -140,32 +172,15 @@ ListToolsResult DeserializeListToolsResult(const JsonValue& j) {
 
 JsonValue SerializeListResourcesResult(const ListResourcesResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    {
-        JsonValue::Array arr;
-        for (const auto& r : v.resources) arr.push_back(SerializeResource(r));
-        obj[detail::kResources] = JsonValue(std::move(arr));
-    }
-    detail::SerializeOptional(obj, detail::kNextCursor, v.next_cursor);
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    SerializeListItems(obj, detail::kResources, v.resources, SerializeResource);
+    WriteListResultCommon(obj, v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return obj;
 }
 
 ListResourcesResult DeserializeListResourcesResult(const JsonValue& j) {
     ListResourcesResult v;
-    auto* resources = j.Find(detail::kResources);
-    if (resources && resources->IsArray()) {
-        std::vector<Resource> vec;
-        for (const auto& rv : resources->GetArray()) vec.push_back(DeserializeResource(rv));
-        v.resources = std::move(vec);
-    }
-    detail::DeserializeOptional(j, detail::kNextCursor, v.next_cursor);
-    auto* ch = j.Find(detail::kCacheHint);
-    if (ch) v.cache_hint = DeserializeCacheHint(*ch);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
+    v.resources = DeserializeListItems<Resource>(j, detail::kResources, DeserializeResource);
+    ReadListResultCommon(j, &v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return v;
 }
 
@@ -173,32 +188,15 @@ ListResourcesResult DeserializeListResourcesResult(const JsonValue& j) {
 
 JsonValue SerializeListResourceTemplatesResult(const ListResourceTemplatesResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    {
-        JsonValue::Array arr;
-        for (const auto& rt : v.resource_templates) arr.push_back(SerializeResourceTemplate(rt));
-        obj["resourceTemplates"] = JsonValue(std::move(arr));
-    }
-    detail::SerializeOptional(obj, detail::kNextCursor, v.next_cursor);
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    SerializeListItems(obj, detail::kResourceTemplates, v.resource_templates, SerializeResourceTemplate);
+    WriteListResultCommon(obj, v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return obj;
 }
 
 ListResourceTemplatesResult DeserializeListResourceTemplatesResult(const JsonValue& j) {
     ListResourceTemplatesResult v;
-    auto* templates = j.Find("resourceTemplates");
-    if (templates && templates->IsArray()) {
-        std::vector<ResourceTemplate> vec;
-        for (const auto& rtv : templates->GetArray()) vec.push_back(DeserializeResourceTemplate(rtv));
-        v.resource_templates = std::move(vec);
-    }
-    detail::DeserializeOptional(j, detail::kNextCursor, v.next_cursor);
-    auto* ch = j.Find(detail::kCacheHint);
-    if (ch) v.cache_hint = DeserializeCacheHint(*ch);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
+    v.resource_templates = DeserializeListItems<ResourceTemplate>(j, detail::kResourceTemplates, DeserializeResourceTemplate);
+    ReadListResultCommon(j, &v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return v;
 }
 
@@ -206,30 +204,15 @@ ListResourceTemplatesResult DeserializeListResourceTemplatesResult(const JsonVal
 
 JsonValue SerializeReadResourceResult(const ReadResourceResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    {
-        JsonValue::Array arr;
-        for (const auto& rc : v.contents) arr.push_back(SerializeResourceContents(rc));
-        obj["contents"] = JsonValue(std::move(arr));
-    }
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    SerializeListItems(obj, detail::kContents, v.contents, SerializeResourceContents);
+    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta, v.result_type);
     return obj;
 }
 
 ReadResourceResult DeserializeReadResourceResult(const JsonValue& j) {
     ReadResourceResult v;
-    auto* contents = j.Find("contents");
-    if (contents && contents->IsArray()) {
-        std::vector<ResourceContents> vec;
-        for (const auto& rcv : contents->GetArray()) vec.push_back(DeserializeResourceContents(rcv));
-        v.contents = std::move(vec);
-    }
-    auto* ch = j.Find(detail::kCacheHint);
-    if (ch) v.cache_hint = DeserializeCacheHint(*ch);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
+    v.contents = DeserializeListItems<ResourceContents>(j, detail::kContents, DeserializeResourceContents);
+    ReadListResultCommon(j, nullptr, v.cache_hint, v.meta, v.result_type);
     return v;
 }
 
@@ -237,32 +220,15 @@ ReadResourceResult DeserializeReadResourceResult(const JsonValue& j) {
 
 JsonValue SerializeListPromptsResult(const ListPromptsResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    {
-        JsonValue::Array arr;
-        for (const auto& p : v.prompts) arr.push_back(SerializePrompt(p));
-        obj[detail::kPrompts] = JsonValue(std::move(arr));
-    }
-    detail::SerializeOptional(obj, detail::kNextCursor, v.next_cursor);
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    SerializeListItems(obj, detail::kPrompts, v.prompts, SerializePrompt);
+    WriteListResultCommon(obj, v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return obj;
 }
 
 ListPromptsResult DeserializeListPromptsResult(const JsonValue& j) {
     ListPromptsResult v;
-    auto* prompts = j.Find(detail::kPrompts);
-    if (prompts && prompts->IsArray()) {
-        std::vector<Prompt> vec;
-        for (const auto& pv : prompts->GetArray()) vec.push_back(DeserializePrompt(pv));
-        v.prompts = std::move(vec);
-    }
-    detail::DeserializeOptional(j, detail::kNextCursor, v.next_cursor);
-    auto* ch = j.Find(detail::kCacheHint);
-    if (ch) v.cache_hint = DeserializeCacheHint(*ch);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
+    v.prompts = DeserializeListItems<Prompt>(j, detail::kPrompts, DeserializePrompt);
+    ReadListResultCommon(j, &v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return v;
 }
 
@@ -369,8 +335,7 @@ DiscoverResult DeserializeDiscoverResult(const JsonValue& j) {
     v.capabilities = DeserializeServerCapabilities(j[detail::kCapabilities]);
     v.server_info = DeserializeImplementation(j[detail::kServerInfo]);
     detail::DeserializeOptional(j, detail::kInstructions, v.instructions);
-    auto* ch = j.Find(detail::kCacheHint);
-    if (ch) v.cache_hint = DeserializeCacheHint(*ch);
+    v.cache_hint = DeserializeCacheHintCompat(j);
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     auto* rt = j.Find(detail::kResultType);
     if (rt) v.result_type = DeserializeResultType(*rt);

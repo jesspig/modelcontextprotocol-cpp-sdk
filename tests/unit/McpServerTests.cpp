@@ -186,3 +186,60 @@ TEST(McpServerTest, ClientCapabilitiesInitialState) {
     EXPECT_EQ(server->GetClientInfo(), nullptr);
     server->Close();
 }
+
+// ── RequireInitialized guard: method handlers reject requests before
+// notifications/initialized arrives ──
+TEST(McpServerTest, RejectsRequestsBeforeInitialized) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLegacyProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    auto future = client->SendRequest(methods::kPing,
+        JsonValue(JsonValue::object_tag), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidRequest));
+    EXPECT_EQ(result["message"].GetString(), std::string("Server not initialized"));
+
+    server->Close();
+    client->Close();
+}
+
+// ── HandleInitialize echoes the client's legacy protocol version back ──
+TEST(McpServerTest, InitializeEchoesClientVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    InitializeRequestParams params;
+    params.protocol_version = std::string(kLegacyProtocolVersion);
+    params.client_info = Implementation{"test-client", "1.0"};
+    auto future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_FALSE(result.Contains("code"));
+    auto init = DeserializeInitializeResult(result);
+    EXPECT_EQ(init.protocol_version, std::string(kLegacyProtocolVersion));
+    EXPECT_EQ(init.server_info.name, "test-server");
+
+    server->Close();
+    client->Close();
+}

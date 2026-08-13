@@ -1,5 +1,6 @@
 // StdioClientTransport.cpp — stdio client transport implementation
 
+#include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Limits.hpp>
@@ -48,7 +49,7 @@ public:
         if (process_) process_->Terminate(5000);
         if (stdout_pipe_) stdout_pipe_->Close();
 
-        if (read_thread_.joinable()) read_thread_.join();
+        detail::JoinThreadSafely(read_thread_);
 
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -57,7 +58,7 @@ public:
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
 
-        auto line = SerializeMessage(message) + "\n";
+        auto line = SerializeMessage(std::move(message)) + "\n";
         if (stdin_pipe_ && stdin_pipe_->Write(line.data(), line.size()) != line.size()) {
             MCP_LOG(Error, "failed to write to child stdin pipe");
             NotifyError("failed to write to child stdin pipe");
@@ -77,10 +78,19 @@ private:
                 MCP_LOG(Error, std::string("stdio read thread failed: ") + e.what());
                 break;
             }
-            if (bytes_read == 0) break;
+            if (bytes_read == 0) {
+                if (stdout_pipe_->IsEof()) break;
+                continue;
+            }
 
             buf[bytes_read] = '\0';
             buffer.append(buf, bytes_read);
+
+            if (buffer.size() > detail::kMaxMessageSize) {
+                buffer.clear();
+                NotifyError("message size exceeds maximum allowed size");
+                break;
+            }
 
             size_t pos;
             while ((pos = buffer.find('\n')) != std::string::npos) {

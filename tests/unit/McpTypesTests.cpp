@@ -2,6 +2,8 @@
 
 #include <mcp/McpTypes.hpp>
 
+#include <detail/JsonSchemaValidator.hpp>
+
 #include <gtest/gtest.h>
 
 using namespace mcp;
@@ -357,4 +359,68 @@ TEST(McpTypesTest, IconRoundTrip) {
     auto jv = SerializeIcon(ic);
     auto ic2 = DeserializeIcon(jv);
     EXPECT_EQ(ic2.src, "https://example.com/icon.svg");
+}
+
+// ── JSON Schema subset validator (SEP-2106) ──
+TEST(McpTypesTest, JsonSchemaValidatorRequiredAndProperties) {
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = "object";
+    JsonValue props(JsonValue::object_tag);
+    JsonValue name_s(JsonValue::object_tag);
+    name_s["type"] = "string";
+    props["name"] = std::move(name_s);
+    schema["properties"] = std::move(props);
+    JsonValue req(JsonValue::array_tag);
+    req.PushBack(JsonValue("name"));
+    schema["required"] = std::move(req);
+
+    std::string err;
+    JsonValue ok(JsonValue::object_tag);
+    ok["name"] = JsonValue("x");
+    EXPECT_TRUE(detail::ValidateJsonSchema(ok, schema, err));
+
+    JsonValue bad(JsonValue::object_tag);
+    EXPECT_FALSE(detail::ValidateJsonSchema(bad, schema, err));
+    EXPECT_NE(err.find("required"), std::string::npos);
+}
+
+TEST(McpTypesTest, JsonSchemaValidatorTypeAndEnum) {
+    std::string err;
+    JsonValue enum_schema(JsonValue::object_tag);
+    JsonValue enums(JsonValue::array_tag);
+    enums.PushBack(JsonValue("red"));
+    enums.PushBack(JsonValue("green"));
+    enum_schema["enum"] = std::move(enums);
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue("green"), enum_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue("blue"), enum_schema, err));
+
+    JsonValue int_schema(JsonValue::object_tag);
+    int_schema["type"] = "integer";
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(int64_t(3)), int_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(3.5), int_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue("3"), int_schema, err));
+}
+
+TEST(McpTypesTest, JsonSchemaValidatorNumbersAndArrays) {
+    std::string err;
+    JsonValue num_schema(JsonValue::object_tag);
+    num_schema["type"] = "number";
+    num_schema["minimum"] = JsonValue(0.0);
+    num_schema["maximum"] = JsonValue(150.0);
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(42.0), num_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(200.0), num_schema, err));
+
+    JsonValue arr_schema(JsonValue::object_tag);
+    JsonValue item_schema(JsonValue::object_tag);
+    item_schema["type"] = "string";
+    arr_schema["items"] = std::move(item_schema);
+    arr_schema["minItems"] = JsonValue(int64_t(1));
+    JsonValue arr_ok(JsonValue::array_tag);
+    arr_ok.PushBack(JsonValue("a"));
+    EXPECT_TRUE(detail::ValidateJsonSchema(arr_ok, arr_schema, err));
+    JsonValue arr_bad(JsonValue::array_tag);
+    EXPECT_FALSE(detail::ValidateJsonSchema(arr_bad, arr_schema, err));
+    JsonValue arr_bad2(JsonValue::array_tag);
+    arr_bad2.PushBack(JsonValue(int64_t(1)));
+    EXPECT_FALSE(detail::ValidateJsonSchema(arr_bad2, arr_schema, err));
 }

@@ -58,6 +58,8 @@ auto token = auth->GetAccessToken();
 | `HasToken()` | 检查是否存在任何令牌（可能已过期） |
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
 | `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权 |
+| `AuthenticateClientCredentials()` | 客户端凭据授权（RFC 6749 §4.4），用于无需用户交互的服务到服务场景 |
+| `HandleAuthChallenge(www_authenticate)` | 处理服务端返回的 401/403 认证挑战头（RFC 9728），成功时重试原请求 |
 | `Revoke()` | best-effort 调用 RFC 7009 撤销端点（配置了 `revocation_endpoint` 时），无论成败都清除本地令牌 |
 
 ## PKCE 辅助函数
@@ -77,7 +79,7 @@ SDK 提供了 `ITokenCache`（定义于 `<mcp/client/auth/TokenCache.hpp>`）的
 | 实现 | 持久化 | 保护 |
 |----------------|-------------|------------|
 | `InMemoryTokenCache` | 仅运行时 | 无 |
-| `FileTokenCache`（`<mcp/storage/FileTokenCache.hpp>`） | JSON 文件（Windows 上 DPAPI 加密） | POSIX 上 `chmod 0600`，Windows 上 `CryptProtectData`（DPAPI）；额外提供 `LoadTokenResponse()` 和 `LoadClientRegistration()` 方法 |
+| `FileTokenCache`（`<mcp/storage/FileTokenCache.hpp>`） | JSON 文件（Windows 上 DPAPI 加密） | POSIX 上 `chmod 0600`，Windows 上 `CryptProtectData`（DPAPI） |
 
 ```cpp
 #include <mcp/storage/FileTokenCache.hpp>
@@ -89,4 +91,4 @@ oauth_opts.token_cache = token_cache;
 
 ## 要求
 
-OAuth PKCE 在构建时若使用 OpenSSL（`MCP_HAVE_OPENSSL`），则使用 `RAND_bytes`；否则回退到 `std::random_device`。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可为代码验证器生成提供密码学级随机数。令牌交换的 TLS 由 libhv 的 HTTP 客户端处理。
+OpenSSL 开发头文件是编译 `mcp-client` 的**必需依赖**（`OAuthClientProvider.cpp` 无条件包含 `<openssl/rand.h>`；CMake 通过 `find_package(OpenSSL QUIET)` 自动查找，未找到时定义 `MCP_HAVE_OPENSSL` 失败，但编译仍会因缺少头文件而失败）。PKCE 代码验证器生成在构建时启用 OpenSSL（`MCP_HAVE_OPENSSL`）时使用 `RAND_bytes`，否则回退到 `std::random_device`。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由 libhv 的 HTTP 客户端处理）和密码学级随机数提供支持。

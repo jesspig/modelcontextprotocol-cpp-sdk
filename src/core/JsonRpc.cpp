@@ -59,6 +59,16 @@ JsonValue SerializeJsonRpcRequest(const JsonRpcRequest& v) {
     return obj;
 }
 
+JsonValue SerializeJsonRpcRequest(JsonRpcRequest&& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kJsonrpc] = JsonValue(std::string(kJsonRpcVersion));
+    obj[detail::kId] = RequestIdToJson(std::move(v.id));
+    obj[detail::kMethod] = JsonValue(std::move(v.method));
+    if (v.params) obj[detail::kParams] = std::move(*v.params);
+    if (v.meta) obj[detail::kMeta] = std::move(*v.meta);
+    return obj;
+}
+
 JsonRpcRequest DeserializeJsonRpcRequest(const JsonValue& j) {
     JsonRpcRequest v;
     v.jsonrpc = j[detail::kJsonrpc].GetString();
@@ -98,6 +108,14 @@ JsonValue SerializeJsonRpcResponse(const JsonRpcResponse& v) {
     obj[detail::kJsonrpc] = JsonValue(std::string(kJsonRpcVersion));
     obj[detail::kId] = RequestIdToJson(v.id);
     obj[detail::kResult] = v.result;
+    return obj;
+}
+
+JsonValue SerializeJsonRpcResponse(JsonRpcResponse&& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kJsonrpc] = JsonValue(std::string(kJsonRpcVersion));
+    obj[detail::kId] = RequestIdToJson(std::move(v.id));
+    obj[detail::kResult] = std::move(v.result);
     return obj;
 }
 
@@ -146,6 +164,21 @@ std::string SerializeMessage(const JsonRpcMessage& msg) {
         else
             return SerializeJsonRpcErrorResponse(m);
     }, msg);
+    return jv.Dump();
+}
+
+std::string SerializeMessage(JsonRpcMessage&& msg) {
+    JsonValue jv = std::visit([](auto&& m) -> JsonValue {
+        using T = std::decay_t<decltype(m)>;
+        if constexpr (std::is_same_v<T, JsonRpcRequest>)
+            return SerializeJsonRpcRequest(std::move(m));
+        else if constexpr (std::is_same_v<T, JsonRpcNotification>)
+            return SerializeJsonRpcNotification(std::move(m));
+        else if constexpr (std::is_same_v<T, JsonRpcResponse>)
+            return SerializeJsonRpcResponse(std::move(m));
+        else
+            return SerializeJsonRpcErrorResponse(std::move(m));
+    }, std::move(msg));
     return jv.Dump();
 }
 

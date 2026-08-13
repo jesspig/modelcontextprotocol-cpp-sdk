@@ -3,6 +3,7 @@
 #include <mcp/http/EventStore.hpp>
 
 #include <mutex>
+#include <utility>
 
 namespace mcp {
 
@@ -23,16 +24,16 @@ uint64_t EventStore::Append(
     return id;
 }
 
-std::vector<std::string> EventStore::GetEventsSince(
+std::vector<std::pair<uint64_t, std::string>> EventStore::GetEventsSince(
     std::string_view session_id, uint64_t last_event_id) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<std::string> result;
+    std::vector<std::pair<uint64_t, std::string>> result;
     auto it = events_.find(std::string(session_id));
     if (it == events_.end()) return result;
     for (const auto& ev : it->second) {
         if (ev.id > last_event_id) {
-            result.push_back(ev.data);
+            result.push_back({ev.id, ev.data});
         }
     }
     return result;
@@ -41,11 +42,6 @@ std::vector<std::string> EventStore::GetEventsSince(
 void EventStore::Clear(std::string_view session_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     events_.erase(std::string(session_id));
-}
-
-bool EventStore::HasEvents(std::string_view session_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return events_.find(std::string(session_id)) != events_.end();
 }
 
 } // namespace mcp

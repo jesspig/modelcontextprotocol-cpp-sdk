@@ -1,12 +1,13 @@
 // StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX libhv)
 
+#include <mcp/detail/ThreadUtils.hpp>
+#include <mcp/JsonRpc.hpp>
+#include <mcp/JsonValue.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>
-#include <mcp/JsonRpc.hpp>
-#include <mcp/JsonValue.hpp>
-#include <mcp/Log.hpp>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -35,14 +36,13 @@
 
 namespace mcp {
 
-// JSON parse safety limits
-#define K_MAX_MESSAGE_SIZE (8 * 1024 * 1024)  // 8MB
-
 // ═══════════════════════════════════════════════════════════════════════
 // Win32 implementation (WinHTTP)
 // ═══════════════════════════════════════════════════════════════════════
 #ifdef _WIN32
 namespace {
+
+constexpr DWORD kHttpTimeoutMs = 30000;
 
 std::wstring ToWideStr(const std::string& s) {
     if (s.empty()) return {};
@@ -63,7 +63,6 @@ public:
         : TransportBase()
         , options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -74,6 +73,7 @@ public:
             detail::SetThreadName("mcp-worker");
             SendLoop();
         });
+        SetConnected();
     }
 
     void Close() override {
@@ -85,19 +85,19 @@ public:
         // Interrupt a blocked WinHttpReadData so the SSE thread can exit.
         // sse_request_ is owned exclusively by the SSE thread; Close only
         // signals it and joins, it never closes the handle itself.
-        auto sse_req = sse_request_.load();
+        auto sse_req = sse_request_.exchange(nullptr);
         if (sse_req) {
             WinHttpSetTimeouts(sse_req, 0, 0, 0, 500);
         }
-        if (sse_thread_.joinable()) sse_thread_.join();
-        if (send_thread_.joinable()) send_thread_.join();
+        detail::JoinThreadSafely(sse_thread_);
+        detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
         SetDisconnected();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
-        auto j = SerializeMessage(message);
+        auto j = SerializeMessage(std::move(message));
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
             send_queue_.push(j);
@@ -123,161 +123,210 @@ private:
     }
 
     void DoPost(const std::string& body) {
-        HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession) {
-            MCP_LOG(Error, "WinHttpOpen failed");
-            NotifyError("WinHttpOpen failed");
-            return;
-        }
-
-        auto url = detail::ParseUrl(options_.endpoint);
-        auto wh = ToWideStr(url.host);
-        auto wp = ToWideStr(url.path);
-        if (wp.empty()) wp = L"/";
-
-        HINTERNET hConnect = WinHttpConnect(hSession, wh.c_str(), url.port, 0);
-        if (!hConnect) {
-            MCP_LOG(Error, "WinHttpConnect failed");
-            NotifyError("WinHttpConnect failed");
-            WinHttpCloseHandle(hSession);
-            return;
-        }
-
-        DWORD flags = (url.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST",
-            wp.c_str(), nullptr, WINHTTP_NO_REFERER,
-            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-        if (!hRequest) {
-            MCP_LOG(Error, "WinHttpOpenRequest failed");
-            NotifyError("WinHttpOpenRequest failed");
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return;
-        }
-
-        // Headers per MCP Streamable HTTP spec
-        std::wstring hdrs = L"Content-Type: application/json\r\n"
-                            L"Accept: application/json, text/event-stream\r\n";
-        // Add MCP headers
-        hdrs += L"MCP-Protocol-Version: 2026-07-28\r\n";
-        try {
-            auto body_jv2 = JsonValue::Parse(body);
-            if (auto* m = body_jv2.Find("method"); m && m->IsString()) {
-                hdrs += L"Mcp-Method: " + ToWideStr(m->GetString()) + L"\r\n";
+        auto wide_to_utf8 = [](const wchar_t* w) -> std::string {
+            if (!w) return {};
+            int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+            if (len <= 0) return {};
+            std::string s(static_cast<size_t>(len - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], len, nullptr, nullptr);
+            return s;
+        };
+        std::string auth_value;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
+                WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            if (!hSession) {
+                MCP_LOG(Error, "WinHttpOpen failed");
+                NotifyError("WinHttpOpen failed");
+                return;
             }
-            if (auto* p = body_jv2.Find("params"); p && p->IsObject()) {
-                // iterate params manually to avoid Windows GetObject macro expansion
-                const auto& obj = p->GetObject();
-                for (const auto& [k, v] : obj) {
-                    if (v.IsString()) {
-                        hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetString()) + L"\r\n";
-                    } else if (v.IsInt()) {
-                        hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetInt())) + L"\r\n";
-                    } else if (v.IsBool()) {
-                        hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetBool() ? "true" : "false") + L"\r\n";
+
+            auto url = detail::ParseUrl(options_.endpoint);
+            auto wh = ToWideStr(url.host);
+            auto wp = ToWideStr(url.path);
+            if (wp.empty()) wp = L"/";
+
+            HINTERNET hConnect = WinHttpConnect(hSession, wh.c_str(), url.port, 0);
+            if (!hConnect) {
+                MCP_LOG(Error, "WinHttpConnect failed");
+                NotifyError("WinHttpConnect failed");
+                WinHttpCloseHandle(hSession);
+                return;
+            }
+
+            DWORD flags = (url.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
+            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST",
+                wp.c_str(), nullptr, WINHTTP_NO_REFERER,
+                WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+            if (!hRequest) {
+                MCP_LOG(Error, "WinHttpOpenRequest failed");
+                NotifyError("WinHttpOpenRequest failed");
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return;
+            }
+            if (!WinHttpSetTimeouts(hRequest, kHttpTimeoutMs, kHttpTimeoutMs,
+                                    kHttpTimeoutMs, kHttpTimeoutMs)) {
+                MCP_LOG(Warning, "WinHttpSetTimeouts failed");
+            }
+
+            // Headers per MCP Streamable HTTP spec
+            std::wstring hdrs = L"Content-Type: application/json\r\n"
+                                L"Accept: application/json, text/event-stream\r\n";
+            // Add MCP headers
+            hdrs += L"MCP-Protocol-Version: 2026-07-28\r\n";
+            try {
+                auto body_jv2 = JsonValue::Parse(body);
+                if (auto* m = body_jv2.Find("method"); m && m->IsString()) {
+                    hdrs += L"Mcp-Method: " + ToWideStr(m->GetString()) + L"\r\n";
+                }
+                if (auto* p = body_jv2.Find("params"); p && p->IsObject()) {
+                    // iterate params manually to avoid Windows GetObject macro expansion
+                    const auto& obj = p->GetObject();
+                    for (const auto& [k, v] : obj) {
+                        if (v.IsString()) {
+                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetString()) + L"\r\n";
+                        } else if (v.IsInt()) {
+                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetInt())) + L"\r\n";
+                        } else if (v.IsBool()) {
+                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetBool() ? "true" : "false") + L"\r\n";
+                        } else if (v.IsDouble()) {
+                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetDouble())) + L"\r\n";
+                        }
+                    }
+                    if (auto n = obj.find("name"); n != obj.end() && n->second.IsString()) {
+                        hdrs += L"Mcp-Name: " + ToWideStr(n->second.GetString()) + L"\r\n";
+                    } else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString()) {
+                        hdrs += L"Mcp-Name: " + ToWideStr(u->second.GetString()) + L"\r\n";
                     }
                 }
+            } catch (...) {
+                MCP_LOG(Warning, "HTTP header parse failed");
+                hdrs += L"Mcp-Method: tools/call\r\n";
             }
-        } catch (...) {
-            MCP_LOG(Warning, "HTTP header parse failed");
-            hdrs += L"Mcp-Method: tools/call\r\n";
-        }
-        for (auto& [k, v] : options_.additional_headers) {
-            auto wk = ToWideStr(k);
-            auto wv = ToWideStr(v);
-            hdrs += wk + L": " + wv + L"\r\n";
-        }
+            for (auto& [k, v] : options_.additional_headers) {
+                auto wk = ToWideStr(k);
+                auto wv = ToWideStr(v);
+                hdrs += wk + L": " + wv + L"\r\n";
+            }
+            if (!auth_value.empty()) {
+                hdrs += L"Authorization: " + ToWideStr(auth_value) + L"\r\n";
+            }
 
-        WinHttpAddRequestHeaders(hRequest, hdrs.data(),
-            static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
+            WinHttpAddRequestHeaders(hRequest, hdrs.data(),
+                static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
 
-        BOOL sent = WinHttpSendRequest(hRequest,
-            WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            const_cast<char*>(body.data()),
-            static_cast<DWORD>(body.size()),
-            static_cast<DWORD>(body.size()), 0);
+            BOOL sent = WinHttpSendRequest(hRequest,
+                WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                const_cast<char*>(body.data()),
+                static_cast<DWORD>(body.size()),
+                static_cast<DWORD>(body.size()), 0);
 
-        if (!sent) {
-            MCP_LOG(Error, "WinHttpSendRequest failed");
-            NotifyError("WinHttpSendRequest failed");
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return;
-        }
-        if (!WinHttpReceiveResponse(hRequest, nullptr)) {
-            MCP_LOG(Error, "WinHttpReceiveResponse failed");
-            NotifyError("WinHttpReceiveResponse failed");
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return;
-        }
-
-        // Check response status code; 4xx/5xx responses are not JSON-RPC payloads
-        DWORD status_code = 0;
-        DWORD scSize = sizeof(status_code);
-        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE,
-                nullptr, &status_code, &scSize, nullptr) &&
-            status_code >= 400)
-        {
-            MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(status_code));
-            NotifyError("HTTP POST returned status " + std::to_string(status_code));
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return;
-        }
-
-        // Read response headers to determine content type
-        wchar_t contentType[64] = {};
-        DWORD ctSize = sizeof(contentType);
-        bool isSse = false;
-        if (WinHttpQueryHeaders(hRequest,
-                WINHTTP_QUERY_CONTENT_TYPE, nullptr,
-                contentType, &ctSize, nullptr)) {
-            isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
-        }
-
-        if (isSse && !sse_thread_.joinable()) {
-            sse_thread_ = std::thread([this, hRequest, hConnect, hSession]() {
-                detail::SetThreadName("mcp-worker");
-                // SSE thread owns the request handle for its whole lifetime
-                sse_request_ = hRequest;
-                SseReadLoop(hRequest);
-                sse_request_ = nullptr;
+            if (!sent) {
+                MCP_LOG(Error, "WinHttpSendRequest failed");
+                NotifyError("WinHttpSendRequest failed");
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
-            });
-        } else {
-            // Drain response (single JSON response)
-            std::string resp_body;
-            char buf[4096];
-            DWORD read = 0;
-            while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
-                resp_body.append(buf, read);
-                read = 0;
+                return;
             }
-            // Try to parse as JSON-RPC response and enqueue
-            if (!resp_body.empty()) {
-                if (resp_body.size() > K_MAX_MESSAGE_SIZE) {
+            if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+                MCP_LOG(Error, "WinHttpReceiveResponse failed");
+                NotifyError("WinHttpReceiveResponse failed");
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return;
+            }
+
+            // Check response status code; 4xx/5xx responses are not JSON-RPC payloads
+            DWORD status_code = 0;
+            DWORD scSize = sizeof(status_code);
+            BOOL status_ok = WinHttpQueryHeaders(hRequest,
+                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                    nullptr, &status_code, &scSize, nullptr);
+            if (status_ok && status_code >= 400)
+            {
+                if ((status_code == 401 || status_code == 403) && attempt == 0 &&
+                    options_.auth_challenge_handler) {
+                    wchar_t www_auth[512] = {};
+                    DWORD waSize = sizeof(www_auth);
+                    std::string www_auth_str;
+                    if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
+                            L"WWW-Authenticate", www_auth, &waSize, nullptr)) {
+                        www_auth_str = wide_to_utf8(www_auth);
+                    }
+                    auto new_auth = options_.auth_challenge_handler(www_auth_str);
+                    if (!new_auth.empty()) {
+                        auth_value = std::move(new_auth);
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        continue;
+                    }
+                }
+                MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(status_code));
+                NotifyError("HTTP POST returned status " + std::to_string(status_code));
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return;
+            }
+
+            // Read response headers to determine content type
+            wchar_t contentType[64] = {};
+            DWORD ctSize = sizeof(contentType);
+            bool isSse = false;
+            if (WinHttpQueryHeaders(hRequest,
+                    WINHTTP_QUERY_CONTENT_TYPE, nullptr,
+                    contentType, &ctSize, nullptr)) {
+                isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
+            }
+
+            if (isSse && !sse_thread_.joinable()) {
+                sse_thread_ = std::thread([this, hRequest, hConnect, hSession]() {
+                    detail::SetThreadName("mcp-worker");
+                    // SSE thread owns the request handle for its whole lifetime
+                    sse_request_ = hRequest;
+                    SseReadLoop(hRequest);
+                    sse_request_ = nullptr;
                     WinHttpCloseHandle(hRequest);
                     WinHttpCloseHandle(hConnect);
                     WinHttpCloseHandle(hSession);
-                    return;
+                });
+                return;
+            } else {
+                // Drain response (single JSON response)
+                std::string resp_body;
+                char buf[4096];
+                DWORD read = 0;
+                while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
+                    resp_body.append(buf, read);
+                    read = 0;
                 }
-                try {
-                    JsonRpcMessage msg = DeserializeMessage(resp_body);
-                    if (channel_) channel_->Send(std::move(msg));
-                } catch (...) { MCP_LOG(Error, "HTTP response parse failed"); }
+                // Try to parse as JSON-RPC response and enqueue
+                if (!resp_body.empty()) {
+                    if (resp_body.size() > detail::kMaxMessageSize) {
+                        MCP_LOG(Error, "HTTP response exceeded max message size");
+                        NotifyError("HTTP response exceeded max message size");
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        return;
+                    }
+                    try {
+                        JsonRpcMessage msg = DeserializeMessage(resp_body);
+                        if (channel_) channel_->Send(std::move(msg));
+                    } catch (...) { MCP_LOG(Error, "HTTP response parse failed"); }
+                }
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return;
             }
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
         }
+        // Both attempts failed with 401/403.
     }
 
     void SseReadLoop(HINTERNET hRequest) {
@@ -297,6 +346,15 @@ private:
                 DispatchSseBlock(block);
             }
         }
+
+        if (running_.exchange(false)) {
+            {
+                std::lock_guard<std::mutex> lk(send_mutex_);
+                send_cv_.notify_one();
+            }
+            if (channel_) channel_->Close();
+            SetDisconnected();
+        }
     }
 
     void DispatchSseBlock(const std::string& block) {
@@ -315,7 +373,11 @@ private:
             }
         }
         if (!data.empty()) {
-            if (data.size() > K_MAX_MESSAGE_SIZE) return;
+            if (data.size() > detail::kMaxMessageSize) {
+                MCP_LOG(Error, "HTTP SSE block exceeded max message size");
+                NotifyError("HTTP SSE block exceeded max message size");
+                return;
+            }
             try {
                 JsonRpcMessage msg = DeserializeMessage(data);
                 if (channel_) channel_->Send(std::move(msg));
@@ -343,13 +405,14 @@ private:
 
 namespace {
 
+constexpr int kHttpRequestTimeoutSeconds = 30;
+
 class StreamableHttpSessionTransport : public TransportBase {
 public:
     explicit StreamableHttpSessionTransport(
         HttpClientTransportOptions options)
         : options_(std::move(options))
     {
-        channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
@@ -363,14 +426,14 @@ public:
     void Close() override {
         if (!running_.exchange(false)) return;
         { std::lock_guard<std::mutex> lk(send_mutex_); send_cv_.notify_one(); }
-        if (send_thread_.joinable()) send_thread_.join();
+        detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
         SetDisconnected();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
-        auto body = SerializeMessage(message);
+        auto body = SerializeMessage(std::move(message));
         { std::lock_guard<std::mutex> lk(send_mutex_); send_queue_.push(std::move(body)); }
         send_cv_.notify_one();
     }
@@ -391,51 +454,97 @@ private:
     }
 
     void DoPost(const std::string& body) {
-        http_headers headers;
-        headers["Content-Type"] = "application/json";
-        headers["Accept"] = "application/json, text/event-stream";
-        try {
-            auto jv = JsonValue::Parse(body);
-            if (auto* m = jv.Find("method"); m && m->IsString())
-                headers["Mcp-Method"] = m->GetString();
-        } catch (...) {
-            headers["Mcp-Method"] = "unknown";
-        }
-        for (auto& [k, v] : options_.additional_headers)
-            headers[k] = v;
-
-        auto resp = requests::post(options_.endpoint.c_str(), body, headers);
-        if (!resp) {
-            MCP_LOG(Error, "HTTP POST failed");
-            NotifyError("HTTP POST failed");
-            return;
-        }
-
-        if (resp->status_code >= 400) {
-            MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp->status_code));
-            NotifyError("HTTP POST returned status " + std::to_string(resp->status_code));
-            return;
-        }
-
-        auto ct = resp->GetHeader("Content-Type");
-        if (ct.find("text/event-stream") != std::string::npos) {
-            auto sse_data = resp->body;
-            size_t pos;
-            while ((pos = sse_data.find("\n\n")) != std::string::npos) {
-                std::string block = sse_data.substr(0, pos);
-                sse_data.erase(0, pos + 2);
-                DispatchSseBlock(block);
-            }
-        } else {
-            if (resp->body.empty()) return;
-            if (resp->body.size() > K_MAX_MESSAGE_SIZE) return;
+        std::string auth_value;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            http_headers headers;
+            headers["Content-Type"] = "application/json";
+            headers["Accept"] = "application/json, text/event-stream";
             try {
-                JsonRpcMessage msg = DeserializeMessage(resp->body);
-                if (channel_) channel_->Send(std::move(msg));
-            } catch (const std::exception& e) {
-                MCP_LOG(Error, std::string("HTTP response parse failed: ") + e.what());
+                auto jv = JsonValue::Parse(body);
+                if (auto* m = jv.Find("method"); m && m->IsString())
+                    headers["Mcp-Method"] = m->GetString();
+                if (auto* p = jv.Find("params"); p && p->IsObject()) {
+                    const auto& obj = p->GetObject();
+                    for (const auto& [k, v] : obj) {
+                        if (v.IsString()) {
+                            headers["Mcp-Param-" + k] = v.GetString();
+                        } else if (v.IsInt()) {
+                            headers["Mcp-Param-" + k] = std::to_string(v.GetInt());
+                        } else if (v.IsBool()) {
+                            headers["Mcp-Param-" + k] = v.GetBool() ? "true" : "false";
+                        } else if (v.IsDouble()) {
+                            headers["Mcp-Param-" + k] = std::to_string(v.GetDouble());
+                        }
+                    }
+                    if (auto n = obj.find("name"); n != obj.end() && n->second.IsString())
+                        headers["Mcp-Name"] = n->second.GetString();
+                    else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString())
+                        headers["Mcp-Name"] = u->second.GetString();
+                }
+            } catch (...) {
+                headers["Mcp-Method"] = "unknown";
+            }
+            if (!auth_value.empty()) {
+                headers["Authorization"] = auth_value;
+            }
+            for (auto& [k, v] : options_.additional_headers)
+                headers[k] = v;
+
+            auto req = std::make_shared<::HttpRequest>();
+            req->method = HTTP_POST;
+            req->url = options_.endpoint;
+            req->body = body;
+            req->timeout = kHttpRequestTimeoutSeconds;
+            req->headers = headers;
+            auto resp = requests::request(req);
+            if (!resp) {
+                MCP_LOG(Error, "HTTP POST failed");
+                NotifyError("HTTP POST failed");
+                return;
+            }
+
+            if (resp->status_code >= 400) {
+                if ((resp->status_code == 401 || resp->status_code == 403) &&
+                    attempt == 0 && options_.auth_challenge_handler) {
+                    auto www_auth = resp->GetHeader("WWW-Authenticate");
+                    auto new_auth = options_.auth_challenge_handler(www_auth);
+                    if (!new_auth.empty()) {
+                        auth_value = std::move(new_auth);
+                        continue;
+                    }
+                }
+                MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp->status_code));
+                NotifyError("HTTP POST returned status " + std::to_string(resp->status_code));
+                return;
+            }
+
+            auto ct = resp->GetHeader("Content-Type");
+            if (ct.find("text/event-stream") != std::string::npos) {
+                auto sse_data = resp->body;
+                size_t pos;
+                while ((pos = sse_data.find("\n\n")) != std::string::npos) {
+                    std::string block = sse_data.substr(0, pos);
+                    sse_data.erase(0, pos + 2);
+                    DispatchSseBlock(block);
+                }
+                return;
+            } else {
+                if (resp->body.empty()) return;
+                if (resp->body.size() > detail::kMaxMessageSize) {
+                    MCP_LOG(Error, "HTTP response exceeded max message size");
+                    NotifyError("HTTP response exceeded max message size");
+                    return;
+                }
+                try {
+                    JsonRpcMessage msg = DeserializeMessage(resp->body);
+                    if (channel_) channel_->Send(std::move(msg));
+                } catch (const std::exception& e) {
+                    MCP_LOG(Error, std::string("HTTP response parse failed: ") + e.what());
+                }
+                return;
             }
         }
+        // Both attempts failed with 401/403.
     }
 
     void DispatchSseBlock(const std::string& block) {
@@ -453,7 +562,11 @@ private:
             }
         }
         if (!data.empty()) {
-            if (data.size() > K_MAX_MESSAGE_SIZE) return;
+            if (data.size() > detail::kMaxMessageSize) {
+                MCP_LOG(Error, "HTTP SSE block exceeded max message size");
+                NotifyError("HTTP SSE block exceeded max message size");
+                return;
+            }
             try {
                 JsonRpcMessage msg = DeserializeMessage(data);
                 if (channel_) channel_->Send(std::move(msg));

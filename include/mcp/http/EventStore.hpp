@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mcp {
@@ -24,14 +25,11 @@ public:
     uint64_t Append(std::string_view session_id, std::string event_data);
 
     // Get events since a given event ID for a session.
-    std::vector<std::string> GetEventsSince(
+    std::vector<std::pair<uint64_t, std::string>> GetEventsSince(
         std::string_view session_id, uint64_t last_event_id) const;
 
     // Clear events for a session.
     void Clear(std::string_view session_id);
-
-    // Check if a session has pending events.
-    bool HasEvents(std::string_view session_id) const;
 
     // Max events to keep per session (prevents unbounded growth).
     static constexpr size_t kMaxEventsPerSession = 1024;

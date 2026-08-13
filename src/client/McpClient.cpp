@@ -1,10 +1,15 @@
 // McpClient.cpp
 // McpClient and VersionNegotiation implementation
+#include <detail/JsonFields.hpp>
+#include <detail/ResponseCache.hpp>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/Transport.hpp>
 
+#include <cstring>
 #include <thread>
+#include <typeinfo>
 
 namespace mcp {
 
@@ -28,6 +33,130 @@ namespace {
             caps.extensions = std::nullopt;
         }
     }
+
+    // ── Pagination ──
+    // Defensive cap: never page more than this many times (cursor loop guard).
+    constexpr size_t kMaxAutoPages = 64;
+
+    // ── Helper: send request and check for protocol errors ──
+    static JsonValue DoSendRequest(
+        McpSessionHandler& handler,
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout)
+    {
+        auto future = handler.SendRequest(method, std::move(params), meta, timeout);
+        auto result = future.get();
+
+        if (result.Contains(detail::kCode) && result[detail::kCode].GetInt() < 0) {
+            std::string msg = "request failed";
+            if (result.Contains(detail::kMessage))
+                msg = result[detail::kMessage].GetString();
+            throw McpError(
+                static_cast<McpErrorCode>(result[detail::kCode].GetInt()),
+                std::move(msg));
+        }
+
+        return result;
+    }
+
+    // ── Helper: extract a cache hint from a wire result ──
+    // The 2026 era flattens ttlMs/cacheScope onto the result top level; the
+    // 2025 era nests them under cacheHint. Returns the canonical nested shape.
+    static std::optional<JsonValue> ExtractCacheHint(const JsonValue& result) {
+        auto* ttl = result.Find(detail::kTTLMs);
+        auto* scope = result.Find(detail::kCacheScope);
+        if (ttl || scope) {
+            JsonValue hint(JsonValue::object_tag);
+            if (ttl) hint[detail::kTTLMs] = *ttl;
+            if (scope) hint[detail::kCacheScope] = *scope;
+            return hint;
+        }
+        if (auto* hint = result.Find(detail::kCacheHint); hint && hint->IsObject())
+            return *hint;
+        return std::nullopt;
+    }
+
+    // Fetch a paginated list method. With an explicit cursor a single page is
+    // returned (caller-driven pagination); without one all pages are merged
+    // automatically until nextCursor is exhausted.
+    JsonValue ListPages(
+        McpSessionHandler& handler,
+        std::string_view method,
+        std::string_view result_key,
+        const RequestMeta& meta,
+        const std::optional<std::string>& cursor)
+    {
+        if (cursor) {
+            PaginatedRequestParams params;
+            params.cursor = cursor;
+            return DoSendRequest(handler, method,
+                SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+        }
+
+        JsonValue::Array merged;
+        std::optional<std::string> current;
+        std::optional<JsonValue> first_hint;
+        for (size_t page = 0; page < kMaxAutoPages; ++page) {
+            PaginatedRequestParams params;
+            params.cursor = current;
+            auto result = DoSendRequest(handler, method,
+                SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+            if (page == 0) {
+                if (auto hint = ExtractCacheHint(result))
+                    first_hint = std::move(hint);
+            }
+            if (auto* arr = result.Find(std::string(result_key)); arr && arr->IsArray()) {
+                for (const auto& item : arr->GetArray()) merged.push_back(item);
+            }
+            auto* nc = result.Find(detail::kNextCursor);
+            if (!nc || !nc->IsString() || nc->GetString().empty()) break;
+            current = nc->GetString();
+        }
+        JsonValue out(JsonValue::object_tag);
+        out[std::string(result_key)] = JsonValue(std::move(merged));
+        if (first_hint) out[detail::kCacheHint] = std::move(*first_hint);
+        return out;
+    }
+
+    // ── Helper: classify the active transport for probe-failure handling ──
+    // stdio and in-memory transports have no network-failure concept: any
+    // discover probe failure falls back to initialize. HTTP-like transports
+    // (streamable-http, sse, websocket) surface timeouts and connection
+    // errors as typed errors instead of falling back. ITransport exposes no
+    // Name(); the concrete session transports are identified via RTTI.
+    static bool IsStdioLikeTransport(const ITransport& transport)
+    {
+        const char* type_name = typeid(transport).name();
+        return std::strstr(type_name, "InMemoryTransportImpl") != nullptr ||
+               std::strstr(type_name, "StdioClientSessionTransport") != nullptr;
+    }
+
+    // ── Helper: extract result["data"]["supported"] as version strings ──
+    // Returns nullopt when the field is missing or malformed; callers treat
+    // that like any unrecognized error code (fall back to initialize).
+    static std::optional<std::vector<std::string>> ExtractSupportedVersions(
+        const JsonValue& result)
+    {
+        auto* data = result.Find("data");
+        if (!data || !data->IsObject()) return std::nullopt;
+        auto* supported = data->Find("supported");
+        if (!supported || !supported->IsArray()) return std::nullopt;
+        std::vector<std::string> versions;
+        for (const auto& item : supported->GetArray()) {
+            if (!item.IsString()) return std::nullopt;
+            versions.push_back(item.GetString());
+        }
+        return versions;
+    }
+
+    // ── Helper: check for a JSON-RPC error response ──
+    static bool IsErrorResponse(const JsonValue& result)
+    {
+        return result.Contains(detail::kCode) &&
+               static_cast<int32_t>(result[detail::kCode].GetInt()) < 0;
+    }
 }
 
 // ── Helper: build RequestMeta from ClientOptions and version ──
@@ -46,29 +175,6 @@ static RequestMeta BuildClientMeta(
         ApplyExtensions(*meta.client_capabilities, options.extensions);
     }
     return meta;
-}
-
-// ── Helper: send request and check for protocol errors ──
-static JsonValue DoSendRequest(
-    McpSessionHandler& handler,
-    std::string_view method,
-    JsonValue params,
-    const RequestMeta& meta,
-    std::chrono::milliseconds timeout)
-{
-    auto future = handler.SendRequest(method, std::move(params), meta, timeout);
-    auto result = future.get();
-
-    if (result.Contains("code") && result["code"].GetInt() < 0) {
-        std::string msg = "request failed";
-        if (result.Contains("message"))
-            msg = result["message"].GetString();
-        throw McpError(
-            static_cast<McpErrorCode>(result["code"].GetInt()),
-            std::move(msg));
-    }
-
-    return result;
 }
 
 // ====================================================================
@@ -145,27 +251,108 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
     std::chrono::seconds timeout,
     const ClientOptions& options)
 {
-    RequestMeta meta;
-    meta.protocol_version = std::string(preferred_version);
-    meta.client_info = options.client_info;
-    meta.client_capabilities = options.capabilities.value_or(ClientCapabilities{});
-    ApplyExtensions(*meta.client_capabilities, options.extensions);
+    // stdio-like transports fall back to initialize on any probe failure;
+    // HTTP-like transports surface timeouts and connection errors as typed
+    // errors instead of falling back.
+    const bool stdio_like = IsStdioLikeTransport(handler.GetTransport());
 
-    auto future = handler.SendRequest(
-        methods::kDiscover, JsonValue(JsonValue::object_tag), meta, timeout);
+    auto send_probe = [&handler, &options, timeout](std::string_view version) {
+        RequestMeta meta;
+        meta.protocol_version = std::string(version);
+        meta.client_info = options.client_info;
+        meta.client_capabilities = options.capabilities.value_or(ClientCapabilities{});
+        ApplyExtensions(*meta.client_capabilities, options.extensions);
+        return handler.SendRequest(
+            methods::kDiscover, JsonValue(JsonValue::object_tag), meta, timeout);
+    };
 
-    if (future.wait_for(timeout) == std::future_status::timeout) {
+    // Awaits a probe future. Returns nullopt for the fallback outcome
+    // (stdio-like timeout); throws McpError for network-class failures.
+    auto await_probe = [stdio_like, timeout](std::future<JsonValue>& future)
+        -> std::optional<JsonValue>
+    {
+        if (future.wait_for(timeout) == std::future_status::timeout) {
+            if (!stdio_like) {
+                throw McpError(McpErrorCode::RequestTimeout,
+                    "server/discover timed out");
+            }
+            return std::nullopt;
+        }
+        try {
+            return future.get();
+        } catch (const std::exception& e) {
+            if (!stdio_like) {
+                throw McpError(McpErrorCode::ConnectionClosed,
+                    std::string("server/discover failed: ") + e.what());
+            }
+            return std::nullopt;
+        } catch (...) {
+            if (!stdio_like) {
+                throw McpError(McpErrorCode::ConnectionClosed,
+                    "server/discover failed");
+            }
+            return std::nullopt;
+        }
+    };
+
+    auto first_probe = send_probe(preferred_version);
+    auto first = await_probe(first_probe);
+    if (!first) return std::nullopt;
+
+    if (IsErrorResponse(*first)) {
+        auto code = static_cast<int32_t>((*first)[detail::kCode].GetInt());
+
+        if (code == static_cast<int32_t>(McpErrorCode::UnsupportedProtocolVersion)) {
+            auto supported = ExtractSupportedVersions(*first);
+            if (!supported) return std::nullopt;
+
+            bool shares_latest = false;
+            bool has_modern = false;
+            for (const auto& v : *supported) {
+                if (v == kLatestProtocolVersion) shares_latest = true;
+                if (IsModernProtocolVersion(v)) has_modern = true;
+            }
+
+            if (shares_latest) {
+                // Corrective: retry server/discover once with the shared
+                // version; a second rejection is a hard error (no fallback).
+                auto retry = send_probe(kLatestProtocolVersion);
+                auto retried = await_probe(retry);
+                if (!retried) {
+                    throw McpError(McpErrorCode::UnsupportedProtocolVersion,
+                        "server/discover retry timed out for " +
+                        std::string(kLatestProtocolVersion));
+                }
+                if (IsErrorResponse(*retried)) {
+                    throw McpError(McpErrorCode::UnsupportedProtocolVersion,
+                        "server/discover rejected the shared protocol version " +
+                        std::string(kLatestProtocolVersion));
+                }
+                try {
+                    return DeserializeDiscoverResult(*retried);
+                } catch (...) {
+                    throw McpError(McpErrorCode::UnsupportedProtocolVersion,
+                        "server/discover retry result could not be parsed for " +
+                        std::string(kLatestProtocolVersion));
+                }
+            }
+
+            if (!has_modern) return std::nullopt;  // only legacy versions → initialize
+
+            throw McpError(McpErrorCode::UnsupportedProtocolVersion,
+                "server does not support the client protocol version " +
+                std::string(kLatestProtocolVersion));
+        }
+
+        // Legacy-era signals (-32001, -32020, -32021, -32601) and any other
+        // error code fall back to initialize.
         return std::nullopt;
     }
 
     try {
-        auto result = future.get();
-        if (result.Contains("code") &&
-            static_cast<int32_t>(result["code"].GetInt()) < 0) {
-            return std::nullopt;
-        }
-        return DeserializeDiscoverResult(result);
+        return DeserializeDiscoverResult(*first);
     } catch (...) {
+        // Unrecognized result shape falls back to initialize.
         return std::nullopt;
     }
 }
@@ -199,6 +386,7 @@ McpClient::McpClient(
     ClientOptions options)
     : transport_(std::move(transport))
     , options_(std::move(options))
+    , response_cache_(std::make_unique<detail::ResponseCache>())
 {
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(
@@ -257,37 +445,14 @@ void McpClient::WireClientHandlers() {
             }
         });
 
-    // ── Client-side notification handlers ──
-    handler_->SetNotificationHandler(notifications::kResourceUpdated,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kResourceListChanged,
-        [](const JsonRpcNotification&) {});
+    // ── Client-side notification handlers: listChanged invalidates the
+    // response cache so subsequent calls observe the new listing ──
     handler_->SetNotificationHandler(notifications::kToolListChanged,
-        [](const JsonRpcNotification&) {});
+        [this](const JsonRpcNotification&) { response_cache_->Clear(); });
+    handler_->SetNotificationHandler(notifications::kResourceListChanged,
+        [this](const JsonRpcNotification&) { response_cache_->Clear(); });
     handler_->SetNotificationHandler(notifications::kPromptListChanged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kMessage,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kProgress,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kRootsListChanged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kElicitationComplete,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskStatus,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskWorking,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskCompleted,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskFailed,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskCancelled,
-        [](const JsonRpcNotification&) {});
-    handler_->SetNotificationHandler(notifications::kTaskInputRequired,
-        [](const JsonRpcNotification&) {});
+        [this](const JsonRpcNotification&) { response_cache_->Clear(); });
 }
 
 // ====================================================================
@@ -446,18 +611,31 @@ JsonValue McpClient::SendRequestWithMrtr(
 {
     auto& cfg = options_.input_required_config;
     int max_rounds = cfg ? cfg->max_rounds : 0;
-    auto effective_timeout = cfg ? cfg->round_timeout : timeout;
+    auto round_timeout = cfg ? cfg->round_timeout : timeout;
+    auto total_budget = cfg ? cfg->max_total_timeout : std::chrono::seconds(0);
+    auto flow_start = std::chrono::steady_clock::now();
 
     for (int round = 0; round <= max_rounds; ++round) {
+        auto effective_timeout = round_timeout;
+        if (total_budget.count() > 0) {
+            auto elapsed = std::chrono::steady_clock::now() - flow_start;
+            auto remaining = total_budget - elapsed;
+            if (remaining <= std::chrono::seconds(0)) {
+                throw McpError(McpErrorCode::RequestTimeout,
+                    "MRTR: exceeded max_total_timeout");
+            }
+            if (remaining < effective_timeout)
+                effective_timeout = std::chrono::duration_cast<std::chrono::seconds>(remaining);
+        }
         auto future = handler_->SendRequest(method, params_json, meta, effective_timeout);
         auto result_json = future.get();
 
         // Check for protocol errors
-        if (result_json.Contains("code") && result_json["code"].GetInt() < 0) {
+        if (result_json.Contains(detail::kCode) && result_json[detail::kCode].GetInt() < 0) {
             throw McpError(
-                static_cast<McpErrorCode>(result_json["code"].GetInt()),
-                result_json.Contains("message")
-                    ? result_json["message"].GetString()
+                static_cast<McpErrorCode>(result_json[detail::kCode].GetInt()),
+                result_json.Contains(detail::kMessage)
+                    ? result_json[detail::kMessage].GetString()
                     : "request failed");
         }
 
@@ -467,8 +645,8 @@ JsonValue McpClient::SendRequestWithMrtr(
         if (TryFulfillInputRequired(result_json, options_, elicitation_handler_,
                 input_responses, request_state)) {
             // Inject input_responses for next round
-            params_json["inputResponses"] = std::move(input_responses);
-            if (request_state) params_json["requestState"] = JsonValue(*request_state);
+            params_json[detail::kInputResponses] = std::move(input_responses);
+            if (request_state) params_json[detail::kRequestState] = JsonValue(*request_state);
             continue;
         }
 
@@ -480,17 +658,29 @@ JsonValue McpClient::SendRequestWithMrtr(
         "MRTR: exceeded max_rounds (" + std::to_string(max_rounds) + ")");
 }
 
+void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
+    auto* ttl = result.Find(detail::kCacheHint);
+    if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
+    if (!ttl) ttl = result.Find(detail::kTTLMs);
+    if (ttl && ttl->IsInt() && ttl->GetInt() > 0) {
+        response_cache_->Store(key, result, std::chrono::milliseconds(ttl->GetInt()));
+    }
+}
+
 // ====================================================================
 // Tools
 // ====================================================================
 ListToolsResult McpClient::ListTools(
     std::optional<std::string> cursor)
 {
-    ListToolsRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListTools,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("tools/list")) {
+            return DeserializeListToolsResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
+    if (!cursor) CacheIfHinted("tools/list", result);
     return DeserializeListToolsResult(result);
 }
 
@@ -503,7 +693,7 @@ static std::optional<JsonValue> ResolveTaskResult(
     auto* rt = result_json.Find("resultType");
     if (!rt || rt->GetString() != "task") return std::nullopt;
 
-    auto* tid = result_json.Find("taskId");
+    auto* tid = result_json.Find(detail::kTaskId);
     if (!tid || !tid->IsString()) {
         throw McpError(McpErrorCode::InvalidParams,
             "task result missing valid taskId");
@@ -537,7 +727,7 @@ CallToolResult McpClient::CallTool(
     if (options.meta) meta.extensions = options.meta;
 
     JsonValue req_json(JsonValue::object_tag);
-    req_json["name"] = JsonValue(params.name);
+    req_json[detail::kName] = JsonValue(params.name);
     if (params.arguments) req_json["arguments"] = *params.arguments;
 
     auto round_timeout = options_.input_required_config
@@ -560,22 +750,28 @@ CallToolResult McpClient::CallTool(
 ListResourcesResult McpClient::ListResources(
     std::optional<std::string> cursor)
 {
-    ListResourcesRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListResources,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("resources/list")) {
+            return DeserializeListResourcesResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListResources, "resources", meta, cursor);
+    if (!cursor) CacheIfHinted("resources/list", result);
     return DeserializeListResourcesResult(result);
 }
 
 ListResourceTemplatesResult McpClient::ListResourceTemplates(
     std::optional<std::string> cursor)
 {
-    ListResourceTemplatesRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListResourceTemplates,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("resources/templates/list")) {
+            return DeserializeListResourceTemplatesResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
+    if (!cursor) CacheIfHinted("resources/templates/list", result);
     return DeserializeListResourceTemplatesResult(result);
 }
 
@@ -620,11 +816,14 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
 ListPromptsResult McpClient::ListPrompts(
     std::optional<std::string> cursor)
 {
-    ListPromptsRequestParams params;
-    params.cursor = std::move(cursor);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto result = DoSendRequest(*handler_, methods::kListPrompts,
-        SerializePaginatedRequestParams(params), meta, kDefaultRequestTimeout);
+    if (!cursor) {
+        if (auto cached = response_cache_->Get("prompts/list")) {
+            return DeserializeListPromptsResult(*cached);
+        }
+    }
+    auto result = ListPages(*handler_, methods::kListPrompts, "prompts", meta, cursor);
+    if (!cursor) CacheIfHinted("prompts/list", result);
     return DeserializeListPromptsResult(result);
 }
 
@@ -637,7 +836,7 @@ GetPromptResult McpClient::GetPrompt(
     if (options.meta) meta.extensions = options.meta;
 
     JsonValue req_json(JsonValue::object_tag);
-    req_json["name"] = JsonValue(std::string(name));
+    req_json[detail::kName] = JsonValue(std::string(name));
     if (arguments) req_json["arguments"] = *arguments;
 
     auto timeout = options.read_timeout_ms

@@ -12,15 +12,17 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/ProtocolVersion.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
-#include <atomic>
+#include <string>
 #include <thread>
 #include <unordered_map>
-#include <memory>
-#include <string>
 #include <vector>
 
 namespace mcp {
@@ -123,14 +125,15 @@ public:
     void SetRequestStateVerifier(std::function<bool(std::string_view)> verifier);
 
     // ── Version negotiation ──
-    // Must be called before Start() (or before Close() re-Starts); the message
-    // loop reads negotiated_version_ without synchronization.
+    // Thread-safe: replaces codec_ under codec_mutex_, so it may be called
+    // while the message loop is running.
     void SetNegotiatedProtocolVersion(std::string_view version);
 
     // ── Protocol-era gates (semantic helpers, matching C# McpProtocolVersions) ──
-    std::string_view NegotiatedProtocolVersion() const { return negotiated_version_; }
-    bool IsJuly2026OrLater() const { return mcp::IsModernProtocolVersion(negotiated_version_); }
-    WireCodec& GetCodec() { return *codec_; }
+    std::string NegotiatedProtocolVersion() const;
+    bool IsJuly2026OrLater() const {
+        return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion());
+    }
     ITransport& GetTransport() { return *transport_; }
 
 private:
@@ -146,7 +149,10 @@ private:
 
     // ── Request handling helpers ──
     bool VerifyCapability(const JsonRpcRequest& req, const std::string& required);
-    void SendResponseAsync(const JsonRpcRequest& req, std::future<JsonValue> future);
+    void EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future);
+
+    // ── Response worker ──
+    void ResponseWorkerLoop();
 
     // ── Request/response correlation ──
     static std::string GetRequestIdKey(const RequestId& rid);
@@ -155,18 +161,19 @@ private:
     // ── Internal ──
     void CheckTimeouts();
     void EraseProgressTokens(const std::string& request_id);
-    void ReapCompletedResponses();
 
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
-    std::unique_ptr<WireCodec> codec_;
+    std::shared_ptr<WireCodec> codec_;
+    mutable std::mutex codec_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
-    std::string negotiated_version_;
+    std::shared_ptr<const std::string> negotiated_version_;
 
     // Threads
     std::thread message_loop_thread_;
     std::thread timeout_thread_;
+    std::thread response_worker_;
 
     // Handler maps
     std::unordered_map<std::string, RequestHandler> request_handlers_;
@@ -180,10 +187,11 @@ private:
     // Progress token → request_id mapping (for timeout reset)
     std::unordered_map<std::string, std::string> progress_token_map_;
 
-    // Async response tasks; reaped once their future is ready so the
-    // destructor never blocks on an in-flight task.
-    std::vector<std::future<void>> pending_responses_;
-    std::mutex response_mutex_;
+    // Response worker queue: a single worker thread drains tasks that wait on
+    // handler futures and send the reply, replacing one thread per request.
+    std::deque<std::function<void()>> response_queue_;
+    std::mutex response_queue_mutex_;
+    std::condition_variable response_cv_;
 
     // Subscriptions
     std::unordered_map<std::string, SubscriptionEntry> subscriptions_;
