@@ -24,17 +24,24 @@ target_link_libraries(mcp-client-tests PRIVATE mcp-client mcp-server GTest::gtes
 gtest_discover_tests(mcp-client-tests)
 
 add_executable(mcp-oauth-tests OAuthTests.cpp)
-target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http hv_static GTest::gtest_main)
-target_include_directories(mcp-oauth-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http GTest::gtest_main)
+target_include_directories(mcp-oauth-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 gtest_discover_tests(mcp-oauth-tests)
 
 add_executable(mcp-transport-tests TransportTests.cpp)
 target_link_libraries(mcp-transport-tests PRIVATE mcp-transport GTest::gtest_main)
 gtest_discover_tests(mcp-transport-tests)
 
+add_executable(mcp-net-tests
+    NetStackTests.cpp
+    WebSocketClientTests.cpp)
+target_link_libraries(mcp-net-tests PRIVATE mcp-transport GTest::gtest_main)
+target_include_directories(mcp-net-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+gtest_discover_tests(mcp-net-tests)
+
 add_executable(mcp-http-tests HttpServerTests.cpp)
-target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol hv_static GTest::gtest_main)
-target_include_directories(mcp-http-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol GTest::gtest_main)
+target_include_directories(mcp-http-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 gtest_discover_tests(mcp-http-tests)
 
 add_executable(mcp-message-filter-tests MessageFilterTests.cpp)
@@ -50,8 +57,7 @@ target_link_libraries(mcp-task-store-tests PRIVATE mcp-server GTest::gtest_main)
 gtest_discover_tests(mcp-task-store-tests)
 
 add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp)
-target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
-target_include_directories(mcp-streamable-http-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http GTest::gtest_main)
 gtest_discover_tests(mcp-streamable-http-tests)
 
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)

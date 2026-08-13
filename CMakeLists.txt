@@ -127,14 +127,24 @@ target_sources(mcp-transport PRIVATE
     src/transport/StdioClientTransport.cpp
     src/transport/InMemoryTransport.cpp
     src/transport/SseClientTransport.cpp
-    src/transport/WebSocketClientTransport.cpp)
+    src/transport/WebSocketClientTransport.cpp
+    src/transport/detail/net/TlsSocket.cpp
+    src/transport/detail/net/HttpClient.cpp
+    src/transport/detail/net/WebSocketClient.cpp)
 if(WIN32)
-    target_sources(mcp-transport PRIVATE src/transport/detail/win32_platform.cpp)
+    target_sources(mcp-transport PRIVATE
+        src/transport/detail/win32_platform.cpp
+        src/transport/detail/net/TcpSocketWin32.cpp)
 else()
-    target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
+    target_sources(mcp-transport PRIVATE
+        src/transport/detail/posix_platform.cpp
+        src/transport/detail/net/TcpSocketPosix.cpp)
 endif()
-target_link_libraries(mcp-transport PUBLIC mcp-core hv_static)
-target_include_directories(mcp-transport SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-transport PUBLIC mcp-core)
+if(WIN32)
+    target_link_libraries(mcp-transport PUBLIC ws2_32)
+endif()
+target_include_directories(mcp-transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
@@ -171,7 +181,6 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
-target_include_directories(mcp-client SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 target_include_directories(mcp-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
@@ -189,14 +198,18 @@ set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
 add_library(mcp-http STATIC)
 target_sources(mcp-http PRIVATE
     src/http/HttpServer.cpp
+    src/http/HttpServerImpl.cpp
     src/http/EventStore.cpp
     src/http/StreamableHttpServerTransport.cpp)
 target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
-target_link_libraries(mcp-http PUBLIC mcp-transport hv_static)
-target_include_directories(mcp-http SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-http PUBLIC mcp-transport)
+if(WIN32)
+    target_link_libraries(mcp-http PUBLIC ws2_32)
+endif()
+target_include_directories(mcp-http PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 

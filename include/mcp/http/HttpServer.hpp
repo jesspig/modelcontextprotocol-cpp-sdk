@@ -1,4 +1,4 @@
-// HttpServer.hpp - Minimal HTTP server with SSE streaming support (libhv PIMPL)
+// HttpServer.hpp — Minimal HTTP server with SSE streaming support (self-hosted PIMPL)
 
 #pragma once
 
