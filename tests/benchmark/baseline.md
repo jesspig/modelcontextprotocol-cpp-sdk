@@ -25,3 +25,29 @@
 ## 结论
 
 验收标准为「KB 级消息解析吞吐不低于 simdjson 基线的 25%」。全部样本达标：最差 87%（Release tools/list），多数样本超过 simdjson 基线。
+
+# HTTP 基准对比（自研客户端 × libhv 服务器 → 自研客户端 × 自研服务器）
+
+环境：Windows 11，clang-cl（MSVC 目标）。`mcp-http-bench`：GET RTT（keep-alive 复用 200 次）、POST 1KB×2000、并发 8 线程×50、SSE 广播 1000 事件。
+
+## Debug 构建
+
+| 指标 | libhv 服务器 | 自研服务器 | 比值 |
+|---|---|---|---|
+| GetRtt | 0.666 ms/op | 0.757 ms/op | 114% |
+| PostThroughput | 2.10 MB/s | 1.44 MB/s | 69% |
+| Concurrent(8x50) | 62.3 ms | 72.2 ms | 116% |
+| SseStream(1000) | 15.87 s | 15.74 s | 99% |
+
+## Release 构建（LTO）
+
+| 指标 | 自研服务器 |
+|---|---|
+| GetRtt | 0.600 ms/op |
+| PostThroughput | 1.92 MB/s |
+| Concurrent(8x50) | 53.6 ms |
+| SseStream(1000) | 15.79 s |
+
+## 结论
+
+验收标准：RTT 同数量级（≤2×）、吞吐 ≥50%、并发无超时失败。全部达标（Debug 最差 69%，Release 更优；SSE 持平）。libhv 服务器时代未记录 Release 数据，Release 列仅自研数据。
