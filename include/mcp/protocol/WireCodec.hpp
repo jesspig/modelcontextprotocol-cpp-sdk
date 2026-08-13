@@ -46,7 +46,7 @@ public:
     // Default: no extraction (meta handling lives in McpSessionHandler);
     // derived codecs may override to parse era-specific envelope fields.
     virtual std::optional<RequestMeta> ExtractIncomingMeta(
-        const JsonValue& request_body) const { return std::nullopt; }
+        const JsonValue&) const { return std::nullopt; }
 
     // ── Result encoding ──
     // Encode result, stamping resultType (2026)
