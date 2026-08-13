@@ -490,7 +490,7 @@ private:
             for (auto& [k, v] : options_.additional_headers)
                 headers[k] = v;
 
-            auto req = std::make_shared<HttpRequest>();
+            auto req = std::make_shared<::HttpRequest>();
             req->method = HTTP_POST;
             req->url = options_.endpoint;
             req->body = body;
