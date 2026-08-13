@@ -6,14 +6,6 @@
 
 namespace mcp {
 
-// Forward declarations from other modules
-JsonValue SerializeRequestMeta(const RequestMeta& v);
-RequestMeta DeserializeRequestMeta(const JsonValue& j);
-JsonValue SerializeProgressToken(const ProgressToken& pt);
-ProgressToken DeserializeProgressToken(const JsonValue& j);
-JsonValue SerializeLoggingLevel(LoggingLevel l);
-LoggingLevel DeserializeLoggingLevel(const JsonValue& j);
-
 // ── SubscriptionFilter ──
 
 JsonValue SerializeSubscriptionFilter(const SubscriptionFilter& v) {
@@ -115,7 +107,7 @@ CancelledNotificationParams DeserializeCancelledNotificationParams(const JsonVal
 JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotificationParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kLevel] = SerializeLoggingLevel(v.level);
-    obj["logger"] = JsonValue(v.logger);
+    detail::SerializeOptional(obj, "logger", v.logger);
     obj[detail::kData] = v.data;
     return obj;
 }
@@ -123,7 +115,7 @@ JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotifica
 LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(const JsonValue& j) {
     LoggingMessageNotificationParams v;
     v.level = DeserializeLoggingLevel(j[detail::kLevel]);
-    v.logger = j["logger"].GetString();
+    detail::DeserializeOptional(j, "logger", v.logger);
     v.data = j[detail::kData];
     return v;
 }

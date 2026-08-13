@@ -11,6 +11,7 @@ inline constexpr std::string_view kLegacyProtocolVersion = "2025-11-25";
 inline constexpr std::string_view kJsonRpcVersion = "2.0";
 
 inline constexpr std::string_view kProtocolVersions[] = {
+    "2024-10-07",
     "2024-11-05",
     "2025-03-26",
     "2025-06-18",

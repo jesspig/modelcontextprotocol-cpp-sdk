@@ -35,15 +35,28 @@ WebSocketSessionTransport::WebSocketSessionTransport(std::string url)
 WebSocketSessionTransport::~WebSocketSessionTransport() { Close(); }
 
 void WebSocketSessionTransport::Start() {
-    ws_.onopen = [this]() { running_ = true; SetConnected(); };
-    ws_.onclose = [this]() { running_ = false; SetDisconnected(); };
-    ws_.onmessage = [this](const std::string& msg) {
+    auto weak_self = std::weak_ptr<WebSocketSessionTransport>(std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this()));
+    ws_.onopen = [weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->running_ = true;
+        self->SetConnected();
+    };
+    ws_.onclose = [weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->running_ = false;
+        self->SetDisconnected();
+    };
+    ws_.onmessage = [weak_self](const std::string& msg) {
+        auto self = weak_self.lock();
+        if (!self) return;
         try {
             auto parsed = DeserializeMessage(msg);
-            WriteMessage(std::move(parsed));
+            self->WriteMessage(std::move(parsed));
         } catch (const std::exception& e) {
             MCP_LOG(Error, std::string("WebSocket parse error: ") + e.what());
-            NotifyError(std::string("WebSocket parse error: ") + e.what());
+            self->NotifyError(std::string("WebSocket parse error: ") + e.what());
         }
     };
 
@@ -52,6 +65,9 @@ void WebSocketSessionTransport::Start() {
 
 void WebSocketSessionTransport::Close() {
     running_ = false;
+    ws_.onopen = nullptr;
+    ws_.onclose = nullptr;
+    ws_.onmessage = nullptr;
     ws_.close();
     if (channel_)
         channel_->Close();
@@ -61,7 +77,7 @@ void WebSocketSessionTransport::Close() {
 void WebSocketSessionTransport::SendMessageAsync(JsonRpcMessage message) {
     if (!running_)
         return;
-    auto json_str = SerializeMessage(message);
+    auto json_str = SerializeMessage(std::move(message));
     ws_.send(json_str);
 }
 

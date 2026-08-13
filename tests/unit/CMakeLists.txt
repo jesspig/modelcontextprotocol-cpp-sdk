@@ -5,6 +5,7 @@ add_executable(mcp-core-tests
     McpTypesTests.cpp)
 
 target_link_libraries(mcp-core-tests PRIVATE mcp-core GTest::gtest_main)
+target_include_directories(mcp-core-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 gtest_discover_tests(mcp-core-tests)
 
 add_executable(mcp-wire-codec-tests
@@ -22,7 +23,8 @@ target_link_libraries(mcp-client-tests PRIVATE mcp-client mcp-server GTest::gtes
 gtest_discover_tests(mcp-client-tests)
 
 add_executable(mcp-oauth-tests OAuthTests.cpp)
-target_link_libraries(mcp-oauth-tests PRIVATE mcp-client GTest::gtest_main)
+target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http hv_static GTest::gtest_main)
+target_include_directories(mcp-oauth-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 gtest_discover_tests(mcp-oauth-tests)
 
 add_executable(mcp-transport-tests TransportTests.cpp)
@@ -30,7 +32,7 @@ target_link_libraries(mcp-transport-tests PRIVATE mcp-transport GTest::gtest_mai
 gtest_discover_tests(mcp-transport-tests)
 
 add_executable(mcp-http-tests HttpServerTests.cpp)
-target_link_libraries(mcp-http-tests PRIVATE mcp-http hv_static GTest::gtest_main)
+target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol hv_static GTest::gtest_main)
 target_include_directories(mcp-http-tests SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
 gtest_discover_tests(mcp-http-tests)
 

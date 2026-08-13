@@ -15,6 +15,7 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -84,9 +85,9 @@ public:
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
 
     // ── Properties ──
-    const ClientCapabilities* GetClientCapabilities() const;
-    const Implementation* GetClientInfo() const;
-    std::string_view GetNegotiatedProtocolVersion() const;
+    std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
+    std::shared_ptr<const Implementation> GetClientInfo() const;
+    std::string GetNegotiatedProtocolVersion() const;
     const ServerCapabilities& GetCapabilities() const;
     bool IsMrtrSupported() const;
 
@@ -100,9 +101,17 @@ private:
 
     // ── Auto-wire handlers from registered tools/resources/prompts ──
     void WireHandlers();
+    void WireToolHandlers();
+    void WireResourceHandlers();
+    void WirePromptHandlers();
+    void WireCoreHandlers();
+    void WireExtensionHandlers();
+    void WireTaskHandlers();
+    void WireSubscriptionHandlers();
     void DeriveCapabilities();
 
     // ── Internal handler implementations ──
+    JsonValue BuildToolsJson();
     void HandleListTools(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleCallTool(
@@ -135,6 +144,8 @@ private:
     // Registered primitives (guarded by registry_mutex_, which also guards capabilities_)
     mutable std::shared_mutex registry_mutex_;
     std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
+    // Serialized tools/list result cache; invalidated on registration changes
+    std::optional<JsonValue> cached_tools_json_;
     struct ResourceEntry {
         std::string name;
         std::string uri_pattern;
@@ -157,8 +168,9 @@ private:
     std::vector<PromptEntry> prompts_;
 
     // Client info (set on first request in 2026-era, or from initialize)
-    std::optional<ClientCapabilities> client_capabilities_;
-    std::optional<Implementation> client_info_;
+    std::shared_ptr<const ClientCapabilities> client_capabilities_;
+    std::shared_ptr<const Implementation> client_info_;
+    mutable std::mutex client_info_mutex_;
 
     // Completion handler (optional user-registered)
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
@@ -171,6 +183,7 @@ private:
     std::atomic<bool> initialized_{false};
 
     // Current logging level (set via logging/setLevel)
+    mutable std::mutex log_level_mutex_;
     std::optional<LoggingLevel> current_log_level_;
 
     // Stateless mode (no session persistence, no MRTR)

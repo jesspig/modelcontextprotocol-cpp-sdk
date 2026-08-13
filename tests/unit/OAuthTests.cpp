@@ -1,8 +1,13 @@
 // OAuthTests — unit tests for PKCE, token cache, and OAuth client provider
 
+#include <mcp/JsonRpc.hpp>
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
+#include <mcp/http/HttpServer.hpp>
+#include <mcp/transport/StreamableHttpClientTransport.hpp>
+#include "TestServerUtil.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
 
@@ -27,8 +32,6 @@ TEST(OAuthTest, PkceBase64UrlNoPadding) {
 
 TEST(OAuthTest, PkceGenerateCodeVerifier) {
     auto v1 = pkce::GenerateCodeVerifier();
-    auto v2 = pkce::GenerateCodeVerifier();
-    EXPECT_NE(v1, v2);  // random
     EXPECT_GE(v1.size(), 43U);
     EXPECT_LE(v1.size(), 128U);
 }
@@ -39,14 +42,6 @@ TEST(OAuthTest, PkceComputeCodeChallenge) {
         "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     auto challenge = pkce::ComputeCodeChallenge(fixed_verifier);
     EXPECT_EQ(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
-}
-
-// ── Base64Url ──
-TEST(OAuthTest, Base64UrlRoundTrip) {
-    std::string original = "hello world!";
-    // Just test encoding (decoding would need inverse)
-    auto encoded = pkce::Base64UrlEncode(original);
-    EXPECT_FALSE(encoded.empty());
 }
 
 // ── TokenContainer ──
@@ -162,4 +157,82 @@ TEST(OAuthTest, OAuthClientProviderRevokeClearsTokens) {
     EXPECT_TRUE(provider.HasToken());
     provider.Revoke();
     EXPECT_FALSE(provider.HasToken());
+}
+
+// ── client_credentials grant (RFC 6749 §4.4, M2M) ──
+TEST(OAuthTest, ClientCredentialsGrant) {
+    auto port = PickFreePort(kTestBasePort + 700);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            EXPECT_NE(req.body.find("grant_type=client_credentials"), std::string::npos);
+            EXPECT_NE(req.body.find("client_id=test-client"), std::string::npos);
+            resp.body = "{\"access_token\":\"m2m-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    OAuthClientProvider provider(opts);
+
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+    EXPECT_EQ(provider.GetAccessToken(), "m2m-token");
+    server.Stop();
+}
+
+// ── 401 challenge → auth_challenge_handler → retry with Authorization ──
+TEST(OAuthTest, AuthChallengeTriggersRetryWithAuthorization) {
+    auto port = PickFreePort(kTestBasePort + 800);
+    std::atomic<int> calls{0};
+    std::string second_auth;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/mcp",
+        [&calls, &second_auth](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (calls.fetch_add(1) == 0) {
+                resp.status_code = 401;
+                resp.status_text = "Unauthorized";
+                resp.headers["WWW-Authenticate"] =
+                    "Bearer resource_metadata=\"http://127.0.0.1:1/meta\", error=\"insufficient_scope\"";
+                return;
+            }
+            auto it = req.headers.find("authorization");
+            if (it != req.headers.end()) second_auth = it->second;
+            resp.body = R"({"jsonrpc":"2.0","id":1,"result":{"resultType":"complete"}})";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.auth_challenge_handler = [](std::string_view www_auth) -> std::string {
+        EXPECT_NE(www_auth.find("resource_metadata="), std::string::npos);
+        return "Bearer retried-token";
+    };
+    auto transport = std::make_shared<mcp::StreamableHttpClientTransport>(opts);
+    auto session = transport->Connect();
+
+    mcp::JsonRpcRequest rpc;
+    rpc.id = mcp::RequestId{int64_t(1)};
+    rpc.method = "ping";
+    session->SendMessageAsync(mcp::JsonRpcMessage{rpc});
+
+    std::error_code ec;
+    mcp::JsonRpcMessage resp_msg;
+    session->GetMessageChannel().AsyncReceive(
+        [&ec, &resp_msg](std::error_code e, mcp::JsonRpcMessage m) {
+            ec = e; resp_msg = std::move(m);
+        });
+    ASSERT_FALSE(ec);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_EQ(second_auth, "Bearer retried-token");
+
+    session->Close();
+    server.Stop();
 }

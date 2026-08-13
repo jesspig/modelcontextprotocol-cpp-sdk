@@ -64,6 +64,7 @@ using JsonRpcMessage = std::variant<
 
 // ── Serialization functions (implemented in JsonRpc.cpp) ──
 std::string SerializeMessage(const JsonRpcMessage& msg);
+std::string SerializeMessage(JsonRpcMessage&& msg);
 JsonRpcMessage DeserializeMessage(std::string_view json);
 
 // ── Helpers ──

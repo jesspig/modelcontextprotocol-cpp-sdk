@@ -3,6 +3,7 @@
 // and the error-path future contract.
 
 #include <mcp/protocol/McpSessionHandler.hpp>
+#include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/McpError.hpp>
@@ -92,8 +93,9 @@ TEST(SessionHandlerTest, UnnegotiatedMethodRejected2026) {
     EXPECT_EQ(result["code"].GetInt(), static_cast<int64_t>(McpErrorCode::MethodNotFound));
 }
 
-// Regression guard: ping must remain available in the 2026 era.
-TEST(SessionHandlerTest, PingAvailableIn2026) {
+// Regression guard: ping is a 2025-only method, so the 2026 era must
+// reject it with MethodNotFound (wire method set excludes ping).
+TEST(SessionHandlerTest, PingRejectedIn2026) {
     HandlerPair hp;
     hp.server->SetRequestHandler(methods::kPing,
         [](const JsonRpcRequest&, std::promise<JsonValue> p) {
@@ -106,8 +108,28 @@ TEST(SessionHandlerTest, PingAvailableIn2026) {
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(), static_cast<int64_t>(McpErrorCode::MethodNotFound));
+}
+
+// Ping remains available in the 2025 era: the handler is invoked and the
+// request completes without an error payload.
+TEST(SessionHandlerTest, PingAvailableIn2025) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.server->SetRequestHandler(methods::kPing,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    auto future = hp.client->SendRequest(methods::kPing,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
     EXPECT_FALSE(result.Contains("code"));
-    EXPECT_EQ(result["resultType"], JsonValue("complete"));
 }
 
 // A request that is never answered resolves via CheckTimeouts with a
@@ -160,7 +182,12 @@ TEST(SessionHandlerTest, CancelledNotificationNotRoutedToHandlerMap) {
 
     ASSERT_EQ(observed_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Give the (hard-coded) cancelled dispatch path a bounded window to run,
+    // then assert the user handler was never invoked.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline && !cancelled_handler_called) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     EXPECT_FALSE(cancelled_handler_called);
 }
 
@@ -184,4 +211,93 @@ TEST(SessionHandlerTest, ErrorResponseSatisfiesFutureContract) {
     ASSERT_TRUE(result.Contains("code"));
     EXPECT_EQ(result["code"].GetInt(), static_cast<int64_t>(McpErrorCode::MethodNotFound));
     EXPECT_EQ(result["message"].GetString(), std::string("boom"));
+}
+
+// A progress notification carrying a matching progressToken extends the
+// deadline of the pending request by kProgressTimeoutExtension.
+TEST(SessionHandlerTest, ProgressNotificationExtendsDeadline) {
+    HandlerPair hp;
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    // Client-side progress handling: a progress notification with a matching
+    // token resets the pending request deadline (mirrors McpServer wiring).
+    hp.client->SetNotificationHandler(notifications::kProgress,
+        [client = hp.client.get()](const JsonRpcNotification& notif) {
+            if (notif.params && notif.params->IsObject()) {
+                auto* pt = notif.params->Find("progressToken");
+                if (pt && pt->IsString()) {
+                    client->ResetTimeoutByProgressToken(pt->GetString());
+                }
+            }
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.progress_token = std::string("pt-1");
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(500));
+
+    // Server reports progress 250ms in, before the 500ms deadline.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    JsonValue progress_params(JsonValue::object_tag);
+    progress_params["progressToken"] = JsonValue("pt-1");
+    hp.server->SendNotification(notifications::kProgress, std::move(progress_params));
+
+    // Past the original deadline the request must still be pending.
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(400)),
+              std::future_status::timeout);
+
+    // Completing the handler satisfies the request normally.
+    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    EXPECT_FALSE(result.Contains("code"));
+}
+
+// A request dropped by an incoming filter never reaches the handler map;
+// the sender observes a request timeout instead.
+TEST(SessionHandlerTest, IncomingFilterInterceptsRequests) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto pipeline = std::make_shared<FilterPipeline>();
+    pipeline->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
+        [](const JsonRpcMessage& msg, MessageFilterNext next) {
+            if (const auto* req = std::get_if<JsonRpcRequest>(&msg)) {
+                if (req->method == "blocked") return;  // drop, do not forward
+            }
+            next(msg);
+        }));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)),
+        pipeline, nullptr);
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->Start();
+
+    bool handler_called = false;
+    server->SetRequestHandler("blocked",
+        [&handler_called](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handler_called = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    auto future = client->SendRequest("blocked",
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(500));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestTimeout));
+    EXPECT_FALSE(handler_called);
+
+    client->Close();
+    server->Close();
 }

@@ -3,6 +3,13 @@
 #include <mcp/detail/AtomicJsonFile.hpp>
 #include <mcp/Log.hpp>
 
+#include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -11,21 +18,32 @@ namespace mcp::detail {
 
 bool WriteAtomic(const std::filesystem::path& path, const std::string& contents) {
     auto tmp_path = path;
-    tmp_path += ".tmp";
-    {
-        std::ofstream file(tmp_path, std::ios::binary);
-        if (!file.is_open()) {
-            MCP_LOG(Error, "atomic write: failed to open tmp file: " + tmp_path.string());
-            return false;
-        }
-        file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        if (!file) {
-            file.close();
-            std::error_code ec;
-            std::filesystem::remove(tmp_path, ec);
-            MCP_LOG(Error, "atomic write: failed while writing: " + tmp_path.string());
-            return false;
-        }
+    tmp_path += ".tmp." + std::to_string(
+        static_cast<long long>(
+#ifdef _WIN32
+            GetCurrentProcessId()
+#else
+            getpid()
+#endif
+        ));
+    std::FILE* file = std::fopen(tmp_path.string().c_str(), "wb");
+    if (!file) {
+        MCP_LOG(Error, "atomic write: failed to open tmp file: " + tmp_path.string());
+        return false;
+    }
+    bool ok = std::fwrite(contents.data(), 1, contents.size(), file) == contents.size();
+    ok = std::fflush(file) == 0 && ok;
+#ifdef _WIN32
+    ok = FlushFileBuffers(reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)))) != 0 && ok;
+#else
+    ok = ::fsync(::fileno(file)) == 0 && ok;
+#endif
+    std::fclose(file);
+    if (!ok) {
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        MCP_LOG(Error, "atomic write: failed while writing: " + tmp_path.string());
+        return false;
     }
     std::error_code ec;
     std::filesystem::rename(tmp_path, path, ec);

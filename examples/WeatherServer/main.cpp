@@ -36,7 +36,17 @@ int main() {
 
     // 工具: 获取天气警报
     server->RegisterTool("get_alerts",
-        ToolOptions{}.Description("Get weather alerts for a US state"),
+        ToolOptions{}
+            .Description("Get weather alerts for a US state")
+            .InputSchema(JsonValue(JsonValue::Object{
+                {"type", JsonValue("object")},
+                {"properties", JsonValue(JsonValue::Object{
+                    {"state", JsonValue(JsonValue::Object{
+                        {"type", JsonValue("string")},
+                        {"description", JsonValue("Two-letter US state code")}})},
+                })},
+                {"required", JsonValue(JsonValue::Array{JsonValue("state")})},
+            })),
         std::function<CallToolResult(const Ctx&)>(
             [](const Ctx& ctx) -> CallToolResult {
                 auto& params = ctx.Params();
@@ -54,7 +64,19 @@ int main() {
 
     // 工具: 获取天气预报
     server->RegisterTool("get_forecast",
-        ToolOptions{}.Description("Get weather forecast for a location"),
+        ToolOptions{}
+            .Description("Get weather forecast for a location")
+            .InputSchema(JsonValue(JsonValue::Object{
+                {"type", JsonValue("object")},
+                {"properties", JsonValue(JsonValue::Object{
+                    {"state", JsonValue(JsonValue::Object{
+                        {"type", JsonValue("string")},
+                        {"description", JsonValue("Two-letter US state code")}})},
+                    {"latitude", JsonValue(JsonValue::Object{{"type", JsonValue("number")}})},
+                    {"longitude", JsonValue(JsonValue::Object{{"type", JsonValue("number")}})},
+                })},
+                {"required", JsonValue(JsonValue::Array{JsonValue("state")})},
+            })),
         std::function<CallToolResult(const Ctx&)>(
             [](const Ctx& ctx) -> CallToolResult {
                 auto& params = ctx.Params();

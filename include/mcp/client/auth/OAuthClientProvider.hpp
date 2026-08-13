@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -59,6 +60,11 @@ public:
     // Returns false on failure.
     bool Authenticate();
 
+    // ── Machine-to-machine (client credentials, RFC 6749 §4.4) ──
+    // Obtains a token without user interaction. Requires client_id and
+    // client_secret. Returns false on failure.
+    bool AuthenticateClientCredentials();
+
     // ── Get valid access token (auto-refresh if needed) ──
     std::string GetAccessToken();
 
@@ -80,12 +86,21 @@ public:
     // Some operations require additional scopes.
     bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
 
+    // ── Protected Resource Metadata (RFC 9728) ──
+    // Parses a WWW-Authenticate challenge advertising a resource_metadata
+    // URI, fetches it, and merges any discovered endpoints into the known
+    // metadata. Returns true when metadata was refreshed.
+    bool HandleAuthChallenge(std::string_view www_authenticate);
+
 private:
     // Internal helpers
     bool DiscoverMetadata();
     bool RegisterClient();
     bool StartAuthorizationFlow();
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
+    // Parse a token endpoint response and persist it. Returns false when the
+    // response lacks the access_token.
+    bool ParseAndStoreTokenResponse(const JsonValue& json);
 
     // RFC 9207: validate issuer parameter in token response
     bool ValidateTokenIssuer(const JsonValue& response) const;
@@ -108,6 +123,11 @@ private:
 
     // CSRF state (RFC 6749 §10.12)
     std::string state_;
+
+    // Serializes the "read token → refresh if expiring → store" critical
+    // section so concurrent callers cannot refresh with the same
+    // refresh_token (rotation-safe).
+    std::mutex refresh_mutex_;
 };
 
 // ── PKCE helpers ──

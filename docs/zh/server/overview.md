@@ -99,8 +99,8 @@ server->RegisterTool(tool);
 
 | 方法 | 返回类型 | 说明 |
 |--------|-------------|------|
-| `GetClientCapabilities()` | `const ClientCapabilities*` | 仅在 2025 时代客户端 `initialize` 握手时填充；2026 时代（无 initialize）下恒为 nullptr |
-| `GetClientInfo()` | `const Implementation*` | 客户端标识（连接前为 nullptr） |
+| `GetClientCapabilities()` | `std::shared_ptr<const ClientCapabilities>` | 仅在 2025 时代客户端 `initialize` 握手时填充；2026 时代（无 initialize）下恒为 nullptr |
+| `GetClientInfo()` | `std::shared_ptr<const Implementation>` | 客户端标识（连接前为 nullptr） |
 | `GetNegotiatedProtocolVersion()` | `string_view` | 协商后的协议版本字符串 |
 | `GetCapabilities()` | `const ServerCapabilities&` | 从注册原语自动推导的服务端能力 |
 | `IsMrtrSupported()` | `bool` | 是否支持 MRTR（多轮工具检索） |

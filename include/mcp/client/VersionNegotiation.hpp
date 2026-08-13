@@ -22,7 +22,12 @@ struct NegotiationResult {
 // ── VersionNegotiation — auto-detect server era ──
 // 1. Send server/discover
 // 2. On success → modern era (2026-07-28)
-// 3. On -32022 / -32601 / timeout → fall back to initialize handshake
+// 3. Failure handling depends on the transport: stdio-like transports fall
+//    back to initialize on timeouts and legacy-era error signals
+//    (-32001/-32020/-32021/-32601 and any other code); HTTP-like transports
+//    surface timeouts, connection errors, and -32022 version mismatches as
+//    typed McpError. A -32022 with an overlapping supported version list is
+//    retried once with the shared version before erroring.
 class VersionNegotiation {
 public:
     // Probe the server and negotiate the best protocol version.

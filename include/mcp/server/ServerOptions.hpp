@@ -12,6 +12,8 @@
 #include <mcp/protocol/MessageFilter.hpp>
 
 #include <chrono>
+#include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,7 +38,7 @@ struct MCP_API ServerOptions {
     // Normally auto-wired from RegisterTool/RegisterResource/RegisterPrompt
 
     // Caching
-    std::optional<std::map<std::string, CacheHint>> cache_hints;
+    std::optional<std::map<std::string, CacheHint, std::less<>>> cache_hints;
 
     // Request state security (HMAC/AEAD verification)
     std::function<bool(std::string_view)> request_state_verifier;

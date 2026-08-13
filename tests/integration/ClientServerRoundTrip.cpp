@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <future>
 #include <thread>
 
@@ -21,8 +23,11 @@ namespace {
 template <typename F>
 void RunWithTimeout(F&& body) {
     auto future = std::async(std::launch::async, std::forward<F>(body));
-    ASSERT_TRUE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready)
-        << "test body hung: call did not complete within 10s";
+    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+        std::fprintf(stderr,
+            "[  FAILED  ] test body hung: call did not complete within 10s\n");
+        std::_Exit(1);
+    }
     future.get();
 }
 
@@ -185,9 +190,27 @@ TEST_F(ClientServerFixture, ServerCapabilities) {
 // ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
     RunWithTimeout([this]() {
+        // Ping is a 2025-only wire method; the fixture's Auto client
+        // negotiates 2026, so build a dedicated legacy connection.
+        auto pair = InMemoryTransport::CreatePair();
+
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"TestServer", "1.0.0"};
+        auto legacy_server = McpServer::Create(pair.server, sopts);
+        std::thread server_thread([&legacy_server]() { legacy_server->Run(); });
+
+        ClientOptions cops;
+        cops.client_info = Implementation{"TestClient", "1.0.0"};
+        cops.connect_mode = ConnectMode::Legacy;
+        auto legacy_client = McpClient::Create(pair.client, cops);
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        EXPECT_NO_THROW(client->Ping());
+        EXPECT_NO_THROW(legacy_client->Ping());
 #pragma clang diagnostic pop
+
+        legacy_client->Close();
+        legacy_server->Close();
+        server_thread.join();
     });
 }

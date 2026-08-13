@@ -10,6 +10,7 @@
 #include <string_view>
 #include <functional>
 #include <atomic>
+#include <mutex>
 #include <system_error>
 #include <exception>
 
@@ -49,8 +50,14 @@ public:
     TransportState GetState() const { return static_cast<TransportState>(state_.load()); }
 
     // Callbacks
-    void SetOnClose(std::function<void()> cb) { on_close_ = std::move(cb); }
-    void SetOnError(std::function<void(std::string_view)> cb) { on_error_ = std::move(cb); }
+    void SetOnClose(std::function<void()> cb) {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        on_close_ = std::move(cb);
+    }
+    void SetOnError(std::function<void(std::string_view)> cb) {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        on_error_ = std::move(cb);
+    }
 
 protected:
     void NotifyClose();
@@ -63,6 +70,7 @@ protected:
     std::atomic<int> state_{0}; // 0=Initial, 1=Connected, 2=Disconnected
     std::function<void()> on_close_;
     std::function<void(std::string_view)> on_error_;
+    std::mutex callback_mutex_;
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -81,7 +89,13 @@ inline TransportBase::TransportBase() {
 }
 inline TransportBase::~TransportBase() = default;
 
-inline void TransportBase::SetConnected() { state_ = static_cast<int>(TransportState::Connected); }
+inline void TransportBase::SetConnected() {
+    int expected = static_cast<int>(TransportState::Initial);
+    if (!state_.compare_exchange_strong(expected,
+            static_cast<int>(TransportState::Connected))) {
+        MCP_LOG(Warning, "transport: SetConnected ignored (state is not Initial)");
+    }
+}
 
 inline void TransportBase::SetDisconnected() {
     if (state_.exchange(static_cast<int>(TransportState::Disconnected)) ==
@@ -91,8 +105,22 @@ inline void TransportBase::SetDisconnected() {
 }
 
 // Callback helpers
-inline void TransportBase::NotifyClose() { if (on_close_) on_close_(); }
-inline void TransportBase::NotifyError(std::string_view msg) { if (on_error_) on_error_(msg); }
+inline void TransportBase::NotifyClose() {
+    std::function<void()> cb;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        cb = on_close_;
+    }
+    if (cb) cb();
+}
+inline void TransportBase::NotifyError(std::string_view msg) {
+    std::function<void(std::string_view)> cb;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        cb = on_error_;
+    }
+    if (cb) cb(msg);
+}
 inline void TransportBase::WriteMessage(JsonRpcMessage message) {
     if (channel_ && !channel_->Send(std::move(message)))
         MCP_LOG(Warning, "message dropped: channel closed");

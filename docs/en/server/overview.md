@@ -99,8 +99,8 @@ The lambda-based `RegisterTool` overload works identically — it creates an `Mc
 
 | Method | Return Type | Description |
 |--------|-------------|-------------|
-| `GetClientCapabilities()` | `const ClientCapabilities*` | Only populated during a 2025-era client `initialize` handshake; always nullptr in the 2026 era (no initialize) |
-| `GetClientInfo()` | `const Implementation*` | Client identity (nullptr before connect) |
+| `GetClientCapabilities()` | `std::shared_ptr<const ClientCapabilities>` | Only populated during a 2025-era client `initialize` handshake; always nullptr in the 2026 era (no initialize) |
+| `GetClientInfo()` | `std::shared_ptr<const Implementation>` | Client identity (nullptr before connect) |
 | `GetNegotiatedProtocolVersion()` | `string_view` | The negotiated protocol version string |
 | `GetCapabilities()` | `const ServerCapabilities&` | Server capabilities auto-derived from registered primitives |
 | `IsMrtrSupported()` | `bool` | Whether MRTR (Multi-Round Tool Retrieval) is supported |
