@@ -41,7 +41,6 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 | CMake          | 3.28           | Generator: Ninja recommended |
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
 | libhv          | 1.3.4          | Fetched automatically        |
-| simdjson       | 3.12.3         | Fetched automatically        |
 | OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS); OAuth PKCE works without it (built-in SHA-256 fallback). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
