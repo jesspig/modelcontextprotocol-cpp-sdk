@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、依赖拉取。
 tags: [cmake, ninja, unity, lto]
-timestamp: 2026-08-13T16:30:00+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: CMakePresets.json
 ---
 
@@ -25,7 +25,7 @@ ctest --preset debug --output-on-failure
 | 默认关闭 | `MCP_BUILD_TESTS`、`MCP_BUILD_EXAMPLES`（预设中 tests=ON） |
 | Werror | 仅 `-DMCP_WERROR=ON`（CI 自动添加；MSVC `/WX`） |
 | `MCP_IS_CI` | 由环境变量 `CI` 定义与否决定 |
-| job pool | 自动调优：compile ≈ `mem/1500MB`、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
+| job pool | 自动调优：compile = `min(mem/1500MB, cpu-2)`（下限 1）、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
 
 ## 不易察觉的事实
 
@@ -35,7 +35,7 @@ ctest --preset debug --output-on-failure
 - **LTO 仅 Release**：clang-cl/MSVC 走 LTCG，Clang 走 ThinLTO，GCC 走 IPO
 - **缓存**：sccache > ccache（ccache 跳过 MSVC）
 - **`-march=native` 仅本地**（`MCP_IS_CI` 门控），debug 二进制不可移植出构建机
-- MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4324 /wd4244 /wd4267 /EHsc` + `_WIN32_WINNT=0x0A00`
+- MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4100 /wd4324 /wd4244 /wd4267 /EHsc` + 宏 `_CRT_SECURE_NO_WARNINGS`、`_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS`、`_WIN32_WINNT=0x0A00`
 - Clang/GCC：`-Wall -Wextra -Wpedantic -Wno-unused-parameter`
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
 - 配置期生成 `build_config.txt` 摘要

@@ -1,9 +1,9 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 14 个 gtest 目标（unit/integration/conformance），278 个测试用例。
+description: 15 个 gtest 目标（unit/integration/conformance），378 个测试用例。
 tags: [test, gtest, ctest, conformance]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: tests/CMakeLists.txt
 ---
 
@@ -15,12 +15,13 @@ resource: tests/CMakeLists.txt
 
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
-| mcp-core-tests | JsonRpcTests、McpTypesTests | 41 | 100 |
+| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests | 116 | 165 |
 | mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests | 27 | 84 |
 | mcp-server-tests | McpServerTests | 11 | 22 |
 | mcp-client-tests | McpClientTests | 15 | 43 |
 | mcp-oauth-tests | OAuthTests | 16 | 33 |
 | mcp-transport-tests | TransportTests | 6 | 18 |
+| mcp-net-tests | NetStackTests、WebSocketClientTests | 25 | 52 |
 | mcp-http-tests | HttpServerTests | 11 | 44 |
 | mcp-message-filter-tests | MessageFilterTests | 5 | 12 |
 | mcp-token-cache-tests | FileTokenCacheTests | 5 | 19 |
@@ -29,7 +30,7 @@ resource: tests/CMakeLists.txt
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-integration-tests | ClientServerRoundTrip | 8 | 21 |
 | mcp-conformance-tests | ProtocolConformance | 111 | 316 |
-| **合计** | | **278** | **764** |
+| **合计** | | **378** | **881** |
 
 ## 测试注意点
 

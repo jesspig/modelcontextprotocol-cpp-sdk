@@ -3,13 +3,13 @@ type: Class
 title: HttpServer
 description: 自研 HTTP/1.1 PIMPL 服务端：SSE 广播、并发限制、Host/Origin 校验。
 tags: [http, sse, pimpl]
-timestamp: 2026-08-13T16:30:00+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: include/mcp/http/HttpServer.hpp
 ---
 
 # HttpServer
 
-PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，SSE onclose 回调捕获 impl 的 shared_ptr 而非 `this`，保证服务 Stop 后回调仍有效。
+PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:389](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id, true)` 移除。
 
 ## 关键行为
 
@@ -28,7 +28,7 @@ PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl
 - `on_connect`/`on_disconnect` 已接线：SSE 客户端注册/移除时触发（拷贝语义，勿 move 取走）
 - **`on_disconnect` 三条移除路径统一"恰好一次"**：onclose 回调、`RemoveSseClient`、`BroadcastSse` 写失败分支均以 `erase` 返回的 `removed` 标志决定是否**锁外**调用回调（`sse_mutex` 内只移除与拷贝回调，锁外执行）
 - `BroadcastSse` 对已断开连接写失败会**自动移除**该客户端（锁外拷贝 entry 列表逐个发送，每个 entry 有独立 `write_mutex`，异常按 entry 自清理）
-- 注册前有 `writer->isClosed()` 预检；`next_sse_id` 从 1 递增
+- `next_sse_id` 从 1 递增
 
 ## 相关页面
 

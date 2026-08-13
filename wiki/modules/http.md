@@ -3,7 +3,7 @@ type: Module
 title: mcp-http HTTP 库
 description: HttpServer（自研实现）、EventStore（SSE 回放）、Streamable HTTP 双端传输。
 tags: [http, sse, webserver]
-timestamp: 2026-08-13T16:30:00+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: src/http/HttpServer.cpp
 ---
 
@@ -25,7 +25,7 @@ resource: src/http/HttpServer.cpp
 - accept 线程 + 每连接一线程（上限 256，超出 503）；stateless 并发上限 8（超出 503 `"server busy"`），同步等待超时 30s 返回 **504**（非 500）
 - 错误体均为 JSON-RPC 格式：413（超限 body）`-32700`、400（解析失败）`-32700 Parse error`、400（头不匹配）`-32020 HeaderMismatch`、503 `-32000 server closed`、504 `-32000`
 - SSE 广播带 `id:` 行；GET 支持 `Last-Event-ID` 断线回放（stateless 不回放）
-- `Mcp-Method` 头动态生成：解析 JSON-RPC body 的 method 字段写入（SEP-2243）；`mcp-param-*` 头往返镜像
+- `Mcp-Method` 头：客户端从 JSON-RPC body 的 method 字段动态生成（[StreamableHttpClientTransport.cpp:184](../../src/http/StreamableHttpClientTransport.cpp)）；服务端在响应中**回显** `mcp-method`/`mcp-name`/`mcp-protocol-version`（SEP-2243，[StreamableHttpServerTransport.cpp:210](../../src/http/StreamableHttpServerTransport.cpp)）；`mcp-param-*` 头往返镜像
 - EventStore：每会话上限 1024 事件，超出从头部裁剪
 - `Stop()` 的关闭序列（关 listen/连接 fd 解除阻塞 → join accept 与全部连接线程 → 释放 impl）移入独立 `std::thread` + `detail::JoinThreadSafely`（self-join 防护，[HttpServer.cpp:66](../../src/http/HttpServer.cpp)）
 - `running_` 为 `std::atomic<bool>`：`Start` 用 `exchange(true)`、`Stop` 用 `exchange(false)`、`SetHandler` 用 `load()` 检查

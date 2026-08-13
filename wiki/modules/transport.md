@@ -3,7 +3,7 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-08-13T16:30:00+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: include/mcp/Transport.hpp
 ---
 
@@ -13,7 +13,7 @@ resource: include/mcp/Transport.hpp
 
 ## 抽象
 
-- `ITransport` 纯虚接口 5 方法：`SessionId / GetMessageChannel / SendMessageAsync / Close / IsStateless`（默认 false）
+- `ITransport` 接口：4 个纯虚方法（`SessionId / GetMessageChannel / SendMessageAsync / Close`）+ `IsStateless` 带默认实现（默认 false）
 - `TransportBase`：三态状态机 `Initial → Connected → Disconnected`（[Transport.hpp](../../include/mcp/Transport.hpp)）
   - `SetConnected` 仅允许 `Initial→Connected`（CAS），已 Disconnected 后调用被忽略并记 Warning
   - `SetDisconnected` 幂等：仅首次触发 `NotifyClose()`
@@ -33,7 +33,7 @@ resource: include/mcp/Transport.hpp
 
 ## PlatformIO（合并 Win32+POSIX）
 
-[PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)：`ProcessHandle / PipeHandle / ProcessStartInfo / CreatedProcess` + 工厂函数 `CreateProcess / OpenStandardInput / SetThreadName`。
+[PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)：`ProcessHandle / PipeHandle / ProcessStartInfo / CreatedProcess` + 工厂函数 `CreateProcess / OpenStandardInput / OpenStandardOutput / OpenStandardError / SetThreadName`。
 
 关键语义（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）：
 

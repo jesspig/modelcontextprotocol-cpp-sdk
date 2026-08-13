@@ -3,7 +3,7 @@ type: Concept
 title: _meta 元数据与过滤器管线
 description: 2026 时代每请求 _meta 携带协议信息，入站/出站 FilterPipeline 用于认证审计限流。
 tags: [协议, meta, filter, 认证]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: include/mcp/Meta.hpp
 ---
 
@@ -23,7 +23,7 @@ resource: include/mcp/Meta.hpp
 - `FilterPipeline`（[MessageFilter.hpp](../../include/mcp/protocol/MessageFilter.hpp)）：`AddFilter(shared_ptr<MessageFilter>)` + `Execute(message, final_handler)`，无 filter 时直通；链式递归
 - **约束：`next` 必须在 filter 函数返回前同步调用**，延迟调用不安全
 - 挂接点：`ServerOptions::incoming_filters / outgoing_filters`（[/classes/mcp-server.md](../classes/mcp-server.md)）；`McpSessionHandler` 构造参数。入站在消息循环分发前执行，出站在 `SendMessage` 中执行（`closed_` 时不再发送）
-- 用途：认证/审计/限流（AGENTS.md 推荐做法）
+- 用途：认证/审计/限流（ServerOptions/MessageFilter 头注释推荐做法）
 
 ## 相关页面
 
