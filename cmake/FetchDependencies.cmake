@@ -7,19 +7,6 @@ if(DEFINED ENV{HTTP_PROXY})
 endif()
 
 # ====================================================================
-# simdjson — JSON 解析 (内部使用，不暴露于公共 API)
-# ====================================================================
-FetchContent_Declare(simdjson
-    GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-    GIT_TAG        v3.12.3
-    GIT_SHALLOW    TRUE)
-set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
-set(SIMDJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(simdjson)
-# Suppress warnings from simdjson headers (e.g. unused parameter in fallback path)
-target_include_directories(simdjson SYSTEM INTERFACE "$<BUILD_INTERFACE:${simdjson_SOURCE_DIR}/include>")
-
-# ====================================================================
 # OpenSSL — 提前探测，影响 libhv 的 TLS 选项
 # ====================================================================
 find_package(OpenSSL QUIET)
