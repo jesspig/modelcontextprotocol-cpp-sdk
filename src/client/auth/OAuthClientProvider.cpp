@@ -1,6 +1,7 @@
 // OAuthClientProvider.cpp
 // OAuth PKCE flow, token refresh, and metadata discovery implementation
 #include <mcp/client/auth/OAuthClientProvider.hpp>
+#include <detail/JsonFields.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
@@ -59,6 +60,8 @@ OAuthMetadata ParseMetadataJson(const JsonValue& json) {
         meta.registration_endpoint = v->GetString();
     if (auto* v = json.Find("jwks_uri"))
         meta.jwks_uri = v->GetString();
+    if (auto* v = json.Find(detail::kResource))
+        meta.resource = v->GetString();
 
     auto extract_vec = [&](const char* key, std::vector<std::string>& vec) {
         if (auto* v = json.Find(key)) {
@@ -74,6 +77,24 @@ OAuthMetadata ParseMetadataJson(const JsonValue& json) {
     extract_vec("code_challenge_methods_supported", meta.code_challenge_methods_supported);
 
     return meta;
+}
+
+// RFC 9728 §3.2: when a resource_metadata document advertises a `resource`,
+// it must match the URL the client actually requested (exactly, or at least
+// its scheme+host authority), otherwise the document does not belong to this
+// resource and must not be trusted.
+void VerifyResourceMatch(const std::string& requested_url,
+                         const std::optional<std::string>& resource)
+{
+    if (!resource || resource->empty()) return;
+    if (*resource == requested_url) return;
+    auto scheme_end = requested_url.find("://");
+    if (scheme_end != std::string::npos) {
+        auto host_end = requested_url.find_first_of("/?#", scheme_end + 3);
+        if (*resource == requested_url.substr(0, host_end)) return;
+    }
+    throw McpError(McpErrorCode::InternalError,
+        "OAuth resource_metadata resource does not match the request URL");
 }
 
 } // anonymous namespace
@@ -377,6 +398,7 @@ bool OAuthClientProvider::RefreshTokens() {
 }
 
 std::string OAuthClientProvider::GetAccessToken() {
+    std::lock_guard<std::mutex> lock(refresh_mutex_);
     auto tokens = token_cache_->GetTokens();
     if (!tokens) return {};
     if (tokens->WillExpireSoon()) {
@@ -451,6 +473,7 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
         meta.token_endpoint.empty()) {
         return false;
     }
+    VerifyResourceMatch(options_.server_url, meta.resource);
     if (!metadata_) metadata_ = OAuthMetadata{};
     if (!meta.issuer.empty()) metadata_->issuer = meta.issuer;
     if (!meta.authorization_endpoint.empty()) metadata_->authorization_endpoint = meta.authorization_endpoint;

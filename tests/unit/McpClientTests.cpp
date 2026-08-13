@@ -120,6 +120,93 @@ TEST(McpClientTest, AutoNegotiationFallsBackToInitialize) {
     server_handler->Close();
 }
 
+// Auto mode against a server whose -32022 lists an overlapping supported
+// version: the probe is retried once with the shared version and succeeds.
+TEST(McpClientTest, AutoNegotiationCorrectsVersionOnSharedVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> discover_calls{0};
+    server_handler->SetRequestHandler(methods::kDiscover,
+        [&discover_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            if (discover_calls.fetch_add(1) == 0) {
+                JsonValue err(JsonValue::object_tag);
+                err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
+                err["message"] = JsonValue("unsupported protocol version");
+                JsonValue data(JsonValue::object_tag);
+                JsonValue supported(JsonValue::array_tag);
+                supported.PushBack(JsonValue("2025-11-25"));
+                supported.PushBack(JsonValue("2026-07-28"));
+                data["supported"] = std::move(supported);
+                err["data"] = std::move(data);
+                p.set_value(std::move(err));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] = SerializeImplementation(Implementation{"modern-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    EXPECT_EQ(discover_calls.load(), 2);
+    EXPECT_TRUE(client->IsModernProtocol());
+    EXPECT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLatestProtocolVersion));
+    EXPECT_EQ(client->GetServerInfo().name, "modern-server");
+    client->Close();
+    server_handler->Close();
+}
+
+// Auto mode against a server whose -32022 lists only legacy versions: no
+// overlap exists, so negotiation falls back to initialize.
+TEST(McpClientTest, AutoNegotiationFallsBackWhenOnlyLegacySupported) {
+    auto pair = InMemoryTransport::CreatePair();
+
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> discover_calls{0};
+    server_handler->SetRequestHandler(methods::kDiscover,
+        [&discover_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            discover_calls.fetch_add(1);
+            JsonValue err(JsonValue::object_tag);
+            err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
+            err["message"] = JsonValue("unsupported protocol version");
+            JsonValue data(JsonValue::object_tag);
+            JsonValue supported(JsonValue::array_tag);
+            supported.PushBack(JsonValue("2025-11-25"));
+            data["supported"] = std::move(supported);
+            err["data"] = std::move(data);
+            p.set_value(std::move(err));
+        });
+    server_handler->SetRequestHandler(methods::kInitialize,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] = SerializeImplementation(Implementation{"legacy-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    EXPECT_EQ(discover_calls.load(), 1);
+    EXPECT_FALSE(client->IsModernProtocol());
+    EXPECT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLegacyProtocolVersion));
+    EXPECT_EQ(client->GetServerInfo().name, "legacy-server");
+    client->Close();
+    server_handler->Close();
+}
+
 // Pin mode: no handshake is sent; the pinned version is negotiated directly.
 // Note: Pin mode does not populate server_info (known limitation).
 TEST(McpClientTest, PinNegotiationUsesPinnedVersion) {

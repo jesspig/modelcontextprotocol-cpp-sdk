@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -122,6 +123,11 @@ private:
 
     // CSRF state (RFC 6749 §10.12)
     std::string state_;
+
+    // Serializes the "read token → refresh if expiring → store" critical
+    // section so concurrent callers cannot refresh with the same
+    // refresh_token (rotation-safe).
+    std::mutex refresh_mutex_;
 };
 
 // ── PKCE helpers ──
