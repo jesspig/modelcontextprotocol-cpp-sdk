@@ -21,11 +21,11 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 
 ## Protocol Versions
 
-The SDK supports five protocol versions across two eras:
+The SDK supports six protocol versions across two eras:
 
 | Era | Versions | Handshake |
 |-----|----------|-----------|
-| Legacy | `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` | `initialize` |
+| Legacy | `2024-10-07`, `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` | `initialize` |
 | Modern | `2026-07-28` | `server/discover` |
 
 Legacy versions use `initialize` handshake with standalone server-to-client requests for sampling/roots/elicitation. The modern version (2026-07-28) uses stateless `server/discover`, per-request `_meta` envelope, MRTR (`InputRequiredResult`), and `subscriptions/listen`.
