@@ -5,7 +5,7 @@
 | Stdio           | 是     | 是     | stdin/stdout 管道，子进程通信                 |
 | Streamable HTTP | 是     | 是     | HTTP POST 配合 JSON/会话模式响应             |
 | SSE             | 是     | 是¹   | 用于推送通知的服务器发送事件                   |
-| WebSocket       | 是     | 否     | 基于 TCP 的双向通信（libhv WebSocketClient）  |
+| WebSocket       | 是     | 否     | 基于 TCP 的双向通信（自研 WebSocketClient）  |
 | InMemory        | 是     | 是     | 进程内通信，用于测试                          |
 
 ## Streamable HTTP
@@ -31,15 +31,15 @@ ITransport（会话连接）
       ├── StdioClientSessionTransport（内部类）
       ├── InMemoryTransportImpl
       ├── SseClientSessionTransport（内部类）
-      ├── WebSocketSessionTransport（封装 hv::WebSocketClient）
+      ├── WebSocketSessionTransport（封装自研 WebSocketClient）
       ├── StreamableHttpServerTransport
       └── StreamableHttpSessionTransport（内部类）
 
 IClientTransport（连接工厂）
   ├── StdioClientTransport（PlatformIO）
-  ├── SseClientTransport（libhv HttpClient + requests::post）
-  ├── StreamableHttpClientTransport（libhv requests::post / WinHTTP）
-  └── WebSocketClientTransport（libhv WebSocketClient）
+  ├── SseClientTransport（自研 HttpClient）
+  ├── StreamableHttpClientTransport（自研 HttpClient / WinHTTP）
+  └── WebSocketClientTransport（自研 WebSocketClient）
 ```
 
 ## 关键类型

@@ -3,7 +3,7 @@ type: Class
 title: WireCodec
 description: 按协议时代划分的线协议词汇表：方法成员判定、消息校验、meta 处理与错误码映射。
 tags: [protocol, codec, 双时代, 2026]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: src/protocol/WireCodec.cpp
 ---
 
@@ -34,7 +34,7 @@ resource: src/protocol/WireCodec.cpp
 
 通知共 **12 种**：公共 7 + 2025 独有 4（initialized、roots/list_changed、elicitation/complete、tasks/status）+ 2026 独有 1（subscriptions/acknowledged）。2026 = 8 种、2025 = 11 种。5 个 `notifications/tasks/*` 独有通知已从集合移除（[Methods.hpp](../../include/mcp/Methods.hpp) 中常量仍保留）。
 
-2026 时代入站收到 ping、tasks/*、elicitation/create 等不在时代的方法：`HasRequestMethod` 判定为 `NotInEra`，McpSessionHandler 回 `-32601 MethodNotFound`（initialize 豁免，[McpSessionHandler.cpp:227](../../src/protocol/McpSessionHandler.cpp)）。
+2026 时代入站收到 ping、tasks/*、elicitation/create 等不在时代的方法：`ValidateRequest` 判定为 `NotInEra`，McpSessionHandler 回 `-32601 MethodNotFound`（initialize 豁免，[McpSessionHandler.cpp:227](../../src/protocol/McpSessionHandler.cpp)）。
 
 ## 相关页面
 

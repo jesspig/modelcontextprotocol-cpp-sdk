@@ -44,13 +44,13 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 mcp-core (STATIC)
 
 mcp-transport (STATIC)
-  └── mcp-core + libhv
+  └── mcp-core（含自研网络栈：TCP/TLS/HTTP/WebSocket）
 
 mcp-protocol (STATIC)
   └── mcp-transport
 
 mcp-http (STATIC)
-  └── mcp-transport + libhv
+  └── mcp-transport（自研网络栈）
 
 mcp-server (STATIC)
   └── mcp-protocol

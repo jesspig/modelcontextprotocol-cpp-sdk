@@ -3,7 +3,7 @@ type: Module
 title: mcp-protocol 协议库
 description: JSON-RPC 引擎（McpSessionHandler）与双时代线协议编解码（WireCodec）。
 tags: [protocol, jsonrpc, codec, 双时代]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: src/protocol/McpSessionHandler.cpp
 ---
 
@@ -23,7 +23,7 @@ resource: src/protocol/McpSessionHandler.cpp
 
 ## 通知处理器
 
-WireCodec 编解码器集合共 **12 种**通知：公共 7 + 2025 独有 4（initialized、roots/list_changed、elicitation/complete、tasks/status）+ 2026 独有 1（subscriptions/acknowledged）。[Methods.hpp](../../include/mcp/Methods.hpp) 的 `notifications` 命名空间仍保留 17 个常量（含 5 个 `notifications/tasks/*` 独有通知），但编解码器只认上述 12 种——tasks 系列仅 `tasks/status` 可通行。服务端在 `McpServer::WireHandlers()` 接线；客户端不注册任何通知处理器。`notifications/cancelled` 在 `OnNotification` 中硬编码处理，先于处理器表查找。
+WireCodec 编解码器集合共 **12 种**通知：公共 7 + 2025 独有 4（initialized、roots/list_changed、elicitation/complete、tasks/status）+ 2026 独有 1（subscriptions/acknowledged）。[Methods.hpp](../../include/mcp/Methods.hpp) 的 `notifications` 命名空间仍保留 17 个常量（含 5 个 `notifications/tasks/*` 独有通知），但编解码器只认上述 12 种——tasks 系列仅 `tasks/status` 可通行。服务端在 `McpServer::WireHandlers()` 接线；客户端注册 4 个处理器（`tools/list_changed`、`resources/list_changed`、`prompts/list_changed` 于 [McpClient.cpp:450-454](../../src/client/McpClient.cpp)，`notifications/message` 于 [McpClient.cpp:541](../../src/client/McpClient.cpp)，另有公共 `SetNotificationHandler` 转发 [McpClient.cpp:527](../../src/client/McpClient.cpp)）。`notifications/cancelled` 在 `OnNotification` 中硬编码处理，先于处理器表查找。
 
 ## 关键语义
 

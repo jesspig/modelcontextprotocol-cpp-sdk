@@ -5,7 +5,7 @@
 | Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication     |
 | Streamable HTTP | Yes    | Yes    | HTTP POST with JSON/session-mode responses       |
 | SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications        |
-| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient)  |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (self-hosted WebSocketClient)  |
 | InMemory        | Yes    | Yes    | In-process for testing                           |
 
 ## Streamable HTTP
@@ -31,15 +31,15 @@ ITransport (session connection)
       ├── StdioClientSessionTransport (internal)
       ├── InMemoryTransportImpl
       ├── SseClientSessionTransport (internal)
-      ├── WebSocketSessionTransport (wraps hv::WebSocketClient)
+      ├── WebSocketSessionTransport (wraps self-hosted WebSocketClient)
       ├── StreamableHttpServerTransport
       └── StreamableHttpSessionTransport (internal)
 
 IClientTransport (connection factory)
   ├── StdioClientTransport (PlatformIO)
-  ├── SseClientTransport (libhv HttpClient + requests::post)
-  ├── StreamableHttpClientTransport (libhv requests::post / WinHTTP)
-  └── WebSocketClientTransport (libhv WebSocketClient)
+  ├── SseClientTransport (self-hosted HttpClient)
+  ├── StreamableHttpClientTransport (self-hosted HttpClient / WinHTTP)
+  └── WebSocketClientTransport (self-hosted WebSocketClient)
 ```
 
 ## Key Types

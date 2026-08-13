@@ -1,4 +1,4 @@
-// StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX libhv)
+// StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX self-hosted)
 
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -18,6 +18,8 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <cctype>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -31,7 +33,7 @@
 #endif
 
 #ifndef _WIN32
-#include <hv/requests.h>
+#include <transport/detail/net/HttpClient.hpp>
 #endif
 
 namespace mcp {
@@ -399,9 +401,24 @@ private:
 } // namespace
 
 // ═══════════════════════════════════════════════════════════════════════
-// POSIX implementation using libhv
+// POSIX implementation using the internal HTTP client
 // ═══════════════════════════════════════════════════════════════════════
 #else
+
+namespace mcp { namespace httpclient_posix_impl {
+
+std::string GetHeader(const detail::net::HttpResponseInfo& resp,
+                      std::string_view name)
+{
+    std::string lower;
+    lower.reserve(name.size());
+    for (char c : name)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto it = resp.headers.find(lower);
+    return it == resp.headers.end() ? std::string{} : it->second;
+}
+
+}} // namespace mcp::httpclient_posix_impl
 
 namespace {
 
@@ -456,7 +473,7 @@ private:
     void DoPost(const std::string& body) {
         std::string auth_value;
         for (int attempt = 0; attempt < 2; ++attempt) {
-            http_headers headers;
+            std::unordered_map<std::string, std::string> headers;
             headers["Content-Type"] = "application/json";
             headers["Accept"] = "application/json, text/event-stream";
             try {
@@ -490,37 +507,40 @@ private:
             for (auto& [k, v] : options_.additional_headers)
                 headers[k] = v;
 
-            auto req = std::make_shared<::HttpRequest>();
-            req->method = HTTP_POST;
-            req->url = options_.endpoint;
-            req->body = body;
-            req->timeout = kHttpRequestTimeoutSeconds;
-            req->headers = headers;
-            auto resp = requests::request(req);
-            if (!resp) {
+            detail::net::HttpRequestSpec req;
+            req.method = "POST";
+            req.url = options_.endpoint;
+            req.body = body;
+            req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
+            req.headers = headers;
+            detail::net::HttpClient client;
+            detail::net::HttpResponseInfo resp;
+            try {
+                resp = client.Request(req);
+            } catch (...) {
                 MCP_LOG(Error, "HTTP POST failed");
                 NotifyError("HTTP POST failed");
                 return;
             }
 
-            if (resp->status_code >= 400) {
-                if ((resp->status_code == 401 || resp->status_code == 403) &&
+            if (resp.status_code >= 400) {
+                if ((resp.status_code == 401 || resp.status_code == 403) &&
                     attempt == 0 && options_.auth_challenge_handler) {
-                    auto www_auth = resp->GetHeader("WWW-Authenticate");
+                    auto www_auth = httpclient_posix_impl::GetHeader(resp, "WWW-Authenticate");
                     auto new_auth = options_.auth_challenge_handler(www_auth);
                     if (!new_auth.empty()) {
                         auth_value = std::move(new_auth);
                         continue;
                     }
                 }
-                MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp->status_code));
-                NotifyError("HTTP POST returned status " + std::to_string(resp->status_code));
+                MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp.status_code));
+                NotifyError("HTTP POST returned status " + std::to_string(resp.status_code));
                 return;
             }
 
-            auto ct = resp->GetHeader("Content-Type");
+            auto ct = httpclient_posix_impl::GetHeader(resp, "Content-Type");
             if (ct.find("text/event-stream") != std::string::npos) {
-                auto sse_data = resp->body;
+                auto sse_data = resp.body;
                 size_t pos;
                 while ((pos = sse_data.find("\n\n")) != std::string::npos) {
                     std::string block = sse_data.substr(0, pos);
@@ -529,14 +549,14 @@ private:
                 }
                 return;
             } else {
-                if (resp->body.empty()) return;
-                if (resp->body.size() > detail::kMaxMessageSize) {
+                if (resp.body.empty()) return;
+                if (resp.body.size() > detail::kMaxMessageSize) {
                     MCP_LOG(Error, "HTTP response exceeded max message size");
                     NotifyError("HTTP response exceeded max message size");
                     return;
                 }
                 try {
-                    JsonRpcMessage msg = DeserializeMessage(resp->body);
+                    JsonRpcMessage msg = DeserializeMessage(resp.body);
                     if (channel_) channel_->Send(std::move(msg));
                 } catch (const std::exception& e) {
                     MCP_LOG(Error, std::string("HTTP response parse failed: ") + e.what());

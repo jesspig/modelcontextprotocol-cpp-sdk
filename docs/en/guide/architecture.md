@@ -44,13 +44,13 @@ HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event pers
 mcp-core (STATIC)
 
 mcp-transport (STATIC)
-  └── mcp-core + libhv
+  └── mcp-core (with self-hosted network stack: TCP/TLS/HTTP/WebSocket)
 
 mcp-protocol (STATIC)
   └── mcp-transport
 
 mcp-http (STATIC)
-  └── mcp-transport + libhv
+  └── mcp-transport (self-hosted network stack)
 
 mcp-server (STATIC)
   └── mcp-protocol

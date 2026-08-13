@@ -3,7 +3,7 @@ type: Class
 title: FileTaskStore
 description: 文件持久化任务存储：CRUD、Flush 失败回滚、损坏文件备份 .corrupt。
 tags: [storage, 任务, 原子写入, 回滚]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: include/mcp/storage/FileTaskStore.hpp
 ---
 
@@ -18,7 +18,7 @@ resource: include/mcp/storage/FileTaskStore.hpp
 - `CreateTask`：`try_emplace`，已存在抛 `runtime_error "task already exists: <id>"`；Flush 失败从内存 erase 并抛异常
 - `GetTask`：不存在返回 `nullopt`；`GetAllTasks`：拷贝全部（均 `shared_lock`，与写盘并发）
 - `UpdateTask / CancelTask / SetTaskStatus`：**返回 false 仅表示任务不存在**；Flush 失败恢复原值（`original` 回滚）并抛异常
-- `SetTaskStatus`：status=Cancelled 时写 `error_message`
+- `CancelTask`：置 status=Cancelled 并写 `error_message`=reason（[FileTaskStore.cpp:154](../../src/server/FileTaskStore.cpp)）；`SetTaskStatus` 仅改状态，不写 `error_message`
 - `Flush()`：`shared_lock` 快照 + 锁外 `PersistTasks`；析构忽略返回值
 
 ## 持久化格式

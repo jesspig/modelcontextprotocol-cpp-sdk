@@ -19,7 +19,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/classes/message-channel.md](/classes/message-channel.md) — 有界异步队列
 - [/classes/mcp-server.md](/classes/mcp-server.md) — 服务端门面与四层回调接线
 - [/classes/mcp-client.md](/classes/mcp-client.md) — 客户端门面：创建即协商
-- [/classes/http-server.md](/classes/http-server.md) — libhv PIMPL HTTP 服务端与 SSE 广播
+- [/classes/http-server.md](/classes/http-server.md) — 自研 HTTP 服务端与 SSE 广播
 - [/classes/file-task-store.md](/classes/file-task-store.md) — 任务存储：双锁与锁外写盘、回滚与损坏备份
 - [/classes/file-token-cache.md](/classes/file-token-cache.md) — 令牌缓存：DPAPI 与 0600
 
@@ -28,7 +28,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/transports/stdio.md](/transports/stdio.md) — 管道传输与子进程
 - [/transports/sse.md](/transports/sse.md) — SSE 客户端：重连与回放
 - [/transports/in-memory.md](/transports/in-memory.md) — 同步测试传输
-- [/transports/websocket.md](/transports/websocket.md) — libhv WebSocket 客户端
+- [/transports/websocket.md](/transports/websocket.md) — 自研 WebSocket 客户端
 - [/transports/streamable-http.md](/transports/streamable-http.md) — 2026 时代 HTTP 传输（stateless / 504）
 
 ## 概念（concepts）
@@ -42,8 +42,8 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 
 ## 工程（build & tests）
 
-- [/build.md](/build.md) — CMake 预设、Unity/LTO、依赖与 libhv 补丁
-- [/tests.md](/tests.md) — 14 个 gtest 目标与守护测试
+- [/build.md](/build.md) — CMake 预设、Unity/LTO、依赖拉取
+- [/tests.md](/tests.md) — 15 个 gtest 目标与守护测试
 
 ## 维护
 

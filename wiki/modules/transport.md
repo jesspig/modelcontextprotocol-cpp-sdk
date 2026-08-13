@@ -3,17 +3,17 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T00:57:41+08:00
 resource: include/mcp/Transport.hpp
 ---
 
 # mcp-transport 传输库
 
-依赖 `mcp-core`，链接 libhv（`hv_static`）。显式关闭 Unity 构建（匿名命名空间实现类符号冲突）。
+依赖 `mcp-core`，网络 I/O 用自研栈（[detail/net/](../../src/transport/detail/net/)：TcpSocket/TlsSocket/HttpClient/WebSocketClient/Sha1）。显式关闭 Unity 构建（匿名命名空间实现类符号冲突）。
 
 ## 抽象
 
-- `ITransport` 纯虚接口 5 方法：`SessionId / GetMessageChannel / SendMessageAsync / Close / IsStateless`（默认 false）
+- `ITransport` 接口：4 个纯虚方法（`SessionId / GetMessageChannel / SendMessageAsync / Close`）+ `IsStateless` 带默认实现（默认 false）
 - `TransportBase`：三态状态机 `Initial → Connected → Disconnected`（[Transport.hpp](../../include/mcp/Transport.hpp)）
   - `SetConnected` 仅允许 `Initial→Connected`（CAS），已 Disconnected 后调用被忽略并记 Warning
   - `SetDisconnected` 幂等：仅首次触发 `NotifyClose()`
@@ -27,13 +27,13 @@ resource: include/mcp/Transport.hpp
 | StdioServerTransport | 服务端 | stdin/stdout 管道 | [/transports/stdio.md](../transports/stdio.md) |
 | StdioClientTransport | 客户端工厂 | 子进程管道 | 同上 |
 | InMemoryTransport::CreatePair | 双向 | MessageChannel 对 | [/transports/in-memory.md](../transports/in-memory.md) |
-| SseClientTransport | 客户端工厂 | libhv HttpClient | [/transports/sse.md](../transports/sse.md) |
-| WebSocketClientTransport | 客户端工厂 | libhv WebSocketClient | [/transports/websocket.md](../transports/websocket.md) |
-| StreamableHttpServer/ClientTransport | 双向 | libhv/WinHTTP | [/transports/streamable-http.md](../transports/streamable-http.md) |
+| SseClientTransport | 客户端工厂 | 自研 HttpClient | [/transports/sse.md](../transports/sse.md) |
+| WebSocketClientTransport | 客户端工厂 | 自研 WebSocketClient | [/transports/websocket.md](../transports/websocket.md) |
+| StreamableHttpServer/ClientTransport | 双向 | 自研 HttpClient / WinHTTP | [/transports/streamable-http.md](../transports/streamable-http.md) |
 
 ## PlatformIO（合并 Win32+POSIX）
 
-[PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)：`ProcessHandle / PipeHandle / ProcessStartInfo / CreatedProcess` + 工厂函数 `CreateProcess / OpenStandardInput / SetThreadName`。
+[PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)：`ProcessHandle / PipeHandle / ProcessStartInfo / CreatedProcess` + 工厂函数 `CreateProcess / OpenStandardInput / OpenStandardOutput / OpenStandardError / SetThreadName`。
 
 关键语义（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）：
 

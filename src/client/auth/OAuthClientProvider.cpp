@@ -7,16 +7,18 @@
 #include <mcp/McpError.hpp>
 #include <mcp/detail/sha256.hpp>
 
-#include <hv/requests.h>
+#include <transport/detail/net/HttpClient.hpp>
 
 #include <chrono>
 #ifdef MCP_HAVE_OPENSSL
 #include <openssl/rand.h>
 #endif
 
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace {
 
@@ -39,6 +41,37 @@ std::string UrlEncode(std::string_view input) {
         }
     }
     return result;
+}
+
+using NetResponse = mcp::detail::net::HttpResponseInfo;
+
+std::optional<NetResponse> HttpGetUrl(const std::string& url) {
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "GET";
+        req.url = url;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<NetResponse> HttpPostUrl(
+    const std::string& url, const std::string& body,
+    const std::unordered_map<std::string, std::string>& headers = {})
+{
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "POST";
+        req.url = url;
+        req.body = body;
+        req.headers = headers;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 } // anonymous namespace
@@ -195,10 +228,10 @@ JsonValue OAuthClientProvider::HttpPost(
         body += UrlEncode(it->first) + '=' + UrlEncode(it->second);
     }
 
-    http_headers headers;
+    std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/x-www-form-urlencoded";
 
-    auto resp = requests::post(std::string(url_str).c_str(), body, headers);
+    auto resp = HttpPostUrl(std::string(url_str), body, headers);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
         return JsonValue();
 
@@ -465,7 +498,7 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
     if (end == std::string::npos) return false;
     auto metadata_url = header.substr(pos + 1, end - pos - 1);
 
-    auto resp = requests::get(metadata_url.c_str());
+    auto resp = HttpGetUrl(metadata_url);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
     auto json = JsonValue::Parse(resp->body);
     if (!json.IsObject()) return false;
@@ -497,7 +530,7 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
     while (!url.empty() && url.back() == '/') url.pop_back();
     std::string metadata_url = url + "/.well-known/oauth-authorization-server";
 
-    auto resp = requests::get(metadata_url.c_str());
+    auto resp = HttpGetUrl(metadata_url);
     if (resp && resp->status_code >= 200 && resp->status_code < 300) {
         auto json = JsonValue::Parse(resp->body);
         if (json.IsObject()) {
@@ -523,11 +556,10 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
 
     auto body = JsonValue(std::move(obj)).Dump();
 
-    http_headers headers;
+    std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
 
-    auto resp = requests::post(
-        std::string(registration_endpoint).c_str(), body, headers);
+    auto resp = HttpPostUrl(std::string(registration_endpoint), body, headers);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
         return std::nullopt;
 

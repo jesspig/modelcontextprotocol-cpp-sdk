@@ -91,4 +91,4 @@ oauth_opts.token_cache = token_cache;
 
 ## 要求
 
-OpenSSL 开发头文件是编译 `mcp-client` 的**必需依赖**（`OAuthClientProvider.cpp` 无条件包含 `<openssl/rand.h>`；CMake 通过 `find_package(OpenSSL QUIET)` 自动查找，未找到时定义 `MCP_HAVE_OPENSSL` 失败，但编译仍会因缺少头文件而失败）。PKCE 代码验证器生成在构建时启用 OpenSSL（`MCP_HAVE_OPENSSL`）时使用 `RAND_bytes`，否则回退到 `std::random_device`。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由 libhv 的 HTTP 客户端处理）和密码学级随机数提供支持。
+OpenSSL 开发头文件是编译 `mcp-client` 的**必需依赖**（`OAuthClientProvider.cpp` 无条件包含 `<openssl/rand.h>`；CMake 通过 `find_package(OpenSSL QUIET)` 自动查找，未找到时定义 `MCP_HAVE_OPENSSL` 失败，但编译仍会因缺少头文件而失败）。PKCE 代码验证器生成在构建时启用 OpenSSL（`MCP_HAVE_OPENSSL`）时使用 `RAND_bytes`，否则回退到 `std::random_device`。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由自研网络栈处理）和密码学级随机数提供支持。
