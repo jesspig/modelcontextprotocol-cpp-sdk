@@ -10,7 +10,9 @@
 #include <hv/requests.h>
 
 #include <chrono>
+#ifdef MCP_HAVE_OPENSSL
 #include <openssl/rand.h>
+#endif
 
 #include <random>
 #include <sstream>

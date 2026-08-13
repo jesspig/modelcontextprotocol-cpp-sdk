@@ -15,6 +15,8 @@
 #include <crt_externs.h>
 #endif
 #include <vector>
+#include <chrono>
+#include <thread>
 
 namespace mcp { namespace detail {
 
@@ -105,7 +107,7 @@ bool PosixProcess::Terminate(int timeout_ms) {
     int elapsed = 0;
     while (elapsed < timeout_ms) {
         if (!IsRunning()) return true;
-        usleep(10000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         elapsed += 10;
     }
 
@@ -135,7 +137,7 @@ int PosixProcess::WaitForExit(int timeout_ms) {
             pid_ = -1;
             return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         }
-        usleep(10000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         elapsed += 10;
     }
     return -1;

@@ -152,7 +152,7 @@ public:
 private:
     void SseReadLoop() {
         while (running_) {
-            HttpRequest req;
+            ::HttpRequest req;
             req.method = HTTP_GET;
             req.url = server_url_;
             req.headers["Accept"] = "text/event-stream";
@@ -183,7 +183,7 @@ private:
                 }
             };
 
-            HttpResponse resp;
+            ::HttpResponse resp;
             http_client_->send(&req, &resp);
 
             // The stream ended. Exit on explicit Close, otherwise back off
@@ -274,12 +274,12 @@ private:
     }
 
     void DoPost(const std::string& endpoint, const std::string& body) {
-        HttpRequest req;
+        ::HttpRequest req;
         req.method = HTTP_POST;
         req.url = endpoint;
         req.headers["Content-Type"] = "application/json";
         req.body = body;
-        HttpResponse resp;
+        ::HttpResponse resp;
         post_client_->send(&req, &resp);
     }
 

@@ -11,6 +11,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             /utf-8
             /bigobj
             /W4
+            /wd4100
             /wd4324
             /wd4244
             /wd4267
@@ -37,6 +38,7 @@ elseif(MSVC)
         /utf-8
         /bigobj
         /W4
+        /wd4100
         /wd4324
         /wd4244
         /wd4267

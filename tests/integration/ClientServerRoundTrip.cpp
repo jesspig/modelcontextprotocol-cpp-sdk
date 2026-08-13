@@ -189,7 +189,7 @@ TEST_F(ClientServerFixture, ServerCapabilities) {
 
 // ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
-    RunWithTimeout([this]() {
+    RunWithTimeout([]() {
         // Ping is a 2025-only wire method; the fixture's Auto client
         // negotiates 2026, so build a dedicated legacy connection.
         auto pair = InMemoryTransport::CreatePair();
@@ -204,10 +204,24 @@ TEST_F(ClientServerFixture, Ping) {
         cops.connect_mode = ConnectMode::Legacy;
         auto legacy_client = McpClient::Create(pair.client, cops);
 
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+__pragma(warning(push))
+__pragma(warning(disable : 4996))
+#endif
         EXPECT_NO_THROW(legacy_client->Ping());
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+__pragma(warning(pop))
+#endif
 
         legacy_client->Close();
         legacy_server->Close();
