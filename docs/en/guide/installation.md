@@ -6,7 +6,6 @@
 |----------------|------------|--------------------------------|
 | CMake          | 3.28       | Ninja generator required       |
 | C++ Compiler   | C++17      | MSVC, Clang, GCC               |
-| libhv          | 1.3.4      | Fetched automatically          |
 | OpenSSL        | Required (dev headers) | Hard requirement for building `mcp-client` (`<openssl/rand.h>` included unconditionally); located automatically by CMake. Used for TLS encryption (WebSocket, SSE HTTPS, etc.). PKCE verifier generation uses `RAND_bytes` when `MCP_HAVE_OPENSSL` is defined, else falls back to `std::random_device` |
 
 ## Consume via FetchContent

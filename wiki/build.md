@@ -1,9 +1,9 @@
 ---
 type: Build
 title: 构建系统
-description: CMake 预设、编译器探测、Unity/LTO/缓存优化、依赖拉取与 libhv 补丁。
-tags: [cmake, ninja, unity, lto, libhv]
-timestamp: 2026-08-13T19:33:03+08:00
+description: CMake 预设、编译器探测、Unity/LTO/缓存优化、依赖拉取。
+tags: [cmake, ninja, unity, lto]
+timestamp: 2026-08-13T16:30:00+08:00
 resource: CMakePresets.json
 ---
 
@@ -44,13 +44,8 @@ ctest --preset debug --output-on-failure
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
-| libhv | 1.3.4 | `hv_static`；`WITH_OPENSSL` 跟随探测 |
 | GoogleTest | 1.15.2 | 仅 `MCP_BUILD_TESTS=ON`；`BUILD_GMOCK=OFF` |
 | OpenSSL | 系统 | 可选；`MCP_HAVE_OPENSSL` 定义，PKCE 失败回落内置 SHA-256 |
-
-## libhv 补丁（必须保留）
-
-[FetchDependencies.cmake](../cmake/FetchDependencies.cmake) 将 libhv CMakeLists 的 `install(FILES ... DESTINATION include/hv)` 替换为 `file(COPY ...)`，使 `include/hv/` 在**配置期**即存在（匹配 `hv_static` 的 `BUILD_INTERFACE`）。`if(POLICY CMP0169)` 保护 + 兜底手工复制。修改依赖拉取时此补丁不得破坏。
 
 ## 相关页面
 
