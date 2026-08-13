@@ -317,7 +317,7 @@ void StreamableHttpServerTransport::HandlePost(
                     }
                 }
             }
-            resp.body = SerializeMessage(response);
+            resp.body = SerializeMessage(std::move(response));
             resp.status_code = 200;
             resp.status_text = "OK";
             resp.headers["content-type"] = "application/json";
@@ -407,7 +407,7 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     }
 
     // Normal path: store event and broadcast via SSE
-    auto event_data = BuildSseEvent(message);
+    auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
         auto event_id = event_store_->Append(session_id_, event_data);
         event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
@@ -427,9 +427,9 @@ std::string StreamableHttpServerTransport::RequestIdToString(const RequestId& id
 
 // ── Build SSE event ──
 std::string StreamableHttpServerTransport::BuildSseEvent(
-    const JsonRpcMessage& msg)
+    JsonRpcMessage msg)
 {
-    std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(msg)) + "\n\n";
+    std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(std::move(msg))) + "\n\n";
     return data;
 }
 

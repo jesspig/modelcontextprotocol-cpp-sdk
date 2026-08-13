@@ -35,10 +35,22 @@ WebSocketSessionTransport::WebSocketSessionTransport(std::string url)
 WebSocketSessionTransport::~WebSocketSessionTransport() { Close(); }
 
 void WebSocketSessionTransport::Start() {
-    auto self = std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this());
-    ws_.onopen = [self]() { self->running_ = true; self->SetConnected(); };
-    ws_.onclose = [self]() { self->running_ = false; self->SetDisconnected(); };
-    ws_.onmessage = [self](const std::string& msg) {
+    auto weak_self = std::weak_ptr<WebSocketSessionTransport>(std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this()));
+    ws_.onopen = [weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->running_ = true;
+        self->SetConnected();
+    };
+    ws_.onclose = [weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->running_ = false;
+        self->SetDisconnected();
+    };
+    ws_.onmessage = [weak_self](const std::string& msg) {
+        auto self = weak_self.lock();
+        if (!self) return;
         try {
             auto parsed = DeserializeMessage(msg);
             self->WriteMessage(std::move(parsed));
@@ -53,6 +65,9 @@ void WebSocketSessionTransport::Start() {
 
 void WebSocketSessionTransport::Close() {
     running_ = false;
+    ws_.onopen = nullptr;
+    ws_.onclose = nullptr;
+    ws_.onmessage = nullptr;
     ws_.close();
     if (channel_)
         channel_->Close();
@@ -62,7 +77,7 @@ void WebSocketSessionTransport::Close() {
 void WebSocketSessionTransport::SendMessageAsync(JsonRpcMessage message) {
     if (!running_)
         return;
-    auto json_str = SerializeMessage(message);
+    auto json_str = SerializeMessage(std::move(message));
     ws_.send(json_str);
 }
 

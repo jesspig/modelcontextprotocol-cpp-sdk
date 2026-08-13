@@ -73,6 +73,7 @@ public:
             detail::SetThreadName("mcp-worker");
             SendLoop();
         });
+        SetConnected();
     }
 
     void Close() override {
@@ -96,7 +97,7 @@ public:
 
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
-        auto j = SerializeMessage(message);
+        auto j = SerializeMessage(std::move(message));
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
             send_queue_.push(j);
@@ -432,7 +433,7 @@ public:
 
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
-        auto body = SerializeMessage(message);
+        auto body = SerializeMessage(std::move(message));
         { std::lock_guard<std::mutex> lk(send_mutex_); send_queue_.push(std::move(body)); }
         send_cv_.notify_one();
     }

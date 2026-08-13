@@ -114,20 +114,21 @@ public:
     }
 
     void Close() override {
-        if (!running_.exchange(false))
-            return;
+        if (running_.exchange(false)) {
+            {
+                std::lock_guard<std::mutex> lock(send_mutex_);
+                send_cv_.notify_one();
+            }
 
-        {
-            std::lock_guard<std::mutex> lock(send_mutex_);
-            send_cv_.notify_one();
+            // Closing both clients unblocks the SSE read and POST sends
+            if (post_client_)
+                post_client_->close();
+            if (http_client_)
+                http_client_->close();
         }
 
-        // Closing both clients unblocks the SSE read and POST sends
-        if (post_client_)
-            post_client_->close();
-        if (http_client_)
-            http_client_->close();
-
+        // Join unconditionally: the SSE read thread may have exited on its own
+        // (reconnect exhaustion / oversize), so Close() must not be short-circuited
         detail::JoinThreadSafely(send_thread_);
         detail::JoinThreadSafely(sse_thread_);
 
@@ -139,7 +140,7 @@ public:
         if (!running_)
             return;
 
-        std::string body = SerializeMessage(message);
+        std::string body = SerializeMessage(std::move(message));
 
         {
             std::lock_guard<std::mutex> lock(send_mutex_);
@@ -164,6 +165,15 @@ private:
                 if (state == HP_BODY && data && size) {
                     sse_buffer_.append(data, size);
 
+                    if (sse_buffer_.size() > detail::kMaxMessageSize) {
+                        sse_buffer_.clear();
+                        NotifyError("message size exceeds maximum allowed size");
+                        running_.store(false);
+                        // Closing the client aborts the blocking recv in send()
+                        http_client_->close();
+                        return;
+                    }
+
                     size_t pos;
                     while ((pos = sse_buffer_.find("\n\n")) != std::string::npos) {
                         auto block = sse_buffer_.substr(0, pos);
@@ -183,14 +193,16 @@ private:
             if (!WaitForReconnect()) break;
         }
 
-        if (running_.exchange(false)) {
-            {
-                std::lock_guard<std::mutex> lk(send_mutex_);
-                send_cv_.notify_one();
-            }
-            if (channel_) channel_->Close();
-            SetDisconnected();
+        // The SSE read thread exited on its own (reconnect exhaustion/oversize);
+        // leave running_ untouched so Close() performs the full teardown.
+        // Close the channel first, then wake SendLoop, whose wait predicate
+        // also checks the channel state.
+        if (channel_) channel_->Close();
+        {
+            std::lock_guard<std::mutex> lk(send_mutex_);
+            send_cv_.notify_one();
         }
+        SetDisconnected();
     }
 
     bool WaitForReconnect() {
@@ -242,9 +254,11 @@ private:
             {
                 std::unique_lock<std::mutex> lock(send_mutex_);
                 send_cv_.wait(lock, [this] {
-                    return !send_queue_.empty() || !running_;
+                    return !send_queue_.empty() || !running_ ||
+                           (channel_ != nullptr && !channel_->IsOpen());
                 });
-                if (!running_) break;
+                if (!running_ || (channel_ != nullptr && !channel_->IsOpen()))
+                    break;
                 body = std::move(send_queue_.front());
                 send_queue_.pop();
             }

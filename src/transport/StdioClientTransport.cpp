@@ -58,7 +58,7 @@ public:
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
 
-        auto line = SerializeMessage(message) + "\n";
+        auto line = SerializeMessage(std::move(message)) + "\n";
         if (stdin_pipe_ && stdin_pipe_->Write(line.data(), line.size()) != line.size()) {
             MCP_LOG(Error, "failed to write to child stdin pipe");
             NotifyError("failed to write to child stdin pipe");
@@ -85,6 +85,12 @@ private:
 
             buf[bytes_read] = '\0';
             buffer.append(buf, bytes_read);
+
+            if (buffer.size() > detail::kMaxMessageSize) {
+                buffer.clear();
+                NotifyError("message size exceeds maximum allowed size");
+                break;
+            }
 
             size_t pos;
             while ((pos = buffer.find('\n')) != std::string::npos) {

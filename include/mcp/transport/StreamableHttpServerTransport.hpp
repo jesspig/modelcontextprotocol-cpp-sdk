@@ -67,7 +67,7 @@ private:
     void HandleGet(const HttpRequest& req, HttpResponse& resp);
 
     // Build SSE event data from a JSON-RPC message
-    std::string BuildSseEvent(const JsonRpcMessage& msg);
+    std::string BuildSseEvent(JsonRpcMessage msg);
 
     // Parse MCP headers from request
     std::optional<std::string> GetMcpHeader(const HttpRequest& req,
