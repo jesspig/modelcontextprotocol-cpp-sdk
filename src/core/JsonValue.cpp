@@ -4,8 +4,6 @@
 #include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
 
-#include <simdjson.h>
-
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -14,57 +12,12 @@
 
 namespace mcp::detail {
 
-using namespace simdjson;
-
-// Recursively convert a simdjson DOM element to a JsonValue.
-static JsonValue FromDomElement(const dom::element& el) {
-    switch (el.type()) {
-    case dom::element_type::NULL_VALUE:
-        return JsonValue(nullptr);
-    case dom::element_type::BOOL:
-        return JsonValue(bool(el));
-    case dom::element_type::INT64:
-        return JsonValue(int64_t(el));
-    case dom::element_type::UINT64: {
-        uint64_t u = uint64_t(el);
-        if (u > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-            throw McpError(McpErrorCode::DeserializeFailed,
-                std::string("JSON parse error: uint64 value out of int64 range: ") + std::to_string(u));
-        return JsonValue(static_cast<int64_t>(u));
-    }
-    case dom::element_type::DOUBLE:
-        return JsonValue(double(el));
-    case dom::element_type::STRING: {
-        std::string_view sv(el);
-        return JsonValue(std::string(sv));
-    }
-    case dom::element_type::ARRAY: {
-        JsonValue::Array arr;
-        for (auto child : dom::array(el)) {
-            arr.push_back(FromDomElement(child));
-        }
-        return JsonValue(std::move(arr));
-    }
-    case dom::element_type::OBJECT: {
-        JsonValue::Object obj;
-        for (auto [key, value] : dom::object(el)) {
-            obj.emplace(std::string(key), FromDomElement(value));
-        }
-        return JsonValue(std::move(obj));
-    }
-    }
-    return JsonValue(nullptr);
+namespace json {
+JsonValue ParseDocument(std::string_view json);
 }
 
 JsonValue ParseJsonString(std::string_view json) {
-    static thread_local dom::parser parser;
-    dom::element doc;
-    auto error = parser.parse(json).get(doc);
-    if (error) {
-        throw McpError(McpErrorCode::ParseError,
-            std::string("JSON parse error: ") + error_message(error));
-    }
-    return FromDomElement(doc);
+    return json::ParseDocument(json);
 }
 
 // ── Hand-written JSON serializer ──

@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-13T19:33:03+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -15,7 +15,7 @@ resource: src/core/JsonValue.cpp
 
 - `JsonValue` 基于 `std::variant<nullptr_t, bool, int64_t, double, string, Array, Object>`；无 uint64/float 类型（[JsonValue.hpp](../../include/mcp/JsonValue.hpp)）
 - `Dump()` 手写序列化：NaN/Inf 输出 `null`，double 用 `max_digits10` 精度（[JsonValue.cpp](../../src/core/JsonValue.cpp)）
-- 解析用 simdjson DOM；`ParseJsonString` 使用 `static thread_local` simdjson parser（[JsonValue.cpp:59](../../src/core/JsonValue.cpp)）；`Parse` 失败抛 `McpError(ParseError)`
+- 解析用自研递归下降解析器（[JsonParser.cpp](../../src/core/JsonParser.cpp)，`mcp::detail::json`）；深度上限 512，数字超界分类（uint64 超 int64 抛 `DeserializeFailed`，其余语法/范围错误抛 `ParseError`，消息带 offset）；`Parse` 失败抛 `McpError`
 - 非 const `operator[]` 缺失键时单次 `emplace` 插入 null 并返回引用；const 版本抛 `DeserializeFailed`（[JsonValue.cpp:279](../../src/core/JsonValue.cpp)）
 - 详见 [/classes/json-value.md](../classes/json-value.md)
 

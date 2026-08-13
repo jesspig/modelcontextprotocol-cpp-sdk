@@ -42,7 +42,6 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 
 ```
 mcp-core (STATIC)
-  └── simdjson  (JSON 解析，内部使用)
 
 mcp-transport (STATIC)
   └── mcp-core + libhv

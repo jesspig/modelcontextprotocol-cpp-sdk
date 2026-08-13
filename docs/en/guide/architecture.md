@@ -42,7 +42,6 @@ HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event pers
 
 ```
 mcp-core (STATIC)
-  └── simdjson  (JSON parsing, internal)
 
 mcp-transport (STATIC)
   └── mcp-core + libhv

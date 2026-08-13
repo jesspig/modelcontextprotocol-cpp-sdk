@@ -42,7 +42,6 @@
 | CMake         | 3.28    | 生成器：推荐 Ninja            |
 | C++ 编译器    | C++17   | MSVC、Clang、GCC             |
 | libhv         | 1.3.4   | 自动下载                      |
-| simdjson      | 3.12.3  | 自动下载                      |
 | OpenSSL       | (可选)  | TLS 必需（WebSocket、SSE HTTPS）；OAuth PKCE 无需 OpenSSL（内置 SHA-256 回退）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 支持平台：**Windows** (MSVC、clang-cl)、**Linux** (GCC、Clang)、**macOS** (Clang)。

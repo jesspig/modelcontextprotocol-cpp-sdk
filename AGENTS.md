@@ -12,7 +12,7 @@ ctest --preset debug --output-on-failure
 
 - 运行单个用例：`ctest --preset debug -R 'XxxTest.CaseName'`，或直接跑二进制：`build/debug/tests/unit/mcp-core-tests --gtest_filter='XxxTest.*'`
 - 构建示例需 `-DMCP_BUILD_EXAMPLES=ON`（预设默认 OFF）
-- 首次 configure 必须联网（simdjson/libhv/googletest 由 FetchContent 拉取，且会改写 libhv 的 CMakeLists）；构建目录不可跨机拷贝
+- 首次 configure 必须联网（libhv/googletest 由 FetchContent 拉取，且会改写 libhv 的 CMakeLists）；构建目录不可跨机拷贝
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起；只有 MSVC 时显式传 `-DCMAKE_CXX_COMPILER=cl`
 - 详细说明见 [wiki/build.md](wiki/build.md)、[wiki/tests.md](wiki/tests.md)
 

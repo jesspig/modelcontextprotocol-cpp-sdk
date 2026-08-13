@@ -90,6 +90,7 @@ endif()
 add_library(mcp-core STATIC)
 target_sources(mcp-core PRIVATE
     src/core/JsonValue.cpp
+    src/core/JsonParser.cpp
     src/core/JsonRpc.cpp
     src/core/McpTypesTools.cpp
     src/core/McpTypesResults.cpp
@@ -105,7 +106,6 @@ target_include_directories(mcp-core PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_include_directories(mcp-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mcp-core PUBLIC Threads::Threads)
-target_link_libraries(mcp-core PRIVATE simdjson)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 

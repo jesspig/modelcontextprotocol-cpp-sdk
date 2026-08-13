@@ -15,7 +15,6 @@
 namespace mcp::detail {
 
 // ── Core JSON conversion (implemented in JsonValue.cpp) ──
-// Only used for converting JsonValue ↔ simdjson internally.
 // JsonValue::Parse and JsonValue::Dump are the public interface.
 
 JsonValue ParseJsonString(std::string_view json);
