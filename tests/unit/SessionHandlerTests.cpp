@@ -93,8 +93,9 @@ TEST(SessionHandlerTest, UnnegotiatedMethodRejected2026) {
     EXPECT_EQ(result["code"].GetInt(), static_cast<int64_t>(McpErrorCode::MethodNotFound));
 }
 
-// Regression guard: ping must remain available in the 2026 era.
-TEST(SessionHandlerTest, PingAvailableIn2026) {
+// Regression guard: ping is a 2025-only method, so the 2026 era must
+// reject it with MethodNotFound (wire method set excludes ping).
+TEST(SessionHandlerTest, PingRejectedIn2026) {
     HandlerPair hp;
     hp.server->SetRequestHandler(methods::kPing,
         [](const JsonRpcRequest&, std::promise<JsonValue> p) {
@@ -107,8 +108,28 @@ TEST(SessionHandlerTest, PingAvailableIn2026) {
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(), static_cast<int64_t>(McpErrorCode::MethodNotFound));
+}
+
+// Ping remains available in the 2025 era: the handler is invoked and the
+// request completes without an error payload.
+TEST(SessionHandlerTest, PingAvailableIn2025) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.server->SetRequestHandler(methods::kPing,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    auto future = hp.client->SendRequest(methods::kPing,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
     EXPECT_FALSE(result.Contains("code"));
-    EXPECT_EQ(result["resultType"], JsonValue("complete"));
 }
 
 // A request that is never answered resolves via CheckTimeouts with a

@@ -57,7 +57,7 @@ static JsonValue FromDomElement(const dom::element& el) {
 }
 
 JsonValue ParseJsonString(std::string_view json) {
-    dom::parser parser;
+    static thread_local dom::parser parser;
     dom::element doc;
     auto error = parser.parse(json).get(doc);
     if (error) {
@@ -278,8 +278,6 @@ const JsonValue& JsonValue::operator[](size_t i) const {
 
 JsonValue& JsonValue::operator[](std::string_view key) {
     auto& obj = GetObject();
-    auto it = obj.find(key);
-    if (it != obj.end()) return it->second;
     auto [pos, _] = obj.emplace(std::string(key), nullptr);
     return pos->second;
 }

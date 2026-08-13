@@ -7,12 +7,6 @@
 
 namespace mcp {
 
-// Forward declarations from other modules
-JsonValue SerializeIcon(const Icon& v);
-Icon DeserializeIcon(const JsonValue& j);
-JsonValue SerializeContentVariant(const ContentVariant& v);
-ContentVariant DeserializeContentVariant(const JsonValue& j);
-
 // ── ToolAnnotations ──
 
 JsonValue SerializeToolAnnotations(const ToolAnnotations& v) {

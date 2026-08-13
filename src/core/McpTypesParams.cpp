@@ -7,24 +7,6 @@
 
 namespace mcp {
 
-// Forward declarations from other modules
-JsonValue SerializeRequestMeta(const RequestMeta& v);
-RequestMeta DeserializeRequestMeta(const JsonValue& j);
-JsonValue SerializeClientCapabilities(const ClientCapabilities& v);
-ClientCapabilities DeserializeClientCapabilities(const JsonValue& j);
-JsonValue SerializeImplementation(const Implementation& v);
-Implementation DeserializeImplementation(const JsonValue& j);
-JsonValue SerializeContentVariant(const ContentVariant& v);
-ContentVariant DeserializeContentVariant(const JsonValue& j);
-JsonValue SerializeSubscriptionFilter(const SubscriptionFilter& v);
-SubscriptionFilter DeserializeSubscriptionFilter(const JsonValue& j);
-JsonValue SerializeElicitResult(const ElicitResult& v);
-ElicitResult DeserializeElicitResult(const JsonValue& j);
-JsonValue SerializeInputRequests(const InputRequests& v);
-InputRequests DeserializeInputRequests(const JsonValue& j);
-JsonValue SerializeLoggingLevel(LoggingLevel l);
-LoggingLevel DeserializeLoggingLevel(const JsonValue& j);
-
 // ── PaginatedRequestParams ──
 
 JsonValue SerializePaginatedRequestParams(const PaginatedRequestParams& v) {

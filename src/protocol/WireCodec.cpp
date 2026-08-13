@@ -14,58 +14,52 @@ namespace mcp {
 namespace {
 
 // Shared methods — supported by both 2025 and 2026 era
-inline const std::unordered_set<std::string> kCommonRequestMethods = {
-    "ping",
+inline const std::unordered_set<std::string_view> kCommonRequestMethods = {
     "tools/list", "tools/call",
     "resources/list", "resources/read", "resources/templates/list",
     "prompts/list", "prompts/get",
     "completion/complete",
-    "elicitation/create",
 };
 
-inline const std::unordered_set<std::string> k2025OnlyRequestMethods = {
+inline const std::unordered_set<std::string_view> k2025OnlyRequestMethods = {
     "initialize",
+    "ping",
     "resources/subscribe", "resources/unsubscribe",
     "logging/setLevel", "roots/list", "sampling/createMessage",
-};
-
-inline const std::unordered_set<std::string> k2026OnlyRequestMethods = {
-    "server/discover",
-    "server/extensions/list",
-    "subscriptions/listen",
+    "elicitation/create",
     "tasks/get", "tasks/update", "tasks/cancel",
     "tasks/result", "tasks/list",
 };
 
-inline const std::unordered_set<std::string> kCommonNotifMethods = {
+inline const std::unordered_set<std::string_view> k2026OnlyRequestMethods = {
+    "server/discover",
+    "subscriptions/listen",
+};
+
+inline const std::unordered_set<std::string_view> kCommonNotifMethods = {
     "notifications/cancelled",
     "notifications/progress",
+    "notifications/message",
     "notifications/resources/updated",
     "notifications/resources/list_changed",
     "notifications/tools/list_changed",
     "notifications/prompts/list_changed",
+};
+
+inline const std::unordered_set<std::string_view> k2025OnlyNotifMethods = {
+    "notifications/initialized",
+    "notifications/roots/list_changed",
+    "notifications/elicitation/complete",
+    "notifications/tasks/status",
+};
+
+inline const std::unordered_set<std::string_view> k2026OnlyNotifMethods = {
     "notifications/subscriptions/acknowledged",
 };
 
-inline const std::unordered_set<std::string> k2025OnlyNotifMethods = {
-    "notifications/initialized",
-    "notifications/message",
-    "notifications/roots/list_changed",
-    "notifications/elicitation/complete",
-};
-
-inline const std::unordered_set<std::string> k2026OnlyNotifMethods = {
-    "notifications/tasks/status",
-    "notifications/tasks/working",
-    "notifications/tasks/completed",
-    "notifications/tasks/failed",
-    "notifications/tasks/cancelled",
-    "notifications/tasks/input_required",
-};
-
-inline std::unordered_set<std::string> MakeEraMethods(
-    const std::unordered_set<std::string>& common,
-    const std::unordered_set<std::string>& only) {
+inline std::unordered_set<std::string_view> MakeEraMethods(
+    const std::unordered_set<std::string_view>& common,
+    const std::unordered_set<std::string_view>& only) {
     auto set = common;
     set.insert(only.begin(), only.end());
     return set;
@@ -81,21 +75,23 @@ public:
     bool HasRequestMethod(std::string_view method) const override {
         static const auto methods = MakeEraMethods(
             kCommonRequestMethods, k2025OnlyRequestMethods);
-        return methods.count(std::string(method)) > 0;
+        return methods.count(method) > 0;
     }
 
     bool HasNotificationMethod(std::string_view method) const override {
         static const auto notifs = MakeEraMethods(
             kCommonNotifMethods, k2025OnlyNotifMethods);
-        return notifs.count(std::string(method)) > 0;
+        return notifs.count(method) > 0;
     }
 
     WireValidation ValidateRequest(
         std::string_view method, const JsonValue& raw) const override {
         if (method == "initialize") {
-            if (!raw.Contains("protocolVersion") ||
-                !raw.Contains("capabilities") ||
-                !raw.Contains("clientInfo")) {
+            const JsonValue* params = raw.Find(detail::kParams);
+            if (!params || !params->IsObject() ||
+                !params->Contains(detail::kProtocolVersion) ||
+                !params->Contains(detail::kCapabilities) ||
+                !params->Contains(detail::kClientInfo)) {
                 return WireValidation::Invalid;
             }
         }
@@ -121,11 +117,6 @@ public:
         const RequestMeta& /*meta*/) const override {
     }
 
-    std::optional<RequestMeta> ExtractIncomingMeta(
-        const JsonValue& /*request_body*/) const override {
-        return std::nullopt;
-    }
-
     JsonValue EncodeResult(
         std::string_view /*method*/, const JsonValue& result) const override {
         return result;
@@ -148,13 +139,13 @@ public:
     bool HasRequestMethod(std::string_view method) const override {
         static const auto methods = MakeEraMethods(
             kCommonRequestMethods, k2026OnlyRequestMethods);
-        return methods.count(std::string(method)) > 0;
+        return methods.count(method) > 0;
     }
 
     bool HasNotificationMethod(std::string_view method) const override {
         static const auto notifs = MakeEraMethods(
             kCommonNotifMethods, k2026OnlyNotifMethods);
-        return notifs.count(std::string(method)) > 0;
+        return notifs.count(method) > 0;
     }
 
     WireValidation ValidateRequest(
@@ -163,7 +154,7 @@ public:
             return WireValidation::NotInEra;
         }
         if (method != "server/discover" &&
-            !raw.Contains("_meta")) {
+            !raw.Contains(detail::kMeta)) {
             return WireValidation::Invalid;
         }
         return WireValidation::Ok;
@@ -171,16 +162,16 @@ public:
 
     WireValidation ValidateResponse(
         std::string_view method, const JsonValue& raw) const override {
-        if (!raw.Contains("resultType")) {
+        if (!raw.Contains(detail::kResultType)) {
             return WireValidation::Invalid;
         }
-        static const std::unordered_set<std::string> kListMethods = {
+        static const std::unordered_set<std::string_view> kListMethods = {
             "tools/list", "resources/list", "resources/templates/list",
-            "prompts/list", "server/extensions/list", "tasks/list",
+            "prompts/list",
         };
-        if (kListMethods.count(std::string(method)) > 0) {
-            auto* rt = raw.Find("resultType");
-            if (rt && (!rt->IsString() || rt->GetString() != "complete")) {
+        if (kListMethods.count(method) > 0) {
+            auto* rt = raw.Find(detail::kResultType);
+            if (rt && (!rt->IsString() || rt->GetString() != detail::kCompleteValue)) {
                 return WireValidation::Invalid;
             }
         }
@@ -206,32 +197,23 @@ public:
         if (meta.client_capabilities) {
             meta_obj[detail::kMetaClientCapabilitiesKey] = SerializeClientCapabilities(*meta.client_capabilities);
         }
-        body["_meta"] = std::move(meta_obj);
-    }
-
-    std::optional<RequestMeta> ExtractIncomingMeta(
-        const JsonValue& body) const override {
-        auto* m = body.Find("_meta");
-        if (!m) return std::nullopt;
-
-        RequestMeta meta;
-        if (auto* v = m->Find(detail::kMetaProtocolVersionKey))
-            meta.protocol_version = v->GetString();
-        if (auto* v = m->Find(detail::kMetaClientInfoKey))
-            meta.client_info = DeserializeImplementation(*v);
-        if (auto* v = m->Find(detail::kMetaClientCapabilitiesKey))
-            meta.client_capabilities = DeserializeClientCapabilities(*v);
-        if (auto* v = m->Find("traceparent")) meta.traceparent = v->GetString();
-        if (auto* v = m->Find("tracestate")) meta.tracestate = v->GetString();
-        if (auto* v = m->Find("baggage")) meta.baggage = v->GetString();
-        return meta;
+        body[detail::kMeta] = std::move(meta_obj);
     }
 
     JsonValue EncodeResult(
         std::string_view /*method*/, const JsonValue& result) const override {
         JsonValue j = result;
-        if (!j.Contains("resultType")) {
-            j["resultType"] = JsonValue("complete");
+        // The 2026 era flattens cache fields onto the result top level:
+        // ttlMs/cacheScope replace the nested cacheHint object.
+        if (auto* ch = j.Find(detail::kCacheHint); ch && ch->IsObject()) {
+            if (auto* ttl = ch->Find(detail::kTTLMs); ttl && ttl->IsInt())
+                j[detail::kTTLMs] = *ttl;
+            if (auto* scope = ch->Find(detail::kCacheScope); scope && scope->IsString())
+                j[detail::kCacheScope] = *scope;
+            j.GetObject().erase(std::string(detail::kCacheHint));
+        }
+        if (!j.Contains(detail::kResultType)) {
+            j[detail::kResultType] = JsonValue(detail::kCompleteValue);
         }
         return j;
     }

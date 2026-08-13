@@ -9,10 +9,6 @@
 
 namespace mcp {
 
-// Forward declarations from Capabilities.cpp
-JsonValue SerializeClientCapabilities(const ClientCapabilities& v);
-ClientCapabilities DeserializeClientCapabilities(const JsonValue& j);
-
 namespace {
 
 // Known RequestMeta field keys that are stored in dedicated members rather
@@ -24,9 +20,9 @@ bool RequestMetaFieldIsKnown(std::string_view key) {
         || key == detail::kMetaClientCapabilitiesKey
         || key == detail::kMetaLogLevelKey
         || key == detail::kMetaSubscriptionIdKey
-        || key == "traceparent"
-        || key == "tracestate"
-        || key == "baggage";
+        || key == detail::kTraceparent
+        || key == detail::kTracestate
+        || key == detail::kBaggage;
 }
 
 } // namespace
@@ -35,26 +31,26 @@ bool RequestMetaFieldIsKnown(std::string_view key) {
 
 JsonValue SerializeIcon(const Icon& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj["src"] = JsonValue(v.src);
+    obj[detail::kSrc] = JsonValue(v.src);
     detail::SerializeOptional(obj, detail::kMimeType, v.mime_type);
     if (v.sizes) {
-        detail::SerializeVector(obj, "sizes", *v.sizes,
+        detail::SerializeVector(obj, detail::kSizes, *v.sizes,
             [](const std::string& s) { return JsonValue(s); });
     }
-    detail::SerializeOptional(obj, "theme", v.theme);
+    detail::SerializeOptional(obj, detail::kTheme, v.theme);
     return obj;
 }
 
 Icon DeserializeIcon(const JsonValue& j) {
     Icon v;
-    v.src = j["src"].GetString();
+    v.src = j[detail::kSrc].GetString();
     detail::DeserializeOptional(j, detail::kMimeType, v.mime_type);
-    auto* sz = j.Find("sizes");
+    auto* sz = j.Find(detail::kSizes);
     if (sz && sz->IsArray()) {
         v.sizes = detail::DeserializeVector<std::string>(*sz,
             [](const JsonValue& s) { return s.GetString(); });
     }
-    detail::DeserializeOptional(j, "theme", v.theme);
+    detail::DeserializeOptional(j, detail::kTheme, v.theme);
     return v;
 }
 
@@ -293,24 +289,24 @@ ContentVariant DeserializeContentVariant(const JsonValue& j) {
 JsonValue SerializeImplementation(const Implementation& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kName] = JsonValue(v.name);
-    obj["version"] = JsonValue(v.version);
+    obj[detail::kVersion] = JsonValue(v.version);
     detail::SerializeOptional(obj, detail::kTitle, v.title);
     detail::SerializeVector(obj, detail::kIcons, v.icons,
         [](const Icon& icon) { return SerializeIcon(icon); });
     detail::SerializeOptional(obj, detail::kDescription, v.description);
-    detail::SerializeOptional(obj, "websiteUrl", v.website_url);
+    detail::SerializeOptional(obj, detail::kWebsiteUrl, v.website_url);
     return obj;
 }
 
 Implementation DeserializeImplementation(const JsonValue& j) {
     Implementation v;
     v.name = j[detail::kName].GetString();
-    v.version = j["version"].GetString();
+    v.version = j[detail::kVersion].GetString();
     detail::DeserializeOptional(j, detail::kTitle, v.title);
     v.icons = detail::DeserializeVector<Icon>(j, detail::kIcons,
         [](const JsonValue& iv) { return DeserializeIcon(iv); });
     detail::DeserializeOptional(j, detail::kDescription, v.description);
-    detail::DeserializeOptional(j, "websiteUrl", v.website_url);
+    detail::DeserializeOptional(j, detail::kWebsiteUrl, v.website_url);
     return v;
 }
 
@@ -354,15 +350,15 @@ LoggingLevel DeserializeLoggingLevel(const JsonValue& j) {
 
 JsonValue SerializeCacheHint(const CacheHint& v) {
     JsonValue obj(JsonValue::object_tag);
-    detail::SerializeOptional(obj, "ttlMs", v.ttl_ms);
-    detail::SerializeOptional(obj, "cacheScope", v.cache_scope);
+    detail::SerializeOptional(obj, detail::kTTLMs, v.ttl_ms);
+    detail::SerializeOptional(obj, detail::kCacheScope, v.cache_scope);
     return obj;
 }
 
 CacheHint DeserializeCacheHint(const JsonValue& j) {
     CacheHint v;
-    detail::DeserializeOptional(j, "ttlMs", v.ttl_ms);
-    detail::DeserializeOptional(j, "cacheScope", v.cache_scope);
+    detail::DeserializeOptional(j, detail::kTTLMs, v.ttl_ms);
+    detail::DeserializeOptional(j, detail::kCacheScope, v.cache_scope);
     return v;
 }
 
@@ -378,9 +374,9 @@ JsonValue SerializeRequestMeta(const RequestMeta& v) {
     if (v.extensions) {
         for (const auto& [k, val] : v.extensions->GetObject()) obj[k] = val;
     }
-    if (v.traceparent) obj["traceparent"] = JsonValue(*v.traceparent);
-    if (v.tracestate) obj["tracestate"] = JsonValue(*v.tracestate);
-    if (v.baggage) obj["baggage"] = JsonValue(*v.baggage);
+    if (v.traceparent) obj[detail::kTraceparent] = JsonValue(*v.traceparent);
+    if (v.tracestate) obj[detail::kTracestate] = JsonValue(*v.tracestate);
+    if (v.baggage) obj[detail::kBaggage] = JsonValue(*v.baggage);
     return obj;
 }
 
@@ -396,9 +392,9 @@ RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     if (cc) v.client_capabilities = DeserializeClientCapabilities(*cc);
     auto* ll = j.Find(detail::kMetaLogLevelKey);
     if (ll) v.log_level = DeserializeLoggingLevel(*ll);
-    if (auto* tp = j.Find("traceparent")) v.traceparent = tp->GetString();
-    if (auto* ts = j.Find("tracestate")) v.tracestate = ts->GetString();
-    if (auto* bg = j.Find("baggage")) v.baggage = bg->GetString();
+    if (auto* tp = j.Find(detail::kTraceparent)) v.traceparent = tp->GetString();
+    if (auto* ts = j.Find(detail::kTracestate)) v.tracestate = ts->GetString();
+    if (auto* bg = j.Find(detail::kBaggage)) v.baggage = bg->GetString();
 
     // Round-trip symmetry with SerializeRequestMeta: keys that are not
     // dedicated members are preserved in the extensions bag.
