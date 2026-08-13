@@ -2,6 +2,7 @@
 
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/ThreadUtils.hpp>
 
 #include <hv/HttpService.h>
 #include <hv/HttpServer.h>
@@ -69,8 +70,7 @@ HttpServer::~HttpServer() {
 }
 
 void HttpServer::Start() {
-    if (running_) return;
-    running_ = true;
+    if (running_.exchange(true)) return;
 
     auto impl = std::make_shared<HttpServerImpl>();
     impl->options = options_;
@@ -160,12 +160,13 @@ void HttpServer::Start() {
                     auto impl = std::atomic_load(&impl_);
                     writer->onclose = [impl, id]() {
                         HttpDisconnectCallback on_disconnect;
+                        bool removed = false;
                         {
                             std::lock_guard<std::mutex> lock(impl->sse_mutex);
-                            impl->sse_clients.erase(id);
+                            removed = impl->sse_clients.erase(id) != 0;
                             on_disconnect = impl->options.on_disconnect;
                         }
-                        if (on_disconnect) {
+                        if (removed && on_disconnect) {
                             try {
                                 on_disconnect();
                             } catch (const std::exception& e) {
@@ -204,17 +205,19 @@ void HttpServer::Start() {
 }
 
 void HttpServer::Stop() {
-    if (!running_) return;
-    running_ = false;
+    if (!running_.exchange(false)) return;
     auto impl = std::atomic_load(&impl_);
     if (impl) {
-        if (impl->server) {
-            // stop() joins all event-loop threads; SSE onclose callbacks run
-            // synchronously inside, safely before impl_ is released.
-            impl->server->stop();
-            impl->server.reset();
-        }
-        impl->service.reset();
+        std::thread stopper([impl]() {
+            if (impl->server) {
+                // stop() joins all event-loop threads; SSE onclose callbacks run
+                // synchronously inside, safely before impl_ is released.
+                impl->server->stop();
+                impl->server.reset();
+            }
+            impl->service.reset();
+        });
+        detail::JoinThreadSafely(stopper);
     }
     std::atomic_store(&impl_, std::shared_ptr<HttpServerImpl>());
 }
@@ -244,7 +247,7 @@ bool HttpServer::IsRequestAllowed(const HttpRequest& req) const {
 void HttpServer::SetHandler(std::string_view method, std::string_view path,
                             HttpHandler handler)
 {
-    if (running_) {
+    if (running_.load()) {
         throw std::logic_error("HttpServer: SetHandler called after Start()");
     }
     handlers_[{std::string(method), std::string(path)}] = std::move(handler);
@@ -268,12 +271,13 @@ void HttpServer::RemoveSseClient(SseClientId id) {
     auto impl = std::atomic_load(&impl_);
     if (!impl) return;
     HttpDisconnectCallback on_disconnect;
+    bool removed = false;
     {
         std::lock_guard<std::mutex> lock(impl->sse_mutex);
-        impl->sse_clients.erase(id);
+        removed = impl->sse_clients.erase(id) != 0;
         on_disconnect = impl->options.on_disconnect;
     }
-    if (on_disconnect) {
+    if (removed && on_disconnect) {
         try {
             on_disconnect();
         } catch (const std::exception& e) {
@@ -298,11 +302,24 @@ void HttpServer::BroadcastSse(std::string_view event) {
             entry->send_fn(event);
         } catch (const std::exception& e) {
             MCP_LOG(Warning, std::string("SSE send failed: ") + e.what());
-            std::lock_guard<std::mutex> lock(impl->sse_mutex);
-            for (auto it = impl->sse_clients.begin(); it != impl->sse_clients.end(); ++it) {
-                if (it->second == entry) {
-                    impl->sse_clients.erase(it);
-                    break;
+            HttpDisconnectCallback on_disconnect;
+            bool removed = false;
+            {
+                std::lock_guard<std::mutex> lock(impl->sse_mutex);
+                for (auto it = impl->sse_clients.begin(); it != impl->sse_clients.end(); ++it) {
+                    if (it->second == entry) {
+                        impl->sse_clients.erase(it);
+                        removed = true;
+                        break;
+                    }
+                }
+                on_disconnect = impl->options.on_disconnect;
+            }
+            if (removed && on_disconnect) {
+                try {
+                    on_disconnect();
+                } catch (const std::exception& ex) {
+                    MCP_LOG(Warning, std::string("on_disconnect callback threw: ") + ex.what());
                 }
             }
         }

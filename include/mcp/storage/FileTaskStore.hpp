@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -30,10 +31,16 @@ public:
 private:
     // Returns false if the on-disk persistence failed; callers must propagate.
     bool Flush();
+    bool PersistTasks(const std::unordered_map<std::string, TaskState>& tasks);
 
+    // Lock order: write_mutex_ (outer) -> data_mutex_ (inner). Writers hold
+    // write_mutex_ for the whole operation including the persist, which runs
+    // outside data_mutex_, so readers stay concurrent during disk I/O and a
+    // failed persist can roll back without racing a concurrent writer.
+    std::mutex write_mutex_;
+    std::shared_mutex data_mutex_;
     std::filesystem::path storage_path_;
     std::unordered_map<std::string, TaskState> tasks_;
-    std::mutex mutex_;
 };
 
 } // namespace mcp

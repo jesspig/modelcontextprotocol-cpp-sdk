@@ -28,8 +28,6 @@ private:
     void RemoveFiles() {
         std::error_code ec;
         std::filesystem::remove(cache_path, ec);
-        std::filesystem::remove(cache_path.string() + ".token_response", ec);
-        std::filesystem::remove(cache_path.string() + ".client_registration", ec);
     }
 };
 

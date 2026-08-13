@@ -4,6 +4,7 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Log.hpp>
+#include <detail/JsonFields.hpp>
 #include <detail/JsonSerialize_fwd.hpp>
 #include <detail/JsonSchemaValidator.hpp>
 
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <mutex>
 #include <shared_mutex>
+#include <type_traits>
 
 namespace mcp {
 
@@ -38,13 +40,68 @@ namespace {
     std::string MakeNextCursor(size_t next_index) {
         return std::to_string(next_index);
     }
+
+    template <typename Entry, typename Fn, typename IncludeFn = std::nullptr_t>
+    bool PaginateEntries(
+        const std::vector<Entry>& entries,
+        size_t cursor_val,
+        size_t page_size,
+        size_t& next_index,
+        Fn&& emit,
+        IncludeFn&& should_include = nullptr)
+    {
+        size_t index = 0;
+        size_t sent = 0;
+        for (const auto& entry : entries) {
+            if constexpr (std::is_invocable_v<IncludeFn, const Entry&>) {
+                if (!should_include(entry)) continue;
+            }
+            if (index++ < cursor_val) continue;
+            if (sent >= page_size) {
+                next_index = index;
+                return true;
+            }
+            emit(entry);
+            sent++;
+        }
+        return false;
+    }
+
+    std::string TaskStatusToWireString(TaskStatus status) {
+        switch (status) {
+            case TaskStatus::Working:
+            case TaskStatus::Pending:
+                return "working";
+            case TaskStatus::InputRequired:
+                return "input_required";
+            case TaskStatus::Completed:
+                return "completed";
+            case TaskStatus::Failed:
+                return "failed";
+            case TaskStatus::Cancelled:
+                return "cancelled";
+        }
+        return "working";
+    }
+
+    JsonValue MakeGetTaskResultJson(const TaskState& task, bool include_optional_fields) {
+        GetTaskResult r;
+        r.task_id = task.task_id;
+        r.status = TaskStatusToWireString(task.status);
+        r.result = task.result;
+        if (include_optional_fields) {
+            r.error_message = task.error_message;
+            r.input_required = task.input_required;
+        }
+        return SerializeGetTaskResult(r);
+    }
 }
 
 namespace {
 
-CacheHint GetCacheHint(const std::optional<std::map<std::string, CacheHint>>& hints, const std::string_view method) {
+CacheHint GetCacheHint(const std::optional<std::map<std::string, CacheHint, std::less<>>>& hints, const std::string_view method) {
     if (hints) {
-        auto it = hints->find(std::string(method));
+        auto it = hints->find(method);
         if (it != hints->end()) return it->second;
     }
     return {};
@@ -173,6 +230,7 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
         tools_[t.name] = std::move(tool);
+        cached_tools_json_ = std::nullopt;
     }
     // Re-wire handlers
     WireHandlers();
@@ -281,8 +339,8 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     if (current_level && static_cast<int>(level) < static_cast<int>(*current_level))
         return;
     JsonValue params(JsonValue::object_tag);
-    params["level"] = JsonValue(static_cast<int64_t>(level));
-    params["data"] = JsonValue(std::string(data));
+    params[detail::kLevel] = JsonValue(static_cast<int64_t>(level));
+    params[detail::kData] = JsonValue(std::string(data));
     params["logger"] = JsonValue(std::string(kDefaultLoggerName));
     handler_->SendNotification(notifications::kMessage, std::move(params));
 }
@@ -328,6 +386,16 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
 void McpServer::WireHandlers() {
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
 
+    WireToolHandlers();
+    WireResourceHandlers();
+    WirePromptHandlers();
+    WireCoreHandlers();
+    WireExtensionHandlers();
+    WireTaskHandlers();
+    WireSubscriptionHandlers();
+}
+
+void McpServer::WireToolHandlers() {
     // ── tools/list ──
     if (!tools_.empty()) {
         handler_->SetRequestHandler(methods::kListTools,
@@ -341,7 +409,9 @@ void McpServer::WireHandlers() {
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleCallTool(req, std::move(p));
         });
+}
 
+void McpServer::WireResourceHandlers() {
     // ── resources/list ──
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return !r.is_template; })) {
@@ -368,40 +438,6 @@ void McpServer::WireHandlers() {
             });
     }
 
-    // ── prompts/list ──
-    if (!prompts_.empty()) {
-        handler_->SetRequestHandler(methods::kListPrompts,
-            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                HandleListPrompts(req, std::move(p));
-            });
-    }
-
-    // ── prompts/get ──
-    handler_->SetRequestHandler(methods::kGetPrompt,
-        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-            HandleGetPrompt(req, std::move(p));
-        });
-
-    // ── initialize ──
-    handler_->SetRequestHandler(methods::kInitialize,
-        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-            HandleInitialize(req, std::move(p));
-        });
-
-    // ── server/discover ──
-    handler_->SetRequestHandler(methods::kDiscover,
-        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-            HandleDiscover(req, std::move(p));
-        });
-
-    // ── ping ──
-    handler_->SetRequestHandler(methods::kPing,
-        [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            if (!RequireInitialized(initialized_, p)) return;
-            PingResult r;
-            p.set_value(SerializeEmptyResult(r));
-        });
-
     // ── resources/subscribe / unsubscribe (2025-era) ──
     if (!resources_.empty()) {
         handler_->SetRequestHandler(methods::kSubscribeResource,
@@ -425,23 +461,43 @@ void McpServer::WireHandlers() {
                 p.set_value(SerializeEmptyResult(r));
             });
     }
+}
 
-    // ── server/extensions/list ──
-    handler_->SetRequestHandler(methods::kListExtensions,
+void McpServer::WirePromptHandlers() {
+    // ── prompts/list ──
+    if (!prompts_.empty()) {
+        handler_->SetRequestHandler(methods::kListPrompts,
+            [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                HandleListPrompts(req, std::move(p));
+            });
+    }
+
+    // ── prompts/get ──
+    handler_->SetRequestHandler(methods::kGetPrompt,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleGetPrompt(req, std::move(p));
+        });
+}
+
+void McpServer::WireCoreHandlers() {
+    // ── initialize ──
+    handler_->SetRequestHandler(methods::kInitialize,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleInitialize(req, std::move(p));
+        });
+
+    // ── server/discover ──
+    handler_->SetRequestHandler(methods::kDiscover,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleDiscover(req, std::move(p));
+        });
+
+    // ── ping ──
+    handler_->SetRequestHandler(methods::kPing,
         [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
             if (!RequireInitialized(initialized_, p)) return;
-            JsonValue j(JsonValue::object_tag);
-            JsonValue ext_list(JsonValue::array_tag);
-            if (capabilities_.extensions) {
-                for (const auto& [key, val] : *capabilities_.extensions) {
-                    JsonValue entry(JsonValue::object_tag);
-                    entry["name"] = key;
-                    entry["settings"] = val;
-                    ext_list.PushBack(std::move(entry));
-                }
-            }
-            j["extensions"] = std::move(ext_list);
-            p.set_value(std::move(j));
+            PingResult r;
+            p.set_value(SerializeEmptyResult(r));
         });
 
     // ── notifications/initialized ──
@@ -473,7 +529,7 @@ void McpServer::WireHandlers() {
     handler_->SetNotificationHandler(notifications::kProgress,
         [this](const JsonRpcNotification& notif) {
             if (notif.params && notif.params->IsObject()) {
-                auto* pt = notif.params->Find("progressToken");
+                auto* pt = notif.params->Find(detail::kProgressToken);
                 if (pt) {
                     ProgressToken token;
                     if (pt->IsString())
@@ -495,15 +551,38 @@ void McpServer::WireHandlers() {
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleComplete(req, std::move(p));
         });
+}
 
-    // ── tasks/get, tasks/update, tasks/cancel (2026+ only) ──
+void McpServer::WireExtensionHandlers() {
+    // ── server/extensions/list ──
+    handler_->SetRequestHandler(methods::kListExtensions,
+        [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            if (!RequireInitialized(initialized_, p)) return;
+            JsonValue j(JsonValue::object_tag);
+            JsonValue ext_list(JsonValue::array_tag);
+            if (capabilities_.extensions) {
+                for (const auto& [key, val] : *capabilities_.extensions) {
+                    JsonValue entry(JsonValue::object_tag);
+                    entry[detail::kName] = key;
+                    entry["settings"] = val;
+                    ext_list.PushBack(std::move(entry));
+                }
+            }
+            j[detail::kExtensions] = std::move(ext_list);
+            p.set_value(std::move(j));
+        });
+}
+
+void McpServer::WireTaskHandlers() {
+    // ── tasks/get, tasks/update, tasks/cancel (2025 era only) ──
     auto& store = options_.task_store;
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::MethodNotFound, "tasks/get not available in this protocol version")));
+                        McpError(McpErrorCode::MethodNotFound,
+                            "tasks/get is only available in 2025 and earlier protocol versions")));
                     return;
                 }
                 GetTaskRequestParams params;
@@ -515,20 +594,15 @@ void McpServer::WireHandlers() {
                                  "task not found: " + params.task_id)));
                     return;
                 }
-                GetTaskResult r;
-                r.task_id = task->task_id;
-                r.status = std::to_string(static_cast<int>(task->status));
-                r.result = task->result;
-                r.error_message = task->error_message;
-                r.input_required = task->input_required;
-                p.set_value(SerializeGetTaskResult(r));
+                p.set_value(MakeGetTaskResultJson(*task, true));
             });
 
         handler_->SetRequestHandler(methods::kUpdateTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::MethodNotFound, "tasks/update not available in this protocol version")));
+                        McpError(McpErrorCode::MethodNotFound,
+                            "tasks/update is only available in 2025 and earlier protocol versions")));
                     return;
                 }
                 UpdateTaskRequestParams params;
@@ -552,9 +626,10 @@ void McpServer::WireHandlers() {
 
         handler_->SetRequestHandler(methods::kCancelTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::MethodNotFound, "tasks/cancel not available in this protocol version")));
+                        McpError(McpErrorCode::MethodNotFound,
+                            "tasks/cancel is only available in 2025 and earlier protocol versions")));
                     return;
                 }
                 CancelTaskRequestParams params;
@@ -578,10 +653,10 @@ void McpServer::WireHandlers() {
 
         handler_->SetRequestHandler(methods::kGetTaskPayload,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
-                            "tasks/result not available in this protocol version")));
+                            "tasks/result is only available in 2025 and earlier protocol versions")));
                     return;
                 }
                 GetTaskRequestParams params;
@@ -593,19 +668,15 @@ void McpServer::WireHandlers() {
                                  "task not found: " + params.task_id)));
                     return;
                 }
-                GetTaskResult r;
-                r.task_id = task->task_id;
-                r.status = std::to_string(static_cast<int>(task->status));
-                r.result = task->result;
-                p.set_value(SerializeGetTaskResult(r));
+                p.set_value(MakeGetTaskResultJson(*task, false));
             });
 
         handler_->SetRequestHandler(methods::kListTasks,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
-                            "tasks/list not available in this protocol version")));
+                            "tasks/list is only available in 2025 and earlier protocol versions")));
                     return;
                 }
                 (void)req;
@@ -614,16 +685,18 @@ void McpServer::WireHandlers() {
                 auto all_tasks = store->GetAllTasks();
                 for (const auto& t : all_tasks) {
                     JsonValue entry(JsonValue::object_tag);
-                    entry["taskId"] = t.task_id;
-                    entry["status"] = std::to_string(static_cast<int>(t.status));
-                    if (t.result) entry["result"] = *t.result;
+                    entry[detail::kTaskId] = t.task_id;
+                    entry["status"] = TaskStatusToWireString(t.status);
+                    if (t.result) entry[detail::kResult] = *t.result;
                     tasks_arr.PushBack(std::move(entry));
                 }
                 result["tasks"] = std::move(tasks_arr);
                 p.set_value(std::move(result));
             });
     }
+}
 
+void McpServer::WireSubscriptionHandlers() {
     // ── subscriptions/listen (2026 era only) ──
     handler_->SetRequestHandler(methods::kSubscribe,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -657,18 +730,34 @@ void McpServer::DeriveCapabilities() {
 // ====================================================================
 // Handler implementations
 // ====================================================================
-void McpServer::HandleListTools(
-    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
-{
-    if (!RequireInitialized(initialized_, promise)) return;
-    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+JsonValue McpServer::BuildToolsJson() {
     ListToolsResult result;
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
     auto hint = GetCacheHint(options_.cache_hints, "tools/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    promise.set_value(SerializeListToolsResult(result));
+    return SerializeListToolsResult(result);
+}
+
+void McpServer::HandleListTools(
+    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, promise)) return;
+    {
+        std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+        if (cached_tools_json_) {
+            promise.set_value(*cached_tools_json_);
+            return;
+        }
+    }
+    {
+        std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
+        if (!cached_tools_json_) {
+            cached_tools_json_ = BuildToolsJson();
+        }
+        promise.set_value(*cached_tools_json_);
+    }
 }
 
 void McpServer::HandleCallTool(
@@ -744,24 +833,20 @@ void McpServer::HandleListResources(
     if (req.params) {
         cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
     }
-    size_t index = 0;
-    size_t sent = 0;
-    for (const auto& entry : resources_) {
-        if (entry.is_template) continue;
-        if (index++ < cursor_val) continue;
-        if (sent >= kDefaultPageSize) {
-            result.next_cursor = MakeNextCursor(index);
-            break;
-        }
-        Resource r;
-        r.uri = entry.uri_pattern;
-        r.name = entry.name;
-        r.description = entry.description;
-        r.title = entry.title;
-        r.mime_type = entry.mime_type;
-        if (!entry.icons.empty()) r.icons = entry.icons;
-        result.resources.push_back(std::move(r));
-        sent++;
+    size_t next_index = 0;
+    if (PaginateEntries(resources_, cursor_val, kDefaultPageSize, next_index,
+            [&result](const ResourceEntry& entry) {
+                Resource r;
+                r.uri = entry.uri_pattern;
+                r.name = entry.name;
+                r.description = entry.description;
+                r.title = entry.title;
+                r.mime_type = entry.mime_type;
+                if (!entry.icons.empty()) r.icons = entry.icons;
+                result.resources.push_back(std::move(r));
+            },
+            [](const ResourceEntry& entry) { return !entry.is_template; })) {
+        result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = GetCacheHint(options_.cache_hints, "resources/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
@@ -778,24 +863,20 @@ void McpServer::HandleListResourceTemplates(
     if (req.params) {
         cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
     }
-    size_t index = 0;
-    size_t sent = 0;
-    for (const auto& entry : resources_) {
-        if (!entry.is_template) continue;
-        if (index++ < cursor_val) continue;
-        if (sent >= kDefaultPageSize) {
-            result.next_cursor = MakeNextCursor(index);
-            break;
-        }
-        ResourceTemplate rt;
-        rt.uri_template = entry.uri_pattern;
-        rt.name = entry.name;
-        rt.description = entry.description;
-        rt.title = entry.title;
-        rt.mime_type = entry.mime_type;
-        if (!entry.icons.empty()) rt.icons = entry.icons;
-        result.resource_templates.push_back(std::move(rt));
-        sent++;
+    size_t next_index = 0;
+    if (PaginateEntries(resources_, cursor_val, kDefaultPageSize, next_index,
+            [&result](const ResourceEntry& entry) {
+                ResourceTemplate rt;
+                rt.uri_template = entry.uri_pattern;
+                rt.name = entry.name;
+                rt.description = entry.description;
+                rt.title = entry.title;
+                rt.mime_type = entry.mime_type;
+                if (!entry.icons.empty()) rt.icons = entry.icons;
+                result.resource_templates.push_back(std::move(rt));
+            },
+            [](const ResourceEntry& entry) { return entry.is_template; })) {
+        result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = GetCacheHint(options_.cache_hints, "resources/templates/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
@@ -843,21 +924,17 @@ void McpServer::HandleListPrompts(
     if (req.params) {
         cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
     }
-    size_t index = 0;
-    size_t sent = 0;
-    for (const auto& entry : prompts_) {
-        if (index++ < cursor_val) continue;
-        if (sent >= kDefaultPageSize) {
-            result.next_cursor = MakeNextCursor(index);
-            break;
-        }
-        Prompt p;
-        p.name = entry.name;
-        p.description = entry.description;
-        p.title = entry.title;
-        if (!entry.icons.empty()) p.icons = entry.icons;
-        result.prompts.push_back(std::move(p));
-        sent++;
+    size_t next_index = 0;
+    if (PaginateEntries(prompts_, cursor_val, kDefaultPageSize, next_index,
+            [&result](const PromptEntry& entry) {
+                Prompt p;
+                p.name = entry.name;
+                p.description = entry.description;
+                p.title = entry.title;
+                if (!entry.icons.empty()) p.icons = entry.icons;
+                result.prompts.push_back(std::move(p));
+            })) {
+        result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = GetCacheHint(options_.cache_hints, "prompts/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
@@ -1049,7 +1126,7 @@ std::shared_ptr<const Implementation> McpServer::GetClientInfo() const {
     return client_info_;
 }
 
-std::string_view McpServer::GetNegotiatedProtocolVersion() const {
+std::string McpServer::GetNegotiatedProtocolVersion() const {
     return handler_->NegotiatedProtocolVersion();
 }
 

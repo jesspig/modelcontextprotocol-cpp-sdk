@@ -4,6 +4,7 @@
 
 #include <mcp/JsonRpc.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -81,7 +82,7 @@ public:
 
 private:
     uint16_t port_;
-    bool running_{false};
+    std::atomic<bool> running_{false};
     HttpServerOptions options_;
 
     // DNS rebinding protection: validates Host (and Origin when configured).

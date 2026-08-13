@@ -15,6 +15,7 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -86,7 +87,7 @@ public:
     // ── Properties ──
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
-    std::string_view GetNegotiatedProtocolVersion() const;
+    std::string GetNegotiatedProtocolVersion() const;
     const ServerCapabilities& GetCapabilities() const;
     bool IsMrtrSupported() const;
 
@@ -100,9 +101,17 @@ private:
 
     // ── Auto-wire handlers from registered tools/resources/prompts ──
     void WireHandlers();
+    void WireToolHandlers();
+    void WireResourceHandlers();
+    void WirePromptHandlers();
+    void WireCoreHandlers();
+    void WireExtensionHandlers();
+    void WireTaskHandlers();
+    void WireSubscriptionHandlers();
     void DeriveCapabilities();
 
     // ── Internal handler implementations ──
+    JsonValue BuildToolsJson();
     void HandleListTools(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleCallTool(
@@ -135,6 +144,8 @@ private:
     // Registered primitives (guarded by registry_mutex_, which also guards capabilities_)
     mutable std::shared_mutex registry_mutex_;
     std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
+    // Serialized tools/list result cache; invalidated on registration changes
+    std::optional<JsonValue> cached_tools_json_;
     struct ResourceEntry {
         std::string name;
         std::string uri_pattern;
