@@ -30,6 +30,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -95,7 +96,7 @@ void SendRaw(int fd, std::string_view data) {
 #ifdef _WIN32
         int s = ::send(static_cast<SOCKET>(fd), data.data(), static_cast<int>(data.size()), 0);
 #else
-        ssize_t s = ::send(fd, data.data(), data.size(), 0);
+        ssize_t s = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
 #endif
         if (s <= 0) return;
         data.remove_prefix(static_cast<std::size_t>(s));
@@ -144,7 +145,25 @@ public:
 
     ~TcpTestServer() {
         stop_.store(true);
+#ifdef _WIN32
+        ::shutdown(static_cast<SOCKET>(listen_fd_), SD_BOTH);
+#else
+        ::shutdown(listen_fd_, SHUT_RDWR);
+#endif
         CloseFd(listen_fd_);
+        std::vector<int> conns;
+        {
+            std::lock_guard<std::mutex> lk(conn_mutex_);
+            conns = conn_fds_;
+        }
+        for (int fd : conns) {
+#ifdef _WIN32
+            ::shutdown(static_cast<SOCKET>(fd), SD_BOTH);
+#else
+            ::shutdown(fd, SHUT_RDWR);
+#endif
+            CloseFd(fd);
+        }
         if (accept_thread_.joinable()) accept_thread_.join();
         for (std::thread& t : conn_threads_) {
             if (t.joinable()) t.join();
@@ -162,23 +181,48 @@ private:
     void AcceptLoop() {
         for (;;) {
 #ifdef _WIN32
+            WSAPOLLFD pfd;
+            pfd.fd = static_cast<SOCKET>(listen_fd_);
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            int prc;
+            do {
+                prc = ::WSAPoll(&pfd, 1, 100);
+            } while (prc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR);
+            if (prc <= 0) {
+                if (stop_.load()) break;
+                continue;
+            }
             SOCKET c = ::accept(static_cast<SOCKET>(listen_fd_), nullptr, nullptr);
             if (c == INVALID_SOCKET) {
                 if (stop_.load()) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
             int client_fd = static_cast<int>(c);
 #else
+            struct pollfd pfd;
+            pfd.fd = listen_fd_;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            int prc;
+            do {
+                prc = ::poll(&pfd, 1, 100);
+            } while (prc < 0 && errno == EINTR);
+            if (prc <= 0) {
+                if (stop_.load()) break;
+                continue;
+            }
             int client_fd = ::accept(listen_fd_, nullptr, nullptr);
             if (client_fd < 0) {
                 if (stop_.load()) break;
-                if (errno == EINTR) continue;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
 #endif
             accept_count.fetch_add(1, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lk(conn_mutex_);
+                conn_fds_.push_back(client_fd);
+            }
             conn_threads_.emplace_back([this, client_fd] {
                 try {
                     handler_(client_fd);
@@ -194,6 +238,8 @@ private:
     std::atomic<bool> stop_{false};
     std::thread accept_thread_;
     std::vector<std::thread> conn_threads_;
+    std::mutex conn_mutex_;
+    std::vector<int> conn_fds_;
     std::function<void(int)> handler_;
 };
 
@@ -326,11 +372,16 @@ TEST(HttpClientTest, ChunkedDecoding) {
 
 TEST(HttpClientTest, StreamingBodyCallback) {
     TcpTestServer server([](int fd) {
+        RecvLine(fd);
+        for (;;) {
+            std::string h = RecvLine(fd);
+            if (h == "\r\n" || h == "\n" || h.empty()) break;
+        }
         SendRaw(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
         SendRaw(fd, "data: a\r\n\r\n");
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         SendRaw(fd, "data: b\r\n\r\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
     });
     std::string captured;
     std::mutex mu;
