@@ -11,9 +11,10 @@
 #pragma push_macro("GetObject")
 #undef GetObject
 #else
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -187,8 +188,14 @@ void Impl::Stop() {
         std::lock_guard<std::mutex> lock(conns_mutex_);
         fds = conn_fds_;
     }
-    for (int cfd : fds)
+    for (int cfd : fds) {
+#ifdef _WIN32
+        ::shutdown(static_cast<SOCKET>(cfd), SD_BOTH);
+#else
+        ::shutdown(cfd, SHUT_RDWR);
+#endif
         CloseFd(cfd);
+    }
     detail::JoinThreadSafely(accept_thread_);
     for (auto& e : conn_threads_)
         detail::JoinThreadSafely(e.thread);
@@ -219,13 +226,47 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
         }
         for (auto& e : finished)
             detail::JoinThreadSafely(e.thread);
+#ifdef _WIN32
+        WSAPOLLFD pfd;
+        pfd.fd = listen_fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int prc;
+        do {
+            prc = ::WSAPoll(&pfd, 1, 100);
+        } while (prc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR);
+        if (prc <= 0) {
+            if (!running_.load())
+                break;
+            continue;
+        }
         int cfd = static_cast<int>(::accept(listen_fd, nullptr, nullptr));
         if (cfd < 0) {
             if (!running_.load())
                 break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
+#else
+        struct pollfd pfd;
+        pfd.fd = listen_fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int prc;
+        do {
+            prc = ::poll(&pfd, 1, 100);
+        } while (prc < 0 && errno == EINTR);
+        if (prc <= 0) {
+            if (!running_.load())
+                break;
+            continue;
+        }
+        int cfd = static_cast<int>(::accept(listen_fd, nullptr, nullptr));
+        if (cfd < 0) {
+            if (!running_.load())
+                break;
+            continue;
+        }
+#endif
         bool over_limit = false;
         {
             std::lock_guard<std::mutex> lock(conns_mutex_);
