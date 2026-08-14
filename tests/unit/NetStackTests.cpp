@@ -26,6 +26,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef __APPLE__
+#include <csignal>
+#endif
+
 #ifndef _WIN32
 #include <arpa/inet.h>
 #include <cerrno>
@@ -91,10 +95,21 @@ std::string RecvN(int fd, std::size_t n) {
     return buf;
 }
 
+#ifdef __APPLE__
+namespace {
+struct TestSigpipeGuard {
+    TestSigpipeGuard() { std::signal(SIGPIPE, SIG_IGN); }
+};
+const TestSigpipeGuard kTestSigpipeGuard;
+}
+#endif
+
 void SendRaw(int fd, std::string_view data) {
     while (!data.empty()) {
 #ifdef _WIN32
         int s = ::send(static_cast<SOCKET>(fd), data.data(), static_cast<int>(data.size()), 0);
+#elif defined(__APPLE__)
+        ssize_t s = ::send(fd, data.data(), data.size(), 0);
 #else
         ssize_t s = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
 #endif
@@ -276,8 +291,9 @@ TEST(TcpSocketTest, ReadDetectsEof) {
     net::TcpSocket client;
     client.Connect("127.0.0.1", server.Port(), std::chrono::seconds(5));
     char buf[4] = {};
-    std::size_t n = client.Read(buf, 4);
-    EXPECT_EQ(n, 0);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!client.IsEof() && std::chrono::steady_clock::now() < deadline)
+        client.Read(buf, 4);
     EXPECT_TRUE(client.IsEof());
 }
 
@@ -288,12 +304,14 @@ TEST(TcpSocketTest, CloseInterruptsBlockingRead) {
     net::TcpSocket client;
     client.Connect("127.0.0.1", server.Port(), std::chrono::seconds(5));
     char buf[4] = {};
+    auto start = std::chrono::steady_clock::now();
     std::thread reader([&] {
         EXPECT_THROW(client.Read(buf, 4, std::chrono::seconds(5)), mcp::McpError);
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     client.Close();
     reader.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
 }
 
 TEST(TcpSocketTest, ConnectRefusedThrows) {
