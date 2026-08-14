@@ -9,6 +9,15 @@ endif()
 # ====================================================================
 # OpenSSL — TLS 与 PKCE 随机数（find_package 探测）
 # ====================================================================
+if(WIN32 AND NOT DEFINED OPENSSL_ROOT_DIR)
+    file(GLOB _mcp_openssl_dirs "C:/Program Files/OpenSSL*")
+    if(_mcp_openssl_dirs)
+        list(SORT _mcp_openssl_dirs ORDER DESCENDING)
+        list(GET _mcp_openssl_dirs 0 _mcp_openssl_root)
+        set(OPENSSL_ROOT_DIR "${_mcp_openssl_root}")
+        message(STATUS "[mcp] Auto-detected OpenSSL root: ${_mcp_openssl_root}")
+    endif()
+endif()
 find_package(OpenSSL QUIET)
 if(OpenSSL_FOUND)
     message(STATUS "[mcp] OpenSSL found: ${OPENSSL_VERSION}")
