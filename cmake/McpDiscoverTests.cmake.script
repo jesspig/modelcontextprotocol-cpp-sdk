@@ -1,0 +1,18 @@
+# McpDiscoverTests.cmake.script — 运行 --list-tests 并生成逐用例 add_test 文件（-P 脚本模式）
+execute_process(COMMAND "${TARGET_EXE}" --list-tests
+    OUTPUT_VARIABLE OUT
+    RESULT_VARIABLE RC)
+if(NOT RC EQUAL 0)
+    message(FATAL_ERROR "mcp_discover_tests: '${TARGET_EXE} --list-tests' failed with ${RC}")
+endif()
+string(REPLACE "\r" "" OUT "${OUT}")
+string(REPLACE "\n" ";" TEST_LINES "${OUT}")
+get_filename_component(TEST_WD "${TARGET_EXE}" DIRECTORY)
+set(CONTENT "")
+foreach(test_name IN LISTS TEST_LINES)
+    if(NOT test_name STREQUAL "")
+        string(APPEND CONTENT "add_test([==[${test_name}]==]  \"${TARGET_EXE}\" [==[--gtest_filter=${test_name}]==])\n")
+        string(APPEND CONTENT "set_tests_properties([==[${test_name}]==]  PROPERTIES WORKING_DIRECTORY \"${TEST_WD}\")\n")
+    endif()
+endforeach()
+file(WRITE "${TESTS_FILE}" "${CONTENT}")

@@ -10,7 +10,7 @@
 
 #include <transport/detail/net/HttpClient.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 #include "TestServerUtil.hpp"
 
 #include <chrono>

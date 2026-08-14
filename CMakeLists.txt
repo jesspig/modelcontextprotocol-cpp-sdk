@@ -218,6 +218,7 @@ set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 # ====================================================================
 if(MCP_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(tests/framework)
     add_subdirectory(tests)
 endif()
 

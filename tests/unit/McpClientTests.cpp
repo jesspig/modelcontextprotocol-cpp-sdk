@@ -7,7 +7,7 @@
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/McpTypes.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <atomic>
 #include <future>

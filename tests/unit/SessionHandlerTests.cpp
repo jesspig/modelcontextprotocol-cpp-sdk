@@ -9,7 +9,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <chrono>
 #include <future>

@@ -1,15 +1,15 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 15 个 gtest 目标（unit/integration/conformance），378 个测试用例。
-tags: [test, gtest, ctest, conformance]
-timestamp: 2026-08-14T00:57:41+08:00
+description: 15 个测试目标（unit/integration/conformance/framework），392 个测试用例（自研测试框架）。
+tags: [test, framework, ctest, conformance]
+timestamp: 2026-08-14T10:56:04+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部经 `gtest_discover_tests()` 注册到 ctest。用例/断言数为静态统计（行首 `TEST(_F|_P)?` 宏与 `EXPECT_|ASSERT_` 宏计数），运行期数量可能略少。
+全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例/断言数为静态统计（行首 `TEST(_F)?` 宏与 `EXPECT_|ASSERT_` 宏计数），运行期数量可能略少。
 
 ## 目标清单
 
@@ -30,7 +30,8 @@ resource: tests/CMakeLists.txt
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-integration-tests | ClientServerRoundTrip | 8 | 21 |
 | mcp-conformance-tests | ProtocolConformance | 111 | 316 |
-| **合计** | | **378** | **881** |
+| mcp-framework-self-tests | SelfTests | 14 | 27 |
+| **合计** | | **392** | **908** |
 
 ## 测试注意点
 

@@ -42,8 +42,8 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 
 ## 工程（build & tests）
 
-- [/build.md](/build.md) — CMake 预设、Unity/LTO、依赖拉取
-- [/tests.md](/tests.md) — 15 个 gtest 目标与守护测试
+- [/build.md](/build.md) — CMake 预设、Unity/LTO、系统依赖
+- [/tests.md](/tests.md) — 15 个测试目标与守护测试（自研框架）
 
 ## 维护
 

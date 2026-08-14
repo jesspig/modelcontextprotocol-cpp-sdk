@@ -5,7 +5,7 @@
 #include <mcp/McpCore.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 using namespace mcp;
 

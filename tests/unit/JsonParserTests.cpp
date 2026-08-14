@@ -3,7 +3,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <limits>
 #include <string>
@@ -17,7 +17,7 @@ void ExpectParseError(std::string_view json, McpErrorCode expected) {
     EXPECT_THROW(JsonValue::Parse(json), mcp::McpError);
     try {
         JsonValue::Parse(json);
-        FAIL() << "should throw";
+        EXPECT_TRUE(false);  // FAIL() << "should throw" 的等价：记录失败
     } catch (const mcp::McpError& e) {
         EXPECT_EQ(e.Code(), expected);
     }
