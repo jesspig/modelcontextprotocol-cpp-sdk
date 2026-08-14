@@ -57,34 +57,45 @@ TlsSocket::~TlsSocket() {
 
 void TlsSocket::Connect(std::string_view host, uint16_t port, std::chrono::milliseconds timeout) {
     Close();
-    ctx_ = GetSharedCtx();
-    if (ctx_ == nullptr)
-        throw McpError(McpErrorCode::TlsHandshakeFailed, "failed to initialize OpenSSL");
-
     tcp_.Connect(host, port, timeout);
     std::string host_str(host);
 
     try {
-        ssl_ = SSL_new(ctx_);
-        if (ssl_ == nullptr)
-            throw McpError(McpErrorCode::TlsHandshakeFailed, "SSL_new failed");
-        SSL_set_fd(ssl_, tcp_.NativeHandle());
-        if (verify_peer_) {
-            SSL_set_verify(ssl_, SSL_VERIFY_PEER, nullptr);
-            X509_VERIFY_PARAM* param = SSL_get0_param(ssl_);
-            X509_VERIFY_PARAM_set1_host(param, host_str.c_str(), 0);
+        {
+            std::lock_guard<std::mutex> lock(io_mutex_);
+            ctx_ = GetSharedCtx();
+            if (ctx_ == nullptr)
+                throw McpError(McpErrorCode::TlsHandshakeFailed, "failed to initialize OpenSSL");
+            ssl_ = SSL_new(ctx_);
+            if (ssl_ == nullptr)
+                throw McpError(McpErrorCode::TlsHandshakeFailed, "SSL_new failed");
+            SSL_set_fd(ssl_, static_cast<int>(tcp_.NativeHandle()));
+            if (verify_peer_) {
+                SSL_set_verify(ssl_, SSL_VERIFY_PEER, nullptr);
+                X509_VERIFY_PARAM* param = SSL_get0_param(ssl_);
+                X509_VERIFY_PARAM_set1_host(param, host_str.c_str(), 0);
+            }
         }
 
         auto deadline = std::chrono::steady_clock::now() + timeout;
         for (;;) {
-            int rc = SSL_connect(ssl_);
-            if (rc == 1) break;
-            int err = SSL_get_error(ssl_, rc);
+            int rc;
+            int err;
+            {
+                std::lock_guard<std::mutex> lock(io_mutex_);
+                if (ssl_ == nullptr)
+                    throw McpError(McpErrorCode::ConnectionClosed,
+                                   "connection closed during TLS handshake with " + host_str);
+                rc = SSL_connect(ssl_);
+                if (rc == 1) break;
+                err = SSL_get_error(ssl_, rc);
+            }
             auto remaining = deadline - std::chrono::steady_clock::now();
             if (err == SSL_ERROR_WANT_READ) {
                 if (remaining <= std::chrono::milliseconds(0))
                     throw McpError(McpErrorCode::RequestTimeout, "TLS handshake timed out for " + host_str);
-                if (tcp_.WaitReadable(std::chrono::duration_cast<std::chrono::milliseconds>(remaining)), tcp_.IsEof())
+                tcp_.WaitReadable(std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
+                if (tcp_.IsEof())
                     throw McpError(McpErrorCode::ConnectionClosed,
                                    "connection closed during TLS handshake with " + host_str);
                 continue;
@@ -99,6 +110,10 @@ void TlsSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
                            "TLS handshake failed for " + host_str + ": " + SslErrorText(err));
         }
 
+        std::lock_guard<std::mutex> lock(io_mutex_);
+        if (ssl_ == nullptr)
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           "connection closed during TLS handshake with " + host_str);
         if (verify_peer_) {
             long result = SSL_get_verify_result(ssl_);
             if (result != X509_V_OK)
@@ -113,30 +128,33 @@ void TlsSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
 }
 
 std::size_t TlsSocket::Read(void* buf, std::size_t len, std::chrono::milliseconds timeout) {
-    if (ssl_ == nullptr)
-        throw McpError(McpErrorCode::ConnectionClosed, "read on closed TLS socket");
-    if (eof_) return 0;
-
     auto deadline = std::chrono::steady_clock::now() + timeout;
     bool want_write = false;
     for (;;) {
-        if (SSL_pending(ssl_) > 0) {
-            int n = SSL_read(ssl_, buf, static_cast<int>(len));
-            if (n > 0) return static_cast<std::size_t>(n);
-            int err = SSL_get_error(ssl_, n);
-            if (err == SSL_ERROR_WANT_READ) {
-                want_write = false;
-            } else if (err == SSL_ERROR_WANT_WRITE) {
-                want_write = true;
-            } else if (err == SSL_ERROR_ZERO_RETURN) {
-                eof_ = true;
-                return 0;
-            } else if (err == SSL_ERROR_SYSCALL && tcp_.IsEof()) {
-                eof_ = true;
-                return 0;
-            } else {
-                throw McpError(McpErrorCode::ConnectionClosed,
-                               std::string("TLS read failed: ") + SslErrorText(err));
+        {
+            std::lock_guard<std::mutex> lock(io_mutex_);
+            if (ssl_ == nullptr)
+                throw McpError(McpErrorCode::ConnectionClosed, "read on closed TLS socket");
+            if (eof_) return 0;
+
+            if (SSL_pending(ssl_) > 0) {
+                int n = SSL_read(ssl_, buf, static_cast<int>(len));
+                if (n > 0) return static_cast<std::size_t>(n);
+                int err = SSL_get_error(ssl_, n);
+                if (err == SSL_ERROR_WANT_READ) {
+                    want_write = false;
+                } else if (err == SSL_ERROR_WANT_WRITE) {
+                    want_write = true;
+                } else if (err == SSL_ERROR_ZERO_RETURN) {
+                    eof_ = true;
+                    return 0;
+                } else if (err == SSL_ERROR_SYSCALL && tcp_.IsEof()) {
+                    eof_ = true;
+                    return 0;
+                } else {
+                    throw McpError(McpErrorCode::ConnectionClosed,
+                                   std::string("TLS read failed: ") + SslErrorText(err));
+                }
             }
         }
 
@@ -152,20 +170,24 @@ std::size_t TlsSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
 }
 
 void TlsSocket::Write(const void* buf, std::size_t len, std::chrono::milliseconds timeout) {
-    if (ssl_ == nullptr)
-        throw McpError(McpErrorCode::ConnectionClosed, "write on closed TLS socket");
-
     const char* data = static_cast<const char*>(buf);
     std::size_t total = 0;
     auto deadline = std::chrono::steady_clock::now() + timeout;
 
     while (total < len) {
-        int n = SSL_write(ssl_, data + total, static_cast<int>(len - total));
-        if (n > 0) {
-            total += static_cast<std::size_t>(n);
-            continue;
+        int n;
+        int err;
+        {
+            std::lock_guard<std::mutex> lock(io_mutex_);
+            if (ssl_ == nullptr)
+                throw McpError(McpErrorCode::ConnectionClosed, "write on closed TLS socket");
+            n = SSL_write(ssl_, data + total, static_cast<int>(len - total));
+            if (n > 0) {
+                total += static_cast<std::size_t>(n);
+                continue;
+            }
+            err = SSL_get_error(ssl_, n);
         }
-        int err = SSL_get_error(ssl_, n);
         auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::milliseconds(0))
             throw McpError(McpErrorCode::RequestTimeout, "TLS write timed out");
@@ -183,26 +205,28 @@ void TlsSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
 }
 
 void TlsSocket::Close() {
+    tcp_.Close();
+    std::lock_guard<std::mutex> lock(io_mutex_);
     if (ssl_ != nullptr) {
         SSL_shutdown(ssl_);
         SSL_free(ssl_);
         ssl_ = nullptr;
     }
-    tcp_.Close();
 }
 
 bool TlsSocket::IsEof() const {
+    std::lock_guard<std::mutex> lock(io_mutex_);
     return eof_ || tcp_.IsEof();
 }
 
 bool TlsSocket::IsConnected() const {
+    std::lock_guard<std::mutex> lock(io_mutex_);
     return ssl_ != nullptr && tcp_.IsConnected() && !eof_;
 }
 
 #else // !MCP_HAVE_OPENSSL
 
-TlsSocket::TlsSocket(bool verify_peer)
-    : verify_peer_(verify_peer) {}
+TlsSocket::TlsSocket(bool) {}
 
 TlsSocket::~TlsSocket() {
     Close();

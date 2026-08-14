@@ -52,6 +52,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
 
+# ====================================================================
+# mcp_enable_werror — MCP_WERROR=ON 时对目标附加 /WX (MSVC) 或 -Werror。
+# 守护全部 mcp-* 库目标与测试目标（含不链接 mcp-core 的 mcp-test/mcp-test-main）。
+# ====================================================================
+function(mcp_enable_werror target)
+    if(NOT MCP_WERROR)
+        return()
+    endif()
+    if(MSVC)
+        target_compile_options(${target} PUBLIC /WX)
+    else()
+        target_compile_options(${target} PUBLIC -Werror)
+    endif()
+    message(STATUS "[mcp] Werror: ${target}")
+endfunction()
+
 # ── 模块包含 ──
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -108,15 +124,6 @@ target_include_directories(mcp-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mcp-core PUBLIC Threads::Threads)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
-
-if(MCP_WERROR)
-    if(MSVC)
-        target_compile_options(mcp-core PUBLIC /WX)
-    else()
-        target_compile_options(mcp-core PUBLIC -Werror)
-    endif()
-    message(STATUS "[mcp] Werror enabled")
-endif()
 
 # ====================================================================
 # mcp-transport — STATIC
@@ -181,6 +188,9 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
+if(WIN32)
+    target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
+endif()
 target_include_directories(mcp-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
@@ -214,12 +224,30 @@ set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
 # ====================================================================
+# Werror 守护 — 全部 mcp-* 库目标
+# ====================================================================
+foreach(_t mcp-core mcp-transport mcp-protocol mcp-server mcp-client mcp-http)
+    mcp_enable_werror(${_t})
+endforeach()
+
+# ====================================================================
 # 子目录
 # ====================================================================
 if(MCP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/framework)
     add_subdirectory(tests)
+    # 测试框架 (mcp-test/mcp-test-main 不链接 mcp-core) + 全部测试/基准目标
+    foreach(_t
+        mcp-test mcp-test-main mcp-framework-self-tests
+        mcp-core-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
+        mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
+        mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
+        mcp-streamable-http-tests mcp-websocket-tests
+        mcp-integration-tests mcp-conformance-tests
+        mcp-json-bench mcp-http-bench)
+        mcp_enable_werror(${_t})
+    endforeach()
 endif()
 
 if(MCP_BUILD_EXAMPLES)

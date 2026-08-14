@@ -27,6 +27,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef __APPLE__
+#include <csignal>
+#endif
+
 #ifndef _WIN32
 #include <arpa/inet.h>
 #include <cerrno>
@@ -94,10 +98,21 @@ std::string RecvN(int fd, std::size_t n) {
     return buf;
 }
 
+#ifdef __APPLE__
+namespace {
+struct TestSigpipeGuard {
+    TestSigpipeGuard() { std::signal(SIGPIPE, SIG_IGN); }
+};
+const TestSigpipeGuard kTestSigpipeGuard;
+}
+#endif
+
 void SendRaw(int fd, std::string_view data) {
     while (!data.empty()) {
 #ifdef _WIN32
         int s = ::send(static_cast<SOCKET>(fd), data.data(), static_cast<int>(data.size()), 0);
+#elif defined(__APPLE__)
+        ssize_t s = ::send(fd, data.data(), data.size(), 0);
 #else
         ssize_t s = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
 #endif

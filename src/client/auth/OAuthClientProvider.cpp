@@ -12,6 +12,9 @@
 #include <chrono>
 #ifdef MCP_HAVE_OPENSSL
 #include <openssl/rand.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
 #endif
 
 #include <algorithm>
@@ -165,6 +168,11 @@ std::string GenerateCodeVerifier() {
 #ifdef MCP_HAVE_OPENSSL
     if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1) {
         throw std::runtime_error("pkce: RAND_bytes failed");
+    }
+#elif defined(_WIN32)
+    if (BCryptGenRandom(nullptr, random_bytes.data(),
+            static_cast<ULONG>(random_bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        throw std::runtime_error("pkce: BCryptGenRandom failed");
     }
 #else
     std::random_device rd;

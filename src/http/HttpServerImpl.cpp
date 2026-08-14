@@ -179,6 +179,11 @@ void Impl::Stop() {
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
         if (listen_fd_ != -1) {
+#ifdef _WIN32
+            ::shutdown(static_cast<SOCKET>(listen_fd_), SD_BOTH);
+#else
+            ::shutdown(listen_fd_, SHUT_RDWR);
+#endif
             CloseFd(listen_fd_);
             listen_fd_ = -1;
         }

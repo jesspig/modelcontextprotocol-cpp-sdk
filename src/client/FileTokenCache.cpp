@@ -10,7 +10,6 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
-#pragma comment(lib, "crypt32.lib")
 #else
 #include <sys/stat.h>
 #endif
@@ -77,7 +76,8 @@ void FileTokenCache::ClearTokens() {
 }
 
 void FileTokenCache::Load() {
-    if (!std::filesystem::exists(cache_path_)) return;
+    std::error_code ec;
+    if (!std::filesystem::exists(cache_path_, ec)) return;
 
 #ifdef _WIN32
     std::ifstream file(cache_path_, std::ios::binary);
@@ -136,7 +136,10 @@ void FileTokenCache::Load() {
 
 void FileTokenCache::Save() {
     if (!tokens_) {
-        std::filesystem::remove(cache_path_);
+        std::error_code ec;
+        if (!std::filesystem::remove(cache_path_, ec) && ec) {
+            MCP_LOG(Error, "token cache: failed to remove " + cache_path_.string());
+        }
         return;
     }
     JsonValue::Object obj;

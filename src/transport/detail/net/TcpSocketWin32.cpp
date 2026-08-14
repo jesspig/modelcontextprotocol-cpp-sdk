@@ -3,6 +3,9 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -13,7 +16,9 @@
 #include <windows.h>
 #include <mutex>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <thread>
 
 namespace mcp { namespace detail { namespace net {
 
@@ -43,6 +48,14 @@ std::string WinsockErrorText(int error) {
     return text;
 }
 
+template <typename Rep, typename Period>
+int ClampTimeoutMs(std::chrono::duration<Rep, Period> ms) {
+    auto count = std::chrono::duration_cast<std::chrono::milliseconds>(ms).count();
+    if (count > std::numeric_limits<int>::max()) return std::numeric_limits<int>::max();
+    if (count < 0) return 0;
+    return static_cast<int>(count);
+}
+
 bool WaitForSocket(SOCKET sock, short events, int timeout_ms) {
     WSAPOLLFD pfd;
     pfd.fd = sock;
@@ -57,18 +70,35 @@ bool WaitForSocket(SOCKET sock, short events, int timeout_ms) {
 
 } // anonymous namespace
 
-TcpSocket TcpSocket::FromFd(int fd) {
+bool TcpSocket::WaitForEvents(short events, int timeout_ms) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    for (;;) {
+        if (closed_.load() || fd_ == INVALID_SOCKET) return false;
+        long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  deadline - std::chrono::steady_clock::now())
+                                  .count();
+        int slice = remaining > kPollSliceMs
+                        ? kPollSliceMs
+                        : remaining > 0 ? static_cast<int>(remaining) : 0;
+        if (WaitForSocket(fd_, events, slice)) return true;
+        if (slice <= 0) return false;
+    }
+}
+
+TcpSocket TcpSocket::FromFd(NativeFd fd) {
+    if (!EnsureWinsock())
+        throw McpError(McpErrorCode::ConnectionRefused, "Winsock initialization failed");
     TcpSocket s;
-    s.fd_ = static_cast<SOCKET>(fd);
-    s.closed_ = false;
+    s.fd_ = fd;
+    s.closed_.store(false);
     s.eof_ = false;
     return s;
 }
 
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
-    : fd_(other.fd_), eof_(other.eof_), closed_(other.closed_) {
+    : fd_(other.fd_), eof_(other.eof_), closed_(other.closed_.load()) {
     other.fd_ = INVALID_SOCKET;
-    other.closed_ = true;
+    other.closed_.store(true);
 }
 
 TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
@@ -76,9 +106,9 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
         Close();
         fd_ = other.fd_;
         eof_ = other.eof_;
-        closed_ = other.closed_;
+        closed_.store(other.closed_.load());
         other.fd_ = INVALID_SOCKET;
-        other.closed_ = true;
+        other.closed_.store(true);
     }
     return *this;
 }
@@ -133,7 +163,7 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
             continue;
         }
 
-        if (!WaitForSocket(sock, POLLOUT, static_cast<int>(remaining.count()))) {
+        if (!WaitForSocket(sock, POLLOUT, ClampTimeoutMs(remaining))) {
             ::closesocket(sock);
             throw McpError(McpErrorCode::RequestTimeout,
                            "connect timed out for " + host_str + ":" + port_str);
@@ -158,16 +188,20 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
                        "connect failed for " + host_str + ":" + port_str + ": " + WinsockErrorText(last_error));
 
     fd_ = connected_sock;
-    closed_ = false;
+    closed_.store(false);
     eof_ = false;
 }
 
 std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::milliseconds timeout) {
-    if (closed_)
+    if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
     if (eof_ || fd_ == INVALID_SOCKET) return 0;
 
-    if (!WaitForSocket(fd_, POLLIN, static_cast<int>(timeout.count()))) return 0;
+    if (!WaitForEvents(POLLIN, ClampTimeoutMs(timeout))) {
+        if (closed_.load())
+            throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
+        return 0;
+    }
 
     int n = ::recv(fd_, static_cast<char*>(buf), static_cast<int>(len), 0);
     if (n == 0) {
@@ -188,7 +222,7 @@ std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
 }
 
 void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::milliseconds timeout) {
-    if (closed_)
+    if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
     if (fd_ == INVALID_SOCKET)
         throw McpError(McpErrorCode::ConnectionClosed, "write on unconnected socket");
@@ -201,13 +235,19 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
         auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::milliseconds(0))
             throw McpError(McpErrorCode::RequestTimeout, "socket write timed out");
-        if (!WaitForSocket(fd_, POLLOUT, static_cast<int>(remaining.count())))
+        if (!WaitForEvents(POLLOUT, ClampTimeoutMs(remaining))) {
+            if (closed_.load())
+                throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
             throw McpError(McpErrorCode::RequestTimeout, "socket write timed out");
+        }
 
         int n = ::send(fd_, data + total, static_cast<int>(len - total), 0);
         if (n == SOCKET_ERROR) {
             int error = WSAGetLastError();
-            if (error == WSAEWOULDBLOCK) continue;
+            if (error == WSAEWOULDBLOCK) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
             throw McpError(McpErrorCode::ConnectionClosed,
                            "socket write failed: " + WinsockErrorText(error));
         }
@@ -217,35 +257,21 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
 
 void TcpSocket::WaitWriteable(std::chrono::milliseconds timeout) {
     if (fd_ == INVALID_SOCKET) return;
-    WSAPOLLFD pfd;
-    pfd.fd = fd_;
-    pfd.events = POLLOUT;
-    pfd.revents = 0;
-    int rc;
-    do {
-        rc = ::WSAPoll(&pfd, 1, static_cast<int>(timeout.count()));
-    } while (rc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR);
+    WaitForEvents(POLLOUT, ClampTimeoutMs(timeout));
 }
 
 void TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
     if (fd_ == INVALID_SOCKET) return;
-    WSAPOLLFD pfd;
-    pfd.fd = fd_;
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-    int rc;
-    do {
-        rc = ::WSAPoll(&pfd, 1, static_cast<int>(timeout.count()));
-    } while (rc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR);
+    WaitForEvents(POLLIN, ClampTimeoutMs(timeout));
 }
 
 void TcpSocket::Close() {
+    closed_.store(true);
     if (fd_ != INVALID_SOCKET) {
         ::shutdown(fd_, SD_BOTH);
         ::closesocket(fd_);
         fd_ = INVALID_SOCKET;
     }
-    closed_ = true;
 }
 
 }}} // namespace mcp::detail::net

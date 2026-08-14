@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string_view>
 
 // Forward declarations of OpenSSL types so this header stays free of
@@ -32,10 +33,13 @@ public:
 
 private:
     TcpSocket tcp_;
+    mutable std::mutex io_mutex_;
+#ifdef MCP_HAVE_OPENSSL
     SSL_CTX* ctx_ = nullptr;
     SSL* ssl_ = nullptr;
     bool verify_peer_;
     bool eof_ = false;
+#endif
 };
 
 }}} // namespace mcp::detail::net
