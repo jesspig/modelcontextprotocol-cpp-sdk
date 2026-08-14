@@ -4,7 +4,12 @@
 #include <mcp/McpError.hpp>
 
 #include <charconv>
+#include <cerrno>
+#include <clocale>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -30,6 +35,37 @@ private:
     [[noreturn]] void Fail(const std::string& reason) const {
         throw McpError(McpErrorCode::ParseError,
             "JSON parse error: " + reason + " at offset " + std::to_string(pos_));
+    }
+
+    double ParseFloatFallback(std::string_view token) {
+        std::string adjusted(token);
+        struct lconv* lc = std::localeconv();
+        const char* dp = lc == nullptr ? "." : lc->decimal_point;
+        if (dp == nullptr || dp[0] == '\0') dp = ".";
+        size_t dp_len = std::strlen(dp);
+        if (dp_len != 1 || dp[0] != '.') {
+            std::string converted;
+            converted.reserve(adjusted.size());
+            for (char c : adjusted) {
+                if (c == '.') {
+                    converted.append(dp, dp_len);
+                } else {
+                    converted.push_back(c);
+                }
+            }
+            adjusted = std::move(converted);
+        }
+        char* end = nullptr;
+        errno = 0;
+        double value = std::strtod(adjusted.c_str(), &end);
+        if (end != adjusted.c_str() + adjusted.size()) Fail("invalid number");
+        if (errno == ERANGE) {
+            if (value == 0.0 || std::abs(value) < std::numeric_limits<double>::min()) {
+                return value;
+            }
+            Fail("number out of range");
+        }
+        return value;
     }
 
     static bool IsDigit(char c) {
@@ -326,11 +362,17 @@ private:
             }
             Fail("invalid number");
         }
+#if defined(_LIBCPP_VERSION)
+        // libc++ 下 std::from_chars 浮点重载为 deleted，任何形式的编译期门控都会触发
+        // "call to deleted function"，必须用预处理宏彻底移除调用
+        return JsonValue(ParseFloatFallback(token));
+#else
         double double_val = 0;
         auto res = std::from_chars(first, last, double_val);
         if (res.ec == std::errc()) return JsonValue(double_val);
         if (res.ec == std::errc::result_out_of_range) Fail("number out of range");
         Fail("invalid number");
+#endif
     }
 
     JsonValue ParseLiteral() {
