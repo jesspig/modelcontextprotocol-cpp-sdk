@@ -3,13 +3,13 @@ type: Class
 title: HttpServer
 description: 自研 HTTP/1.1 PIMPL 服务端：SSE 广播、并发限制、Host/Origin 校验。
 tags: [http, sse, pimpl]
-timestamp: 2026-08-14T00:57:41+08:00
+timestamp: 2026-08-14T21:59:51+08:00
 resource: include/mcp/http/HttpServer.hpp
 ---
 
 # HttpServer
 
-PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:389](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id, true)` 移除。
+PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:324](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id, true)` 移除。
 
 ## 关键行为
 

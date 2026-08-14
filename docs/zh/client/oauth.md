@@ -51,14 +51,14 @@ auto token = auth->GetAccessToken();
 
 | 方法 | 描述 |
 |--------|-------------|
-| `Authenticate()` | 完整 OAuth 流程：发现 → 注册 → 授权 → 令牌交换 |
+| `Authenticate()` | 完整 OAuth 流程：发现 → 注册 → 授权 → 令牌交换（返回 `bool` 指示成败） |
 | `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新；刷新失败抛出 `McpError`（InternalError） |
-| `RefreshTokens()` | 使用存储的刷新令牌强制刷新 |
+| `RefreshTokens()` | 使用存储的刷新令牌强制刷新（返回 `bool`） |
 | `IsAuthenticated()` | 检查令牌是否存在且未过期 |
 | `HasToken()` | 检查是否存在任何令牌（可能已过期） |
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
-| `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权 |
-| `AuthenticateClientCredentials()` | 客户端凭据授权（RFC 6749 §4.4），用于无需用户交互的服务到服务场景 |
+| `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权（返回 `bool`） |
+| `AuthenticateClientCredentials()` | 客户端凭据授权（RFC 6749 §4.4），用于无需用户交互的服务到服务场景（返回 `bool`） |
 | `HandleAuthChallenge(www_authenticate)` | 处理服务端返回的 401/403 认证挑战头（RFC 9728），成功时重试原请求 |
 | `Revoke()` | best-effort 调用 RFC 7009 撤销端点（配置了 `revocation_endpoint` 时），无论成败都清除本地令牌 |
 
@@ -91,4 +91,4 @@ oauth_opts.token_cache = token_cache;
 
 ## 要求
 
-OpenSSL 开发头文件是编译 `mcp-client` 的**必需依赖**（`OAuthClientProvider.cpp` 无条件包含 `<openssl/rand.h>`；CMake 通过 `find_package(OpenSSL QUIET)` 自动查找，未找到时定义 `MCP_HAVE_OPENSSL` 失败，但编译仍会因缺少头文件而失败）。PKCE 代码验证器生成在构建时启用 OpenSSL（`MCP_HAVE_OPENSSL`）时使用 `RAND_bytes`，否则回退到 `std::random_device`。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由自研网络栈处理）和密码学级随机数提供支持。
+OpenSSL 是**可选依赖**：CMake 通过 `find_package(OpenSSL QUIET)` 探测本机安装，找到后才定义 `MCP_HAVE_OPENSSL` 并链接 `OpenSSL::Crypto`/`OpenSSL::SSL`。未找到时 TLS 被禁用（`TlsSocket::Connect` 抛 `TlsHandshakeFailed`），PKCE 代码验证器生成回退到 `BCryptGenRandom`（Windows）/`std::random_device`（POSIX），SHA-256 使用内置实现——`mcp-client` 与 OAuth 功能仍可编译使用。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由自研网络栈处理）和密码学级随机数提供支持。

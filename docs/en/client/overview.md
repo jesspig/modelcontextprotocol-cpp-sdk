@@ -19,7 +19,7 @@ auto client = McpClient::Create(transport, opts);
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.1.0"}`) |
+| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.3.0"}`) |
 | `capabilities` | `optional<ClientCapabilities>` | Declared capabilities |
 | `connect_mode` | `ConnectMode` | `Auto` (discover → initialize), `Legacy`, `Pin` |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
