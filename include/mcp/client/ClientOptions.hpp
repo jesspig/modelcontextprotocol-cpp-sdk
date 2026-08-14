@@ -25,7 +25,7 @@ enum class ConnectMode {
 // ── ClientOptions (对应 C# McpClientOptions) ──
 struct MCP_API ClientOptions {
     // Client identity
-    Implementation client_info{"mcp-cpp-client", "0.1.0"};
+    Implementation client_info{"mcp-cpp-client", "0.3.0"};
     std::optional<ClientCapabilities> capabilities;
 
     // Connection mode

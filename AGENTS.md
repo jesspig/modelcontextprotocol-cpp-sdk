@@ -44,22 +44,27 @@ ctest --preset debug --output-on-failure
 
 ## 测试约定
 
-- 自研测试框架（`tests/framework/`，mcp-test + mcp-test-main；`mcp_discover_tests` 逐用例注册 ctest）：`tests/unit/` 12 目标 + `tests/integration/` 1 + `tests/conformance/` 1 + `tests/framework/` 1（SelfTests）= 15 目标 / 392 用例；`tests/benchmark/` 的 `mcp-json-bench`/`mcp-http-bench` 非 ctest 目标
+- 自研测试框架（`tests/framework/`，mcp-test + mcp-test-main；`mcp_discover_tests` 逐用例注册 ctest）：`tests/unit/` 13 目标 + `tests/integration/` 1 + `tests/conformance/` 1 + `tests/framework/` 1（SelfTests）= 16 目标 / 392 用例；`tests/benchmark/` 的 `mcp-json-bench`/`mcp-http-bench` 非 ctest 目标
 - 文件命名 `XxxTests.cpp`，套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*`/`ASSERT_*`，链接 `mcp-test-main`；框架头 `#include <mcp/test/McpTest.hpp>`；`--gtest_filter` 参数名兼容
 - `tests/test_utils/` 是空目录；共享工具在 `tests/unit/TestServerUtil.hpp`
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删
 - 集成测试 `RunWithTimeout`：body 挂起超 10s 会 `std::_Exit(1)` 快速失败（勿改回永久阻塞）
 
+## 文件编辑纪律
+
+- **绝对禁止**用 shell 或脚本（PowerShell/批处理/Python 等）批量写入、替换或修改文件内容——该规则适用于仓库内**所有文件**（源码、CMake、测试、docs、wiki 等），曾因批量替换造成 BOM 污染与 timestamp 全量误改；所有文件编辑必须用 `edit` / `write` 工具逐个进行
+- 子代理同样禁止用 shell/脚本编辑文件；需要大批量更新时启动多个子代理，每个子代理对各自负责的文件集逐个用 `edit`/`write` 更新
+
 ## wiki 知识库维护
 
 `wiki/` 是源码知识库（面向源码理解，与 `docs/` 面向使用者的在线文档分离），入口 [wiki/index.md](wiki/index.md)。维护规则：
 
-- **触发时机**：仅在完成功能、交付操作指南、提交前统一更新；微调或小改动不更新
+- **触发时机**：功能或代码变更落地后**及时**更新对应 wiki 页面并记录 changelog，不推迟到提交前统一处理；微调或小改动不更新
 - **更新前核查**：`git status` 与 `git diff HEAD` 对照全部实际变更（含用户手动修改的文件），禁止仅凭对话记忆撰写；无法核实的内容标注 `> [!todo] 待补充`
 - **彻底清除过时描述**，不留废弃标记
 - **changelog/**：按天分文件 `<YYYY-MM-DD>-log.md`，每条记录时间戳 `<YYYY-MM-DD-HH>`（精确到小时）
 - **log.md**：摘要文件，仅保留最近 7 条
-- **frontmatter**：概念页面（modules/classes/transports/concepts 等）必须含 YAML frontmatter——`type` 必需（同类页面取值一致），推荐 `title`/`description`/`tags`/`timestamp`；对应源码资产必须加 `resource` 指向源码路径
+- **frontmatter**：概念页面（modules/classes/transports/concepts 等）必须含 YAML frontmatter——`type` 必需（同类页面取值一致），推荐 `title`/`description`/`tags`/`timestamp`；对应源码资产必须加 `resource` 指向源码路径。`timestamp` 记录页面最后修改时刻，仅在内容实际变更时更新，内容未变的页面禁止改写；更新时必须获取系统**实际时间**（如 `Get-Date`）写入，禁止编造或沿用时间值
 - **index.md 与 log.md** 为保留文件，不含 frontmatter
 - **链接**：内部链接以 `/` 开头指向知识库根；正文禁止大段粘贴源码
 

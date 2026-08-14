@@ -1,9 +1,9 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 15 个测试目标（unit/integration/conformance/framework），392 个测试用例（自研测试框架）。
+description: 16 个测试目标（13 unit + integration/conformance/framework），392 个测试用例（自研测试框架）。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-08-14T10:56:04+08:00
+timestamp: 2026-08-14T21:59:51+08:00
 resource: tests/CMakeLists.txt
 ---
 
@@ -15,7 +15,7 @@ resource: tests/CMakeLists.txt
 
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
-| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests | 116 | 165 |
+| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests | 116 | 166 |
 | mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests | 27 | 84 |
 | mcp-server-tests | McpServerTests | 11 | 22 |
 | mcp-client-tests | McpClientTests | 15 | 43 |
@@ -30,8 +30,8 @@ resource: tests/CMakeLists.txt
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-integration-tests | ClientServerRoundTrip | 8 | 21 |
 | mcp-conformance-tests | ProtocolConformance | 111 | 316 |
-| mcp-framework-self-tests | SelfTests | 14 | 27 |
-| **合计** | | **392** | **908** |
+| mcp-framework-self-tests | SelfTests | 14 | 30 |
+| **合计** | | **392** | **912** |
 
 ## 测试注意点
 

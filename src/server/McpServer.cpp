@@ -1013,7 +1013,7 @@ void McpServer::HandleDiscover(
             {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.1.0", {}};
+        result.server_info = Implementation{"mcp-server", "0.3.0", {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
@@ -1075,7 +1075,7 @@ void McpServer::HandleInitialize(
             {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.1.0", {}};
+        result.server_info = Implementation{"mcp-server", "0.3.0", {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;

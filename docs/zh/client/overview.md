@@ -19,7 +19,7 @@ auto client = McpClient::Create(transport, opts);
 
 | 字段 | 类型 | 描述 |
 |-------|------|-------------|
-| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.1.0"}`） |
+| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.3.0"}`） |
 | `capabilities` | `optional<ClientCapabilities>` | 声明的能力 |
 | `connect_mode` | `ConnectMode` | `Auto`（发现 → 初始化）、`Legacy`、`Pin` |
 | `initialization_timeout` | `chrono::seconds` | 握手超时（默认 60s） |
@@ -88,16 +88,6 @@ client->SetElicitationHandler(
         return result;
     });
 
-client->SetSamplingHandler(
-    [](const CreateMessageRequestParams& params) -> CreateMessageResult {
-        // 已弃用：请使用 Elicitation 替代
-    });
-
-client->SetRootsHandler(
-    [](const ListRootsRequestParams& params) -> ListRootsResult {
-        // 已弃用：提供根目录
-    });
-
 client->SetNotificationHandler("custom/notification",
     [](const JsonRpcNotification& notif) {
         // 处理服务器发送的通知
@@ -108,6 +98,8 @@ client->SetLoggingHandler(
         // 处理来自服务器的日志消息
     });
 ```
+
+已弃用（SEP-2577）：`SetSamplingHandler` 与 `SetRootsHandler` 不再可用（`sampling/createMessage`、`roots/list` 仅存在于 2025 时代），请改用 `SetElicitationHandler`。
 
 ## 订阅
 

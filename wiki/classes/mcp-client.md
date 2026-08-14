@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、MRTR、响应缓存与任务轮询。
 tags: [client, 门面, 协商, mrt]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T21:59:51+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -36,7 +36,7 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:248](../../src/client/M
 - MRTR：`SendRequestWithMrtr` 循环 `input_required`，`max_rounds` 超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout
 - 自动翻页上限 `kMaxAutoPages = 64` 页；任务轮询 500ms 间隔 / 300s 超时（`PollTaskToCompletion` 默认参）
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）
-- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.1.0"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`
+- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.0"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`
 
 ## 相关页面
 
