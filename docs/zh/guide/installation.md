@@ -6,9 +6,9 @@
 |----------------|------------|--------------------------------|
 | CMake          | 3.28       | 需要 Ninja 生成器               |
 | C++ 编译器      | C++17      | MSVC、Clang、GCC               |
-| simdjson       | 3.12.3     | 自动拉取                        |
-| libhv          | 1.3.4      | 自动拉取                        |
-| OpenSSL        | 必需（开发头文件） | 编译 `mcp-client` 的硬依赖（`<openssl/rand.h>` 被无条件包含）；CMake 自动查找。用于 TLS 加密（WebSocket、SSE HTTPS 等）。PKCE 验证器生成在 `MCP_HAVE_OPENSSL` 下使用 `RAND_bytes`，否则回退 `std::random_device` |
+| OpenSSL        | 可选（开发头文件） | 仅 `mcp-client`/`mcp-transport` 的可选依赖：`find_package(OpenSSL QUIET)` 找到才定义 `MCP_HAVE_OPENSSL` 并链接。未找到时 TLS 被禁用、PKCE 回退内置 SHA-256。用于 TLS 加密（WebSocket、SSE HTTPS 等） |
+
+configure 阶段无需联网：唯一的外部依赖 OpenSSL 通过 `find_package` 探测本机安装，不拉取任何第三方源码。
 
 ## 通过 FetchContent 引用
 

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #ifdef __APPLE__
 #include <crt_externs.h>
@@ -17,22 +18,40 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <atomic>
+#include <mutex>
 
 namespace mcp { namespace detail {
 
 namespace {
 
+// 忽略 SIGPIPE 是进程级设置：向读端已关闭的管道写入时内核会发送 SIGPIPE，
+// 默认动作是终止整个进程，这里改为忽略后 write 返回 EPIPE 错误码。
+struct SigpipeIgnorer {
+    SigpipeIgnorer() {
+        struct sigaction sa = {};
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, nullptr);
+    }
+};
+
+const SigpipeIgnorer kSigpipeIgnorer;
+
 constexpr int kPipeReadPollTimeoutMs = 100;
 
 class PosixPipe : public PipeHandle {
+    mutable std::mutex mutex_;
     int fd_ = -1;
     bool eof_ = false;
+    std::atomic<bool> closed_{false};
 public:
     PosixPipe(int fd) : fd_(fd) {}
     ~PosixPipe() override { Close(); }
 
     size_t Read(char* buffer, size_t size) override {
-        if (fd_ < 0) return 0;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_ || fd_ < 0) return 0;
         struct pollfd pfd = { fd_, POLLIN, 0 };
         int rc;
         do { rc = ::poll(&pfd, 1, kPipeReadPollTimeoutMs); } while (rc < 0 && errno == EINTR);
@@ -42,13 +61,21 @@ public:
         return n > 0 ? static_cast<size_t>(n) : 0;
     }
 
-    bool IsEof() const override { return fd_ < 0 || eof_; }
+    bool IsEof() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_ || fd_ < 0 || eof_;
+    }
 
     size_t Write(const char* data, size_t size) override {
-        if (fd_ < 0) return 0;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_ || fd_ < 0) return 0;
         size_t total = 0;
-        while (total < size) {
-            ssize_t n = write(fd_, data + total, size - total);
+        while (total < size && !closed_) {
+            struct pollfd pfd = { fd_, POLLOUT, 0 };
+            int rc;
+            do { rc = ::poll(&pfd, 1, kPipeReadPollTimeoutMs); } while (rc < 0 && errno == EINTR);
+            if (rc <= 0 || !(pfd.revents & POLLOUT)) return total;
+            ssize_t n = ::write(fd_, data + total, size - total);
             if (n < 0) {
                 if (errno == EINTR) continue;
                 return total;
@@ -60,13 +87,18 @@ public:
     }
 
     void Close() override {
+        closed_ = true;
+        std::lock_guard<std::mutex> lock(mutex_);
         if (fd_ >= 0) {
             ::close(fd_);
             fd_ = -1;
         }
     }
 
-    uintptr_t native_handle() const override { return (uintptr_t)fd_; }
+    uintptr_t native_handle() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return (uintptr_t)fd_;
+    }
 };
 
 class PosixProcess : public ProcessHandle {
@@ -226,8 +258,9 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
                     std::string path(path_env);
                     size_t start = 0, end;
                     while ((end = path.find(':', start)) != std::string::npos) {
-                        std::string candidate = path.substr(start, end - start)
-                                              + "/" + info.command;
+                        std::string dir = path.substr(start, end - start);
+                        if (dir.empty()) dir = ".";
+                        std::string candidate = dir + "/" + info.command;
                         if (access(candidate.c_str(), X_OK) == 0) {
                             resolved = candidate;
                             break;
@@ -235,7 +268,9 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
                         start = end + 1;
                     }
                     if (resolved == info.command) {
-                        std::string candidate = path.substr(start) + "/" + info.command;
+                        std::string dir = path.substr(start);
+                        if (dir.empty()) dir = ".";
+                        std::string candidate = dir + "/" + info.command;
                         if (access(candidate.c_str(), X_OK) == 0)
                             resolved = candidate;
                     }

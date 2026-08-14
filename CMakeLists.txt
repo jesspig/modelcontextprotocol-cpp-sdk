@@ -43,7 +43,7 @@ if(NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
     endif()
 endif()
 
-project(mcp-cpp-sdk VERSION 0.1.0 LANGUAGES CXX)
+project(mcp-cpp-sdk VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,6 +51,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ── 构建选项 ──
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
+
+# ====================================================================
+# mcp_enable_werror — MCP_WERROR=ON 时对目标附加 /WX (MSVC) 或 -Werror。
+# 守护全部 mcp-* 库目标与测试目标（含不链接 mcp-core 的 mcp-test/mcp-test-main）。
+# ====================================================================
+function(mcp_enable_werror target)
+    if(NOT MCP_WERROR)
+        return()
+    endif()
+    if(MSVC)
+        target_compile_options(${target} PUBLIC /WX)
+    else()
+        target_compile_options(${target} PUBLIC -Werror)
+    endif()
+    message(STATUS "[mcp] Werror: ${target}")
+endfunction()
 
 # ── 模块包含 ──
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -90,6 +106,7 @@ endif()
 add_library(mcp-core STATIC)
 target_sources(mcp-core PRIVATE
     src/core/JsonValue.cpp
+    src/core/JsonParser.cpp
     src/core/JsonRpc.cpp
     src/core/McpTypesTools.cpp
     src/core/McpTypesResults.cpp
@@ -105,18 +122,8 @@ target_include_directories(mcp-core PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_include_directories(mcp-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mcp-core PUBLIC Threads::Threads)
-target_link_libraries(mcp-core PRIVATE simdjson)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
-
-if(MCP_WERROR)
-    if(MSVC)
-        target_compile_options(mcp-core PUBLIC /WX)
-    else()
-        target_compile_options(mcp-core PUBLIC -Werror)
-    endif()
-    message(STATUS "[mcp] Werror enabled")
-endif()
 
 # ====================================================================
 # mcp-transport — STATIC
@@ -127,14 +134,24 @@ target_sources(mcp-transport PRIVATE
     src/transport/StdioClientTransport.cpp
     src/transport/InMemoryTransport.cpp
     src/transport/SseClientTransport.cpp
-    src/transport/WebSocketClientTransport.cpp)
+    src/transport/WebSocketClientTransport.cpp
+    src/transport/detail/net/TlsSocket.cpp
+    src/transport/detail/net/HttpClient.cpp
+    src/transport/detail/net/WebSocketClient.cpp)
 if(WIN32)
-    target_sources(mcp-transport PRIVATE src/transport/detail/win32_platform.cpp)
+    target_sources(mcp-transport PRIVATE
+        src/transport/detail/win32_platform.cpp
+        src/transport/detail/net/TcpSocketWin32.cpp)
 else()
-    target_sources(mcp-transport PRIVATE src/transport/detail/posix_platform.cpp)
+    target_sources(mcp-transport PRIVATE
+        src/transport/detail/posix_platform.cpp
+        src/transport/detail/net/TcpSocketPosix.cpp)
 endif()
-target_link_libraries(mcp-transport PUBLIC mcp-core hv_static)
-target_include_directories(mcp-transport SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-transport PUBLIC mcp-core)
+if(WIN32)
+    target_link_libraries(mcp-transport PUBLIC ws2_32)
+endif()
+target_include_directories(mcp-transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
@@ -171,7 +188,9 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
-target_include_directories(mcp-client SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+if(WIN32)
+    target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
+endif()
 target_include_directories(mcp-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(OpenSSL_FOUND)
     target_link_libraries(mcp-client PUBLIC OpenSSL::Crypto)
@@ -189,23 +208,46 @@ set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
 add_library(mcp-http STATIC)
 target_sources(mcp-http PRIVATE
     src/http/HttpServer.cpp
+    src/http/HttpServerImpl.cpp
     src/http/EventStore.cpp
     src/http/StreamableHttpServerTransport.cpp)
 target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
-target_link_libraries(mcp-http PUBLIC mcp-transport hv_static)
-target_include_directories(mcp-http SYSTEM PRIVATE ${libhv_SOURCE_DIR}/include)
+target_link_libraries(mcp-http PUBLIC mcp-transport)
+if(WIN32)
+    target_link_libraries(mcp-http PUBLIC ws2_32)
+endif()
+target_include_directories(mcp-http PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
+
+# ====================================================================
+# Werror 守护 — 全部 mcp-* 库目标
+# ====================================================================
+foreach(_t mcp-core mcp-transport mcp-protocol mcp-server mcp-client mcp-http)
+    mcp_enable_werror(${_t})
+endforeach()
 
 # ====================================================================
 # 子目录
 # ====================================================================
 if(MCP_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(tests/framework)
     add_subdirectory(tests)
+    # 测试框架 (mcp-test/mcp-test-main 不链接 mcp-core) + 全部测试/基准目标
+    foreach(_t
+        mcp-test mcp-test-main mcp-framework-self-tests
+        mcp-core-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
+        mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
+        mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
+        mcp-streamable-http-tests mcp-websocket-tests
+        mcp-integration-tests mcp-conformance-tests
+        mcp-json-bench mcp-http-bench)
+        mcp_enable_werror(${_t})
+    endforeach()
 endif()
 
 if(MCP_BUILD_EXAMPLES)

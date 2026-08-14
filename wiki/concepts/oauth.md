@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存。
 tags: [oauth, pkce, 安全, rfc9207]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-14T21:59:51+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -25,7 +25,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 ## HandleAuthChallenge（RFC 9728）
 
-解析 `resource_metadata="<uri>"` → 拉取资源元数据合并进 metadata_，随后 `VerifyResourceMatch` **事后校验**（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp:86)）：`OAuthMetadata.resource` 字段须与 `options_.server_url` **精确相等**或匹配其 **scheme+host** 前缀；字段缺失/空则放行；不匹配抛 `McpError(InternalError)`。
+解析 `resource_metadata="<uri>"` → 拉取资源元数据合并进 metadata_，随后 `VerifyResourceMatch` **事后校验**（[OAuthClientProvider.cpp:125](../../src/client/auth/OAuthClientProvider.cpp)）：`OAuthMetadata.resource` 字段须与 `options_.server_url` **精确相等**或匹配其 **scheme+host** 前缀；字段缺失/空则放行；不匹配抛 `McpError(InternalError)`。
 
 ## 失败语义
 

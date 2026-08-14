@@ -6,7 +6,7 @@
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/JsonRpc.hpp>
 
-#include <hv/HttpClient.h>
+#include <transport/detail/net/HttpClient.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -93,8 +93,8 @@ class SseClientSessionTransport final : public TransportBase {
 public:
     SseClientSessionTransport(std::string server_url, std::string name)
         : TransportBase()
-        , http_client_(std::make_unique<hv::HttpClient>())
-        , post_client_(std::make_unique<hv::HttpClient>())
+        , http_client_(std::make_unique<detail::net::HttpClient>())
+        , post_client_(std::make_unique<detail::net::HttpClient>())
         , server_url_(std::move(server_url))
         , name_(std::move(name))
     {
@@ -122,9 +122,9 @@ public:
 
             // Closing both clients unblocks the SSE read and POST sends
             if (post_client_)
-                post_client_->close();
+                post_client_->Close();
             if (http_client_)
-                http_client_->close();
+                http_client_->Close();
         }
 
         // Join unconditionally: the SSE read thread may have exited on its own
@@ -152,25 +152,24 @@ public:
 private:
     void SseReadLoop() {
         while (running_) {
-            ::HttpRequest req;
-            req.method = HTTP_GET;
+            detail::net::HttpRequestSpec req;
+            req.method = "GET";
             req.url = server_url_;
             req.headers["Accept"] = "text/event-stream";
             if (!last_event_id_.empty()) {
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
 
-            req.http_cb = [this](HttpMessage* /*msg*/, http_parser_state state,
-                                 const char* data, size_t size) {
-                if (state == HP_BODY && data && size) {
-                    sse_buffer_.append(data, size);
+            auto body_cb = [this](std::string_view chunk) {
+                if (!chunk.empty()) {
+                    sse_buffer_.append(chunk.data(), chunk.size());
 
                     if (sse_buffer_.size() > detail::kMaxMessageSize) {
                         sse_buffer_.clear();
                         NotifyError("message size exceeds maximum allowed size");
                         running_.store(false);
-                        // Closing the client aborts the blocking recv in send()
-                        http_client_->close();
+                        // Closing the client aborts the blocking recv in Request()
+                        http_client_->Close();
                         return;
                     }
 
@@ -183,8 +182,11 @@ private:
                 }
             };
 
-            ::HttpResponse resp;
-            http_client_->send(&req, &resp);
+            try {
+                http_client_->Request(req, body_cb);
+            } catch (...) {
+                if (!running_) break;
+            }
 
             // The stream ended. Exit on explicit Close, otherwise back off
             // and reconnect (the server replays missed events via
@@ -274,17 +276,19 @@ private:
     }
 
     void DoPost(const std::string& endpoint, const std::string& body) {
-        ::HttpRequest req;
-        req.method = HTTP_POST;
+        detail::net::HttpRequestSpec req;
+        req.method = "POST";
         req.url = endpoint;
         req.headers["Content-Type"] = "application/json";
         req.body = body;
-        ::HttpResponse resp;
-        post_client_->send(&req, &resp);
+        try {
+            post_client_->Request(req);
+        } catch (...) {
+        }
     }
 
-    std::unique_ptr<hv::HttpClient> http_client_;
-    std::unique_ptr<hv::HttpClient> post_client_;
+    std::unique_ptr<detail::net::HttpClient> http_client_;
+    std::unique_ptr<detail::net::HttpClient> post_client_;
     std::string server_url_;
     std::string name_;
     std::string endpoint_url_;

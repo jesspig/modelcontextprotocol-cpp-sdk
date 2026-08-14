@@ -7,16 +7,22 @@
 #include <mcp/McpError.hpp>
 #include <mcp/detail/sha256.hpp>
 
-#include <hv/requests.h>
+#include <transport/detail/net/HttpClient.hpp>
 
 #include <chrono>
 #ifdef MCP_HAVE_OPENSSL
 #include <openssl/rand.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
 #endif
 
+#include <algorithm>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace {
 
@@ -39,6 +45,37 @@ std::string UrlEncode(std::string_view input) {
         }
     }
     return result;
+}
+
+using NetResponse = mcp::detail::net::HttpResponseInfo;
+
+std::optional<NetResponse> HttpGetUrl(const std::string& url) {
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "GET";
+        req.url = url;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<NetResponse> HttpPostUrl(
+    const std::string& url, const std::string& body,
+    const std::unordered_map<std::string, std::string>& headers = {})
+{
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "POST";
+        req.url = url;
+        req.body = body;
+        req.headers = headers;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 } // anonymous namespace
@@ -132,6 +169,11 @@ std::string GenerateCodeVerifier() {
     if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1) {
         throw std::runtime_error("pkce: RAND_bytes failed");
     }
+#elif defined(_WIN32)
+    if (BCryptGenRandom(nullptr, random_bytes.data(),
+            static_cast<ULONG>(random_bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        throw std::runtime_error("pkce: BCryptGenRandom failed");
+    }
 #else
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -195,10 +237,10 @@ JsonValue OAuthClientProvider::HttpPost(
         body += UrlEncode(it->first) + '=' + UrlEncode(it->second);
     }
 
-    http_headers headers;
+    std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/x-www-form-urlencoded";
 
-    auto resp = requests::post(std::string(url_str).c_str(), body, headers);
+    auto resp = HttpPostUrl(std::string(url_str), body, headers);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
         return JsonValue();
 
@@ -465,7 +507,7 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
     if (end == std::string::npos) return false;
     auto metadata_url = header.substr(pos + 1, end - pos - 1);
 
-    auto resp = requests::get(metadata_url.c_str());
+    auto resp = HttpGetUrl(metadata_url);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
     auto json = JsonValue::Parse(resp->body);
     if (!json.IsObject()) return false;
@@ -497,7 +539,7 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
     while (!url.empty() && url.back() == '/') url.pop_back();
     std::string metadata_url = url + "/.well-known/oauth-authorization-server";
 
-    auto resp = requests::get(metadata_url.c_str());
+    auto resp = HttpGetUrl(metadata_url);
     if (resp && resp->status_code >= 200 && resp->status_code < 300) {
         auto json = JsonValue::Parse(resp->body);
         if (json.IsObject()) {
@@ -523,11 +565,10 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
 
     auto body = JsonValue(std::move(obj)).Dump();
 
-    http_headers headers;
+    std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
 
-    auto resp = requests::post(
-        std::string(registration_endpoint).c_str(), body, headers);
+    auto resp = HttpPostUrl(std::string(registration_endpoint), body, headers);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
         return std::nullopt;
 

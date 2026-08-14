@@ -3,6 +3,7 @@
 #include <mcp/detail/AtomicJsonFile.hpp>
 #include <mcp/Log.hpp>
 
+#include <atomic>
 #include <cstdio>
 #ifdef _WIN32
 #include <windows.h>
@@ -17,6 +18,7 @@
 namespace mcp::detail {
 
 bool WriteAtomic(const std::filesystem::path& path, const std::string& contents) {
+    static std::atomic<unsigned long long> tmp_counter{0};
     auto tmp_path = path;
     tmp_path += ".tmp." + std::to_string(
         static_cast<long long>(
@@ -25,8 +27,12 @@ bool WriteAtomic(const std::filesystem::path& path, const std::string& contents)
 #else
             getpid()
 #endif
-        ));
+        )) + "." + std::to_string(tmp_counter.fetch_add(1));
+#ifdef _WIN32
+    std::FILE* file = _wfopen(tmp_path.wstring().c_str(), L"wb");
+#else
     std::FILE* file = std::fopen(tmp_path.string().c_str(), "wb");
+#endif
     if (!file) {
         MCP_LOG(Error, "atomic write: failed to open tmp file: " + tmp_path.string());
         return false;
@@ -34,7 +40,8 @@ bool WriteAtomic(const std::filesystem::path& path, const std::string& contents)
     bool ok = std::fwrite(contents.data(), 1, contents.size(), file) == contents.size();
     ok = std::fflush(file) == 0 && ok;
 #ifdef _WIN32
-    ok = FlushFileBuffers(reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)))) != 0 && ok;
+    intptr_t os_handle = _get_osfhandle(_fileno(file));
+    ok = os_handle != -1 && FlushFileBuffers(reinterpret_cast<HANDLE>(os_handle)) != 0 && ok;
 #else
     ok = ::fsync(::fileno(file)) == 0 && ok;
 #endif

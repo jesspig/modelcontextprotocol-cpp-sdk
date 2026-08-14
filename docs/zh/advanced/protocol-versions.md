@@ -159,12 +159,12 @@ pipeline->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
 
 ## 错误码重新映射（2026 时代）
 
-`Rev2026Codec::EncodeErrorCode` 将旧版 2025 时代的错误码重新映射为 2026 时代的值：
+`Rev2026Codec::EncodeErrorCode` 将 2025 时代的错误码重新映射为 2026 时代的值：
 
 | 错误 | 2025 值 | 2026 值 |
 |-------|-----------|-----------|
-| `HeaderMismatch` (-32020) | -32001 | -32020 |
-| `MissingRequiredClientCapability` (-32021) | -32003 | -32021 |
-| `UnsupportedProtocolVersion` (-32022) | -32004 | -32022 |
+| `RequestTimeout` → `HeaderMismatch` | -32001 | -32020 |
+| `ConnectionRefused` → `MissingRequiredClientCapability` | -32003 | -32021 |
+| `TlsHandshakeFailed` → `UnsupportedProtocolVersion` | -32004 | -32022 |
 
 其他所有错误码原样传递。

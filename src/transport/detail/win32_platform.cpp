@@ -9,6 +9,7 @@
 #include <vector>
 #include <atomic>
 #include <condition_variable>
+#include <cwchar>
 #include <mutex>
 
 namespace mcp { namespace detail {
@@ -17,25 +18,47 @@ namespace {
 
 constexpr DWORD kIoWaitTimeoutMs = 100;
 
+std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
+        static_cast<int>(s.size()), nullptr, 0);
+    if (len == 0)
+        throw std::runtime_error("invalid UTF-8 in process string: Windows error " +
+            std::to_string(GetLastError()));
+    std::wstring out(static_cast<std::size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
+        static_cast<int>(s.size()), out.data(), len);
+    return out;
+}
+
+std::string QuoteArg(const std::string& arg) {
+    if (!arg.empty() && arg.find_first_of(" \t\"") == std::string::npos) return arg;
+    std::string out = "\"";
+    std::size_t backslashes = 0;
+    for (char ch : arg) {
+        if (ch == '\\') {
+            ++backslashes;
+        } else if (ch == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+            out += '"';
+            backslashes = 0;
+        } else {
+            out.append(backslashes, '\\');
+            backslashes = 0;
+            out += ch;
+        }
+    }
+    out.append(backslashes * 2, '\\');
+    out += '"';
+    return out;
+}
+
 std::string ArgvToCommandLine(const std::string& command, const std::vector<std::string>& args) {
-    std::string line;
-    bool first = true;
-    auto append = [&line, &first](const std::string& arg) {
-        if (!first) line += ' ';
-        first = false;
-        if (arg.find_first_of(" \t\"") == std::string::npos) {
-            line += arg;
-            return;
-        }
-        line += '"';
-        for (char ch : arg) {
-            if (ch == '"') line += '\\';
-            line += ch;
-        }
-        line += '"';
-    };
-    append(command);
-    for (const auto& arg : args) append(arg);
+    std::string line = QuoteArg(command);
+    for (const auto& arg : args) {
+        line += ' ';
+        line += QuoteArg(arg);
+    }
     return line;
 }
 
@@ -344,42 +367,47 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0))
         MCP_LOG(Warning, "SetHandleInformation failed for stdin write pipe");
 
-    STARTUPINFOA si = {};
+    STARTUPINFOW si = {};
     si.cb = sizeof(si);
     si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     si.hStdOutput = stdout_write;
     si.hStdInput = stdin_read;
     si.dwFlags |= STARTF_USESTDHANDLES;
 
-    // Build environment block
     void* env_block = nullptr;
-    std::string env_block_str;
+    std::wstring env_block_str;
     if (!info.environment_variables.empty() || !info.inherit_environment) {
         if (info.inherit_environment) {
-            LPCH cur_env = GetEnvironmentStrings();
+            LPWCH cur_env = GetEnvironmentStringsW();
             if (cur_env) {
-                LPCH end = cur_env;
-                while (*end || *(end + 1)) ++end;
-                env_block_str = std::string(cur_env, end - cur_env + 2);
-                FreeEnvironmentStrings(cur_env);
+                for (LPWCH item = cur_env; *item != L'\0'; item += wcslen(item) + 1)
+                    env_block_str.append(item, wcslen(item) + 1);
+                FreeEnvironmentStringsW(cur_env);
             }
         }
         for (const auto& [key, val] : info.environment_variables) {
-            env_block_str += key + "=" + val + '\0';
+            env_block_str += Utf8ToWide(key) + L"=" + Utf8ToWide(val) + L'\0';
         }
-        env_block_str += '\0';
+        size_t tail_zeros = 0;
+        while (tail_zeros < 2 && env_block_str.size() > tail_zeros &&
+               env_block_str[env_block_str.size() - tail_zeros - 1] == L'\0')
+            ++tail_zeros;
+        env_block_str.append(2 - tail_zeros, L'\0');
         env_block = static_cast<void*>(env_block_str.data());
     }
 
     PROCESS_INFORMATION pi = {};
-    std::vector<char> cmd_buf(cmd_line.begin(), cmd_line.end());
-    cmd_buf.push_back('\0');
+    std::wstring cmd_line_w = Utf8ToWide(cmd_line);
+    std::vector<wchar_t> cmd_buf(cmd_line_w.begin(), cmd_line_w.end());
+    cmd_buf.push_back(L'\0');
 
-    LPCSTR work_dir = info.working_directory.empty() ? nullptr : info.working_directory.c_str();
+    std::wstring work_dir;
+    if (!info.working_directory.empty()) work_dir = Utf8ToWide(info.working_directory);
+    LPCWSTR work_dir_ptr = work_dir.empty() ? nullptr : work_dir.c_str();
 
-    BOOL success = CreateProcessA(
+    BOOL success = CreateProcessW(
         nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW, env_block, work_dir, &si, &pi);
+        CREATE_NO_WINDOW, env_block, work_dir_ptr, &si, &pi);
 
     CloseHandle(stdin_read);
     CloseHandle(stdout_write);
@@ -401,11 +429,13 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 std::unique_ptr<PipeHandle> OpenStandardInput() {
     HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
     if (h && h != INVALID_HANDLE_VALUE) {
-        HANDLE ov = CreateFileA("CONIN$", GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED, nullptr);
-        if (ov != INVALID_HANDLE_VALUE)
-            return std::make_unique<Win32Pipe>(ov, true);
+        if (GetFileType(h) == FILE_TYPE_CHAR) {
+            HANDLE ov = CreateFileA("CONIN$", GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED, nullptr);
+            if (ov != INVALID_HANDLE_VALUE)
+                return std::make_unique<Win32Pipe>(ov, true);
+        }
         HANDLE dup = nullptr;
         if (DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup,
                             0, FALSE, DUPLICATE_SAME_ACCESS))
@@ -417,11 +447,13 @@ std::unique_ptr<PipeHandle> OpenStandardInput() {
 std::unique_ptr<PipeHandle> OpenStandardOutput() {
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     if (h && h != INVALID_HANDLE_VALUE) {
-        HANDLE ov = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED, nullptr);
-        if (ov != INVALID_HANDLE_VALUE)
-            return std::make_unique<Win32Pipe>(ov, true);
+        if (GetFileType(h) == FILE_TYPE_CHAR) {
+            HANDLE ov = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED, nullptr);
+            if (ov != INVALID_HANDLE_VALUE)
+                return std::make_unique<Win32Pipe>(ov, true);
+        }
         HANDLE dup = nullptr;
         if (DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup,
                             0, FALSE, DUPLICATE_SAME_ACCESS))

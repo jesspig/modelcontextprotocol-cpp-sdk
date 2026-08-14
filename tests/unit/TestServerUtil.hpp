@@ -5,10 +5,15 @@
 #include <chrono>
 #include <string>
 #include <thread>
-#include <hv/requests.h>
+#include <transport/detail/net/HttpClient.hpp>
 
 #ifdef _WIN32
 #include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 static const uint16_t kTestBasePort = 18765;
@@ -52,11 +57,18 @@ inline uint16_t PickFreePort(uint16_t preferred) {
 
 // Poll until the server answers any request (ready) or the deadline passes.
 inline bool WaitUntilReady(uint16_t port) {
-    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/ready";
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
-        auto r = requests::get(url.c_str());
-        if (r) return true;
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "GET";
+        req.url = "http://127.0.0.1:" + std::to_string(port) + "/ready";
+        req.timeout = std::chrono::milliseconds(200);
+        try {
+            auto resp = client.Request(req);
+            if (resp.status_code != 0) return true;
+        } catch (...) {
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     return false;

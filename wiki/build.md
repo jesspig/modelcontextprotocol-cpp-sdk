@@ -1,9 +1,9 @@
 ---
 type: Build
 title: 构建系统
-description: CMake 预设、编译器探测、Unity/LTO/缓存优化、依赖拉取与 libhv 补丁。
-tags: [cmake, ninja, unity, lto, libhv]
-timestamp: 2026-08-13T12:36:14+08:00
+description: CMake 预设、编译器探测、Unity/LTO/缓存优化、系统依赖（仅可选 OpenSSL）。
+tags: [cmake, ninja, unity, lto]
+timestamp: 2026-08-14T10:56:04+08:00
 resource: CMakePresets.json
 ---
 
@@ -25,7 +25,7 @@ ctest --preset debug --output-on-failure
 | 默认关闭 | `MCP_BUILD_TESTS`、`MCP_BUILD_EXAMPLES`（预设中 tests=ON） |
 | Werror | 仅 `-DMCP_WERROR=ON`（CI 自动添加；MSVC `/WX`） |
 | `MCP_IS_CI` | 由环境变量 `CI` 定义与否决定 |
-| job pool | 自动调优：compile ≈ `mem/1500MB`、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
+| job pool | 自动调优：compile = `min(mem/1500MB, cpu-2)`（下限 1）、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
 
 ## 不易察觉的事实
 
@@ -35,23 +35,16 @@ ctest --preset debug --output-on-failure
 - **LTO 仅 Release**：clang-cl/MSVC 走 LTCG，Clang 走 ThinLTO，GCC 走 IPO
 - **缓存**：sccache > ccache（ccache 跳过 MSVC）
 - **`-march=native` 仅本地**（`MCP_IS_CI` 门控），debug 二进制不可移植出构建机
-- MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4324 /wd4244 /wd4267 /EHsc` + `_WIN32_WINNT=0x0A00`
+- MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4100 /wd4324 /wd4244 /wd4267 /EHsc` + 宏 `_CRT_SECURE_NO_WARNINGS`、`_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS`、`_WIN32_WINNT=0x0A00`
 - Clang/GCC：`-Wall -Wextra -Wpedantic -Wno-unused-parameter`
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
 - 配置期生成 `build_config.txt` 摘要
 
-## 依赖（FetchContent 自动拉取）
+## 依赖（无第三方拉取）
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
-| libhv | 1.3.4 | `hv_static`；`WITH_OPENSSL` 跟随探测 |
-| simdjson | 3.12.3 | 强制 `SIMDJSON_JUST_LIBRARY=ON`，SYSTEM INTERFACE |
-| GoogleTest | 1.15.2 | 仅 `MCP_BUILD_TESTS=ON`；`BUILD_GMOCK=OFF` |
 | OpenSSL | 系统 | 可选；`MCP_HAVE_OPENSSL` 定义，PKCE 失败回落内置 SHA-256 |
-
-## libhv 补丁（必须保留）
-
-[FetchDependencies.cmake](../cmake/FetchDependencies.cmake) 将 libhv CMakeLists 的 `install(FILES ... DESTINATION include/hv)` 替换为 `file(COPY ...)`，使 `include/hv/` 在**配置期**即存在（匹配 `hv_static` 的 `BUILD_INTERFACE`）。`if(POLICY CMP0169)` 保护 + 兜底手工复制。修改依赖拉取时此补丁不得破坏。
 
 ## 相关页面
 

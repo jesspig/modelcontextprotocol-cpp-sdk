@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <chrono>
+#include <ctime>
 
 namespace mcp {
 
@@ -37,7 +38,13 @@ inline std::string FormatLogTimestamp() {
     auto now = std::chrono::system_clock::now();
     auto tt = std::chrono::system_clock::to_time_t(now);
     char time_buf[32] = {};
-    std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", std::gmtime(&tt));
+    std::tm tm;
+#ifdef _WIN32
+    gmtime_s(&tm, &tt);
+#else
+    gmtime_r(&tt, &tm);
+#endif
+    std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm);
     return time_buf;
 }
 

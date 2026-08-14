@@ -5,7 +5,7 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -33,7 +33,7 @@ void RunWithTimeout(F&& body) {
 
 } // namespace
 
-struct ClientServerFixture : ::testing::Test {
+struct ClientServerFixture : mcp::test::TestCase {
     std::unique_ptr<McpServer> server;
     std::unique_ptr<McpClient> client;
     std::thread server_thread;

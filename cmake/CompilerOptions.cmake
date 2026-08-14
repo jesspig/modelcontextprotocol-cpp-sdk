@@ -26,7 +26,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -Wall -Wextra -Wpedantic
             -Wno-unused-parameter
         )
-        if(NOT MCP_IS_CI)
+        if(NOT MCP_IS_CI AND NOT APPLE)
             add_compile_options(-march=native)
         endif()
         message(STATUS "[mcp] Clang flags applied")
@@ -58,7 +58,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         -Wall -Wextra -Wpedantic
         -Wno-unused-parameter
     )
-    if(NOT MCP_IS_CI)
+    if(NOT MCP_IS_CI AND NOT APPLE)
         add_compile_options(-march=native)
     endif()
     message(STATUS "[mcp] GCC flags applied")

@@ -1,6 +1,6 @@
 #include <mcp/transport/WebSocketClientTransport.hpp>
 #include <mcp/Transport.hpp>
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 using namespace mcp;
 

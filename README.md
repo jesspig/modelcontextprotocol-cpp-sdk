@@ -40,8 +40,6 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 |----------------|----------------|------------------------------|
 | CMake          | 3.28           | Generator: Ninja recommended |
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
-| libhv          | 1.3.4          | Fetched automatically        |
-| simdjson       | 3.12.3         | Fetched automatically        |
 | OpenSSL        | (optional)     | Required for TLS (WebSocket, SSE HTTPS); OAuth PKCE works without it (built-in SHA-256 fallback). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
@@ -104,7 +102,7 @@ Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-proto
 | Stdio           | Yes    | Yes    | stdin/stdout pipes, subprocess communication     |
 | Streamable HTTP | Yes    | Yes    | HTTP POST with JSON/session-mode responses       |
 | SSE             | Yes    | Yes¹   | Server-Sent Events for push notifications        |
-| WebSocket       | Yes    | No     | TCP-based bidirectional (libhv WebSocketClient)  |
+| WebSocket       | Yes    | No     | TCP-based bidirectional (self-hosted WebSocketClient)  |
 | InMemory        | Yes    | Yes    | In-process transport for testing                 |
 
 > ¹ SSE server-side is provided through `StreamableHttpServerTransport` when `enable_legacy_sse` is `true`, which serves an SSE stream via HTTP GET.

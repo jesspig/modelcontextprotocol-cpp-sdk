@@ -15,8 +15,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, ubuntu-24.04, macos-15]
-        build_type: [debug, release]
+        include:
+          - os: windows-2022
+            build_type: debug
+          - os: windows-2022
+            build_type: release
+          - os: ubuntu-24.04
+            build_type: debug
+          - os: ubuntu-24.04
+            build_type: release
+          - os: ubuntu-24.04
+            build_type: debug
+            compiler: gcc
+          - os: ubuntu-24.04
+            build_type: release
+            compiler: gcc
+          - os: macos-15
+            build_type: debug
+          - os: macos-15
+            build_type: release
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -25,22 +42,77 @@ jobs:
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
+      - name: Install sccache
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install sccache -y --no-progress
+
+      - name: Install sccache
+        if: runner.os == 'macOS'
+        run: |
+          brew install sccache
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+
+      - name: Install sccache
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sccache
+
       - name: Cache sccache
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/sccache
             C:\Users\runneradmin\AppData\Local\Mozilla\sccache
-          key: sccache-${{ matrix.os }}-${{ matrix.build_type }}-${{ github.sha }}
+          key: sccache-${{ matrix.os }}-${{ matrix.build_type }}-${{ matrix.compiler || 'clang' }}-${{ github.sha }}
           restore-keys: |
-            sccache-${{ matrix.os }}-${{ matrix.build_type }}-
+            sccache-${{ matrix.os }}-${{ matrix.build_type }}-${{ matrix.compiler || 'clang' }}-
             sccache-${{ matrix.os }}-
 
+      - name: Install OpenSSL
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install openssl -y --no-progress
+          $opensslDir = Get-ChildItem 'C:\Program Files' -Directory -Filter 'OpenSSL*' | Sort-Object Name -Descending | Select-Object -First 1
+          if ($null -ne $opensslDir) {
+              $binDir = Join-Path $opensslDir.FullName 'bin'
+              if (Test-Path $binDir) {
+                  Add-Content -Path $env:GITHUB_PATH -Value $binDir
+              }
+          }
+
+      - name: Install OpenSSL
+        if: runner.os == 'macOS'
+        run: brew install openssl
+
       - name: Configure
-        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON
+        if: runner.os != 'Windows' && runner.os != 'macOS'
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DCMAKE_CXX_COMPILER=g++
+          else
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON
+          fi
+
+      - name: Configure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $opensslDir = Get-ChildItem 'C:\Program Files' -Directory -Filter 'OpenSSL*' | Sort-Object Name -Descending | Select-Object -First 1
+          if ($null -eq $opensslDir) {
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON
+          } else {
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON "-DOPENSSL_ROOT_DIR=$($opensslDir.FullName)"
+          }
+
+      - name: Configure
+        if: runner.os == 'macOS'
+        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)"
 
       - name: Build
         run: cmake --build --preset ${{ matrix.build_type }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.build_type }} --output-on-failure
+        run: ctest --preset ${{ matrix.build_type }} --output-on-failure --timeout 120

@@ -92,7 +92,7 @@ int main() {
             if (args && args->Contains("text")) {
                 text = (*args)["text"].GetString();
             }
-            for (auto& c : text) c = static_cast<char>(std::toupper(c));
+            for (auto& c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             GetPromptResult r;
             PromptMessage pm;
             pm.role = "user";

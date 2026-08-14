@@ -2,8 +2,8 @@
 type: Transport
 title: SSE 客户端传输
 description: 服务端推送事件流（GET）+ POST 消息通道，支持 Last-Event-ID 断线回放与指数退避重连。
-tags: [transport, sse, libhv, 重连]
-timestamp: 2026-08-13T12:36:14+08:00
+tags: [transport, sse, 重连]
+timestamp: 2026-08-14T21:59:51+08:00
 resource: src/transport/SseClientTransport.cpp
 ---
 
@@ -13,7 +13,7 @@ resource: src/transport/SseClientTransport.cpp
 
 ## 会话实现
 
-- 持有**两个独立 libhv HttpClient**：`http_client_`（GET SSE 流）+ `post_client_`（POST 消息）
+- 持有**两个独立自研 HttpClient**（[detail/net/HttpClient](../../src/transport/detail/net/HttpClient.hpp)，基于 TcpSocket/TlsSocket 的阻塞 HTTP/1.1）：`http_client_`（GET SSE 流）+ `post_client_`（POST 消息）
 - `Start()`：SSE 读线程 + 发送线程双线程，启动即 `SetConnected()`
 - `Close()`：notify 发送线程 → 关两个 client（**靠关客户端解除阻塞**）→ **无条件** `JoinThreadSafely(send_thread_ / sse_thread_)`（读线程可能已自行退出，Close 兜底 join）→ 关通道 → SetDisconnected
 
@@ -21,7 +21,7 @@ resource: src/transport/SseClientTransport.cpp
 
 - GET 带 `Accept: text/event-stream`；有 `last_event_id_` 时带 `Last-Event-ID` 头（断线回放）
 - 解析支持 `event:` / `data:` / `id:` 行；多行 data 用 `\n` 拼接；`id:` 更新 `last_event_id_`（无 id 则清空）
-- `event: endpoint` → 解析 POST 端点（相对路径拼在 `scheme://host[:port]` 后，默认端口省略）；`event: message` → 超限丢弃 + 反序列化 + 入通道
+- `event: endpoint` → 解析 POST 端点（相对路径拼在 `scheme://host[:port]` 后，默认端口省略）；`event: message` → 超限 `NotifyError` 并丢弃该事件，否则反序列化 + 入通道
 - **缓冲超限防护**（`http_cb` 中）：`sse_buffer_` > `kMaxMessageSize`（8MB）→ 清空 + `NotifyError` + `running_.store(false)` + `http_client_->close()`（关闭即中止阻塞的 `send`）
 - 流结束且非显式关闭时**指数退避重连**：`kBackoffBase = 1000ms`、最多 5 步（1s/2s/4s/8s/16s），期间每 100ms 检查 `running_`
 - 重试耗尽自行退出时：**不置 `running_`**，先 `channel_->Close()` 再 `notify_one()` 唤醒发送线程，最后 `SetDisconnected()`

@@ -41,8 +41,6 @@
 |---------------|---------|-------------------------------|
 | CMake         | 3.28    | 生成器：推荐 Ninja            |
 | C++ 编译器    | C++17   | MSVC、Clang、GCC             |
-| libhv         | 1.3.4   | 自动下载                      |
-| simdjson      | 3.12.3  | 自动下载                      |
 | OpenSSL       | (可选)  | TLS 必需（WebSocket、SSE HTTPS）；OAuth PKCE 无需 OpenSSL（内置 SHA-256 回退）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 支持平台：**Windows** (MSVC、clang-cl)、**Linux** (GCC、Clang)、**macOS** (Clang)。
@@ -105,7 +103,7 @@ ctest --preset debug --output-on-failure
 | Stdio          | 是     | 是     | stdin/stdout 管道，子进程通信                  |
 | Streamable HTTP| 是     | 是     | HTTP POST 配合 JSON/会话模式响应               |
 | SSE            | 是     | 是¹   | 用于推送通知的服务器发送事件                  |
-| WebSocket      | 是     | 否     | TCP 双向通信（libhv WebSocketClient）          |
+| WebSocket      | 是     | 否     | TCP 双向通信（自研 WebSocketClient）          |
 | InMemory       | 是     | 是     | 进程内传输，用于测试                           |
 
 > ¹ 服务端 SSE 通过 `StreamableHttpServerTransport` 提供，当 `enable_legacy_sse` 为 `true` 时，在同一端点上通过 HTTP GET 提供 SSE 流。

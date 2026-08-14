@@ -9,7 +9,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <chrono>
 #include <future>
@@ -241,16 +241,16 @@ TEST(SessionHandlerTest, ProgressNotificationExtendsDeadline) {
     meta.progress_token = std::string("pt-1");
     auto future = hp.client->SendRequest(methods::kCallTool,
         JsonValue(JsonValue::object_tag), meta,
-        std::chrono::milliseconds(500));
+        std::chrono::milliseconds(2000));
 
-    // Server reports progress 250ms in, before the 500ms deadline.
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    // Server reports progress 1s in, before the 2s deadline.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     JsonValue progress_params(JsonValue::object_tag);
     progress_params["progressToken"] = JsonValue("pt-1");
     hp.server->SendNotification(notifications::kProgress, std::move(progress_params));
 
     // Past the original deadline the request must still be pending.
-    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(400)),
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(1500)),
               std::future_status::timeout);
 
     // Completing the handler satisfies the request normally.

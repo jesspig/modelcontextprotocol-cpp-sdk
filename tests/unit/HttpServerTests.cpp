@@ -8,18 +8,71 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
-#include <hv/requests.h>
+#include <transport/detail/net/HttpClient.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 #include "TestServerUtil.hpp"
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 // Avoid `using namespace mcp;` — HttpRequest/HttpResponse clash between hv and mcp
 using MCP_Request = mcp::HttpRequest;
 using MCP_Response = mcp::HttpResponse;
+
+namespace {
+
+using NetResp = mcp::detail::net::HttpResponseInfo;
+
+std::optional<NetResp> HttpGet(
+    const std::string& url,
+    const std::unordered_map<std::string, std::string>& hdrs = {})
+{
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "GET";
+        req.url = url;
+        req.headers = hdrs;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<NetResp> HttpPost(
+    const std::string& url, const std::string& body,
+    const std::unordered_map<std::string, std::string>& hdrs = {})
+{
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "POST";
+        req.url = url;
+        req.body = body;
+        req.headers = hdrs;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<NetResp> HttpDelete(const std::string& url) {
+    try {
+        mcp::detail::net::HttpClient client;
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "DELETE";
+        req.url = url;
+        return client.Request(req);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+} // namespace
 
 // ============================================================
 // HttpServer
@@ -33,8 +86,8 @@ TEST(HttpServerTest, GetPing) {
     server.Start();
     ASSERT_TRUE(WaitUntilReady(port));
 
-    auto r = requests::get(("http://127.0.0.1:" + std::to_string(port) + "/ping").c_str());
-    ASSERT_NE(r, nullptr);
+    auto r = HttpGet("http://127.0.0.1:" + std::to_string(port) + "/ping");
+    ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
     EXPECT_EQ(r->body, "pong");
     server.Stop();
@@ -49,8 +102,8 @@ TEST(HttpServerTest, PostEcho) {
     server.Start();
     ASSERT_TRUE(WaitUntilReady(port));
 
-    auto r = requests::post(("http://127.0.0.1:" + std::to_string(port) + "/echo").c_str(), "hello");
-    ASSERT_NE(r, nullptr);
+    auto r = HttpPost("http://127.0.0.1:" + std::to_string(port) + "/echo", "hello");
+    ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
     EXPECT_EQ(r->body, "hello");
     server.Stop();
@@ -65,8 +118,8 @@ TEST(HttpServerTest, NotFound) {
     server.Start();
     ASSERT_TRUE(WaitUntilReady(port));
 
-    auto r = requests::get(("http://127.0.0.1:" + std::to_string(port) + "/nonexistent").c_str());
-    ASSERT_NE(r, nullptr);
+    auto r = HttpGet("http://127.0.0.1:" + std::to_string(port) + "/nonexistent");
+    ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 404);
     server.Stop();
 }
@@ -81,12 +134,12 @@ TEST(HttpServerTest, MultipleHandlers) {
     ASSERT_TRUE(WaitUntilReady(port));
 
     auto base = "http://127.0.0.1:" + std::to_string(port);
-    auto r1 = requests::get((base + "/a").c_str());
-    auto r2 = requests::get((base + "/b").c_str());
-    auto r3 = requests::post((base + "/a").c_str(), "");
-    ASSERT_NE(r1, nullptr);
-    ASSERT_NE(r2, nullptr);
-    ASSERT_NE(r3, nullptr);
+    auto r1 = HttpGet(base + "/a");
+    auto r2 = HttpGet(base + "/b");
+    auto r3 = HttpPost(base + "/a", "");
+    ASSERT_NE(r1, std::nullopt);
+    ASSERT_NE(r2, std::nullopt);
+    ASSERT_NE(r3, std::nullopt);
     EXPECT_EQ(r1->body, "A");
     EXPECT_EQ(r2->body, "B");
     EXPECT_EQ(r3->body, "A-post");
@@ -162,16 +215,16 @@ TEST(StreamableHttpTest, StatelessResponseMirrorsMcpParamHeaders) {
     transport->Start();
     ASSERT_TRUE(WaitUntilReady(port));
 
-    http_headers hdrs;
+    std::unordered_map<std::string, std::string> hdrs;
     hdrs["Content-Type"] = "application/json";
     hdrs["Mcp-Method"] = "tools/call";
-    auto r = requests::post(
-        ("http://127.0.0.1:" + std::to_string(port) + "/mcp").c_str(),
+    auto r = HttpPost(
+        "http://127.0.0.1:" + std::to_string(port) + "/mcp",
         R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
         hdrs);
-    ASSERT_NE(r, nullptr);
+    ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
-    EXPECT_EQ(r->GetHeader("mcp-param-foo"), "bar");
+    EXPECT_EQ(r->headers["mcp-param-foo"], "bar");
 
     handler->Close();
     transport->Close();
@@ -188,14 +241,14 @@ TEST(HttpServerTest, HostValidationRejectsForeignHost) {
     ASSERT_TRUE(WaitUntilReady(port));
 
     auto base = "http://127.0.0.1:" + std::to_string(port);
-    auto ok = requests::get((base + "/ping").c_str());
-    ASSERT_NE(ok, nullptr);
+    auto ok = HttpGet(base + "/ping");
+    ASSERT_NE(ok, std::nullopt);
     EXPECT_EQ(ok->status_code, 200);
 
-    http_headers hdrs;
+    std::unordered_map<std::string, std::string> hdrs;
     hdrs["Host"] = "evil.example.com";
-    auto rejected = requests::get((base + "/ping").c_str(), hdrs);
-    ASSERT_NE(rejected, nullptr);
+    auto rejected = HttpGet(base + "/ping", hdrs);
+    ASSERT_NE(rejected, std::nullopt);
     EXPECT_EQ(rejected->status_code, 403);
     server.Stop();
 }
@@ -212,14 +265,14 @@ TEST(HttpServerTest, HostValidationAllowsConfiguredHosts) {
     ASSERT_TRUE(WaitUntilReady(port));
 
     auto base = "http://127.0.0.1:" + std::to_string(port);
-    http_headers hdrs;
+    std::unordered_map<std::string, std::string> hdrs;
     hdrs["Host"] = "my-host:1234";
-    auto ok = requests::get((base + "/ping").c_str(), hdrs);
-    ASSERT_NE(ok, nullptr);
+    auto ok = HttpGet(base + "/ping", hdrs);
+    ASSERT_NE(ok, std::nullopt);
     EXPECT_EQ(ok->status_code, 200);
 
-    auto rejected = requests::get((base + "/ping").c_str());
-    ASSERT_NE(rejected, nullptr);
+    auto rejected = HttpGet(base + "/ping");
+    ASSERT_NE(rejected, std::nullopt);
     EXPECT_EQ(rejected->status_code, 403);
     server.Stop();
 }
@@ -239,9 +292,8 @@ TEST(StreamableHttpTest, DeleteTerminatesSession) {
     transport->Start();
     ASSERT_TRUE(WaitUntilReady(port));
 
-    auto r = requests::Delete(
-        ("http://127.0.0.1:" + std::to_string(port) + "/mcp").c_str());
-    ASSERT_NE(r, nullptr);
+    auto r = HttpDelete("http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
 
     handler->Close();

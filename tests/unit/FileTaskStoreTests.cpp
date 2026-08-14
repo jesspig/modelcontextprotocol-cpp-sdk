@@ -2,7 +2,7 @@
 
 #include <mcp/storage/FileTaskStore.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -10,13 +10,13 @@
 
 using namespace mcp;
 
-struct FileTaskStoreTest : ::testing::Test {
+struct FileTaskStoreTest : mcp::test::TestCase {
     std::filesystem::path store_path;
 
     void SetUp() override {
         auto temp_dir = std::filesystem::temp_directory_path();
         store_path = temp_dir / ("mcp_test_tasks_" +
-            std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) +
+            std::string(mcp::test::CurrentTestName()) +
             ".json");
         RemoveFiles();
     }
