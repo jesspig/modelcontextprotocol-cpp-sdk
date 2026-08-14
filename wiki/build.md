@@ -1,9 +1,9 @@
 ---
 type: Build
 title: 构建系统
-description: CMake 预设、编译器探测、Unity/LTO/缓存优化、依赖拉取。
+description: CMake 预设、编译器探测、Unity/LTO/缓存优化、系统依赖（仅可选 OpenSSL）。
 tags: [cmake, ninja, unity, lto]
-timestamp: 2026-08-14T00:57:41+08:00
+timestamp: 2026-08-14T10:56:04+08:00
 resource: CMakePresets.json
 ---
 
@@ -40,11 +40,10 @@ ctest --preset debug --output-on-failure
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
 - 配置期生成 `build_config.txt` 摘要
 
-## 依赖（FetchContent 自动拉取）
+## 依赖（无第三方拉取）
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
-| GoogleTest | 1.15.2 | 仅 `MCP_BUILD_TESTS=ON`；`BUILD_GMOCK=OFF` |
 | OpenSSL | 系统 | 可选；`MCP_HAVE_OPENSSL` 定义，PKCE 失败回落内置 SHA-256 |
 
 ## 相关页面

@@ -1,5 +1,6 @@
 # 更新摘要
 
+- 2026-08-14 — 自研测试框架替换 googletest：`tests/framework/`（mcp-test + mcp-test-main：TEST/TEST_F、22 断言宏、ToString、过滤、`--list-tests`）+ `McpDiscoverTests.cmake` 逐用例注册，SelfTests 14 例，15 目标 / 392 用例双配置全绿，`--gtest_filter`/`ctest -R` 兼容，googletest 依赖移除（configure 无需联网），文档同步清理，见 [/changelog/2026-08-14-log.md](/changelog/2026-08-14-log.md)
 - 2026-08-14 — 增量审计复核：3 子代理配对审计，修正 12 页 + index（core 行号/84 对序列化、protocol 客户端 4 通知处理器、mrtr 三件套字段、CancelTask 写 error_message、Mcp-Method 生成/回显区分、ITransport 4 纯虚、SSE 回调捕获等），测试 15 目标 / 378 用例 / 881 断言（含 mcp-net-tests），见 [/changelog/2026-08-14-log.md](/changelog/2026-08-14-log.md)
 - 2026-08-13 — 自研网络栈替换 libhv：TcpSocket/TlsSocket/HttpClient/WebSocketClient/Sha1 + 自研 HttpServerImpl，4 使用方替换，378 用例全绿，基准达标，libhv 依赖与补丁移除，文档同步清理，见 [/changelog/2026-08-13-log.md](/changelog/2026-08-13-log.md)
 - 2026-08-13 — 自研 JSON 解析器替换 simdjson：递归下降解析器（深度上限 512、错误带 offset）、JsonParserTests 边界矩阵 75 例、mcp-json-bench 基准，文档同步清理，见 [/changelog/2026-08-13-log.md](/changelog/2026-08-13-log.md)

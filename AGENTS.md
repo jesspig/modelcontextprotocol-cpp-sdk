@@ -10,12 +10,12 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-- 运行单个用例：`ctest --preset debug -R 'XxxTest.CaseName'`，或直接跑二进制：`build/debug/tests/unit/mcp-core-tests --gtest_filter='XxxTest.*'`
+- 运行单个用例：`ctest --preset debug -R 'XxxTest.CaseName'`，或直接跑二进制：`build/debug/tests/unit/mcp-core-tests --gtest_filter='XxxTest.*'`（自研框架兼容该参数名）
 - 构建示例需 `-DMCP_BUILD_EXAMPLES=ON`（预设默认 OFF）
-- 首次 configure 必须联网（googletest 由 FetchContent 拉取）；构建目录不可跨机拷贝
+- configure 无需联网（无第三方依赖拉取）；构建目录不可跨机拷贝
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起；只有 MSVC 时显式传 `-DCMAKE_CXX_COMPILER=cl`
 - 警告即错误：`-DMCP_WERROR=ON`（CI 自动加）；主分支 `develop`，CI 仅对其 push/PR 运行（3 OS × debug/release 共 6 job，fail-fast false + sccache，改动须在全部平台编译通过）
-- 第三方依赖仅 googletest（FetchContent，需联网）与系统 OpenSSL（可选）；libhv/simdjson 已移除，文档若引用属过时
+- 第三方依赖仅系统 OpenSSL（可选）；libhv/simdjson/googletest 已移除，文档若引用属过时
 - 详细说明见 [wiki/build.md](wiki/build.md)、[wiki/tests.md](wiki/tests.md)
 
 ## 代码约定
@@ -44,8 +44,8 @@ ctest --preset debug --output-on-failure
 
 ## 测试约定
 
-- GoogleTest（`gtest_discover_tests` 注册）：`tests/unit/` 13 目标 + `tests/integration/` 1 目标 + `tests/conformance/` 1 目标 = 15 目标 / 378 用例（unit 259、integration 8、conformance 111）；`tests/benchmark/` 的 `mcp-json-bench`/`mcp-http-bench` 非 ctest 目标
-- 文件命名 `XxxTests.cpp`，套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*`/`ASSERT_*`，链接 `GTest::gtest_main`
+- 自研测试框架（`tests/framework/`，mcp-test + mcp-test-main；`mcp_discover_tests` 逐用例注册 ctest）：`tests/unit/` 12 目标 + `tests/integration/` 1 + `tests/conformance/` 1 + `tests/framework/` 1（SelfTests）= 15 目标 / 392 用例；`tests/benchmark/` 的 `mcp-json-bench`/`mcp-http-bench` 非 ctest 目标
+- 文件命名 `XxxTests.cpp`，套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*`/`ASSERT_*`，链接 `mcp-test-main`；框架头 `#include <mcp/test/McpTest.hpp>`；`--gtest_filter` 参数名兼容
 - `tests/test_utils/` 是空目录；共享工具在 `tests/unit/TestServerUtil.hpp`
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删
 - 集成测试 `RunWithTimeout`：body 挂起超 10s 会 `std::_Exit(1)` 快速失败（勿改回永久阻塞）
