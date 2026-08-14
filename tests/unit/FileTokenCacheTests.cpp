@@ -3,19 +3,19 @@
 #include <mcp/storage/FileTokenCache.hpp>
 
 #include <fstream>
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 #include <filesystem>
 
 using namespace mcp;
 
-class FileTokenCacheTest : public ::testing::Test {
+class FileTokenCacheTest : public mcp::test::TestCase {
 protected:
     std::filesystem::path cache_path;
 
     void SetUp() override {
         auto temp_dir = std::filesystem::temp_directory_path();
         cache_path = temp_dir / ("mcp_test_tokens_" +
-            std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) +
+            std::string(mcp::test::CurrentTestName()) +
             ".json");
         RemoveFiles();
     }

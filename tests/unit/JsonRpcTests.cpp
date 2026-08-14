@@ -2,7 +2,7 @@
 
 #include <mcp/JsonRpc.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 using namespace mcp;
 

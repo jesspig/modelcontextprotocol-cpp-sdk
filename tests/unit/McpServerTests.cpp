@@ -3,7 +3,7 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 
-#include <gtest/gtest.h>
+#include <mcp/test/McpTest.hpp>
 
 #include <chrono>
 #include <functional>
@@ -150,8 +150,7 @@ void ExpectNotificationArrives(
         [&received](const JsonRpcNotification&) { received.set_value(); });
     send();
     EXPECT_EQ(received_future.wait_for(std::chrono::seconds(3)),
-              std::future_status::ready)
-        << "notification " << method << " was not delivered";
+              std::future_status::ready);
 }
 
 } // namespace
