@@ -14,6 +14,7 @@
 #include <openssl/rand.h>
 #endif
 
+#include <algorithm>
 #include <optional>
 #include <random>
 #include <sstream>
