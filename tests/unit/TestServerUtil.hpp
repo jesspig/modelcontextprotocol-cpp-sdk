@@ -9,6 +9,11 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 static const uint16_t kTestBasePort = 18765;

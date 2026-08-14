@@ -12,6 +12,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <csignal>
 #include <cstring>
 #include <cerrno>
 #include <string>
@@ -19,6 +20,11 @@
 namespace mcp { namespace detail { namespace net {
 
 namespace {
+
+struct SigpipeGuard {
+    SigpipeGuard() { std::signal(SIGPIPE, SIG_IGN); }
+};
+const SigpipeGuard g_sigpipe_guard;
 
 bool WaitForSocket(int fd, short events, int timeout_ms) {
     struct pollfd pfd;
@@ -104,7 +110,7 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
             connected_fd = fd;
             break;
         }
-        if (errno != EINPROGRESS) {
+        if (rc != 0 && errno != EINPROGRESS && errno != EINTR) {
             last_error = errno;
             ::close(fd);
             continue;
@@ -182,7 +188,7 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
 
         ssize_t n;
         do {
-            n = ::write(fd_, data + total, len - total);
+            n = ::send(fd_, data + total, len - total, MSG_NOSIGNAL);
         } while (n < 0 && errno == EINTR);
 
         if (n < 0) {
@@ -220,6 +226,7 @@ void TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
 
 void TcpSocket::Close() {
     if (fd_ >= 0) {
+        ::shutdown(fd_, SHUT_RDWR);
         ::close(fd_);
         fd_ = -1;
     }

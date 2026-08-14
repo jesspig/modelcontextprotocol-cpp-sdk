@@ -4,6 +4,7 @@ include(McpDiscoverTests)
 add_library(mcp-test STATIC
     src/McpTestRunner.cpp)
 target_include_directories(mcp-test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(mcp-test PUBLIC Threads::Threads)
 
 add_library(mcp-test-main STATIC
     src/McpTestMain.cpp)

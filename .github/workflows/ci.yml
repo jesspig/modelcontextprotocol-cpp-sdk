@@ -36,11 +36,29 @@ jobs:
             sccache-${{ matrix.os }}-${{ matrix.build_type }}-
             sccache-${{ matrix.os }}-
 
+      - name: Install OpenSSL
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install openssl -y --no-progress
+
+      - name: Install OpenSSL
+        if: runner.os == 'macOS'
+        run: brew install openssl
+
       - name: Configure
+        if: runner.os != 'Windows' && runner.os != 'macOS'
         run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON
+
+      - name: Configure
+        if: runner.os == 'Windows'
+        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON "-DOPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64"
+
+      - name: Configure
+        if: runner.os == 'macOS'
+        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)"
 
       - name: Build
         run: cmake --build --preset ${{ matrix.build_type }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.build_type }} --output-on-failure
+        run: ctest --preset ${{ matrix.build_type }} --output-on-failure --timeout 120

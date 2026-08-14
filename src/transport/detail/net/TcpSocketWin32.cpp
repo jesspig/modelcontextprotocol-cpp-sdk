@@ -241,6 +241,7 @@ void TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
 
 void TcpSocket::Close() {
     if (fd_ != INVALID_SOCKET) {
+        ::shutdown(fd_, SD_BOTH);
         ::closesocket(fd_);
         fd_ = INVALID_SOCKET;
     }

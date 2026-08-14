@@ -405,7 +405,7 @@ private:
 // ═══════════════════════════════════════════════════════════════════════
 #else
 
-namespace mcp { namespace httpclient_posix_impl {
+namespace httpclient_posix_impl {
 
 std::string GetHeader(const detail::net::HttpResponseInfo& resp,
                       std::string_view name)
@@ -418,7 +418,7 @@ std::string GetHeader(const detail::net::HttpResponseInfo& resp,
     return it == resp.headers.end() ? std::string{} : it->second;
 }
 
-}} // namespace mcp::httpclient_posix_impl
+} // namespace httpclient_posix_impl
 
 namespace {
 

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #ifdef __APPLE__
 #include <crt_externs.h>
