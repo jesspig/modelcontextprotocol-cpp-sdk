@@ -31,7 +31,7 @@ ctest --preset debug --output-on-failure
 
 ## 关键陷阱
 
-1. **协议版本共 6 个**（`ProtocolVersion.hpp` 的 `kProtocolVersions[]`：2024-10-07 至 2026-07-28），现代判定为字典序 `>= "2026-07-28"`（`IsModernProtocolVersion`）。新增协议方法/通知必须同时考虑两个 era（`WireCodec` 按协商版本 era-gating）
+1. **协议版本共 5 个**（`ProtocolVersion.hpp` 的 `kProtocolVersions[]`：2024-11-05 至 2026-07-28；缺失版本声明时默认 `kDefaultNegotiatedProtocolVersion`="2025-03-26"），现代判定为字典序 `>= "2026-07-28"`（`IsModernProtocolVersion`）。新增协议方法/通知必须同时考虑两个 era（`WireCodec` 按协商版本 era-gating）
 2. **Unity build 默认 ON**（core/server/client/http），但 **protocol/transport 为 OFF**。新增 `.cpp` 前先确认目标是否开启 `UNITY_BUILD`——含匿名 namespace 或同名静态符号会重复定义
 3. **OpenSSL 是可选依赖**：`find_package(OpenSSL QUIET)` 找到才定义 `MCP_HAVE_OPENSSL`（仅 client/transport）；`TlsSocket.cpp`/`Sha1.hpp`/`OAuthClientProvider.cpp` 的 `<openssl/rand.h>` 包含均有 `#ifdef` 保护——未找到时 TLS 被禁用、PKCE 回退内置 SHA-256。docs 中"必需"表述已过时，以代码为准
 4. **IO 线程回调内调用 `Close()` 会 self-join**：stdio/SSE/HTTP 传输的 IO 线程直接执行用户回调（`on_transport_close`/`on_transport_error`），回调里调 `Close()` 会 join 自身线程。所有 `Close()` 必须用 `detail::JoinThreadSafely`（`include/mcp/detail/ThreadUtils.hpp`）

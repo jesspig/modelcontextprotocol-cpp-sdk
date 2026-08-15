@@ -11,6 +11,7 @@
 #include <thread>
 #include <set>
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <shared_mutex>
 #include <type_traits>
@@ -252,6 +253,10 @@ void McpServer::Close() {
 // ====================================================================
 void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     const auto& t = tool->ProtocolTool();
+    if (!IsValidToolName(t.name)) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "invalid tool name: " + t.name);
+    }
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
         tools_[t.name] = std::move(tool);
@@ -1035,11 +1040,16 @@ void McpServer::HandleDiscover(
 {
     initialized_ = true;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (options_.protocol_version) {
+        handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
+    } else {
+        handler_->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    }
     DiscoverResult result;
-    result.supported_versions = {
-        std::string(kLegacyProtocolVersion),
-        std::string(kLatestProtocolVersion)
-    };
+    result.supported_versions.reserve(std::size(kProtocolVersions));
+    for (auto v : kProtocolVersions) {
+        result.supported_versions.emplace_back(v);
+    }
     result.capabilities = capabilities_;
     if (options_.server_info) {
         result.server_info = Implementation{
@@ -1090,11 +1100,16 @@ void McpServer::HandleInitialize(
         // Find a common legacy version with the client.
         // Modern versions (2026-07-28+) are NEVER negotiated via
         // initialize — only through server/discover.
-        std::string_view selected = kLegacyProtocolVersion;
-        for (auto v : kProtocolVersions) {
-            if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
-                selected = v;
-                break;
+        // Missing declaration falls back to the default version;
+        // an unknown non-empty version falls back to the legacy version.
+        std::string_view selected = kDefaultNegotiatedProtocolVersion;
+        if (!params.protocol_version.empty()) {
+            selected = kLegacyProtocolVersion;
+            for (auto v : kProtocolVersions) {
+                if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
+                    selected = v;
+                    break;
+                }
             }
         }
         handler_->SetNegotiatedProtocolVersion(selected);

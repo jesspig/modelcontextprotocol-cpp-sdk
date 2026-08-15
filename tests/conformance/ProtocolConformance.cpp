@@ -7,6 +7,8 @@
 
 #include <mcp/test/McpTest.hpp>
 
+#include <iterator>
+
 using namespace mcp;
 
 // ====================================================================
@@ -186,8 +188,19 @@ TEST(Conformance, McpSpecificErrorCodes) {
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::MissingRequiredClientCapability), -32021);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::UnsupportedProtocolVersion), -32022);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::UrlElicitationRequired), -32042);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ResourceNotFound), -32002);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ConnectionClosed), -32000);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::RequestTimeout), -32001);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::RequestCancelled), -32800);
+}
+
+TEST(Conformance, InternalErrorCodeValues) {
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ConnectionRefused), -32003);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::TlsHandshakeFailed), -32004);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ProtocolViolation), -32005);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::TaskNotFound), -32006);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::HandlerError), -32007);
+    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::DeserializeFailed), -32008);
 }
 
 TEST(Conformance, ErrorCodeRoundTrip) {
@@ -217,10 +230,26 @@ TEST(Conformance, ErrorCodeWithData) {
 
 TEST(Conformance, WireCodec2026ErrorRemapping) {
     auto codec = MakeWireCodec("2026-07-28");
-    EXPECT_EQ(codec->EncodeErrorCode(-32001), -32020);
-    EXPECT_EQ(codec->EncodeErrorCode(-32003), -32021);
-    EXPECT_EQ(codec->EncodeErrorCode(-32004), -32022);
+    EXPECT_EQ(codec->EncodeErrorCode(-32001), -32603);
+    EXPECT_EQ(codec->EncodeErrorCode(-32003), -32603);
+    EXPECT_EQ(codec->EncodeErrorCode(-32004), -32603);
     EXPECT_EQ(codec->EncodeErrorCode(-32601), -32601);
+}
+
+TEST(Conformance, WireCodec2026ProtocolErrorCodesPassThrough) {
+    auto codec = MakeWireCodec("2026-07-28");
+    EXPECT_EQ(codec->EncodeErrorCode(-32020), -32020);
+    EXPECT_EQ(codec->EncodeErrorCode(-32021), -32021);
+    EXPECT_EQ(codec->EncodeErrorCode(-32022), -32022);
+    EXPECT_EQ(codec->EncodeErrorCode(-32042), -32042);
+}
+
+TEST(Conformance, WireCodec2025ErrorRemappingIsIdentity) {
+    auto codec = MakeWireCodec("2025-11-25");
+    EXPECT_EQ(codec->EncodeErrorCode(-32001), -32001);
+    EXPECT_EQ(codec->EncodeErrorCode(-32003), -32003);
+    EXPECT_EQ(codec->EncodeErrorCode(-32004), -32004);
+    EXPECT_EQ(codec->EncodeErrorCode(-32022), -32022);
 }
 
 // ====================================================================
@@ -398,6 +427,25 @@ TEST(Conformance, IsModernProtocolVersion) {
 
 TEST(Conformance, LatestProtocolVersion) {
     EXPECT_EQ(kLatestProtocolVersion, "2026-07-28");
+}
+
+TEST(Conformance, DefaultNegotiatedProtocolVersion) {
+    EXPECT_EQ(kDefaultNegotiatedProtocolVersion, "2025-03-26");
+    EXPECT_FALSE(IsModernProtocolVersion(kDefaultNegotiatedProtocolVersion));
+}
+
+TEST(Conformance, SupportedProtocolVersions) {
+    constexpr std::string_view kExpected[] = {
+        "2024-11-05",
+        "2025-03-26",
+        "2025-06-18",
+        "2025-11-25",
+        "2026-07-28",
+    };
+    ASSERT_EQ(std::size(kProtocolVersions), std::size(kExpected));
+    for (size_t i = 0; i < std::size(kExpected); ++i) {
+        EXPECT_EQ(kProtocolVersions[i], kExpected[i]);
+    }
 }
 
 TEST(Conformance, JsonRpcVersionConstant) {
