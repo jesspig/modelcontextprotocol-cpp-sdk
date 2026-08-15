@@ -44,7 +44,7 @@ ctest --preset debug --output-on-failure
 
 ## 测试约定
 
-- 自研测试框架（`tests/framework/`，mcp-test + mcp-test-main；`mcp_discover_tests` 逐用例注册 ctest）：`tests/unit/` 13 目标 + `tests/integration/` 1 + `tests/conformance/` 1 + `tests/framework/` 1（SelfTests）= 16 目标 / 392 用例；`tests/benchmark/` 的 `mcp-json-bench`/`mcp-http-bench` 非 ctest 目标
+- 自研测试框架（`tests/framework/`，mcp-test + mcp-test-main；`mcp_discover_tests` 逐用例注册 ctest）：`tests/unit/` 13 目标 + `tests/integration/` 1 + `tests/conformance/` 1 + `tests/framework/` 1（SelfTests）= 16 目标 / 392 用例
 - 文件命名 `XxxTests.cpp`，套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*`/`ASSERT_*`，链接 `mcp-test-main`；框架头 `#include <mcp/test/McpTest.hpp>`；`--gtest_filter` 参数名兼容
 - `tests/test_utils/` 是空目录；共享工具在 `tests/unit/TestServerUtil.hpp`
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删
