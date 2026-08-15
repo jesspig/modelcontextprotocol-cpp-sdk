@@ -1,9 +1,9 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 16 个测试目标（13 unit + integration/conformance/framework），392 个测试用例（自研测试框架）。
+description: 16 个测试目标（13 unit + integration/conformance/framework），445 个测试用例（自研测试框架）。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-08-14T21:59:51+08:00
+timestamp: 2026-08-15T03:15:00+08:00
 resource: tests/CMakeLists.txt
 ---
 
@@ -16,22 +16,22 @@ resource: tests/CMakeLists.txt
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
 | mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests | 116 | 166 |
-| mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests | 27 | 84 |
-| mcp-server-tests | McpServerTests | 11 | 22 |
-| mcp-client-tests | McpClientTests | 15 | 43 |
+| mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests | 34 | 110 |
+| mcp-server-tests | McpServerTests | 24 | 80 |
+| mcp-client-tests | McpClientTests | 28 | 115 |
 | mcp-oauth-tests | OAuthTests | 16 | 33 |
-| mcp-transport-tests | TransportTests | 6 | 18 |
+| mcp-transport-tests | TransportTests、MessageChannelTests | 11 | 36 |
 | mcp-net-tests | NetStackTests、WebSocketClientTests | 25 | 52 |
-| mcp-http-tests | HttpServerTests | 11 | 44 |
+| mcp-http-tests | HttpServerTests | 21 | 90 |
 | mcp-message-filter-tests | MessageFilterTests | 5 | 12 |
 | mcp-token-cache-tests | FileTokenCacheTests | 5 | 19 |
 | mcp-task-store-tests | FileTaskStoreTests | 9 | 29 |
 | mcp-streamable-http-tests | StreamableHttpTransportTests | 11 | 18 |
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-integration-tests | ClientServerRoundTrip | 8 | 21 |
-| mcp-conformance-tests | ProtocolConformance | 111 | 316 |
+| mcp-conformance-tests | ProtocolConformance | 116 | 336 |
 | mcp-framework-self-tests | SelfTests | 14 | 30 |
-| **合计** | | **392** | **912** |
+| **合计** | | **445** | **1152** |
 
 ## 测试注意点
 

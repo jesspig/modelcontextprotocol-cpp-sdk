@@ -165,7 +165,7 @@ private:
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<WireCodec> codec_;
-    mutable std::mutex codec_mutex_;
+    mutable std::shared_mutex codec_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::shared_ptr<const std::string> negotiated_version_;

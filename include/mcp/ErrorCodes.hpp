@@ -17,17 +17,18 @@ enum class McpErrorCode : int32_t {
     MissingRequiredClientCapability = -32021,
     UnsupportedProtocolVersion = -32022,
     UrlElicitationRequired = -32042,
+    ResourceNotFound = -32002,
     ConnectionClosed = -32000,
     RequestTimeout = -32001,
     RequestCancelled = -32800,
 
     // ── Fine-grained error subcategories ──
-    DeserializeFailed = -32002,     // Deserialization failure
     ConnectionRefused = -32003,     // Connection refused
     TlsHandshakeFailed = -32004,    // TLS handshake failure
     ProtocolViolation = -32005,     // Protocol violation (message format, etc.)
     TaskNotFound = -32006,          // Task not found
     HandlerError = -32007,          // User handler threw exception
+    DeserializeFailed = -32008,     // Deserialization failure
 };
 
 // Enable std::error_code integration
@@ -56,6 +57,7 @@ public:
             case McpErrorCode::MissingRequiredClientCapability: return "Missing required client capability";
             case McpErrorCode::UnsupportedProtocolVersion: return "Unsupported protocol version";
             case McpErrorCode::UrlElicitationRequired: return "URL elicitation required";
+            case McpErrorCode::ResourceNotFound: return "Resource not found";
             case McpErrorCode::ConnectionClosed: return "Connection closed";
             case McpErrorCode::RequestTimeout: return "Request timeout";
             case McpErrorCode::RequestCancelled: return "Request cancelled";
@@ -82,6 +84,8 @@ public:
                 return std::errc::io_error;
             case McpErrorCode::TaskNotFound:
                 return std::errc::no_such_process;
+            case McpErrorCode::ResourceNotFound:
+                return std::errc::no_such_file_or_directory;
             default:
                 return std::error_condition(ev, *this);
         }

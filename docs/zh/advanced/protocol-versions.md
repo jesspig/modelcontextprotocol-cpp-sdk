@@ -6,7 +6,6 @@ SDK 通过双 `WireCodec` 架构支持两个 MCP 协议时代。
 
 | 版本 | 状态 | 关键特性 |
 |-------------|---------|--------------|
-| 2024-10-07 | 旧版 | 原始规范 |
 | 2024-11-05 | 旧版 | 原始规范修订 |
 | 2025-03-26 | 旧版 | 稳定握手 |
 | 2025-06-18 | 旧版 | 中间版本 |
@@ -25,7 +24,7 @@ auto codec = MakeWireCodec("2026-07-28");
 
 `SetNegotiatedProtocolVersion(version)` 同时存储版本号并通过 `MakeWireCodec(version)` 重建 `WireCodec`，在 `Rev2025Codec`（无 `_meta` 信封）和 `Rev2026Codec`（每请求 `_meta`）之间切换。
 
-注意 `HandleDiscover` 返回 `{"2025-11-25", "2026-07-28"}` 但**不**调用 `SetNegotiatedProtocolVersion` —— 现代客户端通过 `_meta.protocolVersion` 按请求驱动版本选择。
+`HandleDiscover` 返回 `kProtocolVersions` 全表（5 个版本，2024-11-05 至 2026-07-28）并调用 `SetNegotiatedProtocolVersion` 设置协商版本（配置 `options_.protocol_version` 时取该值，否则 `kLatestProtocolVersion`）——现代客户端同时按需用 `_meta.protocolVersion` 驱动请求。
 
 ### 时代之间的关键差异
 
@@ -36,7 +35,7 @@ auto codec = MakeWireCodec("2026-07-28");
 | 采样 | 独立请求 | 已移除（使用 Elicitation） |
 | 日志 | `logging/setLevel` RPC | 每请求 `_meta.logLevel` |
 | 订阅 | `subscribe`/`unsubscribe` | `subscriptions/listen` 流 |
-| 错误码 | 直接值 | 重新映射（`-32001` → `-32020` 等） |
+| 错误码 | 直接值 | 内部错误（`-32001`/`-32003`/`-32004`）映射为 `InternalError`（-32603）；协议错误码（`-32020`/`-32021`/`-32022`/`-32042`）原样传递 |
 | 结果 | 普通 JSON（恒等编解码） | 带 `resultType` 字段的类型化结果（自动标记 `"complete"`） |
 | `_meta` 验证 | 不需要 | 除 `server/discover` 外所有请求必须携带 |
 
@@ -159,12 +158,10 @@ pipeline->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
 
 ## 错误码重新映射（2026 时代）
 
-`Rev2026Codec::EncodeErrorCode` 将 2025 时代的错误码重新映射为 2026 时代的值：
+`Rev2026Codec::EncodeErrorCode` 不再将内部错误伪装为协议错误码：
 
-| 错误 | 2025 值 | 2026 值 |
-|-------|-----------|-----------|
-| `RequestTimeout` → `HeaderMismatch` | -32001 | -32020 |
-| `ConnectionRefused` → `MissingRequiredClientCapability` | -32003 | -32021 |
-| `TlsHandshakeFailed` → `UnsupportedProtocolVersion` | -32004 | -32022 |
+| 错误 | 2026 值 |
+|-------|-----------|
+| `RequestTimeout`、`ConnectionRefused`、`TlsHandshakeFailed` | 记录日志并映射为 `InternalError` (-32603) |
 
-其他所有错误码原样传递。
+协议错误码（`HeaderMismatch` -32020、`MissingRequiredClientCapability` -32021、`UnsupportedProtocolVersion` -32022、`UrlElicitationRequired` -32042）原样传递，并在各自真实场景构造规范 `data`（如 `requiredCapabilities`、`requested`/`supported`）。

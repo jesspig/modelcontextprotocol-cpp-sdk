@@ -39,7 +39,7 @@ struct MCP_API ClientOptions {
     // MRTR (InputRequired) config
     struct InputRequiredConfig {
         bool auto_fulfill{true};
-        int max_rounds{8};
+        int max_rounds{10};
         std::chrono::seconds round_timeout{600};
 
         // Hard budget for the whole MRTR flow across all rounds. Zero

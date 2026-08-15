@@ -3,7 +3,7 @@ type: Module
 title: mcp-client 客户端库
 description: McpClient 门面：连接模式协商、请求/响应、OAuth 与令牌缓存。
 tags: [client, oauth, 缓存, 协商]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-15T03:15:00+08:00
 resource: src/client/McpClient.cpp
 ---
 
@@ -23,8 +23,7 @@ resource: src/client/McpClient.cpp
 ## 客户端行为要点
 
 - **创建即阻塞**：`McpClient::Create` 构造后立即同步 `NegotiateProtocol()`，返回前协商完成
-- **不注册通知处理器**：客户端收到通知静默丢弃；progress 处理（含超时延长）须自行 `SetNotificationHandler`
-- `WireClientHandlers()` 仅注册 elicit 请求处理器 + 三个 listChanged 通知处理器（清空响应缓存）
+- `WireClientHandlers()` 注册 5 个通知处理器：三个 listChanged（清空响应缓存）、`resources/updated`（按 uri 单键失效）、`subscriptions/acknowledged`（匹配 `SubscribeAsync` 待确认订阅并转发用户处理器）
 - 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置时收到请求抛 `MethodNotFound`；`SetLoggingHandler` 未设置时静默丢弃
 - 自动翻页：无 cursor 的列表请求自动翻页，上限 `kMaxAutoPages = 64` 页
 - 任务轮询：`resultType=="task"` 结果经 `PollTaskToCompletion`（500ms 间隔 / 300s 超时）
@@ -39,7 +38,7 @@ resource: src/client/McpClient.cpp
 
 ### 缓存读取兼容
 
-`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 同样识别两种形态（[McpClient.cpp:67](../../src/client/McpClient.cpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
+`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 同样识别两种形态（[McpClient.cpp:67](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private），`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
 
 ## 相关页面
 

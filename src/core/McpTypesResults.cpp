@@ -358,12 +358,39 @@ InputRequestElicit DeserializeInputRequestElicit(const JsonValue& j) {
     return v;
 }
 
+// ── InputRequestSampling ──
+
+JsonValue SerializeInputRequestSampling(const InputRequestSampling& v) {
+    return SerializeCreateMessageRequestParams(v.params);
+}
+
+InputRequestSampling DeserializeInputRequestSampling(const JsonValue& j) {
+    InputRequestSampling v;
+    if (auto* params = j.Find(detail::kParams); params)
+        v.params = DeserializeCreateMessageRequestParams(*params);
+    else
+        v.params = DeserializeCreateMessageRequestParams(j);
+    return v;
+}
+
+// ── InputRequestRoots ──
+
+JsonValue SerializeInputRequestRoots(const InputRequestRoots&) {
+    return SerializeListRootsRequestParams(ListRootsRequestParams{});
+}
+
+InputRequestRoots DeserializeInputRequestRoots(const JsonValue&) {
+    return InputRequestRoots{};
+}
+
 // ── InputRequests ──
 
 JsonValue SerializeInputRequests(const InputRequests& v) {
     JsonValue obj(JsonValue::object_tag);
     if (v.confirm) obj["confirm"] = SerializeInputRequestElicit(*v.confirm);
     if (v.elicit) obj["elicit"] = SerializeInputRequestElicit(*v.elicit);
+    if (v.sampling) obj["sampling"] = SerializeInputRequestSampling(*v.sampling);
+    if (v.roots) obj["roots"] = SerializeInputRequestRoots(*v.roots);
     return obj;
 }
 
@@ -373,6 +400,10 @@ InputRequests DeserializeInputRequests(const JsonValue& j) {
     if (confirm) v.confirm = DeserializeInputRequestElicit(*confirm);
     auto* elicit = j.Find("elicit");
     if (elicit) v.elicit = DeserializeInputRequestElicit(*elicit);
+    auto* sampling = j.Find("sampling");
+    if (sampling) v.sampling = DeserializeInputRequestSampling(*sampling);
+    auto* roots = j.Find("roots");
+    if (roots) v.roots = DeserializeInputRequestRoots(*roots);
     return v;
 }
 
@@ -388,7 +419,8 @@ JsonValue SerializeInputRequiredResult(const InputRequiredResult& v) {
 
 InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j) {
     InputRequiredResult v;
-    v.input_requests = DeserializeInputRequests(j[detail::kInputRequests]);
+    if (auto* requests = j.Find(detail::kInputRequests); requests)
+        v.input_requests = DeserializeInputRequests(*requests);
     detail::DeserializeOptional(j, detail::kRequestState, v.request_state);
     return v;
 }

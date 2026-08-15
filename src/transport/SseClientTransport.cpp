@@ -8,11 +8,14 @@
 
 #include <transport/detail/net/HttpClient.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <sstream>
 #include <string>
@@ -21,6 +24,10 @@
 namespace mcp {
 
 namespace {
+
+constexpr std::chrono::milliseconds kBackoffBase(1000);
+constexpr std::chrono::milliseconds kBackoffCap(30000);
+constexpr int kMaxReconnectAttempts = 2;
 
 std::string ResolveEndpoint(const std::string& server_url, const std::string& endpoint) {
     if (endpoint.find("://") != std::string::npos)
@@ -49,6 +56,7 @@ struct SseEvent {
     std::string event_type;
     std::string data;
     std::string id;   // from the "id:" line
+    std::optional<uint64_t> retry_ms;   // from the "retry:" line
 };
 
 SseEvent ParseSseEvent(const std::string& block) {
@@ -85,6 +93,19 @@ SseEvent ParseSseEvent(const std::string& block) {
             else val.clear();
             evt.id = std::move(val);
         }
+        else if (line.size() > 6 && line.compare(0, 6, "retry:") == 0) {
+            auto val = line.substr(6);
+            auto n = val.find_first_not_of(" \t");
+            if (n != std::string::npos) val = val.substr(n);
+            else val.clear();
+            if (!val.empty() &&
+                val.find_first_not_of("0123456789") == std::string::npos) {
+                try {
+                    evt.retry_ms = std::stoull(val);
+                } catch (...) {
+                }
+            }
+        }
     }
     return evt;
 }
@@ -104,7 +125,7 @@ public:
         Close();
     }
 
-    void Start() {
+    void Start() override {
         if (running_.exchange(true))
             return;
 
@@ -151,6 +172,7 @@ public:
 
 private:
     void SseReadLoop() {
+        int reconnect_attempts = 0;
         while (running_) {
             detail::net::HttpRequestSpec req;
             req.method = "GET";
@@ -192,7 +214,9 @@ private:
             // and reconnect (the server replays missed events via
             // Last-Event-ID).
             if (!running_) break;
-            if (!WaitForReconnect()) break;
+            if (reconnect_attempts >= kMaxReconnectAttempts) break;
+            ++reconnect_attempts;
+            if (!WaitForReconnect(reconnect_attempts)) break;
         }
 
         // The SSE read thread exited on its own (reconnect exhaustion/oversize);
@@ -207,22 +231,31 @@ private:
         SetDisconnected();
     }
 
-    bool WaitForReconnect() {
-        constexpr std::chrono::milliseconds kBackoffBase(1000);
-        constexpr int kMaxBackoffSteps = 5;
-        for (int step = 0; step < kMaxBackoffSteps; ++step) {
-            auto deadline = std::chrono::steady_clock::now()
-                + kBackoffBase * (1 << step);
-            while (std::chrono::steady_clock::now() < deadline) {
-                if (!running_.load()) return false;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
+    bool WaitForReconnect(int attempt) {
+        auto delay = kBackoffBase;
+        for (int i = 1; i < attempt; ++i)
+            delay = std::min(delay * 3 / 2, kBackoffCap);
+        if (retry_ms_.has_value())
+            delay = std::chrono::milliseconds(*retry_ms_);
+        auto deadline = std::chrono::steady_clock::now() + delay;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!running_.load()) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        return false;
+        return true;
     }
 
     void DispatchSseEvent(const std::string& block) {
         auto evt = ParseSseEvent(block);
+        if (evt.retry_ms.has_value()) {
+            retry_ms_ = evt.retry_ms;
+        }
+        // Comment-only frames (e.g. keepalive ": ping") carry no event
+        // fields; skip them so Last-Event-ID is not reset.
+        if (evt.event_type == "message" && evt.data.empty() && evt.id.empty() &&
+            !evt.retry_ms.has_value()) {
+            return;
+        }
         if (evt.id.empty()) {
             last_event_id_.clear();
         } else {
@@ -294,6 +327,7 @@ private:
     std::string endpoint_url_;
     std::string sse_buffer_;
     std::string last_event_id_;
+    std::optional<uint64_t> retry_ms_;
 
     std::thread sse_thread_;
     std::thread send_thread_;

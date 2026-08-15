@@ -83,6 +83,7 @@ public:
     void SendPromptListChanged();
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
+    void SendTaskStatus(std::string_view task_id, TaskStatus status);
 
     // ── Properties ──
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
@@ -134,6 +135,8 @@ private:
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleSubscriptionsListen(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void SendSubscriptionsAcknowledged(
+        const SubscriptionFilter& honored, std::string_view subscription_id);
 
     // ── State ──
     std::shared_ptr<ITransport> transport_;

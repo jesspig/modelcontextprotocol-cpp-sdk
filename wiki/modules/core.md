@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-08-14T00:57:41+08:00
+timestamp: 2026-08-15T03:15:00+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -37,9 +37,9 @@ resource: src/core/JsonValue.cpp
 
 ## 常量集
 
-- **错误码 18 个**（[ErrorCodes.hpp](../../include/mcp/ErrorCodes.hpp)）：标准 JSON-RPC 5 个（-32700~-32603）+ MCP 专用 7 个（HeaderMismatch、MissingRequiredClientCapability、UnsupportedProtocolVersion、UrlElicitationRequired、ConnectionClosed、RequestTimeout、RequestCancelled）+ 细粒度子类 6 个（DeserializeFailed、ConnectionRefused、TlsHandshakeFailed、ProtocolViolation、TaskNotFound、HandlerError）；`default_error_condition` 将传输类错误映射到 `errc::connection_aborted` 等
+- **错误码 19 个**（[ErrorCodes.hpp](../../include/mcp/ErrorCodes.hpp)）：标准 JSON-RPC 5 个（-32700~-32603）+ MCP 专用 8 个（HeaderMismatch、MissingRequiredClientCapability、UnsupportedProtocolVersion、UrlElicitationRequired、ResourceNotFound、ConnectionClosed、RequestTimeout、RequestCancelled）+ 细粒度子类 6 个（ConnectionRefused、TlsHandshakeFailed、ProtocolViolation、TaskNotFound、HandlerError、DeserializeFailed(-32008)）；`default_error_condition` 将传输类错误映射到 `errc::connection_aborted` 等
 - **方法常量 42 个**（[Methods.hpp](../../include/mcp/Methods.hpp)）：`methods` 命名空间 25 个（含前缀常量 `ext/`），`notifications` 命名空间 17 个
-- **协议版本**（[ProtocolVersion.hpp](../../include/mcp/ProtocolVersion.hpp)）：`kLatestProtocolVersion = "2026-07-28"`、`kLegacyProtocolVersion = "2025-11-25"`，支持版本数组共 6 个（含 "2024-10-07"）；`IsModernProtocolVersion` = 字典序 `>= kLatest`
+- **协议版本**（[ProtocolVersion.hpp](../../include/mcp/ProtocolVersion.hpp)）：`kLatestProtocolVersion = "2026-07-28"`、`kLegacyProtocolVersion = "2025-11-25"`、`kDefaultNegotiatedProtocolVersion = "2025-03-26"`（缺失版本声明的回退值，对齐 5 语言 `DEFAULT_NEGOTIATED_PROTOCOL_VERSION`），支持版本数组共 5 个（"2024-11-05" 起）；`IsModernProtocolVersion` = 字典序 `>= kLatest`
 - **日志 6 级**（[Log.hpp](../../include/mcp/Log.hpp)）：Off/Error/Warning/Info/Debug/Trace，级别经 `MCP_LOG_LEVEL` 环境变量，输出到 stderr
 
 ## 内部头（src/detail）
@@ -47,7 +47,7 @@ resource: src/core/JsonValue.cpp
 - `JsonFields.hpp`：全部 JSON 字段名常量（118 个 `kXxx[]`，含 `kTTLMs/kCacheScope/kClientInfo/kRequestId/kRequiredCapabilities/kStatus` 等），协议键禁止硬编码
 - `JsonSerializer.hpp`：`DeserializeOptional` 未特化时 `static_assert` 编译失败（非静默）
 - `JsonSchemaValidator.hpp`：最小 JSON Schema 子集校验器（SEP-2106，draft-07 风格）
-- `ResponseCache.hpp`：客户端响应缓存（SEP-2549），惰性过期清除
+- `ResponseCache.hpp`：客户端响应缓存（SEP-2549），键 = method + cursor/uri 上下文，TTL 钳制 24h，public/private 双分区，惰性过期清除（详见 [/classes/mcp-client.md](../classes/mcp-client.md)）
 
 ## 相关页面
 

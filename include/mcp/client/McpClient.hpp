@@ -6,8 +6,10 @@
 #include <mcp/client/ClientOptions.hpp>
 #include <mcp/client/VersionNegotiation.hpp>
 
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -163,6 +165,11 @@ private:
     // Client-side response cache (SEP-2549); invalidated on listChanged
     // notifications. Defined in src/detail/ResponseCache.hpp.
     std::unique_ptr<detail::ResponseCache> response_cache_;
+
+    std::mutex ack_mutex_;
+    std::condition_variable ack_cv_;
+    std::optional<std::string> pending_ack_id_;
+    std::optional<ClientNotificationHandler> user_ack_notification_handler_;
 
 };
 

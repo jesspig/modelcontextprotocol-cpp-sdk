@@ -6,7 +6,6 @@ The SDK supports two MCP protocol eras via a dual `WireCodec` architecture.
 
 | Version     | Status  | Key Features |
 |-------------|---------|--------------|
-| 2024-10-07  | Legacy  | Original specification |
 | 2024-11-05  | Legacy  | Original spec revision |
 | 2025-03-26  | Legacy  | Stable handshake |
 | 2025-06-18  | Legacy  | Intermediate |
@@ -25,7 +24,7 @@ auto codec = MakeWireCodec("2026-07-28");
 
 `SetNegotiatedProtocolVersion(version)` both stores the version AND recreates the `WireCodec` via `MakeWireCodec(version)`, switching between `Rev2025Codec` (no `_meta` envelope) and `Rev2026Codec` (per-request `_meta`).
 
-Note that `HandleDiscover` returns `{"2025-11-25", "2026-07-28"}` but does NOT call `SetNegotiatedProtocolVersion` — the modern client drives version selection per-request via `_meta.protocolVersion`.
+`HandleDiscover` returns the full `kProtocolVersions` table (5 versions, 2024-11-05 through 2026-07-28) and calls `SetNegotiatedProtocolVersion` to set the negotiated version (`options_.protocol_version` when configured, otherwise `kLatestProtocolVersion`) — the modern client also drives version selection per-request via `_meta.protocolVersion` as needed.
 
 ### Key Differences Between Eras
 
@@ -36,7 +35,7 @@ Note that `HandleDiscover` returns `{"2025-11-25", "2026-07-28"}` but does NOT c
 | Sampling | Standalone request | Removed (use Elicitation) |
 | Logging | `logging/setLevel` RPC | Per-request `_meta.logLevel` |
 | Subscriptions | `subscribe`/`unsubscribe` | `subscriptions/listen` stream |
-| Error codes | Direct values | Remapped (`-32001` → `-32020`, etc.) |
+| Error codes | Direct values | Internal errors (`-32001`/`-32003`/`-32004`) remapped to `InternalError` (-32603); protocol codes (`-32020`/`-32021`/`-32022`/`-32042`) pass through |
 | Results | Plain JSON (identity encode/decode) | Typed with `resultType` field (auto-stamps `"complete"`) |
 | `_meta` validation | Not required | Required on all requests except `server/discover` |
 
@@ -159,12 +158,10 @@ Incoming filters wrap handler dispatch; outgoing filters wrap transport send. Bo
 
 ## Error Code Remapping (2026-era)
 
-`Rev2026Codec::EncodeErrorCode` remaps legacy 2025-era error codes to 2026-era values:
+`Rev2026Codec::EncodeErrorCode` no longer disguises internal errors as protocol error codes:
 
-| Error | 2025 Value | 2026 Value |
-|-------|-----------|-----------|
-| `HeaderMismatch` (-32020) | -32001 | -32020 |
-| `MissingRequiredClientCapability` (-32021) | -32003 | -32021 |
-| `UnsupportedProtocolVersion` (-32022) | -32004 | -32022 |
+| Error | 2026 Value |
+|-------|-----------|
+| `RequestTimeout`, `ConnectionRefused`, `TlsHandshakeFailed` | logged and remapped to `InternalError` (-32603) |
 
-All other error codes pass through unchanged.
+Protocol error codes (`HeaderMismatch` -32020, `MissingRequiredClientCapability` -32021, `UnsupportedProtocolVersion` -32022, `UrlElicitationRequired` -32042) pass through unchanged and carry canonical `data` in their real scenarios (e.g. `requiredCapabilities`, `requested`/`supported`).

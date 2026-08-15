@@ -120,4 +120,13 @@ LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(con
     return v;
 }
 
+// ── TaskStatusNotificationParams ──
+
+JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kTaskId] = JsonValue(v.task_id);
+    obj[detail::kStatus] = JsonValue(v.status);
+    return obj;
+}
+
 } // namespace mcp

@@ -44,13 +44,34 @@ std::string SseEscapeData(std::string_view data) {
     }
     return out;
 }
+
+std::optional<int> MapRequestErrorHttpStatus(int code) {
+    switch (code) {
+        case static_cast<int>(McpErrorCode::ParseError):
+        case static_cast<int>(McpErrorCode::InvalidRequest):
+        case static_cast<int>(McpErrorCode::InvalidParams):
+        case static_cast<int>(McpErrorCode::HeaderMismatch):
+        case static_cast<int>(McpErrorCode::MissingRequiredClientCapability):
+        case static_cast<int>(McpErrorCode::UnsupportedProtocolVersion):
+            return 400;
+        case static_cast<int>(McpErrorCode::MethodNotFound):
+            return 404;
+        default:
+            return std::nullopt;
+    }
+}
 } // namespace
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
     StreamableHttpServerOptions options)
     : TransportBase()
     , options_(std::move(options))
-    , http_server_(std::make_unique<HttpServer>(options_.port))
+    , http_server_(std::make_unique<HttpServer>(options_.port,
+          [keep_alive_ms = options_.sse_keep_alive_ms] {
+              HttpServerOptions http_options;
+              http_options.sse_keep_alive_ms = keep_alive_ms;
+              return http_options;
+          }()))
     , event_store_(options_.event_store
         ? options_.event_store
         : std::make_shared<EventStore>())
@@ -153,7 +174,7 @@ void StreamableHttpServerTransport::HandlePost(
     // Parse JSON-RPC message from body (single parse inside DeserializeMessage)
     JsonRpcMessage msg;
     try {
-        if (req.body.size() > detail::kMaxMessageSize) {
+        if (req.body.size() > detail::kMaxHttpBodyBytes) {
             resp.status_code = 413;
             resp.status_text = "Payload Too Large";
             resp.body = R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Message size exceeds maximum allowed size"}})";
@@ -236,9 +257,9 @@ void StreamableHttpServerTransport::HandlePost(
     // Check if this is a request (needs response) or notification (no response)
     bool needs_response = IsRequest(msg);
 
-    // Extract request ID before msg is moved (stateless correlation)
+    // Extract request ID before msg is moved (request/response correlation)
     std::optional<RequestId> req_id;
-    if (needs_response && options_.stateless) {
+    if (needs_response) {
         if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
             req_id = r->id;
         }
@@ -252,7 +273,8 @@ void StreamableHttpServerTransport::HandlePost(
             resp.headers["content-type"] = "application/json";
             return;
         }
-        if (options_.stateless && req_id) {
+        std::optional<StatelessInflightGuard> inflight_guard;
+        if (options_.stateless) {
             if (stateless_inflight_.load() >= kMaxStatelessInflight) {
                 resp.status_code = 503;
                 resp.status_text = "Service Unavailable";
@@ -261,79 +283,86 @@ void StreamableHttpServerTransport::HandlePost(
                 return;
             }
             stateless_inflight_.fetch_add(1);
-            StatelessInflightGuard guard(stateless_inflight_);
-            // Stateless mode: wait for response synchronously
-            auto id_str = RequestIdToString(*req_id);
-            auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
-            auto future = promise->get_future();
+            inflight_guard.emplace(stateless_inflight_);
+        }
+        // Wait for the response synchronously; the pending entry is resolved
+        // by SendMessageAsync when the matching response arrives.
+        auto id_str = RequestIdToString(*req_id);
+        auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
+        auto future = promise->get_future();
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            pending_responses_[id_str] = promise;
+        }
+        if (!channel_->TrySend(std::move(msg))) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
-                pending_responses_[id_str] = promise;
+                pending_responses_.erase(id_str);
             }
-            if (!channel_->TrySend(std::move(msg))) {
-                {
-                    std::lock_guard<std::mutex> lock(pending_mutex_);
-                    pending_responses_.erase(id_str);
-                }
-                resp.status_code = 503;
-                resp.status_text = "Service Unavailable";
-                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
-                resp.headers["content-type"] = "application/json";
-                return;
-            }
+            resp.status_code = 503;
+            resp.status_text = "Service Unavailable";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
+            resp.headers["content-type"] = "application/json";
+            return;
+        }
 
-            auto deadline = std::chrono::steady_clock::now() + kStatelessTimeout;
-            if (future.wait_until(deadline) != std::future_status::ready) {
-                {
-                    std::lock_guard<std::mutex> lock(pending_mutex_);
-                    pending_responses_.erase(id_str);
-                }
-                resp.status_code = 504;
-                resp.status_text = "Gateway Timeout";
-                JsonValue::Object err_obj;
-                err_obj["jsonrpc"] = JsonValue("2.0");
-                {
-                    JsonValue::Object err_err;
-                    err_err["code"] = JsonValue(static_cast<int64_t>(-32000));
-                    err_err["message"] = JsonValue("Request timeout for request " + id_str);
-                    err_obj["error"] = JsonValue(std::move(err_err));
-                }
-                resp.body = JsonValue(std::move(err_obj)).Dump();
+        auto deadline = std::chrono::steady_clock::now() + kStatelessTimeout;
+        if (future.wait_until(deadline) != std::future_status::ready) {
+            {
+                std::lock_guard<std::mutex> lock(pending_mutex_);
+                pending_responses_.erase(id_str);
+            }
+            resp.status_code = 504;
+            resp.status_text = "Gateway Timeout";
+            JsonValue::Object err_obj;
+            err_obj["jsonrpc"] = JsonValue("2.0");
+            {
+                JsonValue::Object err_err;
+                err_err["code"] = JsonValue(static_cast<int64_t>(-32000));
+                err_err["message"] = JsonValue("Request timeout for request " + id_str);
+                err_obj["error"] = JsonValue(std::move(err_err));
+            }
+            resp.body = JsonValue(std::move(err_obj)).Dump();
+            resp.headers["content-type"] = "application/json";
+            return;
+        }
+        auto response = future.get();
+        // Protocol errors map to conventional HTTP status codes
+        // (-32020/-32021/-32022/-32602 -> 400, -32601 -> 404); all other
+        // responses are delivered as an SSE stream event.
+        if (const auto* err = std::get_if<JsonRpcErrorResponse>(&response)) {
+            auto mapped = MapRequestErrorHttpStatus(static_cast<int>(err->error.code));
+            if (mapped) {
+                resp.status_code = *mapped;
+                resp.status_text = (*mapped == 404) ? "Not Found" : "Bad Request";
+                resp.body = SerializeMessage(std::move(response));
                 resp.headers["content-type"] = "application/json";
                 return;
             }
-            auto response = future.get();
-            // Mirror x-mcp-header annotations from the result meta into
-            // Mcp-Param-* response headers (SEP-2243).
-            if (const auto* r = std::get_if<JsonRpcResponse>(&response)) {
-                if (r->result.IsObject()) {
-                    if (auto* meta = r->result.Find("_meta"); meta && meta->IsObject()) {
-                        if (auto* xhc = meta->Find("x-mcp-header"); xhc && xhc->IsObject()) {
-                            for (const auto& [hk, hv] : xhc->GetObject()) {
-                                resp.headers["mcp-param-" + hk] =
-                                    hv.IsString() ? hv.GetString() : hv.Dump();
-                            }
+        }
+        // Mirror x-mcp-header annotations from the result meta into
+        // Mcp-Param-* response headers (SEP-2243).
+        if (const auto* r = std::get_if<JsonRpcResponse>(&response)) {
+            if (r->result.IsObject()) {
+                if (auto* meta = r->result.Find("_meta"); meta && meta->IsObject()) {
+                    if (auto* xhc = meta->Find("x-mcp-header"); xhc && xhc->IsObject()) {
+                        for (const auto& [hk, hv] : xhc->GetObject()) {
+                            resp.headers["mcp-param-" + hk] =
+                                hv.IsString() ? hv.GetString() : hv.Dump();
                         }
                     }
                 }
             }
-            resp.body = SerializeMessage(std::move(response));
-            resp.status_code = 200;
-            resp.status_text = "OK";
-            resp.headers["content-type"] = "application/json";
-        } else {
-            if (!channel_->TrySend(std::move(msg))) {
-                resp.status_code = 503;
-                resp.status_text = "Service Unavailable";
-                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"server closed"}})";
-                resp.headers["content-type"] = "application/json";
-                return;
-            }
-            resp.status_code = 202;
-            resp.status_text = "Accepted";
-            resp.body = R"({"jsonrpc":"2.0","result":{"resultType":"complete"}})";
-            resp.headers["content-type"] = "application/json";
         }
+        resp.status_code = 200;
+        resp.status_text = "OK";
+        resp.is_sse = true;
+        resp.sse_close_after_write = true;
+        resp.headers["content-type"] = "text/event-stream";
+        resp.headers["cache-control"] = "no-cache";
+        resp.headers["x-accel-buffering"] = "no";
+        resp.body = "event: message\ndata: " +
+                    SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
     } else {
         // Notification: fire-and-forget
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
@@ -381,27 +410,26 @@ void StreamableHttpServerTransport::HandleGet(
 
 // ── Send message (server-initiated notification via SSE) ──
 void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
-    // Stateless mode: check for pending request-response correlation
-    if (options_.stateless) {
-        if (auto* resp = std::get_if<JsonRpcResponse>(&message)) {
-            auto id_str = RequestIdToString(resp->id);
+    // A response matching an in-flight request resolves its pending promise;
+    // the response is delivered on the POST response stream, not broadcast.
+    if (auto* resp = std::get_if<JsonRpcResponse>(&message)) {
+        auto id_str = RequestIdToString(resp->id);
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        auto it = pending_responses_.find(id_str);
+        if (it != pending_responses_.end()) {
+            it->second->set_value(std::move(message));
+            pending_responses_.erase(it);
+            return;
+        }
+    } else if (auto* err = std::get_if<JsonRpcErrorResponse>(&message)) {
+        if (err->id) {
+            auto id_str = RequestIdToString(*err->id);
             std::lock_guard<std::mutex> lock(pending_mutex_);
             auto it = pending_responses_.find(id_str);
             if (it != pending_responses_.end()) {
                 it->second->set_value(std::move(message));
                 pending_responses_.erase(it);
                 return;
-            }
-        } else if (auto* err = std::get_if<JsonRpcErrorResponse>(&message)) {
-            if (err->id) {
-                auto id_str = RequestIdToString(*err->id);
-                std::lock_guard<std::mutex> lock(pending_mutex_);
-                auto it = pending_responses_.find(id_str);
-                if (it != pending_responses_.end()) {
-                    it->second->set_value(std::move(message));
-                    pending_responses_.erase(it);
-                    return;
-                }
             }
         }
     }

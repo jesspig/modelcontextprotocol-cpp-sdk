@@ -244,8 +244,7 @@ if(MCP_BUILD_TESTS)
         mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
         mcp-streamable-http-tests mcp-websocket-tests
-        mcp-integration-tests mcp-conformance-tests
-        mcp-json-bench mcp-http-bench)
+        mcp-integration-tests mcp-conformance-tests)
         mcp_enable_werror(${_t})
     endforeach()
 endif()

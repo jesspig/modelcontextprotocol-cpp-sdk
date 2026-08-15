@@ -3,7 +3,7 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-08-14T00:57:41+08:00
+timestamp: 2026-08-15T03:07:42+08:00
 resource: include/mcp/Transport.hpp
 ---
 
@@ -13,7 +13,7 @@ resource: include/mcp/Transport.hpp
 
 ## 抽象
 
-- `ITransport` 接口：4 个纯虚方法（`SessionId / GetMessageChannel / SendMessageAsync / Close`）+ `IsStateless` 带默认实现（默认 false）
+- `ITransport` 接口：4 个纯虚方法（`SessionId / GetMessageChannel / SendMessageAsync / Close`）+ `IsStateless`（默认 false）与 `Start`（默认空实现）带默认实现；`Start` 由 `McpServer` 构造调用以拉起传输 IO 线程，按契约幂等
 - `TransportBase`：三态状态机 `Initial → Connected → Disconnected`（[Transport.hpp](../../include/mcp/Transport.hpp)）
   - `SetConnected` 仅允许 `Initial→Connected`（CAS），已 Disconnected 后调用被忽略并记 Warning
   - `SetDisconnected` 幂等：仅首次触发 `NotifyClose()`
@@ -44,7 +44,7 @@ resource: include/mcp/Transport.hpp
 
 ## 默认限制
 
-[Limits.hpp](../../include/mcp/transport/detail/Limits.hpp)：`kMaxMessageSize = 8MB`、`kReadBufferSize = 4096`、`kChannelCapacity = 64`。
+[Limits.hpp](../../include/mcp/transport/detail/Limits.hpp)：`kMaxMessageSize = 8MB`（stdio/SSE/响应体）、`kMaxHttpBodyBytes = 4MiB`（HTTP 请求体）、`kReadBufferSize = 4096`、`kChannelCapacity = 64`。
 
 ## 相关页面
 

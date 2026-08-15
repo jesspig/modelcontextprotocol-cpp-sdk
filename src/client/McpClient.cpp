@@ -7,7 +7,11 @@
 #include <mcp/Log.hpp>
 #include <mcp/Transport.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <thread>
 #include <typeinfo>
 
@@ -15,9 +19,24 @@ namespace mcp {
 
 namespace {
     // ── Timeouts ──
-    // kDefaultRequestTimeout (30s) comes from mcp/protocol/McpSession.hpp
+    // kDefaultRequestTimeout (60s) comes from mcp/protocol/McpSession.hpp
     constexpr std::chrono::seconds kTaskRequestTimeout(600);
     constexpr std::chrono::seconds kPingTimeout(10);
+    // Waiting window for the subscriptions/acknowledged first frame after a
+    // subscriptions/listen request (matches the TS SDK's 5s SUBSCRIPTION ack).
+    constexpr std::chrono::milliseconds kSubscriptionAckTimeout(5000);
+
+    // ── MRTR state-only backoff (50ms base, x2 per round, capped at 250ms) ──
+    constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffBase(50);
+    constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffMax(250);
+
+    std::atomic<int64_t> g_subscription_counter{0};
+
+    static std::string GenerateSubscriptionId() {
+        auto now = std::chrono::system_clock::now().time_since_epoch().count();
+        return "client-sub-" + std::to_string(now) +
+               "-" + std::to_string(g_subscription_counter.fetch_add(1));
+    }
 
     // ── Helper: apply client extensions declaration to capabilities ──
     static void ApplyExtensions(
@@ -76,6 +95,17 @@ namespace {
         if (auto* hint = result.Find(detail::kCacheHint); hint && hint->IsObject())
             return *hint;
         return std::nullopt;
+    }
+
+    // Cache keys combine the method with pagination/uri context so distinct
+    // cursors and resources never share an entry.
+    static std::string CacheKey(std::string_view method, std::string_view context) {
+        std::string key(method);
+        if (!context.empty()) {
+            key.push_back('\x1F');
+            key += context;
+        }
+        return key;
     }
 
     // Fetch a paginated list method. With an explicit cursor a single page is
@@ -421,6 +451,7 @@ NegotiationResult McpClient::NegotiateProtocol() {
 // ====================================================================
 void McpClient::Close() {
     if (handler_) handler_->Close();
+    response_cache_->ClearPrivate();
 }
 
 // ====================================================================
@@ -453,6 +484,36 @@ void McpClient::WireClientHandlers() {
         [this](const JsonRpcNotification&) { response_cache_->Clear(); });
     handler_->SetNotificationHandler(notifications::kPromptListChanged,
         [this](const JsonRpcNotification&) { response_cache_->Clear(); });
+    handler_->SetNotificationHandler(notifications::kResourceUpdated,
+        [this](const JsonRpcNotification& notif) {
+            if (notif.params && notif.params->IsObject()) {
+                if (auto* uri = notif.params->Find(detail::kUri);
+                    uri && uri->IsString()) {
+                    response_cache_->Invalidate(
+                        CacheKey(methods::kReadResource, uri->GetString()));
+                }
+            }
+        });
+    handler_->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [this](const JsonRpcNotification& notif) {
+            std::string sid;
+            if (notif.meta) {
+                if (auto* v = notif.meta->Find(detail::kMetaSubscriptionIdKey);
+                    v && v->IsString()) {
+                    sid = v->GetString();
+                }
+            }
+            std::optional<ClientNotificationHandler> user;
+            {
+                std::lock_guard<std::mutex> lk(ack_mutex_);
+                if (pending_ack_id_ && *pending_ack_id_ == sid) {
+                    pending_ack_id_.reset();
+                    ack_cv_.notify_all();
+                }
+                user = user_ack_notification_handler_;
+            }
+            if (user) (*user)(notif);
+        });
 }
 
 // ====================================================================
@@ -527,6 +588,11 @@ void McpClient::SetElicitationHandler(ElicitationHandler handler) {
 void McpClient::SetNotificationHandler(
     std::string_view method, ClientNotificationHandler handler)
 {
+    if (method == notifications::kSubscriptionsAcknowledged) {
+        std::lock_guard<std::mutex> lk(ack_mutex_);
+        user_ack_notification_handler_ = std::move(handler);
+        return;
+    }
     auto nh = std::move(handler);
     handler_->SetNotificationHandler(method,
         [nh](const JsonRpcNotification& notif) {
@@ -552,14 +618,17 @@ void McpClient::SetLoggingHandler(
 }
 
 // ====================================================================
-// MRTR helper: attempt to fulfill input_required responses via elicitation handler
+// MRTR helper: attempt to fulfill input_required responses via handlers
 // ====================================================================
 static bool TryFulfillInputRequired(
     const JsonValue& result_json,
     const ClientOptions& options,
-    const std::optional<std::function<ElicitResult(const ElicitRequestParams&)>>& elicitation_handler,
+    const std::optional<ElicitationHandler>& elicitation_handler,
+    const std::optional<SamplingHandler>& sampling_handler,
+    const std::optional<RootsHandler>& roots_handler,
     JsonValue& out_input_responses,
-    std::optional<std::string>& out_request_state)
+    std::optional<std::string>& out_request_state,
+    bool& out_state_only)
 {
     auto* rt = result_json.Find("resultType");
     if (!rt || rt->GetString() != "input_required") {
@@ -571,14 +640,24 @@ static bool TryFulfillInputRequired(
     }
 
     auto input_req = DeserializeInputRequiredResult(result_json);
+    out_request_state = input_req.request_state;
 
-    if (!input_req.input_requests.elicit && !input_req.input_requests.confirm) {
-        return false;
+    bool has_requests = input_req.input_requests.confirm.has_value()
+        || input_req.input_requests.elicit.has_value()
+        || input_req.input_requests.sampling.has_value()
+        || input_req.input_requests.roots.has_value();
+    if (!has_requests) {
+        out_state_only = true;
+        return true;
     }
+    out_state_only = false;
 
     JsonValue responses(JsonValue::object_tag);
 
-    if (input_req.input_requests.elicit && elicitation_handler) {
+    if (input_req.input_requests.elicit) {
+        if (!elicitation_handler) {
+            throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
+        }
         auto& elicit_req = *input_req.input_requests.elicit;
         ElicitRequestParams ep;
         ep.message = elicit_req.message;
@@ -588,7 +667,10 @@ static bool TryFulfillInputRequired(
             responses["elicit"] = *elicit_result.values;
     }
 
-    if (input_req.input_requests.confirm && elicitation_handler) {
+    if (input_req.input_requests.confirm) {
+        if (!elicitation_handler) {
+            throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
+        }
         auto& confirm_req = *input_req.input_requests.confirm;
         ElicitRequestParams ep;
         ep.message = confirm_req.message;
@@ -598,8 +680,23 @@ static bool TryFulfillInputRequired(
             responses["confirm"] = *confirm_result.values;
     }
 
+    if (input_req.input_requests.sampling) {
+        if (!sampling_handler) {
+            throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
+        }
+        auto sampling_result = (*sampling_handler)(input_req.input_requests.sampling->params);
+        responses["sampling"] = SerializeCreateMessageResult(sampling_result);
+    }
+
+    if (input_req.input_requests.roots) {
+        if (!roots_handler) {
+            throw McpError(McpErrorCode::MethodNotFound, "roots not supported");
+        }
+        auto roots_result = (*roots_handler)(ListRootsRequestParams{});
+        responses["roots"] = SerializeListRootsResult(roots_result);
+    }
+
     out_input_responses = std::move(responses);
-    out_request_state = input_req.request_state;
     return true;
 }
 
@@ -614,6 +711,7 @@ JsonValue McpClient::SendRequestWithMrtr(
     auto round_timeout = cfg ? cfg->round_timeout : timeout;
     auto total_budget = cfg ? cfg->max_total_timeout : std::chrono::seconds(0);
     auto flow_start = std::chrono::steady_clock::now();
+    int state_only_rounds = 0;
 
     for (int round = 0; round <= max_rounds; ++round) {
         auto effective_timeout = round_timeout;
@@ -642,15 +740,25 @@ JsonValue McpClient::SendRequestWithMrtr(
         // Check for input_required (MRTR)
         JsonValue input_responses(JsonValue::object_tag);
         std::optional<std::string> request_state;
+        bool state_only = false;
         if (TryFulfillInputRequired(result_json, options_, elicitation_handler_,
-                input_responses, request_state)) {
-            // Inject input_responses for next round
-            params_json[detail::kInputResponses] = std::move(input_responses);
+                sampling_handler_, roots_handler_,
+                input_responses, request_state, state_only)) {
+            if (state_only) {
+                int64_t delay_ms = kMrtrStateOnlyBackoffBase.count()
+                    << std::min(state_only_rounds, 3);
+                delay_ms = std::min(delay_ms, kMrtrStateOnlyBackoffMax.count());
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                ++state_only_rounds;
+            } else {
+                state_only_rounds = 0;
+                params_json[detail::kInputResponses] = std::move(input_responses);
+            }
             if (request_state) params_json[detail::kRequestState] = JsonValue(*request_state);
             continue;
         }
 
-        // Complete result or non-MRTR �?return raw JSON
+        // Complete result or non-MRTR — return raw JSON
         return result_json;
     }
 
@@ -663,7 +771,15 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
     if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
     if (!ttl) ttl = result.Find(detail::kTTLMs);
     if (ttl && ttl->IsInt() && ttl->GetInt() > 0) {
-        response_cache_->Store(key, result, std::chrono::milliseconds(ttl->GetInt()));
+        auto* hint = result.Find(detail::kCacheHint);
+        auto* scope = hint && hint->IsObject() ? hint->Find(detail::kCacheScope)
+                                               : result.Find(detail::kCacheScope);
+        auto entry_scope = scope && scope->IsString() &&
+                scope->GetString() == detail::kCacheScopePrivate
+            ? detail::ResponseCache::Scope::Private
+            : detail::ResponseCache::Scope::Public;
+        response_cache_->Store(
+            key, entry_scope, result, std::chrono::milliseconds(ttl->GetInt()));
     }
 }
 
@@ -674,13 +790,13 @@ ListToolsResult McpClient::ListTools(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("tools/list")) {
-            return DeserializeListToolsResult(*cached);
-        }
+    auto key = CacheKey(methods::kListTools,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListToolsResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
-    if (!cursor) CacheIfHinted("tools/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListToolsResult(result);
 }
 
@@ -751,13 +867,13 @@ ListResourcesResult McpClient::ListResources(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("resources/list")) {
-            return DeserializeListResourcesResult(*cached);
-        }
+    auto key = CacheKey(methods::kListResources,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListResourcesResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListResources, "resources", meta, cursor);
-    if (!cursor) CacheIfHinted("resources/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListResourcesResult(result);
 }
 
@@ -765,13 +881,13 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("resources/templates/list")) {
-            return DeserializeListResourceTemplatesResult(*cached);
-        }
+    auto key = CacheKey(methods::kListResourceTemplates,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListResourceTemplatesResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
-    if (!cursor) CacheIfHinted("resources/templates/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListResourceTemplatesResult(result);
 }
 
@@ -781,6 +897,17 @@ ReadResourceResult McpClient::ReadResource(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
+    auto mode = options.cache_mode.value_or("use");
+    auto key = CacheKey(methods::kReadResource, uri);
+    if (mode != "bypass" && mode != "refresh") {
+        std::optional<std::chrono::milliseconds> max_age;
+        if (options.max_age_ms)
+            max_age = std::chrono::milliseconds(*options.max_age_ms);
+        if (auto cached = response_cache_->GetAny(key, max_age)) {
+            return DeserializeReadResourceResult(*cached);
+        }
+    }
+
     JsonValue req_json(JsonValue::object_tag);
     req_json["uri"] = JsonValue(std::string(uri));
 
@@ -789,6 +916,7 @@ ReadResourceResult McpClient::ReadResource(
         : kDefaultRequestTimeout;
     auto result_json = SendRequestWithMrtr(
         methods::kReadResource, std::move(req_json), meta, timeout);
+    if (mode != "bypass") CacheIfHinted(key, result_json);
     return DeserializeReadResourceResult(result_json);
 }
 
@@ -817,13 +945,13 @@ ListPromptsResult McpClient::ListPrompts(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("prompts/list")) {
-            return DeserializeListPromptsResult(*cached);
-        }
+    auto key = CacheKey(methods::kListPrompts,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListPromptsResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListPrompts, "prompts", meta, cursor);
-    if (!cursor) CacheIfHinted("prompts/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListPromptsResult(result);
 }
 
@@ -950,10 +1078,45 @@ DiscoverResult McpClient::Discover() {
 // ====================================================================
 void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    auto params_json = SerializeSubscriptionsListenRequestParams(params);
+    std::string subscription_id;
+    if (params.meta && params.meta->extensions) {
+        if (auto* v = params.meta->extensions->Find(detail::kMetaSubscriptionIdKey);
+            v && v->IsString()) {
+            subscription_id = v->GetString();
+        }
+    }
+    if (subscription_id.empty()) {
+        subscription_id = GenerateSubscriptionId();
+    }
+    if (!meta.extensions) {
+        meta.extensions = JsonValue(JsonValue::object_tag);
+    }
+    (*meta.extensions)[detail::kMetaSubscriptionIdKey] =
+        JsonValue(subscription_id);
 
-    DoSendRequest(*handler_,
-        methods::kSubscribe, std::move(params_json), meta, kDefaultRequestTimeout);
+    {
+        std::lock_guard<std::mutex> lk(ack_mutex_);
+        pending_ack_id_ = subscription_id;
+    }
+    try {
+        DoSendRequest(*handler_, methods::kSubscribe,
+            SerializeSubscriptionsListenRequestParams(params),
+            std::move(meta), kDefaultRequestTimeout);
+    } catch (...) {
+        std::lock_guard<std::mutex> lk(ack_mutex_);
+        pending_ack_id_.reset();
+        throw;
+    }
+
+    std::unique_lock<std::mutex> lk(ack_mutex_);
+    if (pending_ack_id_ &&
+        !ack_cv_.wait_for(lk, kSubscriptionAckTimeout,
+                          [this] { return !pending_ack_id_; })) {
+        pending_ack_id_.reset();
+        throw McpError(McpErrorCode::InternalError,
+            "subscriptions/listen: acknowledged frame not received within " +
+            std::to_string(kSubscriptionAckTimeout.count()) + "ms");
+    }
 }
 
 } // namespace mcp
