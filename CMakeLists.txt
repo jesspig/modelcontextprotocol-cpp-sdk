@@ -43,7 +43,16 @@ if(NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
     endif()
 endif()
 
-project(mcp-cpp-sdk VERSION 0.3.0 LANGUAGES CXX)
+# ── SDK 版本单一来源 (include/mcp/McpVersion.hpp) ──
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/mcp/McpVersion.hpp" _mcp_version_hpp)
+if(_mcp_version_hpp MATCHES "kSdkVersion[ \t]*=[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\"")
+    set(MCP_SDK_VERSION "${CMAKE_MATCH_1}")
+    message(STATUS "[mcp] SDK version: ${MCP_SDK_VERSION}")
+else()
+    message(FATAL_ERROR "[mcp] Cannot parse kSdkVersion from include/mcp/McpVersion.hpp")
+endif()
+
+project(mcp-cpp-sdk VERSION ${MCP_SDK_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

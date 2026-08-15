@@ -6,6 +6,7 @@
 #include <mcp/http/EventStore.hpp>
 
 #include <mcp/JsonValue.hpp>
+#include <mcp/McpVersion.hpp>
 
 #include <atomic>
 #include <future>
@@ -39,7 +40,7 @@ struct StreamableHttpServerOptions {
 
     // Server info for discovery
     std::string server_name{"mcp-server"};
-    std::string server_version{"0.3.0"};
+    std::string server_version{std::string(kSdkVersion)};
 };
 
 // ── StreamableHttpServerTransport ──
