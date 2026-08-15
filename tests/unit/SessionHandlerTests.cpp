@@ -14,11 +14,14 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <set>
 #include <thread>
 
 using namespace mcp;
 
 namespace {
+
+constexpr char kMetaSubscriptionIdKeyLiteral[] = "io.modelcontextprotocol/subscriptionId";
 
 // Pair of session handlers connected via InMemoryTransport, both on the 2026 era.
 struct HandlerPair {
@@ -300,4 +303,261 @@ TEST(SessionHandlerTest, IncomingFilterInterceptsRequests) {
 
     client->Close();
     server->Close();
+}
+
+// Concurrent requests (half synchronous handlers, half async via worker)
+// must each resolve with the response correlated to their own request id.
+TEST(SessionHandlerTest, ConcurrentRequestsResolveCorrectly) {
+    HandlerPair hp;
+    constexpr int kCount = 16;
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            const int64_t id = std::get<int64_t>(req.id);
+            if (id % 2 == 0) {
+                std::thread([p = std::move(p), id]() mutable {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    JsonValue result(JsonValue::object_tag);
+                    result["echo"] = JsonValue(id);
+                    p.set_value(std::move(result));
+                }).detach();
+            } else {
+                JsonValue result(JsonValue::object_tag);
+                result["echo"] = JsonValue(id);
+                p.set_value(std::move(result));
+            }
+        });
+
+    std::vector<std::future<JsonValue>> futures;
+    futures.reserve(kCount);
+    for (int i = 0; i < kCount; ++i) {
+        futures.push_back(hp.client->SendRequest(methods::kCallTool,
+            JsonValue(JsonValue::object_tag), ModernMeta(),
+            std::chrono::milliseconds(2000)));
+    }
+
+    for (int i = 0; i < kCount; ++i) {
+        ASSERT_EQ(futures[i].wait_for(std::chrono::seconds(5)),
+                  std::future_status::ready);
+        auto result = futures[i].get();
+        ASSERT_TRUE(result.Contains("echo"));
+        EXPECT_EQ(result["echo"].GetInt(), static_cast<int64_t>(i + 1));
+    }
+}
+
+// Close() must fail a request whose server handler never completes and must
+// join the response worker without blocking on the unsatisfied promise.
+TEST(SessionHandlerTest, CloseCompletesHeldRequestsAndJoinsWorker) {
+    HandlerPair hp;
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise = std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(5000));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    hp.client->Close();
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::ConnectionClosed));
+
+    hp.server->Close();
+    held_promise->set_value(JsonValue(JsonValue::object_tag));
+}
+
+// An integer progress token (int64 variant of ProgressToken) must extend the
+// deadline of the matching pending request, mirroring the string-token path.
+TEST(SessionHandlerTest, IntProgressTokenExtendsDeadline) {
+    HandlerPair hp;
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise = std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    hp.client->SetNotificationHandler(notifications::kProgress,
+        [client = hp.client.get()](const JsonRpcNotification& notif) {
+            if (notif.params && notif.params->IsObject()) {
+                auto* pt = notif.params->Find("progressToken");
+                if (pt && pt->IsInt()) {
+                    client->ResetTimeoutByProgressToken(std::to_string(pt->GetInt()));
+                }
+            }
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.progress_token = int64_t(7);
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(1000));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    JsonValue progress_params(JsonValue::object_tag);
+    progress_params["progressToken"] = JsonValue(int64_t(7));
+    hp.server->SendNotification(notifications::kProgress, std::move(progress_params));
+
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(800)),
+              std::future_status::timeout);
+
+    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_FALSE(future.get().Contains("code"));
+}
+
+// SetNegotiatedProtocolVersion is safe while the session is running: after a
+// mid-flight era switch the server answers requests with the new codec.
+TEST(SessionHandlerTest, SetNegotiatedProtocolVersionDuringRun) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(kLegacyProtocolVersion));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(kLegacyProtocolVersion));
+    client->Start();
+    server->Start();
+
+    server->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+
+    server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    auto future = client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    EXPECT_EQ(result["resultType"].GetString(), std::string("complete"));
+    EXPECT_FALSE(result.Contains("code"));
+
+    client->Close();
+    server->Close();
+}
+
+// NotifySubscribers shares one message skeleton across matching subscriptions:
+// every subscriber receives the same method/params and its own subscriptionId
+// in _meta (io.modelcontextprotocol/subscriptionId).
+TEST(SessionHandlerTest, NotifySubscribersBroadcastsSharedPayloadWithPerSubscriptionMeta) {
+    HandlerPair hp;
+
+    std::promise<void> received_two;
+    auto received_two_future = received_two.get_future();
+    std::vector<JsonRpcNotification> received;
+    hp.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&received, &received_two](const JsonRpcNotification& notif) {
+            received.push_back(notif);
+            if (received.size() == 2) received_two.set_value();
+        });
+
+    SubscriptionEntry sub_a;
+    sub_a.id = "sub-a";
+    sub_a.filter.tools_list_changed = true;
+    SubscriptionEntry sub_b;
+    sub_b.id = "sub-b";
+    sub_b.filter.tools_list_changed = true;
+    hp.server->AddSubscriptionEntry(std::move(sub_a));
+    hp.server->AddSubscriptionEntry(std::move(sub_b));
+
+    JsonValue params(JsonValue::object_tag);
+    params["serverName"] = JsonValue("test-server");
+    hp.server->NotifySubscribers(notifications::kToolListChanged, std::move(params));
+
+    ASSERT_EQ(received_two_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_EQ(received.size(), 2u);
+
+    std::set<std::string> ids;
+    for (const auto& notif : received) {
+        EXPECT_EQ(notif.method, notifications::kToolListChanged);
+        ASSERT_TRUE(notif.params);
+        auto* name = notif.params->Find("serverName");
+        ASSERT_TRUE(name);
+        EXPECT_EQ(name->GetString(), std::string("test-server"));
+        ASSERT_TRUE(notif.meta);
+        auto* sid = notif.meta->Find(kMetaSubscriptionIdKeyLiteral);
+        ASSERT_TRUE(sid);
+        ids.insert(sid->GetString());
+    }
+    EXPECT_EQ(ids, (std::set<std::string>{"sub-a", "sub-b"}));
+}
+
+// Only subscriptions whose resource filter matches the updated uri are notified.
+TEST(SessionHandlerTest, NotifySubscribersHonorsResourceFilter) {
+    HandlerPair hp;
+
+    std::promise<void> received;
+    auto received_future = received.get_future();
+    std::vector<std::string> sub_ids;
+    hp.client->SetNotificationHandler(notifications::kResourceUpdated,
+        [&sub_ids, &received](const JsonRpcNotification& notif) {
+            if (notif.meta) {
+                if (auto* sid = notif.meta->Find(kMetaSubscriptionIdKeyLiteral)) {
+                    sub_ids.push_back(sid->GetString());
+                }
+            }
+            if (sub_ids.size() == 1) received.set_value();
+        });
+
+    SubscriptionEntry sub_a;
+    sub_a.id = "sub-a";
+    sub_a.filter.resource_subscriptions = {"uri-a"};
+    SubscriptionEntry sub_b;
+    sub_b.id = "sub-b";
+    sub_b.filter.resource_subscriptions = {"uri-b"};
+    SubscriptionEntry sub_c;
+    sub_c.id = "sub-c";
+    sub_c.filter.tools_list_changed = true;
+    hp.server->AddSubscriptionEntry(std::move(sub_a));
+    hp.server->AddSubscriptionEntry(std::move(sub_b));
+    hp.server->AddSubscriptionEntry(std::move(sub_c));
+
+    JsonValue params(JsonValue::object_tag);
+    params["uri"] = JsonValue("uri-a");
+    hp.server->NotifySubscribers(notifications::kResourceUpdated,
+        std::move(params), std::string("uri-a"));
+
+    ASSERT_EQ(received_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_EQ(sub_ids.size(), 1u);
+    EXPECT_EQ(sub_ids[0], std::string("sub-a"));
+}
+
+// Event notifications echo the client-provided subscriptionId (entry.session_id)
+// when one was captured from the listen request, falling back to the server id.
+TEST(SessionHandlerTest, NotifySubscribersPrefersClientSubscriptionId) {
+    HandlerPair hp;
+
+    std::promise<std::string> sid_promise;
+    auto sid_future = sid_promise.get_future();
+    hp.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&sid_promise](const JsonRpcNotification& notif) {
+            if (notif.meta) {
+                if (auto* sid = notif.meta->Find(kMetaSubscriptionIdKeyLiteral)) {
+                    sid_promise.set_value(sid->GetString());
+                }
+            }
+        });
+
+    SubscriptionEntry entry;
+    entry.id = "server-1";
+    entry.session_id = "client-sub-9";
+    entry.filter.tools_list_changed = true;
+    hp.server->AddSubscriptionEntry(std::move(entry));
+
+    JsonValue params(JsonValue::object_tag);
+    hp.server->NotifySubscribers(notifications::kToolListChanged, std::move(params));
+
+    ASSERT_EQ(sid_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_EQ(sid_future.get(), std::string("client-sub-9"));
 }

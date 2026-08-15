@@ -111,6 +111,41 @@ private:
         }
     }
 
+    static size_t EstimateElementCount(std::string_view input, size_t from) {
+        static constexpr size_t kHintScanLimit = 4096;
+        size_t end = from + kHintScanLimit;
+        if (end > input.size()) end = input.size();
+        size_t count = 1;
+        int depth = 0;
+        size_t i = from;
+        while (i < end) {
+            char c = input[i];
+            if (c == '"') {
+                ++i;
+                while (i < end) {
+                    char sc = input[i];
+                    if (sc == '\\') {
+                        i += 2;
+                        continue;
+                    }
+                    ++i;
+                    if (sc == '"') break;
+                }
+                continue;
+            }
+            if (c == '{' || c == '[') {
+                ++depth;
+            } else if (c == '}' || c == ']') {
+                if (depth == 0) break;
+                --depth;
+            } else if (c == ',' && depth == 0) {
+                ++count;
+            }
+            ++i;
+        }
+        return count;
+    }
+
     JsonValue ParseObject() {
         if (++depth_ > kMaxDepth) Fail("nesting depth exceeds " + std::to_string(kMaxDepth));
         ++pos_; // consume '{'
@@ -154,6 +189,7 @@ private:
         if (++depth_ > kMaxDepth) Fail("nesting depth exceeds " + std::to_string(kMaxDepth));
         ++pos_; // consume '['
         JsonValue::Array arr;
+        arr.reserve(EstimateElementCount(input_, pos_));
         while (true) {
             SkipWhitespace();
             if (pos_ >= input_.size()) Fail("unexpected end of array");
@@ -187,39 +223,40 @@ private:
         ++pos_; // consume '"'
         std::string result;
         while (true) {
+            size_t start = pos_;
+            while (pos_ < input_.size()) {
+                unsigned char c = static_cast<unsigned char>(input_[pos_]);
+                if (c == '"' || c == '\\') break;
+                if (c < 0x20) Fail("unescaped control character");
+                if (c < 0x80) {
+                    ++pos_;
+                    continue;
+                }
+                pos_ += ValidateUtf8Sequence();
+            }
+            size_t seg_len = pos_ - start;
+            if (result.empty() && seg_len > 0) result.reserve(seg_len);
+            result.append(input_.data() + start, seg_len);
             if (pos_ >= input_.size()) Fail("unterminated string");
-            unsigned char c = static_cast<unsigned char>(input_[pos_]);
-            if (c == '"') {
+            if (input_[pos_] == '"') {
                 ++pos_;
                 return result;
             }
-            if (c == '\\') {
-                ++pos_;
-                if (pos_ >= input_.size()) Fail("unterminated string");
-                char e = input_[pos_];
-                switch (e) {
-                case '"': result.push_back('"'); ++pos_; break;
-                case '\\': result.push_back('\\'); ++pos_; break;
-                case '/': result.push_back('/'); ++pos_; break;
-                case 'b': result.push_back('\b'); ++pos_; break;
-                case 'f': result.push_back('\f'); ++pos_; break;
-                case 'n': result.push_back('\n'); ++pos_; break;
-                case 'r': result.push_back('\r'); ++pos_; break;
-                case 't': result.push_back('\t'); ++pos_; break;
-                case 'u': ParseUnicodeEscape(result); break;
-                default: Fail("invalid escape sequence");
-                }
-                continue;
+            ++pos_; // consume '\\'
+            if (pos_ >= input_.size()) Fail("unterminated string");
+            char e = input_[pos_];
+            switch (e) {
+            case '"': result.push_back('"'); ++pos_; break;
+            case '\\': result.push_back('\\'); ++pos_; break;
+            case '/': result.push_back('/'); ++pos_; break;
+            case 'b': result.push_back('\b'); ++pos_; break;
+            case 'f': result.push_back('\f'); ++pos_; break;
+            case 'n': result.push_back('\n'); ++pos_; break;
+            case 'r': result.push_back('\r'); ++pos_; break;
+            case 't': result.push_back('\t'); ++pos_; break;
+            case 'u': ParseUnicodeEscape(result); break;
+            default: Fail("invalid escape sequence");
             }
-            if (c < 0x20) Fail("unescaped control character");
-            if (c < 0x80) {
-                result.push_back(static_cast<char>(c));
-                ++pos_;
-                continue;
-            }
-            size_t len = ValidateUtf8Sequence();
-            result.append(input_.data() + pos_, len);
-            pos_ += len;
         }
     }
 

@@ -756,3 +756,350 @@ TEST(McpClientTest, ToolOutputSchemaValidation) {
     client->Close();
     server->Close();
 }
+
+// ── SEP-2549: list pages with different cursors are cached separately ──
+TEST(McpClientTest, ListToolsCachesCursorPagesSeparately) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> plain_calls{0};
+    std::atomic<int> cursor_calls{0};
+    server_handler->SetRequestHandler(methods::kListTools,
+        [&plain_calls, &cursor_calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            bool has_cursor = req.params && req.params->IsObject() &&
+                req.params->Contains("cursor");
+            if (has_cursor) cursor_calls.fetch_add(1); else plain_calls.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue t(JsonValue::object_tag);
+            t["name"] = JsonValue(has_cursor ? "page-tool" : "all-tool");
+            t["inputSchema"] = JsonValue(JsonValue::object_tag);
+            arr.PushBack(std::move(t));
+            result["tools"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto all = client->ListTools();
+    ASSERT_EQ(all.tools.size(), 1u);
+    EXPECT_EQ(all.tools[0].name, "all-tool");
+    auto page1 = client->ListTools("c1");
+    ASSERT_EQ(page1.tools.size(), 1u);
+    EXPECT_EQ(page1.tools[0].name, "page-tool");
+    auto all2 = client->ListTools();
+    EXPECT_EQ(all2.tools[0].name, "all-tool");
+    auto page1_again = client->ListTools("c1");
+    EXPECT_EQ(page1_again.tools[0].name, "page-tool");
+    auto page2 = client->ListTools("c2");
+    EXPECT_EQ(page2.tools[0].name, "page-tool");
+
+    EXPECT_EQ(plain_calls.load(), 1);
+    EXPECT_EQ(cursor_calls.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── SEP-2549: resources/read cache keys include the uri ──
+TEST(McpClientTest, ReadResourceCachesPerUri) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls_a{0};
+    std::atomic<int> calls_b{0};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls_a, &calls_b](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            auto uri = req.params->Find("uri")->GetString();
+            if (uri == "uri-a") calls_a.fetch_add(1); else calls_b.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue(uri);
+            c["text"] = JsonValue(uri);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ReadResource("uri-a");
+    ASSERT_EQ(r1.contents.size(), 1u);
+    auto r2 = client->ReadResource("uri-b");
+    ASSERT_EQ(r2.contents.size(), 1u);
+    auto r3 = client->ReadResource("uri-a");
+    ASSERT_EQ(r3.contents.size(), 1u);
+    auto r4 = client->ReadResource("uri-b");
+    ASSERT_EQ(r4.contents.size(), 1u);
+
+    EXPECT_EQ(calls_a.load(), 1);
+    EXPECT_EQ(calls_b.load(), 1);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── SEP-2549: ttl hints above 24h are clamped, not rejected ──
+TEST(McpClientTest, CacheClampsTtlTo24Hours) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kListTools,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue t(JsonValue::object_tag);
+            t["name"] = JsonValue("tool-x");
+            t["inputSchema"] = JsonValue(JsonValue::object_tag);
+            arr.PushBack(std::move(t));
+            result["tools"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(25LL * 3600 * 1000));
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ListTools();
+    ASSERT_EQ(r1.tools.size(), 1u);
+    auto r2 = client->ListTools();
+    ASSERT_EQ(r2.tools.size(), 1u);
+    EXPECT_EQ(calls.load(), 1);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── SEP-2549: private entries hit within the same connection and stay
+// separate from public entries ──
+TEST(McpClientTest, CachePrivateEntryHitsInSameConnection) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls_a{0};
+    std::atomic<int> calls_b{0};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls_a, &calls_b](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            auto uri = req.params->Find("uri")->GetString();
+            if (uri == "uri-a") calls_a.fetch_add(1); else calls_b.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue(uri);
+            c["text"] = JsonValue(uri);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            if (uri == "uri-b") hint["cacheScope"] = JsonValue("private");
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ReadResource("uri-a");
+    ASSERT_EQ(r1.contents.size(), 1u);
+    EXPECT_EQ(calls_a.load(), 1);
+    auto r2 = client->ReadResource("uri-a");
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(calls_a.load(), 1);
+
+    auto r3 = client->ReadResource("uri-b");
+    ASSERT_EQ(r3.contents.size(), 1u);
+    EXPECT_EQ(calls_b.load(), 1);
+    auto r4 = client->ReadResource("uri-b");
+    ASSERT_EQ(r4.contents.size(), 1u);
+    EXPECT_EQ(calls_b.load(), 1);
+
+    auto r5 = client->ReadResource("uri-a");
+    ASSERT_EQ(r5.contents.size(), 1u);
+    EXPECT_EQ(calls_a.load(), 1);
+    auto r6 = client->ReadResource("uri-b");
+    ASSERT_EQ(r6.contents.size(), 1u);
+    EXPECT_EQ(calls_b.load(), 1);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── SEP-2549: private cache entries are dropped when the connection closes ──
+TEST(McpClientTest, CloseDropsPrivateCacheEntries) {
+    auto pair_a = InMemoryTransport::CreatePair();
+    auto server_a = std::make_shared<McpSessionHandler>(
+        std::move(pair_a.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto pair_b = InMemoryTransport::CreatePair();
+    auto server_b = std::make_shared<McpSessionHandler>(
+        std::move(pair_b.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    auto private_handler = [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+        calls.fetch_add(1);
+        JsonValue result(JsonValue::object_tag);
+        JsonValue arr(JsonValue::array_tag);
+        JsonValue t(JsonValue::object_tag);
+        t["name"] = JsonValue("tool-x");
+        t["inputSchema"] = JsonValue(JsonValue::object_tag);
+        arr.PushBack(std::move(t));
+        result["tools"] = JsonValue(std::move(arr));
+        JsonValue hint(JsonValue::object_tag);
+        hint["ttlMs"] = JsonValue(int64_t(60000));
+        hint["cacheScope"] = JsonValue("private");
+        result["cacheHint"] = std::move(hint);
+        p.set_value(std::move(result));
+    };
+    server_a->SetRequestHandler(methods::kListTools, private_handler);
+    server_b->SetRequestHandler(methods::kListTools, private_handler);
+    server_a->Start();
+    server_b->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+
+    auto client_a = McpClient::Create(std::move(pair_a.client), opts);
+    auto r1 = client_a->ListTools();
+    ASSERT_EQ(r1.tools.size(), 1u);
+    EXPECT_EQ(calls.load(), 1);
+    auto r2 = client_a->ListTools();
+    ASSERT_EQ(r2.tools.size(), 1u);
+    EXPECT_EQ(calls.load(), 1);
+    client_a->Close();
+
+    auto client_b = McpClient::Create(std::move(pair_b.client), opts);
+    auto r3 = client_b->ListTools();
+    ASSERT_EQ(r3.tools.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+
+    client_b->Close();
+    server_a->Close();
+    server_b->Close();
+}
+
+// ── SEP-2549: resources/updated invalidates only the affected uri ──
+TEST(McpClientTest, ResourceUpdatedInvalidatesOnlyThatUri) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls_a{0};
+    std::atomic<int> calls_b{0};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls_a, &calls_b](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            auto uri = req.params->Find("uri")->GetString();
+            if (uri == "uri-a") calls_a.fetch_add(1); else calls_b.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue(uri);
+            c["text"] = JsonValue(uri);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->ReadResource("uri-a");
+    client->ReadResource("uri-b");
+    EXPECT_EQ(calls_a.load(), 1);
+    EXPECT_EQ(calls_b.load(), 1);
+
+    JsonValue params(JsonValue::object_tag);
+    params["uri"] = JsonValue("uri-a");
+    server_handler->SendNotification(notifications::kResourceUpdated, std::move(params));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    client->ReadResource("uri-a");
+    client->ReadResource("uri-b");
+    EXPECT_EQ(calls_a.load(), 2);
+    EXPECT_EQ(calls_b.load(), 1);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── SubscribeAsync: waits for the acknowledged first frame ──
+TEST(McpClientTest, SubscribeAsyncWaitsForAcknowledged) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_TRUE(client->IsModernProtocol());
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    EXPECT_NO_THROW(client->SubscribeAsync(params));
+
+    client->Close();
+    server->Close();
+}
+
+// ── SubscribeAsync: a server that answers the request but never sends the
+// acknowledged frame makes SubscribeAsync time out with an error ──
+TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kDiscover,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue result(JsonValue::object_tag);
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] = SerializeImplementation(Implementation{"silent-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kSubscribe,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_TRUE(client->IsModernProtocol());
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    EXPECT_THROW(client->SubscribeAsync(params), McpError);
+
+    client->Close();
+    server_handler->Close();
+}

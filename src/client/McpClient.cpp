@@ -97,6 +97,17 @@ namespace {
         return std::nullopt;
     }
 
+    // Cache keys combine the method with pagination/uri context so distinct
+    // cursors and resources never share an entry.
+    static std::string CacheKey(std::string_view method, std::string_view context) {
+        std::string key(method);
+        if (!context.empty()) {
+            key.push_back('\x1F');
+            key += context;
+        }
+        return key;
+    }
+
     // Fetch a paginated list method. With an explicit cursor a single page is
     // returned (caller-driven pagination); without one all pages are merged
     // automatically until nextCursor is exhausted.
@@ -440,6 +451,7 @@ NegotiationResult McpClient::NegotiateProtocol() {
 // ====================================================================
 void McpClient::Close() {
     if (handler_) handler_->Close();
+    response_cache_->ClearPrivate();
 }
 
 // ====================================================================
@@ -472,6 +484,16 @@ void McpClient::WireClientHandlers() {
         [this](const JsonRpcNotification&) { response_cache_->Clear(); });
     handler_->SetNotificationHandler(notifications::kPromptListChanged,
         [this](const JsonRpcNotification&) { response_cache_->Clear(); });
+    handler_->SetNotificationHandler(notifications::kResourceUpdated,
+        [this](const JsonRpcNotification& notif) {
+            if (notif.params && notif.params->IsObject()) {
+                if (auto* uri = notif.params->Find(detail::kUri);
+                    uri && uri->IsString()) {
+                    response_cache_->Invalidate(
+                        CacheKey(methods::kReadResource, uri->GetString()));
+                }
+            }
+        });
     handler_->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
         [this](const JsonRpcNotification& notif) {
             std::string sid;
@@ -749,7 +771,15 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
     if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
     if (!ttl) ttl = result.Find(detail::kTTLMs);
     if (ttl && ttl->IsInt() && ttl->GetInt() > 0) {
-        response_cache_->Store(key, result, std::chrono::milliseconds(ttl->GetInt()));
+        auto* hint = result.Find(detail::kCacheHint);
+        auto* scope = hint && hint->IsObject() ? hint->Find(detail::kCacheScope)
+                                               : result.Find(detail::kCacheScope);
+        auto entry_scope = scope && scope->IsString() &&
+                scope->GetString() == detail::kCacheScopePrivate
+            ? detail::ResponseCache::Scope::Private
+            : detail::ResponseCache::Scope::Public;
+        response_cache_->Store(
+            key, entry_scope, result, std::chrono::milliseconds(ttl->GetInt()));
     }
 }
 
@@ -760,13 +790,13 @@ ListToolsResult McpClient::ListTools(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("tools/list")) {
-            return DeserializeListToolsResult(*cached);
-        }
+    auto key = CacheKey(methods::kListTools,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListToolsResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
-    if (!cursor) CacheIfHinted("tools/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListToolsResult(result);
 }
 
@@ -837,13 +867,13 @@ ListResourcesResult McpClient::ListResources(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("resources/list")) {
-            return DeserializeListResourcesResult(*cached);
-        }
+    auto key = CacheKey(methods::kListResources,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListResourcesResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListResources, "resources", meta, cursor);
-    if (!cursor) CacheIfHinted("resources/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListResourcesResult(result);
 }
 
@@ -851,13 +881,13 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("resources/templates/list")) {
-            return DeserializeListResourceTemplatesResult(*cached);
-        }
+    auto key = CacheKey(methods::kListResourceTemplates,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListResourceTemplatesResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
-    if (!cursor) CacheIfHinted("resources/templates/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListResourceTemplatesResult(result);
 }
 
@@ -867,6 +897,17 @@ ReadResourceResult McpClient::ReadResource(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
+    auto mode = options.cache_mode.value_or("use");
+    auto key = CacheKey(methods::kReadResource, uri);
+    if (mode != "bypass" && mode != "refresh") {
+        std::optional<std::chrono::milliseconds> max_age;
+        if (options.max_age_ms)
+            max_age = std::chrono::milliseconds(*options.max_age_ms);
+        if (auto cached = response_cache_->GetAny(key, max_age)) {
+            return DeserializeReadResourceResult(*cached);
+        }
+    }
+
     JsonValue req_json(JsonValue::object_tag);
     req_json["uri"] = JsonValue(std::string(uri));
 
@@ -875,6 +916,7 @@ ReadResourceResult McpClient::ReadResource(
         : kDefaultRequestTimeout;
     auto result_json = SendRequestWithMrtr(
         methods::kReadResource, std::move(req_json), meta, timeout);
+    if (mode != "bypass") CacheIfHinted(key, result_json);
     return DeserializeReadResourceResult(result_json);
 }
 
@@ -903,13 +945,13 @@ ListPromptsResult McpClient::ListPrompts(
     std::optional<std::string> cursor)
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
-    if (!cursor) {
-        if (auto cached = response_cache_->Get("prompts/list")) {
-            return DeserializeListPromptsResult(*cached);
-        }
+    auto key = CacheKey(methods::kListPrompts,
+        cursor ? std::string_view(*cursor) : std::string_view());
+    if (auto cached = response_cache_->GetAny(key)) {
+        return DeserializeListPromptsResult(*cached);
     }
     auto result = ListPages(*handler_, methods::kListPrompts, "prompts", meta, cursor);
-    if (!cursor) CacheIfHinted("prompts/list", result);
+    CacheIfHinted(key, result);
     return DeserializeListPromptsResult(result);
 }
 

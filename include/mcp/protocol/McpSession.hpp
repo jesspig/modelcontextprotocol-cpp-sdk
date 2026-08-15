@@ -21,7 +21,7 @@ class ITransport;
 class MessageChannel;
 class McpSessionHandler;
 
-inline constexpr std::chrono::milliseconds kDefaultRequestTimeout{30000};
+inline constexpr std::chrono::milliseconds kDefaultRequestTimeout{60000};
 
 // ═══════════════════════════════════════════════════════════════════════
 // McpSession — abstract base for both client and server sessions
