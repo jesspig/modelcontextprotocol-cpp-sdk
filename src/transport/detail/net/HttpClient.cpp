@@ -322,7 +322,11 @@ void HttpClient::ReadChunkedBody(HttpResponseInfo& resp,
 void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_clock::time_point& deadline) {
     char buffer[kReadChunk];
     for (;;) {
-        std::size_t n = ReadRaw(buffer, sizeof(buffer), deadline);
+        auto remaining = Remaining(deadline);
+        if (remaining.count() <= 0)
+            throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
+        std::size_t n = use_tls_ ? tls_->Read(buffer, sizeof(buffer), remaining)
+                                 : tcp_->Read(buffer, sizeof(buffer), remaining);
         if (n > 0) {
             if (resp.body.size() + n > kMaxBodyBytes)
                 throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
@@ -330,8 +334,6 @@ void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_
             continue;
         }
         if (IsEof()) return;
-        if (Remaining(deadline).count() <= 0)
-            throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
     }
 }
 

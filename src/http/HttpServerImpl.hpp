@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -60,6 +61,7 @@ private:
     void HandleConnection(int fd, HandlerMap handlers,
                           std::shared_ptr<std::atomic<bool>> done);
     void HandleConnectionInner(int fd, HandlerMap handlers);
+    void KeepAliveLoop();
 
     LineResult ReadLine(net::TcpSocket& conn, std::string& buffer, std::string& line,
                         std::chrono::milliseconds timeout, std::size_t max_line_bytes);
@@ -77,7 +79,8 @@ private:
                        const std::unordered_map<std::string, std::string>& headers,
                        std::string_view body, bool keep_alive);
     void WriteSseHeaders(net::TcpSocket& conn,
-                         const std::unordered_map<std::string, std::string>& headers);
+                         const std::unordered_map<std::string, std::string>& headers,
+                         bool close_after_write);
     void RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry,
                               bool call_on_disconnect);
 
@@ -94,6 +97,8 @@ private:
     std::mutex sse_mutex_;
     std::unordered_map<uint64_t, std::shared_ptr<SseClientEntry>> sse_clients_;
     uint64_t next_sse_id_{1};
+    std::thread keepalive_thread_;
+    std::condition_variable keepalive_cv_;
 };
 
 }}} // namespace mcp::detail::http_server_impl
