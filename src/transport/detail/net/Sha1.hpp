@@ -12,6 +12,13 @@
 
 #ifdef MCP_HAVE_OPENSSL
 #include <openssl/rand.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 #endif
 
 namespace mcp { namespace detail { namespace net {
@@ -142,6 +149,10 @@ inline void RandomBytes(unsigned char* out, int n) {
 #ifdef MCP_HAVE_OPENSSL
     if (RAND_bytes(out, n) != 1)
         throw std::runtime_error("RAND_bytes failed");
+#elif defined(_WIN32)
+    if (BCryptGenRandom(nullptr, out, static_cast<ULONG>(n),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+        throw std::runtime_error("BCryptGenRandom failed");
 #else
     std::random_device rd;
     for (int i = 0; i < n; i += 4) {
