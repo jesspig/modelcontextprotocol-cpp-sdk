@@ -16,7 +16,7 @@ public:
     StdioServerTransport();
     ~StdioServerTransport() override;
 
-    void Start();
+    void Start() override;
     void Close() override;
     void SendMessageAsync(JsonRpcMessage message) override;
 

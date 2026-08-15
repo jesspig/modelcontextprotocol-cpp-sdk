@@ -27,6 +27,8 @@ public:
     virtual void SendMessageAsync(JsonRpcMessage message) = 0;
     virtual void Close() = 0;
     virtual bool IsStateless() const { return false; }
+    // Called by McpServer to bring up the transport's IO threads; idempotent by contract
+    virtual void Start() {}
 };
 
 // ═══════════════════════════════════════════════════════════════════════

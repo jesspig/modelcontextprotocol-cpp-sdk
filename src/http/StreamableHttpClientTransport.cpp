@@ -69,7 +69,7 @@ public:
 
     ~StreamableHttpSessionTransport() override { Close(); }
 
-    void Start() {
+    void Start() override {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] {
             detail::SetThreadName("mcp-worker");
@@ -434,7 +434,7 @@ public:
 
     ~StreamableHttpSessionTransport() override { Close(); }
 
-    void Start() {
+    void Start() override {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] { SendLoop(); });
         SetConnected();

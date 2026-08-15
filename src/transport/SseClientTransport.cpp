@@ -104,7 +104,7 @@ public:
         Close();
     }
 
-    void Start() {
+    void Start() override {
         if (running_.exchange(true))
             return;
 

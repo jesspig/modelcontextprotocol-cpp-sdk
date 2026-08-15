@@ -242,3 +242,34 @@ TEST(McpServerTest, InitializeEchoesClientVersion) {
     server->Close();
     client->Close();
 }
+// ── Transport Start is idempotent: pre-Starting the transport before
+// McpServer::Create must not break the session ──
+TEST(McpServerTest, PreStartedTransportRemainsFunctional) {
+    auto pair = InMemoryTransport::CreatePair();
+    pair.server->Start();
+
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(pair.server, sopts);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    InitializeRequestParams params;
+    params.protocol_version = std::string(kLegacyProtocolVersion);
+    params.client_info = Implementation{"test-client", "1.0"};
+    auto future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_FALSE(result.Contains("code"));
+    auto init = DeserializeInitializeResult(result);
+    EXPECT_EQ(init.protocol_version, std::string(kLegacyProtocolVersion));
+    EXPECT_EQ(init.server_info.name, "test-server");
+
+    server->Close();
+    client->Close();
+}

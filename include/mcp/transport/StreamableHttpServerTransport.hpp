@@ -49,7 +49,7 @@ public:
 
     ~StreamableHttpServerTransport() override;
 
-    void Start();
+    void Start() override;
     void Close() override;
     void SendMessageAsync(JsonRpcMessage message) override;
     bool IsStateless() const override { return options_.stateless; }

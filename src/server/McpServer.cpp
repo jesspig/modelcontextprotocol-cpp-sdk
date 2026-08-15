@@ -191,6 +191,9 @@ McpServer::McpServer(
         }
     }
 
+    // Start the transport's IO threads before the session handler's message loop
+    transport_->Start();
+
     // Start the session handler
     handler_->Start();
 

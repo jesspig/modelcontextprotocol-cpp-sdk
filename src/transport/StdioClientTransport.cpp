@@ -33,7 +33,7 @@ public:
         Close();
     }
 
-    void Start() {
+    void Start() override {
         running_ = true;
         read_thread_ = std::thread([this]() {
             detail::SetThreadName("mcp-worker");
