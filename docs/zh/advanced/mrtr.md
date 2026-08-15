@@ -117,7 +117,7 @@ if (IsInputRequiredResult(raw_result)) {
 ```cpp
 ServerOptions opts;
 opts.input_required_config = ServerOptions::InputRequiredConfig{
-    .max_rounds = 8,
+    .max_rounds = 10,
     .round_timeout = std::chrono::seconds(600),
     .legacy_shim = true
 };
@@ -129,14 +129,14 @@ opts.input_required_config = ServerOptions::InputRequiredConfig{
 ClientOptions opts;
 opts.input_required_config = ClientOptions::InputRequiredConfig{
     .auto_fulfill = true,
-    .max_rounds = 8,
+    .max_rounds = 10,
     .round_timeout = std::chrono::seconds(600)
 };
 ```
 
 | 选项 | 服务端 | 客户端 | 描述 |
 |--------|--------|--------|-------------|
-| `max_rounds` | 是 | 是 | 最大 MRTR 轮数（默认：8） |
+| `max_rounds` | 是 | 是 | 最大 MRTR 轮数（默认：10） |
 | `round_timeout` | 是 | 是 | 每轮超时（默认：600 秒） |
 | `legacy_shim` | 是 | 否 | 占位字段，当前尚未生效 |
 | `auto_fulfill` | 否 | 是 | 如可能则自动填充，无需提示 |

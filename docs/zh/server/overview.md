@@ -44,7 +44,7 @@ server->Run();
 | `request_state_verifier` | `function<bool(string_view)>` | MRTR 的 HMAC/AEAD 验证器 |
 | `cache_hints` | `optional<map<string, CacheHint, less<>>>` | 按方法的缓存提示（ttlMs, cacheScope） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR/elicitation 行为的配置 |
-| `input_required_config.max_rounds` | `int` | 最大启发式收集轮次（默认 8） |
+| `input_required_config.max_rounds` | `int` | 最大启发式收集轮次（默认 10） |
 | `input_required_config.round_timeout` | `chrono::seconds` | 每轮超时时间（默认 600s） |
 | `input_required_config.legacy_shim` | `bool` | 启用旧版兼容垫片（默认 true） |
 | `on_request` | `function` | 收到每个入站 JSON-RPC 请求时回调，包含方法名和完整请求体 |

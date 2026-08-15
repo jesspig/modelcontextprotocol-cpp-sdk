@@ -3,7 +3,7 @@ type: Transport
 title: Stdio 传输
 description: 服务端（stdin/stdout 管道）+ 客户端（子进程）双向传输，'\n' 分隔的 JSON-RPC 行。
 tags: [transport, stdio, 管道, 子进程]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-15T03:15:00+08:00
 resource: src/transport/StdioServerTransport.cpp
 ---
 
@@ -13,7 +13,7 @@ resource: src/transport/StdioServerTransport.cpp
 
 ## 服务端
 
-- 无参构造；`Start()` 幂等（`running_.exchange(true)`），`OpenStandardInput/Output()` 打开管道，启动读线程
+- 无参构造；`Start()` 幂等（`running_.exchange(true)`），`OpenStandardInput/Output()` 打开管道，启动读线程——**由 `McpServer` 构造自动调用**（`ITransport::Start` 契约，[McpServer.cpp:218](../../src/server/McpServer.cpp)），服务端用户无需手动 Start
 - `Close()`：`running_.exchange(false)` 块内关管道（解除读线程阻塞）→ **无条件** `JoinThreadSafely(read_thread_)`（读线程可能已自行退出，Close 兜底 join）→ 关通道 → `SetDisconnected`
 - 发送：`SerializeMessage(message) + "\n"` 写 stdout；写字节数不符 → `NotifyError`
 - 缓冲超限防护：`buffer.append` 后检查 > `detail::kMaxMessageSize`（8MB，[Limits.hpp](../../include/mcp/transport/detail/Limits.hpp)）→ 清空 + `NotifyError` + 退出读循环；单行超限同样 `NotifyError`（不退出，丢弃该行）
@@ -23,7 +23,7 @@ resource: src/transport/StdioServerTransport.cpp
 
 - 选项：`command / arguments / name / working_directory / inherit_environment_variables(true) / environment_variables`
 - `Connect()`：选项转 `ProcessStartInfo` → `CreateProcess` → 构造匿名命名空间会话传输 → 启动即 `SetConnected()`
-- `Close()`：`running_.exchange(false)` 非真则提前返回（客户端保留该行为）→ 关 stdin 管道 → `process_->Terminate(5000)` → 关 stdout 管道 → join → 关通道
+- `Close()`：`running_.exchange(false)` 非真则提前返回（客户端保留该行为）→ 关 stdin 管道 → `process_->Terminate(2000)` → 关 stdout 管道 → join → 关通道
 - 读循环同样有 8MB 缓冲超限防护（清空 + `NotifyError` + break）；EOF 后不置 `running_`（既有行为）
 - `Name()` 空时返回 `"stdio"`
 

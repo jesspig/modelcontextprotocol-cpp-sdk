@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、任务存储集成。
 tags: [server, 工具注册, 资源, 提示词, 任务]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-15T03:15:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -40,7 +40,7 @@ resource: src/server/McpServer.cpp
 
 ## 实现要点
 
-- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字
+- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）
