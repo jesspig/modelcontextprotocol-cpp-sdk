@@ -21,6 +21,8 @@ namespace mcp { namespace detail { namespace net {
 
 namespace {
 
+constexpr std::chrono::milliseconds kTlsCloseNotifyWait(500);
+
 SSL_CTX* GetSharedCtx() {
     // Process-wide singleton, intentionally never freed; OpenSSL cleans up
     // all its global state at process exit.
@@ -148,7 +150,7 @@ std::size_t TlsSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
                 } else if (err == SSL_ERROR_ZERO_RETURN) {
                     eof_ = true;
                     return 0;
-                } else if (err == SSL_ERROR_SYSCALL && tcp_.IsEof()) {
+                } else if (err == SSL_ERROR_SYSCALL && n == 0 && errno == 0 && tcp_.IsEof()) {
                     eof_ = true;
                     return 0;
                 } else {
@@ -205,13 +207,16 @@ void TlsSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
 }
 
 void TlsSocket::Close() {
-    tcp_.Close();
     std::lock_guard<std::mutex> lock(io_mutex_);
     if (ssl_ != nullptr) {
-        SSL_shutdown(ssl_);
+        if (SSL_shutdown(ssl_) == 0) {
+            if (tcp_.WaitReadable(kTlsCloseNotifyWait))
+                SSL_shutdown(ssl_);
+        }
         SSL_free(ssl_);
         ssl_ = nullptr;
     }
+    tcp_.Close();
 }
 
 bool TlsSocket::IsEof() const {

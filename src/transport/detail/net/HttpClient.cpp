@@ -109,6 +109,8 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
     request.reserve(256 + req.body.size());
     request += req.method + " " + path + " HTTP/1.1\r\n";
     std::string host_header = host_;
+    if (host_.find(':') != std::string::npos)
+        host_header = "[" + host_ + "]";
     bool default_port = (use_tls_ && port_ == 443) || (!use_tls_ && port_ == 80);
     if (!default_port) host_header += ":" + std::to_string(port_);
     request += "Host: " + host_header + "\r\n";
@@ -322,7 +324,11 @@ void HttpClient::ReadChunkedBody(HttpResponseInfo& resp,
 void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_clock::time_point& deadline) {
     char buffer[kReadChunk];
     for (;;) {
-        std::size_t n = ReadRaw(buffer, sizeof(buffer), deadline);
+        auto remaining = Remaining(deadline);
+        if (remaining.count() <= 0)
+            throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
+        std::size_t n = use_tls_ ? tls_->Read(buffer, sizeof(buffer), remaining)
+                                 : tcp_->Read(buffer, sizeof(buffer), remaining);
         if (n > 0) {
             if (resp.body.size() + n > kMaxBodyBytes)
                 throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
@@ -330,8 +336,6 @@ void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_
             continue;
         }
         if (IsEof()) return;
-        if (Remaining(deadline).count() <= 0)
-            throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
     }
 }
 

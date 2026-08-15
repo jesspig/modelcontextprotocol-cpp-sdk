@@ -38,6 +38,12 @@ struct SigpipeIgnorer {
 
 const SigpipeIgnorer kSigpipeIgnorer;
 
+void SetCloseOnExec(int fd) {
+    if (fd < 0) return;
+    int flags = ::fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 constexpr int kPipeReadPollTimeoutMs = 100;
 
 class PosixPipe : public PipeHandle {
@@ -183,6 +189,8 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     if (pipe(stdout_pipefd) < 0) {
         throw std::runtime_error("pipe creation failed for stdout");
     }
+    SetCloseOnExec(stdout_pipefd[0]);
+    SetCloseOnExec(stdout_pipefd[1]);
 
     // stdin_pipe: parent writes, child reads
     int stdin_pipefd[2];
@@ -190,6 +198,66 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         close(stdout_pipefd[0]);
         close(stdout_pipefd[1]);
         throw std::runtime_error("pipe creation failed for stdin");
+    }
+    SetCloseOnExec(stdin_pipefd[0]);
+    SetCloseOnExec(stdin_pipefd[1]);
+
+    // Build argv
+    std::vector<std::string> args;
+    args.push_back(info.command);
+    args.insert(args.end(), info.arguments.begin(), info.arguments.end());
+
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+
+    // Handle environment
+    bool has_custom_env = !info.environment_variables.empty() || !info.inherit_environment;
+    std::vector<std::string> env_strings;
+    std::vector<char*> envp;
+    if (has_custom_env) {
+        if (info.inherit_environment) {
+#ifdef __APPLE__
+            for (char** e = *_NSGetEnviron(); *e; ++e) {
+#else
+            for (char** e = ::environ; *e; ++e) {
+#endif
+                env_strings.push_back(*e);
+            }
+        }
+        for (const auto& [key, val] : info.environment_variables) {
+            env_strings.push_back(key + "=" + val);
+        }
+        for (auto& es : env_strings) envp.push_back(es.data());
+        envp.push_back(nullptr);
+    }
+
+    // execvpe is not available on macOS/BSD.
+    // Search PATH manually, then use execve.
+    std::string resolved = info.command;
+    if (has_custom_env && resolved.find('/') == std::string::npos) {
+        const char* path_env = getenv("PATH");
+        if (path_env) {
+            std::string path(path_env);
+            size_t start = 0, end;
+            while ((end = path.find(':', start)) != std::string::npos) {
+                std::string dir = path.substr(start, end - start);
+                if (dir.empty()) dir = ".";
+                std::string candidate = dir + "/" + info.command;
+                if (access(candidate.c_str(), X_OK) == 0) {
+                    resolved = candidate;
+                    break;
+                }
+                start = end + 1;
+            }
+            if (resolved == info.command) {
+                std::string dir = path.substr(start);
+                if (dir.empty()) dir = ".";
+                std::string candidate = dir + "/" + info.command;
+                if (access(candidate.c_str(), X_OK) == 0)
+                    resolved = candidate;
+            }
+        }
     }
 
     pid_t pid = fork();
@@ -213,73 +281,15 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         close(stdin_pipefd[0]);
         close(stdout_pipefd[1]);
 
-        // Change working directory if specified
         if (!info.working_directory.empty()) {
             if (chdir(info.working_directory.c_str()) != 0)
                 _exit(127);
         }
 
-        // Build argv
-        std::vector<std::string> args;
-        args.push_back(info.command);
-        args.insert(args.end(), info.arguments.begin(), info.arguments.end());
-
-        std::vector<char*> argv;
-        for (auto& arg : args) argv.push_back(arg.data());
-        argv.push_back(nullptr);
-
-        // Handle environment
-        bool has_custom_env = !info.environment_variables.empty() || !info.inherit_environment;
-
-        if (has_custom_env) {
-            std::vector<std::string> env_strings;
-            if (info.inherit_environment) {
-#ifdef __APPLE__
-                for (char** e = *_NSGetEnviron(); *e; ++e) {
-#else
-                for (char** e = ::environ; *e; ++e) {
-#endif
-                    env_strings.push_back(*e);
-                }
-            }
-            for (const auto& [key, val] : info.environment_variables) {
-                env_strings.push_back(key + "=" + val);
-            }
-            std::vector<char*> envp;
-            for (auto& es : env_strings) envp.push_back(es.data());
-            envp.push_back(nullptr);
-
-            // execvpe is not available on macOS/BSD.
-            // Search PATH manually, then use execve.
-            std::string resolved = info.command;
-            if (resolved.find('/') == std::string::npos) {
-                const char* path_env = getenv("PATH");
-                if (path_env) {
-                    std::string path(path_env);
-                    size_t start = 0, end;
-                    while ((end = path.find(':', start)) != std::string::npos) {
-                        std::string dir = path.substr(start, end - start);
-                        if (dir.empty()) dir = ".";
-                        std::string candidate = dir + "/" + info.command;
-                        if (access(candidate.c_str(), X_OK) == 0) {
-                            resolved = candidate;
-                            break;
-                        }
-                        start = end + 1;
-                    }
-                    if (resolved == info.command) {
-                        std::string dir = path.substr(start);
-                        if (dir.empty()) dir = ".";
-                        std::string candidate = dir + "/" + info.command;
-                        if (access(candidate.c_str(), X_OK) == 0)
-                            resolved = candidate;
-                    }
-                }
-            }
+        if (has_custom_env)
             execve(resolved.c_str(), argv.data(), envp.data());
-        } else {
+        else
             execvp(info.command.c_str(), argv.data());
-        }
 
         // If exec fails
         _exit(127);
@@ -299,16 +309,19 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
 std::unique_ptr<PipeHandle> OpenStandardInput() {
     int fd = dup(STDIN_FILENO);
+    SetCloseOnExec(fd);
     return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
 }
 
 std::unique_ptr<PipeHandle> OpenStandardOutput() {
     int fd = dup(STDOUT_FILENO);
+    SetCloseOnExec(fd);
     return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
 }
 
 std::unique_ptr<PipeHandle> OpenStandardError() {
     int fd = dup(STDERR_FILENO);
+    SetCloseOnExec(fd);
     return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
 }
 

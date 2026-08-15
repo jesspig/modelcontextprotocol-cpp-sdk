@@ -65,11 +65,12 @@ public:
         : TransportBase()
         , options_(std::move(options))
     {
+        current_session_id_ = options_.known_session_id;
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
 
-    void Start() {
+    void Start() override {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] {
             detail::SetThreadName("mcp-worker");
@@ -82,16 +83,16 @@ public:
         if (!running_.exchange(false)) return;
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
+            delete_pending_ = true;
             send_cv_.notify_one();
         }
-        // Interrupt a blocked WinHttpReadData so the SSE thread can exit.
-        // sse_request_ is owned exclusively by the SSE thread; Close only
-        // signals it and joins, it never closes the handle itself.
+        // Interrupt a blocked WinHttpReadData (SSE POST response) so the send
+        // thread can exit promptly. sse_request_ names the in-flight request
+        // handle; Close only touches it to shorten its receive timeout.
         auto sse_req = sse_request_.exchange(nullptr);
         if (sse_req) {
             WinHttpSetTimeouts(sse_req, 0, 0, 0, 500);
         }
-        detail::JoinThreadSafely(sse_thread_);
         detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -122,6 +123,56 @@ private:
             }
             DoPost(body);
         }
+        if (delete_pending_.exchange(false)) {
+            DoDelete();
+        }
+    }
+
+    void DoDelete() {
+        if (current_session_id_.empty()) return;
+        HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
+            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession) return;
+
+        auto url = detail::ParseUrl(options_.endpoint);
+        auto wh = ToWideStr(url.host);
+        auto wp = ToWideStr(url.path);
+        if (wp.empty()) wp = L"/";
+
+        HINTERNET hConnect = WinHttpConnect(hSession, wh.c_str(), url.port, 0);
+        if (!hConnect) {
+            WinHttpCloseHandle(hSession);
+            return;
+        }
+
+        DWORD flags = (url.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"DELETE",
+            wp.c_str(), nullptr, WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+        if (!hRequest) {
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return;
+        }
+
+        std::wstring hdrs = L"Mcp-Session-Id: " +
+            ToWideStr(current_session_id_) + L"\r\n";
+        WinHttpAddRequestHeaders(hRequest, hdrs.data(),
+            static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
+
+        if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                nullptr, 0, 0, 0) &&
+            WinHttpReceiveResponse(hRequest, nullptr)) {
+            char buf[4096];
+            DWORD read = 0;
+            while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
+                read = 0;
+            }
+        }
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
     }
 
     void DoPost(const std::string& body) {
@@ -178,6 +229,10 @@ private:
                                 L"Accept: application/json, text/event-stream\r\n";
             // Add MCP headers
             hdrs += L"MCP-Protocol-Version: 2026-07-28\r\n";
+            if (!current_session_id_.empty()) {
+                hdrs += L"Mcp-Session-Id: " +
+                    ToWideStr(current_session_id_) + L"\r\n";
+            }
             try {
                 auto body_jv2 = JsonValue::Parse(body);
                 if (auto* m = body_jv2.Find("method"); m && m->IsString()) {
@@ -242,12 +297,21 @@ private:
                 return;
             }
 
-            // Check response status code; 4xx/5xx responses are not JSON-RPC payloads
+            // Check response status code; a 4xx body may still be a JSON-RPC error payload
             DWORD status_code = 0;
             DWORD scSize = sizeof(status_code);
             BOOL status_ok = WinHttpQueryHeaders(hRequest,
                     WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                     nullptr, &status_code, &scSize, nullptr);
+
+            // Capture a session id from any response; later requests carry it.
+            wchar_t sid_buf[512] = {};
+            DWORD sid_size = sizeof(sid_buf);
+            if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
+                    L"Mcp-Session-Id", sid_buf, &sid_size, nullptr)) {
+                current_session_id_ = wide_to_utf8(sid_buf);
+            }
+
             if (status_ok && status_code >= 400)
             {
                 if ((status_code == 401 || status_code == 403) && attempt == 0 &&
@@ -268,8 +332,49 @@ private:
                         continue;
                     }
                 }
-                MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(status_code));
-                NotifyError("HTTP POST returned status " + std::to_string(status_code));
+                // A 4xx body may carry a JSON-RPC error response (e.g. -32601
+                // mapped to HTTP 404); deliver it to the channel instead of
+                // failing the connection.
+                std::string err_body;
+                char ebuf[4096];
+                DWORD eread = 0;
+                while (WinHttpReadData(hRequest, ebuf, sizeof(ebuf), &eread) && eread > 0) {
+                    err_body.append(ebuf, eread);
+                    eread = 0;
+                }
+                bool delivered = false;
+                if (!err_body.empty() && err_body.size() <= detail::kMaxMessageSize) {
+                    try {
+                        JsonRpcMessage msg = DeserializeMessage(err_body);
+                        if (channel_) channel_->Send(std::move(msg));
+                        delivered = true;
+                    } catch (...) {
+                    }
+                }
+                if (!delivered) {
+                    MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(status_code));
+                    NotifyError("HTTP POST returned status " + std::to_string(status_code));
+                }
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return;
+            }
+
+            // 202 acknowledges a notification; it never carries a response.
+            if (status_ok && status_code == 202)
+            {
+                bool had_id = false;
+                try {
+                    auto jv = JsonValue::Parse(body);
+                    had_id = jv.Contains("id");
+                } catch (...) {
+                }
+                if (had_id) {
+                    MCP_LOG(Warning, "HTTP POST returned 202 for a request; response lost");
+                } else {
+                    MCP_LOG(Info, "HTTP POST accepted (202)");
+                }
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
@@ -286,17 +391,37 @@ private:
                 isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
             }
 
-            if (isSse && !sse_thread_.joinable()) {
-                sse_thread_ = std::thread([this, hRequest, hConnect, hSession]() {
-                    detail::SetThreadName("mcp-worker");
-                    // SSE thread owns the request handle for its whole lifetime
-                    sse_request_ = hRequest;
-                    SseReadLoop(hRequest);
-                    sse_request_ = nullptr;
-                    WinHttpCloseHandle(hRequest);
-                    WinHttpCloseHandle(hConnect);
-                    WinHttpCloseHandle(hSession);
-                });
+            if (isSse) {
+                // POST SSE response stream: read until the server closes it
+                // after the final event, then dispatch every block.
+                sse_request_ = hRequest;
+                std::string sse_body;
+                char sbuf[4096];
+                DWORD sread = 0;
+                while (WinHttpReadData(hRequest, sbuf, sizeof(sbuf), &sread) && sread > 0) {
+                    sse_body.append(sbuf, sread);
+                    sread = 0;
+                    if (sse_body.size() > detail::kMaxMessageSize) {
+                        sse_request_ = nullptr;
+                        sse_body.clear();
+                        MCP_LOG(Error, "HTTP SSE response exceeded max message size");
+                        NotifyError("HTTP SSE response exceeded max message size");
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        return;
+                    }
+                }
+                sse_request_ = nullptr;
+                size_t pos;
+                while ((pos = sse_body.find("\n\n")) != std::string::npos) {
+                    std::string block = sse_body.substr(0, pos);
+                    sse_body.erase(0, pos + 2);
+                    DispatchSseBlock(block);
+                }
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
                 return;
             } else {
                 // Drain response (single JSON response)
@@ -331,34 +456,6 @@ private:
         // Both attempts failed with 401/403.
     }
 
-    void SseReadLoop(HINTERNET hRequest) {
-        std::string buffer;
-        while (running_) {
-            char chunk[4096];
-            DWORD read = 0;
-            if (!WinHttpReadData(hRequest, chunk, sizeof(chunk), &read)) break;
-            if (read == 0) break;
-
-            buffer.append(chunk, read);
-
-            size_t pos;
-            while ((pos = buffer.find("\n\n")) != std::string::npos) {
-                std::string block = buffer.substr(0, pos);
-                buffer.erase(0, pos + 2);
-                DispatchSseBlock(block);
-            }
-        }
-
-        if (running_.exchange(false)) {
-            {
-                std::lock_guard<std::mutex> lk(send_mutex_);
-                send_cv_.notify_one();
-            }
-            if (channel_) channel_->Close();
-            SetDisconnected();
-        }
-    }
-
     void DispatchSseBlock(const std::string& block) {
         // Parse SSE: event: message\ndata: {...}
         std::string data;
@@ -388,13 +485,15 @@ private:
     }
 
     HttpClientTransportOptions options_;
+    std::string current_session_id_;
     std::thread send_thread_;
-    std::thread sse_thread_;
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;
     std::atomic<bool> running_{false};
-    // Owned exclusively by the SSE thread; Close() only reads it to interrupt
+    std::atomic<bool> delete_pending_{false};
+    // Handle of the request whose SSE response is being read by the send
+    // thread; Close() shortens its receive timeout to interrupt the read.
     std::atomic<HINTERNET> sse_request_{nullptr};
 };
 
@@ -430,11 +529,12 @@ public:
         HttpClientTransportOptions options)
         : options_(std::move(options))
     {
+        current_session_id_ = options_.known_session_id;
     }
 
     ~StreamableHttpSessionTransport() override { Close(); }
 
-    void Start() {
+    void Start() override {
         if (running_.exchange(true)) return;
         send_thread_ = std::thread([this] { SendLoop(); });
         SetConnected();
@@ -442,7 +542,11 @@ public:
 
     void Close() override {
         if (!running_.exchange(false)) return;
-        { std::lock_guard<std::mutex> lk(send_mutex_); send_cv_.notify_one(); }
+        {
+            std::lock_guard<std::mutex> lk(send_mutex_);
+            delete_pending_ = true;
+            send_cv_.notify_one();
+        }
         detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
         SetDisconnected();
@@ -468,6 +572,24 @@ private:
             }
             DoPost(body);
         }
+        if (delete_pending_.exchange(false)) {
+            DoDelete();
+        }
+    }
+
+    void DoDelete() {
+        if (current_session_id_.empty()) return;
+        detail::net::HttpRequestSpec req;
+        req.method = "DELETE";
+        req.url = options_.endpoint;
+        req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
+        req.headers["Mcp-Session-Id"] = current_session_id_;
+        try {
+            detail::net::HttpClient client;
+            (void)client.Request(req);
+        } catch (...) {
+            MCP_LOG(Error, "HTTP DELETE failed");
+        }
     }
 
     void DoPost(const std::string& body) {
@@ -476,6 +598,10 @@ private:
             std::unordered_map<std::string, std::string> headers;
             headers["Content-Type"] = "application/json";
             headers["Accept"] = "application/json, text/event-stream";
+            headers["MCP-Protocol-Version"] = "2026-07-28";
+            if (!current_session_id_.empty()) {
+                headers["Mcp-Session-Id"] = current_session_id_;
+            }
             try {
                 auto jv = JsonValue::Parse(body);
                 if (auto* m = jv.Find("method"); m && m->IsString())
@@ -523,6 +649,12 @@ private:
                 return;
             }
 
+            // Capture a session id from any response; later requests carry it.
+            auto sid = httpclient_posix_impl::GetHeader(resp, "Mcp-Session-Id");
+            if (!sid.empty()) {
+                current_session_id_ = std::move(sid);
+            }
+
             if (resp.status_code >= 400) {
                 if ((resp.status_code == 401 || resp.status_code == 403) &&
                     attempt == 0 && options_.auth_challenge_handler) {
@@ -533,8 +665,39 @@ private:
                         continue;
                     }
                 }
-                MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp.status_code));
-                NotifyError("HTTP POST returned status " + std::to_string(resp.status_code));
+                // A 4xx body may carry a JSON-RPC error response (e.g. -32601
+                // mapped to HTTP 404); deliver it to the channel instead of
+                // failing the connection.
+                bool delivered = false;
+                if (!resp.body.empty() && resp.body.size() <= detail::kMaxMessageSize) {
+                    try {
+                        JsonRpcMessage msg = DeserializeMessage(resp.body);
+                        if (channel_) channel_->Send(std::move(msg));
+                        delivered = true;
+                    } catch (const std::exception&) {
+                    }
+                }
+                if (!delivered) {
+                    MCP_LOG(Error, std::string("HTTP POST returned status ") + std::to_string(resp.status_code));
+                    NotifyError("HTTP POST returned status " + std::to_string(resp.status_code));
+                }
+                return;
+            }
+
+            // 202 acknowledges a notification; it never carries a response.
+            if (resp.status_code == 202)
+            {
+                bool had_id = false;
+                try {
+                    auto jv = JsonValue::Parse(body);
+                    had_id = jv.Contains("id");
+                } catch (...) {
+                }
+                if (had_id) {
+                    MCP_LOG(Warning, "HTTP POST returned 202 for a request; response lost");
+                } else {
+                    MCP_LOG(Info, "HTTP POST accepted (202)");
+                }
                 return;
             }
 
@@ -597,11 +760,13 @@ private:
     }
 
     HttpClientTransportOptions options_;
+    std::string current_session_id_;
     std::thread send_thread_;
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
     std::queue<std::string> send_queue_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> delete_pending_{false};
 };
 
 } // namespace

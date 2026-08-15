@@ -6,6 +6,7 @@
 #include <mcp/http/EventStore.hpp>
 
 #include <mcp/JsonValue.hpp>
+#include <mcp/McpVersion.hpp>
 
 #include <atomic>
 #include <future>
@@ -25,18 +26,21 @@ struct StreamableHttpServerOptions {
     uint16_t port{kDefaultPort};
     std::string endpoint{"/mcp"};
 
-    // 2026-07-28: stateless mode (no sessions)
-    bool stateless{false};
+    // 2026-07-28: stateless mode (no sessions) is the default
+    bool stateless{true};
 
     // Legacy SSE support (GET /mcp endpoint for SSE stream)
     bool enable_legacy_sse{true};
+
+    // SSE keepalive comment-frame interval in ms (0 disables; default 15s)
+    int sse_keep_alive_ms{15000};
 
     // Event store for resumption
     std::shared_ptr<EventStore> event_store;
 
     // Server info for discovery
     std::string server_name{"mcp-server"};
-    std::string server_version{"0.3.0"};
+    std::string server_version{std::string(kSdkVersion)};
 };
 
 // ── StreamableHttpServerTransport ──
@@ -49,7 +53,7 @@ public:
 
     ~StreamableHttpServerTransport() override;
 
-    void Start();
+    void Start() override;
     void Close() override;
     void SendMessageAsync(JsonRpcMessage message) override;
     bool IsStateless() const override { return options_.stateless; }

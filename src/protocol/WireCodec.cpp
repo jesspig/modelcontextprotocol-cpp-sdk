@@ -4,6 +4,7 @@
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/ErrorCodes.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
 
@@ -51,6 +52,11 @@ inline const std::unordered_set<std::string_view> k2025OnlyNotifMethods = {
     "notifications/roots/list_changed",
     "notifications/elicitation/complete",
     "notifications/tasks/status",
+    "notifications/tasks/working",
+    "notifications/tasks/completed",
+    "notifications/tasks/failed",
+    "notifications/tasks/cancelled",
+    "notifications/tasks/input_required",
 };
 
 inline const std::unordered_set<std::string_view> k2026OnlyNotifMethods = {
@@ -190,13 +196,15 @@ public:
         JsonValue& body,
         const RequestMeta& meta) const override {
         JsonValue meta_obj(JsonValue::object_tag);
-        meta_obj[detail::kMetaProtocolVersionKey] = JsonValue(meta.protocol_version);
         if (meta.client_info) {
-            meta_obj[detail::kMetaClientInfoKey] = SerializeImplementation(*meta.client_info);
+            meta_obj[detail::kMetaClientInfoKey] =
+                SerializeImplementation(*meta.client_info);
         }
         if (meta.client_capabilities) {
-            meta_obj[detail::kMetaClientCapabilitiesKey] = SerializeClientCapabilities(*meta.client_capabilities);
+            meta_obj[detail::kMetaClientCapabilitiesKey] =
+                SerializeClientCapabilities(*meta.client_capabilities);
         }
+        meta_obj[detail::kMetaProtocolVersionKey] = JsonValue(meta.protocol_version);
         body[detail::kMeta] = std::move(meta_obj);
     }
 
@@ -221,11 +229,12 @@ public:
     int32_t EncodeErrorCode(int32_t code) const override {
         switch (code) {
             case static_cast<int32_t>(McpErrorCode::RequestTimeout):
-                return static_cast<int32_t>(McpErrorCode::HeaderMismatch);
             case static_cast<int32_t>(McpErrorCode::ConnectionRefused):
-                return static_cast<int32_t>(McpErrorCode::MissingRequiredClientCapability);
             case static_cast<int32_t>(McpErrorCode::TlsHandshakeFailed):
-                return static_cast<int32_t>(McpErrorCode::UnsupportedProtocolVersion);
+                MCP_LOG(Warning,
+                    "internal error code remapped to InternalError on the 2026 era: " +
+                    std::to_string(code));
+                return static_cast<int32_t>(McpErrorCode::InternalError);
             default:
                 return code;
         }

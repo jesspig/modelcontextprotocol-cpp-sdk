@@ -33,7 +33,7 @@ public:
         Close();
     }
 
-    void Start() {
+    void Start() override {
         running_ = true;
         read_thread_ = std::thread([this]() {
             detail::SetThreadName("mcp-worker");
@@ -46,7 +46,7 @@ public:
         if (!running_.exchange(false)) return;
 
         if (stdin_pipe_) stdin_pipe_->Close();
-        if (process_) process_->Terminate(5000);
+        if (process_) process_->Terminate(2000);
         if (stdout_pipe_) stdout_pipe_->Close();
 
         detail::JoinThreadSafely(read_thread_);

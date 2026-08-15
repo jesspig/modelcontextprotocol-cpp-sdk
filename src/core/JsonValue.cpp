@@ -4,11 +4,13 @@
 #include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
 
+#include <charconv>
 #include <cmath>
-#include <iomanip>
+#include <cstdio>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
+#include <string_view>
+#include <system_error>
 
 namespace mcp::detail {
 
@@ -22,114 +24,167 @@ JsonValue ParseJsonString(std::string_view json) {
 
 // ── Hand-written JSON serializer ──
 
-static void DumpString(std::ostream& os, const std::string& s) {
-    os << '"';
-    for (char c : s) {
+namespace {
+
+std::string JsonValueFormatDoubleFallback(double d) {
+    char buf[64];
+    int len = std::snprintf(buf, sizeof(buf), "%.*g",
+        std::numeric_limits<double>::max_digits10, d);
+    return std::string(buf, static_cast<size_t>(len));
+}
+
+std::string JsonValueFormatDouble(double d) {
+#if defined(_MSC_VER) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11) || defined(__cpp_lib_to_chars)
+    char buf[64];
+    auto res = std::to_chars(buf, buf + sizeof(buf), d, std::chars_format::general);
+    if (res.ec == std::errc()) return std::string(buf, res.ptr);
+#endif
+    return JsonValueFormatDoubleFallback(d);
+}
+
+} // namespace
+
+static void AppendEscapedString(std::string& out, const std::string& s) {
+    out.push_back('"');
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    size_t run_start = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        const char* esc = nullptr;
         switch (c) {
-        case '"':  os << "\\\""; break;
-        case '\\': os << "\\\\"; break;
-        case '\b': os << "\\b";  break;
-        case '\f': os << "\\f";  break;
-        case '\n': os << "\\n";  break;
-        case '\r': os << "\\r";  break;
-        case '\t': os << "\\t";  break;
+        case '"':  esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\b': esc = "\\b";  break;
+        case '\f': esc = "\\f";  break;
+        case '\n': esc = "\\n";  break;
+        case '\r': esc = "\\r";  break;
+        case '\t': esc = "\\t";  break;
         default:
-            if (static_cast<unsigned char>(c) < 0x20) {
-                os << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-                   << static_cast<int>(static_cast<unsigned char>(c)) << std::dec;
-            } else {
-                os << c;
+            if (c < 0x20) {
+                out.append(s, run_start, i - run_start);
+                out += "\\u00";
+                out.push_back(static_cast<char>('0' + (c >> 4)));
+                out.push_back(kHexDigits[c & 0xF]);
+                run_start = i + 1;
             }
+            continue;
         }
+        out.append(s, run_start, i - run_start);
+        out += esc;
+        run_start = i + 1;
     }
-    os << '"';
+    out.append(s, run_start, s.size() - run_start);
+    out.push_back('"');
+}
+
+static size_t EstimateSize(const JsonValue& jv, int indent) {
+    if (jv.IsString()) return jv.GetString().size() + 8;
+    if (jv.IsArray()) {
+        const auto& arr = jv.GetArray();
+        if (arr.empty()) return 2;
+        size_t n = arr.size() * 4 + 2;
+        if (indent >= 0) n += arr.size() * static_cast<size_t>(indent);
+        for (const auto& el : arr) n += EstimateSize(el, indent);
+        return n;
+    }
+    if (jv.IsObject()) {
+        const auto& obj = jv.GetObject();
+        if (obj.empty()) return 2;
+        size_t n = obj.size() * 8 + 2;
+        if (indent >= 0) n += obj.size() * static_cast<size_t>(indent);
+        for (const auto& [key, val] : obj) n += key.size() + 3 + EstimateSize(val, indent);
+        return n;
+    }
+    if (jv.IsInt()) return 24;
+    if (jv.IsDouble()) return 32;
+    return 8;
 }
 
 // Recursively serialize a JsonValue to JSON text with optional indentation.
-static void DumpValue(std::ostream& os, const JsonValue& jv, int indent, int depth) {
+static void DumpValue(std::string& out, const JsonValue& jv, int indent, int depth) {
     auto indent_line = [&]() {
-        for (int i = 0; i < depth * indent; ++i) os << ' ';
+        int n = depth * indent;
+        if (n > 0) out.append(static_cast<size_t>(n), ' ');
     };
 
     if (jv.IsNull()) {
-        os << "null";
+        out += "null";
     } else if (jv.IsBool()) {
-        os << (jv.GetBool() ? "true" : "false");
+        out += jv.GetBool() ? "true" : "false";
     } else if (jv.IsInt()) {
-        os << jv.GetInt();
+        out += std::to_string(jv.GetInt());
     } else if (jv.IsDouble()) {
         double d = jv.GetDouble();
         if (std::isfinite(d)) {
-            std::ostringstream tmp;
-            tmp << std::setprecision(std::numeric_limits<double>::max_digits10) << d;
-            std::string repr = tmp.str();
-            if (repr.find_first_of(".eE") == std::string::npos) repr += ".0";
-            os << repr;
+            std::string repr = JsonValueFormatDouble(d);
+            out += repr;
+            if (repr.find_first_of(".eE") == std::string_view::npos) out += ".0";
         } else {
-            os << "null";
+            out += "null";
         }
     } else if (jv.IsString()) {
-        DumpString(os, jv.GetString());
+        AppendEscapedString(out, jv.GetString());
     } else if (jv.IsArray()) {
         const auto& arr = jv.GetArray();
         if (arr.empty()) {
-            os << "[]";
+            out += "[]";
         } else if (indent < 0) {
-            os << '[';
+            out.push_back('[');
             for (size_t i = 0; i < arr.size(); ++i) {
-                if (i > 0) os << ',';
-                DumpValue(os, arr[i], indent, depth);
+                if (i > 0) out.push_back(',');
+                DumpValue(out, arr[i], indent, depth);
             }
-            os << ']';
+            out.push_back(']');
         } else {
-            os << "[\n";
+            out += "[\n";
             for (size_t i = 0; i < arr.size(); ++i) {
                 indent_line();
-                DumpValue(os, arr[i], indent, depth + 1);
-                if (i + 1 < arr.size()) os << ',';
-                os << '\n';
+                DumpValue(out, arr[i], indent, depth + 1);
+                if (i + 1 < arr.size()) out.push_back(',');
+                out.push_back('\n');
             }
             indent_line();
-            os << ']';
+            out.push_back(']');
         }
-    } else if (jv.IsObject()) {
+    } else {
         const auto& obj = jv.GetObject();
         if (obj.empty()) {
-            os << "{}";
+            out += "{}";
         } else if (indent < 0) {
-            os << '{';
+            out.push_back('{');
             bool first = true;
             for (const auto& [key, val] : obj) {
-                if (!first) os << ',';
+                if (!first) out.push_back(',');
                 first = false;
-                DumpString(os, key);
-                os << ':';
-                DumpValue(os, val, indent, depth);
+                AppendEscapedString(out, key);
+                out.push_back(':');
+                DumpValue(out, val, indent, depth);
             }
-            os << '}';
+            out.push_back('}');
         } else {
-            os << "{\n";
+            out += "{\n";
             bool first = true;
             for (const auto& [key, val] : obj) {
-                if (!first) os << ",\n";
+                if (!first) out += ",\n";
                 first = false;
                 indent_line();
-                DumpString(os, key);
-                os << ':';
-                if (indent >= 0) os << ' ';
-                DumpValue(os, val, indent, depth + 1);
+                AppendEscapedString(out, key);
+                out.push_back(':');
+                out.push_back(' ');
+                DumpValue(out, val, indent, depth + 1);
             }
-            os << '\n';
+            out.push_back('\n');
             indent_line();
-            os << '}';
+            out.push_back('}');
         }
     }
 }
 
 std::string DumpJsonString(const JsonValue& jv, int indent) {
-    std::ostringstream os;
-    DumpValue(os, jv, indent, 0);
-    return os.str();
+    std::string out;
+    out.reserve(EstimateSize(jv, indent));
+    DumpValue(out, jv, indent, 0);
+    return out;
 }
 
 } // namespace mcp::detail

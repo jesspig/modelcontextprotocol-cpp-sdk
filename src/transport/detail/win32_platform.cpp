@@ -62,6 +62,48 @@ std::string ArgvToCommandLine(const std::string& command, const std::vector<std:
     return line;
 }
 
+constexpr DWORD kPipeBufferSize = 65536;
+
+std::wstring MakePipeName() {
+    static std::atomic<unsigned long long> counter{0};
+    return L"\\\\.\\pipe\\mcp-stdio-" + std::to_wstring(GetCurrentProcessId()) +
+        L"-" + std::to_wstring(counter.fetch_add(1));
+}
+
+struct StdioPipe {
+    HANDLE parent = nullptr;
+    HANDLE child = nullptr;
+};
+
+StdioPipe CreateStdioPipe(SECURITY_ATTRIBUTES* sa, bool parent_reads) {
+    std::wstring name = MakePipeName();
+    DWORD open_mode = PIPE_ACCESS_INBOUND;
+    if (parent_reads) open_mode |= FILE_FLAG_OVERLAPPED;
+    HANDLE server = CreateNamedPipeW(name.c_str(), open_mode,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        1, kPipeBufferSize, kPipeBufferSize, 0, sa);
+    if (server == INVALID_HANDLE_VALUE)
+        throw std::runtime_error("CreateNamedPipeW failed for stdio pipe");
+    DWORD client_flags = parent_reads ? 0 : FILE_FLAG_OVERLAPPED;
+    HANDLE client = CreateFileW(name.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, sa, OPEN_EXISTING,
+        client_flags, nullptr);
+    if (client == INVALID_HANDLE_VALUE) {
+        CloseHandle(server);
+        throw std::runtime_error("CreateFileW failed for stdio pipe");
+    }
+    if (!ConnectNamedPipe(server, nullptr) &&
+        GetLastError() != ERROR_PIPE_CONNECTED) {
+        CloseHandle(server);
+        CloseHandle(client);
+        throw std::runtime_error("ConnectNamedPipe failed for stdio pipe");
+    }
+    StdioPipe result;
+    result.parent = parent_reads ? server : client;
+    result.child = parent_reads ? client : server;
+    return result;
+}
+
 class Win32Pipe : public PipeHandle {
     HANDLE handle_ = INVALID_HANDLE_VALUE;
     HANDLE read_event_ = nullptr;
@@ -267,11 +309,15 @@ size_t Win32Pipe::WriteOverlapped(HANDLE h, const char* data, size_t size) {
 
 size_t Win32Pipe::WriteSync(HANDLE h, const char* data, size_t size) {
     size_t total = 0;
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    if (closed_.load()) return 0;
     while (total < size) {
+        {
+            std::lock_guard<std::mutex> lock(io_mutex_);
+            if (closed_.load()) return total;
+        }
         DWORD written = 0;
-        if (!WriteFile(h, data + total, static_cast<DWORD>(size - total), &written, nullptr))
+        BOOL ok = WriteFile(h, data + total,
+            static_cast<DWORD>(size - total), &written, nullptr);
+        if (!ok)
             return total;
         if (written == 0)
             return total;
@@ -352,26 +398,26 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     sa.bInheritHandle = TRUE;
     sa.lpSecurityDescriptor = nullptr;
 
-    HANDLE stdout_read = nullptr, stdout_write = nullptr;
-    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
-        throw std::runtime_error("CreatePipe failed for stdout");
-    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0))
+    StdioPipe stdout_pipe = CreateStdioPipe(&sa, true);
+    if (!SetHandleInformation(stdout_pipe.parent, HANDLE_FLAG_INHERIT, 0))
         MCP_LOG(Warning, "SetHandleInformation failed for stdout read pipe");
 
-    HANDLE stdin_read = nullptr, stdin_write = nullptr;
-    if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0)) {
-        CloseHandle(stdout_read);
-        CloseHandle(stdout_write);
-        throw std::runtime_error("CreatePipe failed for stdin");
+    StdioPipe stdin_pipe;
+    try {
+        stdin_pipe = CreateStdioPipe(&sa, false);
+    } catch (...) {
+        CloseHandle(stdout_pipe.parent);
+        CloseHandle(stdout_pipe.child);
+        throw;
     }
-    if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0))
+    if (!SetHandleInformation(stdin_pipe.parent, HANDLE_FLAG_INHERIT, 0))
         MCP_LOG(Warning, "SetHandleInformation failed for stdin write pipe");
 
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-    si.hStdOutput = stdout_write;
-    si.hStdInput = stdin_read;
+    si.hStdOutput = stdout_pipe.child;
+    si.hStdInput = stdin_pipe.child;
     si.dwFlags |= STARTF_USESTDHANDLES;
 
     void* env_block = nullptr;
@@ -409,20 +455,20 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
         CREATE_NO_WINDOW, env_block, work_dir_ptr, &si, &pi);
 
-    CloseHandle(stdin_read);
-    CloseHandle(stdout_write);
+    CloseHandle(stdin_pipe.child);
+    CloseHandle(stdout_pipe.child);
 
     if (!success) {
-        CloseHandle(stdout_read);
-        CloseHandle(stdin_write);
+        CloseHandle(stdout_pipe.parent);
+        CloseHandle(stdin_pipe.parent);
         throw std::runtime_error("CreateProcess failed for '" + info.command +
             "': Windows error " + std::to_string(GetLastError()));
     }
 
     CreatedProcess result;
     result.process = std::make_unique<Win32Process>(pi);
-    result.stdin_pipe = std::make_unique<Win32Pipe>(stdin_write, false);
-    result.stdout_pipe = std::make_unique<Win32Pipe>(stdout_read, false);
+    result.stdin_pipe = std::make_unique<Win32Pipe>(stdin_pipe.parent, true);
+    result.stdout_pipe = std::make_unique<Win32Pipe>(stdout_pipe.parent, true);
     return result;
 }
 

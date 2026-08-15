@@ -28,7 +28,7 @@ target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http mcp-test-main)
 target_include_directories(mcp-oauth-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-oauth-tests)
 
-add_executable(mcp-transport-tests TransportTests.cpp)
+add_executable(mcp-transport-tests TransportTests.cpp MessageChannelTests.cpp)
 target_link_libraries(mcp-transport-tests PRIVATE mcp-transport mcp-test-main)
 mcp_discover_tests(mcp-transport-tests)
 

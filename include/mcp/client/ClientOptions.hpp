@@ -7,6 +7,7 @@
 #include <mcp/Implementation.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>
+#include <mcp/McpVersion.hpp>
 
 #include <chrono>
 #include <optional>
@@ -25,7 +26,7 @@ enum class ConnectMode {
 // ── ClientOptions (对应 C# McpClientOptions) ──
 struct MCP_API ClientOptions {
     // Client identity
-    Implementation client_info{"mcp-cpp-client", "0.3.0"};
+    Implementation client_info{"mcp-cpp-client", std::string(kSdkVersion)};
     std::optional<ClientCapabilities> capabilities;
 
     // Connection mode
@@ -39,7 +40,7 @@ struct MCP_API ClientOptions {
     // MRTR (InputRequired) config
     struct InputRequiredConfig {
         bool auto_fulfill{true};
-        int max_rounds{8};
+        int max_rounds{10};
         std::chrono::seconds round_timeout{600};
 
         // Hard budget for the whole MRTR flow across all rounds. Zero

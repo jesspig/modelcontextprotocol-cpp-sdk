@@ -19,13 +19,13 @@ auto client = McpClient::Create(transport, opts);
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.3.0"}`) |
+| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.3.1"}`) |
 | `capabilities` | `optional<ClientCapabilities>` | Declared capabilities |
 | `connect_mode` | `ConnectMode` | `Auto` (discover → initialize), `Legacy`, `Pin` |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
 | `pin_protocol_version` | `optional<string>` | Pin to a specific protocol version (used with `Pin` mode) |
 | `discover_probe_timeout` | `chrono::seconds` | Server discovery probe timeout (default 5s) |
-| `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation config: `auto_fulfill=true`, `max_rounds=8`, `round_timeout=600s` |
+| `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation config: `auto_fulfill=true`, `max_rounds=10`, `round_timeout=600s` |
 | `input_required_config.max_total_timeout` | `chrono::seconds` | Hard budget for the whole MRTR flow (default `0` = unlimited; `round_timeout` applies per round) |
 | `extensions` | `optional<JsonValue>` | Protocol extension declarations |
 

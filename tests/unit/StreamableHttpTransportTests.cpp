@@ -53,7 +53,7 @@ TEST(StreamableHttpTransportTest, ServerTransportConstruction) {
     opts.endpoint = "/mcp";
     opts.server_name = "test-server";
     StreamableHttpServerTransport transport(opts);
-    EXPECT_FALSE(transport.IsStateless());
+    EXPECT_TRUE(transport.IsStateless());
 }
 
 TEST(StreamableHttpTransportTest, ServerTransportStateless) {
@@ -66,7 +66,7 @@ TEST(StreamableHttpTransportTest, ServerTransportStateless) {
 
 TEST(StreamableHttpTransportTest, ServerTransportDefaultOptions) {
     StreamableHttpServerTransport transport;
-    EXPECT_FALSE(transport.IsStateless());
+    EXPECT_TRUE(transport.IsStateless());
 }
 
 TEST(StreamableHttpTransportTest, ServerMcpHeadersValidation) {

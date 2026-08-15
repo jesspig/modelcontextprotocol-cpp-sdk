@@ -3,6 +3,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/McpVersion.hpp>
 #include <mcp/Log.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerialize_fwd.hpp>
@@ -11,6 +12,7 @@
 #include <thread>
 #include <set>
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <shared_mutex>
 #include <type_traits>
@@ -82,6 +84,28 @@ namespace {
                 return "cancelled";
         }
         return "working";
+    }
+
+    bool IsValidToolName(std::string_view name) {
+        if (name.empty() || name.size() > 128) return false;
+        return std::all_of(name.begin(), name.end(), [](char c) {
+            return (c >= 'a' && c <= 'z') ||
+                   (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') ||
+                   c == '.' || c == '_' || c == '-';
+        });
+    }
+
+    void SendTaskNotification(
+        McpSessionHandler& handler,
+        std::string_view method,
+        std::string_view task_id,
+        TaskStatus status)
+    {
+        TaskStatusNotificationParams params;
+        params.task_id = std::string(task_id);
+        params.status = TaskStatusToWireString(status);
+        handler.SendNotification(method, SerializeTaskStatusNotificationParams(params));
     }
 
     JsonValue MakeGetTaskResultJson(const TaskState& task, bool include_optional_fields) {
@@ -191,6 +215,9 @@ McpServer::McpServer(
         }
     }
 
+    // Start the transport's IO threads before the session handler's message loop
+    transport_->Start();
+
     // Start the session handler
     handler_->Start();
 
@@ -227,6 +254,10 @@ void McpServer::Close() {
 // ====================================================================
 void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     const auto& t = tool->ProtocolTool();
+    if (!IsValidToolName(t.name)) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "invalid tool name: " + t.name);
+    }
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
         tools_[t.name] = std::move(tool);
@@ -349,6 +380,10 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, st
     if (min_level && static_cast<int>(level) < static_cast<int>(*min_level))
         return;
     SendLoggingMessage(level, data);
+}
+
+void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
+    SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status);
 }
 
 // ====================================================================
@@ -620,6 +655,10 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
+                SendTaskNotification(*handler_,
+                    params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
+                    params.task_id,
+                    params.result ? TaskStatus::Completed : TaskStatus::Working);
                 UpdateTaskResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
@@ -647,6 +686,8 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
+                SendTaskNotification(*handler_, notifications::kTaskCancelled,
+                    params.task_id, TaskStatus::Cancelled);
                 CancelTaskResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
@@ -1000,11 +1041,16 @@ void McpServer::HandleDiscover(
 {
     initialized_ = true;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (options_.protocol_version) {
+        handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
+    } else {
+        handler_->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    }
     DiscoverResult result;
-    result.supported_versions = {
-        std::string(kLegacyProtocolVersion),
-        std::string(kLatestProtocolVersion)
-    };
+    result.supported_versions.reserve(std::size(kProtocolVersions));
+    for (auto v : kProtocolVersions) {
+        result.supported_versions.emplace_back(v);
+    }
     result.capabilities = capabilities_;
     if (options_.server_info) {
         result.server_info = Implementation{
@@ -1013,7 +1059,7 @@ void McpServer::HandleDiscover(
             {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.3.0", {}};
+        result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
@@ -1055,11 +1101,16 @@ void McpServer::HandleInitialize(
         // Find a common legacy version with the client.
         // Modern versions (2026-07-28+) are NEVER negotiated via
         // initialize — only through server/discover.
-        std::string_view selected = kLegacyProtocolVersion;
-        for (auto v : kProtocolVersions) {
-            if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
-                selected = v;
-                break;
+        // Missing declaration falls back to the default version;
+        // an unknown non-empty version falls back to the legacy version.
+        std::string_view selected = kDefaultNegotiatedProtocolVersion;
+        if (!params.protocol_version.empty()) {
+            selected = kLegacyProtocolVersion;
+            for (auto v : kProtocolVersions) {
+                if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
+                    selected = v;
+                    break;
+                }
             }
         }
         handler_->SetNegotiatedProtocolVersion(selected);
@@ -1075,7 +1126,7 @@ void McpServer::HandleInitialize(
             {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.3.0", {}};
+        result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
@@ -1100,17 +1151,38 @@ void McpServer::HandleSubscriptionsListen(
 
     SubscriptionEntry entry;
     entry.id = std::to_string(next_subscription_id_++);
-    entry.filter = std::move(params.notifications);
+    entry.filter = params.notifications;
     entry.created_at = std::chrono::steady_clock::now();
 
     if (meta.subscription_id) {
         entry.session_id = *meta.subscription_id;
     }
 
+    std::string ack_subscription_id =
+        entry.session_id.empty() ? entry.id : entry.session_id;
     handler_->AddSubscriptionEntry(std::move(entry));
+
+    SendSubscriptionsAcknowledged(params.notifications, ack_subscription_id);
 
     JsonValue result = JsonValue(JsonValue::object_tag);
     promise.set_value(std::move(result));
+}
+
+void McpServer::SendSubscriptionsAcknowledged(
+    const SubscriptionFilter& honored, std::string_view subscription_id)
+{
+    JsonRpcNotification notif;
+    notif.method = std::string(notifications::kSubscriptionsAcknowledged);
+    notif.params = SerializeSubscriptionsAcknowledgedNotificationParams(
+        SubscriptionsAcknowledgedNotificationParams{honored});
+
+    JsonValue meta(JsonValue::object_tag);
+    meta[detail::kMetaProtocolVersionKey] =
+        JsonValue(handler_->NegotiatedProtocolVersion());
+    meta[detail::kMetaSubscriptionIdKey] = JsonValue(std::string(subscription_id));
+    notif.meta = std::move(meta);
+
+    handler_->SendMessage(JsonRpcMessage{std::move(notif)});
 }
 
 // ====================================================================

@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、任务存储集成。
 tags: [server, 工具注册, 资源, 提示词, 任务]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -19,14 +19,14 @@ resource: src/server/McpServer.cpp
 
 ## WireHandlers 方法清单
 
-`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:386](../../src/server/McpServer.cpp)）：
+`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:420](../../src/server/McpServer.cpp)）：
 
 - **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件）
 - **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时）、`resources/subscribe|unsubscribe`（有资源时，2025-era）
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）
 - **WireExtensionHandlers**：`server/extensions/list`
-- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:576](../../src/server/McpServer.cpp)）
+- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:616](../../src/server/McpServer.cpp)）
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
 `initialized_` 标志守护除 `initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 外的所有处理器（现代协议经 discover 直接视为已初始化）。
@@ -40,7 +40,7 @@ resource: src/server/McpServer.cpp
 
 ## 实现要点
 
-- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字
+- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）

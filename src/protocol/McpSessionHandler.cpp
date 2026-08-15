@@ -25,6 +25,8 @@ JsonValue SerializeErrorData(const ErrorData& v);
 
 namespace {
 
+constexpr std::chrono::milliseconds kResponsePollInterval{10};
+
 bool HasCapability(const ClientCapabilities& caps, const std::string& required) {
     if (required == "sampling") return caps.sampling.has_value();
     if (required == "roots") return caps.roots.has_value();
@@ -212,7 +214,7 @@ void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
 void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     std::shared_ptr<WireCodec> codec;
     {
-        std::lock_guard<std::mutex> lock(codec_mutex_);
+        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
     }
     // Lightweight codec-validation view: only method/_meta (and initialize
@@ -297,47 +299,48 @@ bool McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::s
 
 void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future) {
     auto self = shared_from_this();
+    auto task_fn = [self, req, future = std::move(future)]() mutable {
+        if (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+            while (future.wait_for(kResponsePollInterval) != std::future_status::ready) {
+                if (self->closed_.load()) return;
+            }
+        }
+        if (self->closed_.load()) return;
+        std::shared_ptr<WireCodec> codec;
+        {
+            std::shared_lock<std::shared_mutex> lock(self->codec_mutex_);
+            codec = self->codec_;
+        }
+        try {
+            auto result = future.get();
+            if (self->closed_.load()) return;
+
+            JsonRpcResponse resp;
+            resp.id = req.id;
+            resp.result = codec->EncodeResult(req.method, result);
+            self->SendMessage(JsonRpcMessage{std::move(resp)});
+        } catch (const McpError& e) {
+            if (self->closed_.load()) return;
+            JsonRpcErrorResponse err_resp;
+            err_resp.id = req.id;
+            err_resp.error.code = static_cast<McpErrorCode>(
+                codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
+            err_resp.error.message = e.what();
+            self->SendMessage(JsonRpcMessage{std::move(err_resp)});
+        } catch (const std::exception& e) {
+            if (self->closed_.load()) return;
+            JsonRpcErrorResponse err_resp;
+            err_resp.id = req.id;
+            err_resp.error.code = static_cast<McpErrorCode>(
+                codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
+            err_resp.error.message = std::string("internal error: ") + e.what();
+            self->SendMessage(JsonRpcMessage{std::move(err_resp)});
+        }
+    };
+    auto task_ptr = std::make_shared<decltype(task_fn)>(std::move(task_fn));
     {
         std::lock_guard<std::mutex> lock(response_queue_mutex_);
         if (closed_.load()) return;
-        auto task_fn = [self, req, future = std::move(future)]() mutable {
-            std::shared_ptr<WireCodec> codec;
-            {
-                std::lock_guard<std::mutex> lock(self->codec_mutex_);
-                codec = self->codec_;
-            }
-            // Wait for the handler's promise, aborting once the session closes
-            // so Close() never blocks on a promise that is never satisfied.
-            while (future.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
-                if (self->closed_.load()) return;
-            }
-            try {
-                auto result = future.get();
-                if (self->closed_.load()) return;
-
-                JsonRpcResponse resp;
-                resp.id = req.id;
-                resp.result = codec->EncodeResult(req.method, result);
-                self->SendMessage(JsonRpcMessage{std::move(resp)});
-            } catch (const McpError& e) {
-                if (self->closed_.load()) return;
-                JsonRpcErrorResponse err_resp;
-                err_resp.id = req.id;
-                err_resp.error.code = static_cast<McpErrorCode>(
-                    codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
-                err_resp.error.message = e.what();
-                self->SendMessage(JsonRpcMessage{std::move(err_resp)});
-            } catch (const std::exception& e) {
-                if (self->closed_.load()) return;
-                JsonRpcErrorResponse err_resp;
-                err_resp.id = req.id;
-                err_resp.error.code = static_cast<McpErrorCode>(
-                    codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
-                err_resp.error.message = std::string("internal error: ") + e.what();
-                self->SendMessage(JsonRpcMessage{std::move(err_resp)});
-            }
-        };
-        auto task_ptr = std::make_shared<decltype(task_fn)>(std::move(task_fn));
         response_queue_.emplace_back([task_ptr]() { (*task_ptr)(); });
     }
     response_cv_.notify_one();
@@ -418,7 +421,7 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
 void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
     std::shared_ptr<WireCodec> codec;
     {
-        std::lock_guard<std::mutex> lock(codec_mutex_);
+        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
     }
     // Lightweight codec-validation view: only method/params presence matters.
@@ -491,21 +494,22 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     pending->deadline = std::chrono::steady_clock::now() + timeout;
     pending->progress_token = meta.progress_token;
 
+    const std::string id_key = std::to_string(id);
+    std::optional<std::string> pt_key;
+    if (meta.progress_token) {
+        pt_key = std::holds_alternative<std::string>(*meta.progress_token)
+            ? std::get<std::string>(*meta.progress_token)
+            : std::to_string(std::get<int64_t>(*meta.progress_token));
+    }
+
     bool closed_after_register = false;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         if (closed_.load()) {
             closed_after_register = true;
         } else {
-            pending_[std::to_string(id)] = pending;
-            if (meta.progress_token) {
-                auto pt_key = std::visit([](const auto& v) -> std::string {
-                    using T = std::decay_t<decltype(v)>;
-                    if constexpr (std::is_same_v<T, std::string>) return v;
-                    else return std::to_string(v);
-                }, *meta.progress_token);
-                progress_token_map_[pt_key] = std::to_string(id);
-            }
+            pending_[id_key] = pending;
+            if (pt_key) progress_token_map_[*pt_key] = id_key;
         }
     }
 
@@ -525,14 +529,14 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
 void McpSessionHandler::SendNotification(std::string_view method, JsonValue params) {
     JsonRpcNotification notif;
     notif.method = std::string(method);
-    std::string version;
+    std::shared_ptr<const std::string> version;
     {
-        std::lock_guard<std::mutex> lock(codec_mutex_);
-        if (negotiated_version_) version = *negotiated_version_;
+        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
+        version = negotiated_version_;
     }
-    if (IsModernProtocolVersion(version)) {
+    if (version && IsModernProtocolVersion(*version)) {
         RequestMeta meta;
-        meta.protocol_version = std::move(version);
+        meta.protocol_version = *version;
         notif.meta = SerializeRequestMeta(meta);
     }
     if (!params.IsNull() && !params.Empty()) {
@@ -621,6 +625,11 @@ void McpSessionHandler::NotifySubscribers(
         std::lock_guard<std::mutex> lock(subscriptions_mutex_);
         if (subscriptions_.empty()) return;
 
+        JsonRpcNotification skeleton;
+        skeleton.method = std::string(notification_type);
+        skeleton.params = std::move(params);
+        skeleton.meta = JsonValue(JsonValue::object_tag);
+
         for (const auto& [id, entry] : subscriptions_) {
             bool should_notify = false;
 
@@ -643,14 +652,11 @@ void McpSessionHandler::NotifySubscribers(
 
             if (!should_notify) continue;
 
-            JsonRpcNotification notif;
-            notif.method = std::string(notification_type);
-            notif.params = params;
-
-            JsonValue meta(JsonValue::object_tag);
-            meta[detail::kMetaSubscriptionIdKey] = JsonValue(id);
-            notif.meta = std::move(meta);
-
+            JsonRpcNotification notif = skeleton;
+            std::string_view sub_id =
+                entry.session_id.empty() ? id : entry.session_id;
+            (*notif.meta)[detail::kMetaSubscriptionIdKey] =
+                JsonValue(std::string(sub_id));
             outgoing.emplace_back(std::move(notif));
         }
     }
@@ -666,7 +672,7 @@ void McpSessionHandler::NotifySubscribers(
 void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data) {
     std::shared_ptr<WireCodec> codec;
     {
-        std::lock_guard<std::mutex> lock(codec_mutex_);
+        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
     }
     JsonRpcErrorResponse err_resp;
@@ -795,14 +801,18 @@ void McpSessionHandler::SetClientCapabilities(ClientCapabilities caps) {
 // ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view version) {
     auto new_codec = MakeWireCodec(version);
-    std::lock_guard<std::mutex> lock(codec_mutex_);
+    std::unique_lock<std::shared_mutex> lock(codec_mutex_);
     negotiated_version_ = std::make_shared<const std::string>(version);
     codec_ = std::move(new_codec);
 }
 
 std::string McpSessionHandler::NegotiatedProtocolVersion() const {
-    std::lock_guard<std::mutex> lock(codec_mutex_);
-    return negotiated_version_ ? *negotiated_version_ : std::string();
+    std::shared_ptr<const std::string> version;
+    {
+        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
+        version = negotiated_version_;
+    }
+    return version ? *version : std::string();
 }
 
 } // namespace mcp

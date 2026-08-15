@@ -30,6 +30,9 @@ struct HttpResponse {
     std::unordered_map<std::string, std::string> headers;
     std::string body;
     bool is_sse{false};  // if true, body is ignored and SSE stream is used
+    // Close the connection right after writing an SSE body: the stream is
+    // finite (e.g. a single request response), not a long-lived GET stream.
+    bool sse_close_after_write{false};
 };
 
 // ── HTTP handler callback ──
@@ -52,6 +55,9 @@ struct HttpServerOptions {
     // When non-empty, requests carrying an Origin header must match one of
     // these exact origins; otherwise the Origin header is ignored.
     std::vector<std::string> allowed_origins;
+
+    // SSE keepalive comment-frame interval in ms (0 disables)
+    int sse_keep_alive_ms{0};
 };
 
 // ── HttpServer — minimal HTTP server ──

@@ -187,7 +187,12 @@ CreateMessageRequestParams DeserializeCreateMessageRequestParams(const JsonValue
         for (const auto& mv : msgs->GetArray()) vec.push_back(DeserializeSamplingMessage(mv));
         v.messages = std::move(vec);
     }
-    v.max_tokens = j["maxTokens"].GetInt();
+    const JsonValue& max_tokens_val = j["maxTokens"];
+    if (!max_tokens_val.IsInt())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("CreateMessageRequestParams: field 'maxTokens' expected int, got ") +
+            detail::JsonValueTypeName(max_tokens_val));
+    v.max_tokens = max_tokens_val.GetInt();
     detail::DeserializeOptional(j, detail::kStopReason, v.stop_reason);
     detail::DeserializeOptional(j, "modelPreference", v.model_preference);
     return v;

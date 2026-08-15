@@ -50,8 +50,8 @@ public:
 private:
     friend class TlsSocket;
     bool WaitForEvents(short events, int timeout_ms);
-    void WaitWriteable(std::chrono::milliseconds timeout);
-    void WaitReadable(std::chrono::milliseconds timeout);
+    bool WaitWriteable(std::chrono::milliseconds timeout);
+    bool WaitReadable(std::chrono::milliseconds timeout);
 
     static constexpr int kPollSliceMs = 100;
 

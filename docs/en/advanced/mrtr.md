@@ -116,7 +116,7 @@ if (IsInputRequiredResult(raw_result)) {
 ```cpp
 ServerOptions opts;
 opts.input_required_config = ServerOptions::InputRequiredConfig{
-    .max_rounds = 8,
+    .max_rounds = 10,
     .round_timeout = std::chrono::seconds(600),
     .legacy_shim = true
 };
@@ -128,14 +128,14 @@ opts.input_required_config = ServerOptions::InputRequiredConfig{
 ClientOptions opts;
 opts.input_required_config = ClientOptions::InputRequiredConfig{
     .auto_fulfill = true,
-    .max_rounds = 8,
+    .max_rounds = 10,
     .round_timeout = std::chrono::seconds(600)
 };
 ```
 
 | Option | Server | Client | Description |
 |--------|--------|--------|-------------|
-| `max_rounds` | Yes | Yes | Maximum MRTR rounds (default: 8) |
+| `max_rounds` | Yes | Yes | Maximum MRTR rounds (default: 10) |
 | `round_timeout` | Yes | Yes | Per-round timeout (default: 600s) |
 | `legacy_shim` | Yes | No | Placeholder field, not yet implemented |
 | `auto_fulfill` | No | Yes | Auto-fulfill without prompting if possible |

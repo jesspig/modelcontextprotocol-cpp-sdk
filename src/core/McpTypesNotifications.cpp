@@ -80,7 +80,12 @@ JsonValue SerializeProgressNotificationParams(const ProgressNotificationParams& 
 ProgressNotificationParams DeserializeProgressNotificationParams(const JsonValue& j) {
     ProgressNotificationParams v;
     v.progress_token = DeserializeProgressToken(j[detail::kProgressToken]);
-    v.progress = j["progress"].GetDouble();
+    const JsonValue& progress_val = j["progress"];
+    if (!progress_val.IsNumber())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("ProgressNotificationParams: field 'progress' expected number, got ") +
+            detail::JsonValueTypeName(progress_val));
+    v.progress = progress_val.IsDouble() ? progress_val.GetDouble() : static_cast<double>(progress_val.GetInt());
     detail::DeserializeOptional(j, "total", v.total);
     detail::DeserializeOptional(j, detail::kMessage, v.message);
     return v;
@@ -118,6 +123,15 @@ LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(con
     detail::DeserializeOptional(j, "logger", v.logger);
     v.data = j[detail::kData];
     return v;
+}
+
+// ── TaskStatusNotificationParams ──
+
+JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kTaskId] = JsonValue(v.task_id);
+    obj[detail::kStatus] = JsonValue(v.status);
+    return obj;
 }
 
 } // namespace mcp

@@ -37,10 +37,11 @@ namespace mcp { namespace detail { namespace http_server_impl {
 inline constexpr std::size_t kMaxRequestLine = 8 * 1024;
 inline constexpr std::size_t kMaxHeaderBytes = 64 * 1024;
 inline constexpr std::size_t kMaxHeaderCount = 100;
-inline constexpr std::size_t kMaxBodyBytes = mcp::detail::kMaxMessageSize;
+inline constexpr std::size_t kMaxBodyBytes = mcp::detail::kMaxHttpBodyBytes;
 inline constexpr std::size_t kMaxConnections = 256;
 inline constexpr std::chrono::milliseconds kKeepAliveIdleTimeout(30000);
 inline constexpr std::chrono::milliseconds kIoTimeout(30000);
+inline constexpr std::string_view kSsePingFrame = ": ping\r\n\r\n";
 
 inline void CloseFd(int fd) {
 #ifdef _WIN32
@@ -165,10 +166,16 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
             [this, port, handlers]() mutable {
                 AcceptLoop(port, std::move(handlers));
             });
+        if (options_.sse_keep_alive_ms > 0) {
+            keepalive_thread_ = std::thread([this] { KeepAliveLoop(); });
+        }
     } catch (...) {
         CloseFd(fd);
         listen_fd_ = -1;
         running_.store(false);
+        keepalive_cv_.notify_all();
+        detail::JoinThreadSafely(keepalive_thread_);
+        detail::JoinThreadSafely(accept_thread_);
         throw;
     }
 }
@@ -176,6 +183,7 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
 void Impl::Stop() {
     if (!running_.exchange(false))
         return;
+    keepalive_cv_.notify_all();
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
         if (listen_fd_ != -1) {
@@ -188,19 +196,16 @@ void Impl::Stop() {
             listen_fd_ = -1;
         }
     }
-    std::vector<int> fds;
+    std::vector<std::shared_ptr<net::TcpSocket>> conns;
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
-        fds = conn_fds_;
+        conns = conn_fds_;
     }
-    for (int cfd : fds) {
-#ifdef _WIN32
-        ::shutdown(static_cast<SOCKET>(cfd), SD_BOTH);
-#else
-        ::shutdown(cfd, SHUT_RDWR);
-#endif
-        CloseFd(cfd);
-    }
+    for (auto& conn : conns)
+        conn->Close();
+    // Join the keepalive thread after connection shutdown so a blocked SSE
+    // write is aborted by the closed socket instead of stalling Stop().
+    detail::JoinThreadSafely(keepalive_thread_);
     detail::JoinThreadSafely(accept_thread_);
     for (auto& e : conn_threads_)
         detail::JoinThreadSafely(e.thread);
@@ -273,12 +278,14 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
         }
 #endif
         bool over_limit = false;
+        std::shared_ptr<net::TcpSocket> conn_obj;
         {
             std::lock_guard<std::mutex> lock(conns_mutex_);
             if (conn_fds_.size() >= kMaxConnections) {
                 over_limit = true;
             } else {
-                conn_fds_.push_back(cfd);
+                conn_obj = std::make_shared<net::TcpSocket>(net::TcpSocket::FromFd(cfd));
+                conn_fds_.push_back(conn_obj);
             }
         }
         if (over_limit) {
@@ -292,9 +299,12 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
         try {
             auto done = std::make_shared<std::atomic<bool>>(false);
             conn_threads_.emplace_back(ConnEntry{
-                std::thread(&Impl::HandleConnection, this, cfd, handlers, done), done});
+                std::thread(&Impl::HandleConnection, this, conn_obj, handlers, done), done});
         } catch (const std::exception&) {
-            CloseFd(cfd);
+            std::lock_guard<std::mutex> lock(conns_mutex_);
+            auto it = std::find(conn_fds_.begin(), conn_fds_.end(), conn_obj);
+            if (it != conn_fds_.end())
+                conn_fds_.erase(it);
         }
     }
     std::lock_guard<std::mutex> lock(conns_mutex_);
@@ -304,24 +314,25 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
     }
 }
 
-void Impl::HandleConnection(int fd, HandlerMap handlers,
+void Impl::HandleConnection(const std::shared_ptr<net::TcpSocket>& conn,
+                            HandlerMap handlers,
                             std::shared_ptr<std::atomic<bool>> done) {
     try {
-        HandleConnectionInner(fd, std::move(handlers));
+        HandleConnectionInner(conn, std::move(handlers));
     } catch (const std::exception& e) {
         MCP_LOG(Warning, std::string("connection handler error: ") + e.what());
     }
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
-        auto it = std::find(conn_fds_.begin(), conn_fds_.end(), fd);
+        auto it = std::find(conn_fds_.begin(), conn_fds_.end(), conn);
         if (it != conn_fds_.end())
             conn_fds_.erase(it);
     }
     done->store(true);
 }
 
-void Impl::HandleConnectionInner(int fd, HandlerMap handlers) {
-    auto conn = std::make_shared<net::TcpSocket>(net::TcpSocket::FromFd(fd));
+void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
+                                 HandlerMap handlers) {
     std::string buffer;
     bool keep_alive = true;
     bool first_request = true;
@@ -426,10 +437,14 @@ void Impl::HandleConnectionInner(int fd, HandlerMap handlers) {
 
         if (resp.is_sse) {
             try {
-                WriteSseHeaders(*conn, safe_headers);
+                WriteSseHeaders(*conn, safe_headers, resp.sse_close_after_write);
                 if (!resp.body.empty())
                     conn->Write(resp.body.data(), resp.body.size());
             } catch (const std::exception&) {
+                return;
+            }
+            if (resp.sse_close_after_write) {
+                conn->Close();
                 return;
             }
             auto id = AddSseClient([conn](std::string_view data) {
@@ -637,13 +652,14 @@ void Impl::WriteResponse(net::TcpSocket& conn, int status,
 
 void Impl::WriteSseHeaders(
     net::TcpSocket& conn,
-    const std::unordered_map<std::string, std::string>& headers) {
+    const std::unordered_map<std::string, std::string>& headers,
+    bool close_after_write) {
     std::string out;
     out.reserve(512 + headers.size() * 32);
     out += "HTTP/1.1 200 OK\r\n";
     out += "Content-Type: text/event-stream\r\n";
     out += "Cache-Control: no-cache\r\n";
-    out += "Connection: keep-alive\r\n";
+    out += close_after_write ? "Connection: close\r\n" : "Connection: keep-alive\r\n";
     for (const auto& [k, v] : headers) {
         out += k;
         out += ": ";
@@ -706,6 +722,7 @@ uint64_t Impl::AddSseClient(std::function<void(std::string_view)> send_fn) {
     std::lock_guard<std::mutex> lock(sse_mutex_);
     auto id = next_sse_id_++;
     sse_clients_[id] = std::move(entry);
+    keepalive_cv_.notify_one();
     return id;
 }
 
@@ -766,6 +783,34 @@ void Impl::BroadcastSse(std::string_view event) {
         } catch (const std::exception& e) {
             MCP_LOG(Warning, std::string("SSE send failed: ") + e.what());
             RemoveSseClientEntry(entry, true);
+        }
+    }
+}
+
+void Impl::KeepAliveLoop() {
+    auto interval = std::chrono::milliseconds(options_.sse_keep_alive_ms);
+    for (;;) {
+        std::unique_lock<std::mutex> lock(sse_mutex_);
+        keepalive_cv_.wait_for(lock, interval, [this] {
+            return !running_.load() || !sse_clients_.empty();
+        });
+        if (!running_.load())
+            return;
+        if (sse_clients_.empty())
+            continue;
+        std::vector<std::shared_ptr<SseClientEntry>> entries;
+        entries.reserve(sse_clients_.size());
+        for (auto& [id, entry] : sse_clients_)
+            entries.push_back(entry);
+        lock.unlock();
+        for (auto& entry : entries) {
+            try {
+                std::lock_guard<std::mutex> write_lock(entry->write_mutex);
+                entry->send_fn(kSsePingFrame);
+            } catch (const std::exception& e) {
+                MCP_LOG(Warning, std::string("SSE keepalive send failed: ") + e.what());
+                RemoveSseClientEntry(entry, true);
+            }
         }
     }
 }
