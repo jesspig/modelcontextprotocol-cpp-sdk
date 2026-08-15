@@ -266,14 +266,38 @@ using PingResult = EmptyResult;
 // ====================================================================
 // InputRequiredResult (MRTR)
 // ====================================================================
+struct SamplingMessage {
+    std::string role;
+    ContentVariant content;
+};
+
+struct CreateMessageRequestParams {
+    std::vector<SamplingMessage> messages;
+    int64_t max_tokens;
+    std::optional<std::string> stop_reason;
+    std::optional<std::string> model_preference;
+};
+
+struct ListRootsRequestParams {};
+
 struct InputRequestElicit {
     std::string message;
     std::optional<JsonValue> requested_schema = std::nullopt;
 };
 
+struct InputRequestSampling {
+    CreateMessageRequestParams params;
+};
+
+struct InputRequestRoots {
+    ListRootsRequestParams params;
+};
+
 struct InputRequests {
     std::optional<InputRequestElicit> confirm;
     std::optional<InputRequestElicit> elicit;
+    std::optional<InputRequestSampling> sampling;
+    std::optional<InputRequestRoots> roots;
 };
 
 struct InputRequiredResult {
@@ -335,18 +359,6 @@ std::optional<InputRequests> ExtractInputRequests(const JsonValue& result);
 // ====================================================================
 // Sampling [deprecated] — use Elicitation instead (SEP-2577).
 // ====================================================================
-struct SamplingMessage {
-    std::string role;
-    ContentVariant content;
-};
-
-struct CreateMessageRequestParams {
-    std::vector<SamplingMessage> messages;
-    int64_t max_tokens;
-    std::optional<std::string> stop_reason;
-    std::optional<std::string> model_preference;
-};
-
 struct CreateMessageResult : Result {
     std::string role;
     ContentVariant content;
@@ -361,8 +373,6 @@ struct Root {
     std::string uri;
     std::optional<std::string> name;
 };
-
-struct ListRootsRequestParams {};
 
 struct ListRootsResult : Result {
     std::vector<Root> roots;
@@ -418,6 +428,11 @@ struct UpdateTaskRequestParams {
 struct CancelTaskRequestParams {
     std::string task_id;
     std::optional<std::string> reason;
+};
+
+struct TaskStatusNotificationParams {
+    std::string task_id;
+    std::string status;
 };
 
 // ====================================================================
@@ -532,6 +547,10 @@ DiscoverResult DeserializeDiscoverResult(const JsonValue& j);
 
 JsonValue SerializeInputRequestElicit(const InputRequestElicit& v);
 InputRequestElicit DeserializeInputRequestElicit(const JsonValue& j);
+JsonValue SerializeInputRequestSampling(const InputRequestSampling& v);
+InputRequestSampling DeserializeInputRequestSampling(const JsonValue& j);
+JsonValue SerializeInputRequestRoots(const InputRequestRoots& v);
+InputRequestRoots DeserializeInputRequestRoots(const JsonValue& j);
 JsonValue SerializeInputRequests(const InputRequests& v);
 InputRequests DeserializeInputRequests(const JsonValue& j);
 JsonValue SerializeInputRequiredResult(const InputRequiredResult& v);
@@ -574,6 +593,7 @@ JsonValue SerializeUpdateTaskRequestParams(const UpdateTaskRequestParams& v);
 UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j);
 JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v);
 CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j);
+JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v);
 
 JsonValue SerializeRequestOptions(const RequestOptions& v);
 RequestOptions DeserializeRequestOptions(const JsonValue& j);

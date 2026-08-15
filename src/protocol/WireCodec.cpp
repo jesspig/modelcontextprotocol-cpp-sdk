@@ -51,6 +51,11 @@ inline const std::unordered_set<std::string_view> k2025OnlyNotifMethods = {
     "notifications/roots/list_changed",
     "notifications/elicitation/complete",
     "notifications/tasks/status",
+    "notifications/tasks/working",
+    "notifications/tasks/completed",
+    "notifications/tasks/failed",
+    "notifications/tasks/cancelled",
+    "notifications/tasks/input_required",
 };
 
 inline const std::unordered_set<std::string_view> k2026OnlyNotifMethods = {

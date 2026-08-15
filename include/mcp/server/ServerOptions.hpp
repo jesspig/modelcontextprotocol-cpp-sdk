@@ -45,7 +45,7 @@ struct MCP_API ServerOptions {
 
     // Input required (MRTR) config
     struct InputRequiredConfig {
-        int max_rounds{8};
+        int max_rounds{10};
         std::chrono::seconds round_timeout{600};
         bool legacy_shim{true};
     };
