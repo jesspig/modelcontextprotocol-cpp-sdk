@@ -28,6 +28,7 @@ ctest --preset debug --output-on-failure
 - 不写代码注释，意图靠命名与结构表达
 - 提交信息：带 scope 的 Conventional Commits，scope 与描述均为中文（如 `refactor(网络栈):`、`docs(文档):`、`bench(核心库):`）
 - 分支/发布：功能开发在 `feature/*`（合入 `develop`），发布走 `release/*` → 打 tag `X.Y.Z`（无 v 前缀，历史至 0.3.1）
+- **docs.yml 部署分支铁律**：`docs.yml` 仅允许在 `master` 分支触发并部署 GitHub Pages——这是唯一允许的分支，绝不允许改为 `develop` 或任何其他分支，也绝不允许为其他分支开通 Pages 部署权限；任何将 docs.yml 在除 `master` 以外分支触发的修改都是绝对错误的行为
 
 ## 关键陷阱
 
