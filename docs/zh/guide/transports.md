@@ -82,7 +82,7 @@ IClientTransport（连接工厂）
 | `enable_legacy_sse` | `bool`                           | `true`          | 在 GET 上提供 SSE 流          |
 | `event_store`     | `std::shared_ptr<EventStore>`      | `nullptr`       | 用于恢复的事件存储            |
 | `server_name`     | `std::string`                      | `"mcp-server"`  | 用于发现的服务器名称          |
-| `server_version`  | `std::string`                      | `"0.3.0"`       | 用于发现的服务器版本          |
+| `server_version`  | `std::string`                      | `"0.3.1"`       | 用于发现的服务器版本          |
 
 ### `InMemoryTransport::Pair`
 ```cpp
