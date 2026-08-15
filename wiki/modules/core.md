@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-08-15T20:49:00+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -14,9 +14,9 @@ resource: src/core/JsonValue.cpp
 ## JSON 值模型
 
 - `JsonValue` 基于 `std::variant<nullptr_t, bool, int64_t, double, string, Array, Object>`；无 uint64/float 类型（[JsonValue.hpp](../../include/mcp/JsonValue.hpp)）
-- `Dump()` 手写序列化：NaN/Inf 输出 `null`，double 用 `max_digits10` 精度，浮点格式经 `std::to_chars`（`chars_format::general`，**locale 无关**；MSVC/glibc≥11 启用，否则回退 `snprintf("%.17g")`，[JsonValue.cpp](../../src/core/JsonValue.cpp)）
+- `Dump()` 手写序列化：NaN/Inf 输出 `null`，double 用 `max_digits10` 精度，浮点格式经 `std::to_chars`（`chars_format::general`，**locale 无关**；MSVC/glibc≥11 或 `__cpp_lib_to_chars` 启用，否则回退 `snprintf("%.17g")`，[JsonValue.cpp](../../src/core/JsonValue.cpp)）
 - 解析用自研递归下降解析器（[JsonParser.cpp](../../src/core/JsonParser.cpp)，`mcp::detail::json`）；深度上限 512，数字超界分类（uint64 超 int64 抛 `DeserializeFailed`，其余语法/范围错误抛 `ParseError`，消息带 offset）；浮点 `from_chars` 下溢（如 `1e-400`）返回 0.0，**仅非有限值才报 "number out of range"**；`Parse` 失败抛 `McpError`
-- 非 const `operator[]` 缺失键时单次 `emplace` 插入 null 并返回引用；const 版本抛 `DeserializeFailed`（[JsonValue.cpp:234](../../src/core/JsonValue.cpp)）
+- 非 const `operator[]` 缺失键时单次 `emplace` 插入 null 并返回引用；const 版本抛 `DeserializeFailed`（[JsonValue.cpp:293](../../src/core/JsonValue.cpp)）
 - 详见 [/classes/json-value.md](../classes/json-value.md)
 
 ## JSON-RPC 消息
@@ -29,11 +29,11 @@ resource: src/core/JsonValue.cpp
 |------|------|----------|
 | 基础类型 | 13 | Tool、Resource、ResourceTemplate、Prompt、Pagination、Result 等 11 struct + ToolExecutionMode、ResultType 2 枚举 |
 | Params | 28 | 21 struct（Paginated/Resource/CallTool/GetPrompt/Complete/Discover/Initialize/SubscriptionsListen/Elicit/CreateMessage/ListRoots/SetLevel + tasks 3 + MRTR 三件套 + Root/SamplingMessage/SubscriptionFilter）+ 7 alias（ListTools/ListResources/ListResourceTemplates/ListPrompts/ReadResource/Subscribe/Unsubscribe） |
-| Results | 19 | 16 struct（EmptyResult、CallToolResult、DiscoverResult、ElicitResultTyped\<T\> 模板、List\* 五件套、GetTaskResult 等）+ 3 alias（Ping/UpdateTask/CancelTask） |
+| Results | 20 | 15 个继承 `Result` 的 struct（EmptyResult、CallToolResult、List\* 五件套、ReadResource/GetPrompt/Complete/Initialize/Discover/InputRequiredResult、ElicitResult、CreateMessageResult、ListRootsResult）+ `ElicitResultTyped\<T\>` 模板 + `GetTaskResult` + 3 alias（Ping/UpdateTask/CancelTask） |
 | Notifications | 4 | SubscriptionsAcknowledged、Progress/Cancelled/LoggingMessage 参数 |
 | Options | 5 | RequestOptions、CacheableRequestOptions、ToolOptions、ResourceOptions、PromptOptions |
 
-所有类型都有成对 `SerializeXxx/DeserializeXxx` 自由函数（84 对：McpTypes.hpp 54 + Content.hpp 16 + Capabilities.hpp 9 + JsonRpc.cpp 5，公共类型声明于 [McpTypes.hpp](../../include/mcp/McpTypes.hpp)，实现分布在各 `McpTypes*.cpp`）。Result 序列化统一带 `resultType` 键。`List*Result` 五件套收敛为模板辅助 `SerializeListItems / WriteListResultCommon / DeserializeListItems / ReadListResultCommon`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）；各 `McpTypes*.cpp` 不再放置前向声明，以公共头声明为准。`LoggingMessageNotificationParams.logger` 为 `std::optional<std::string>`（[McpTypes.hpp:304](../../include/mcp/McpTypes.hpp)）。反序列化类型校验：`ProgressNotificationParams.progress` 须 `IsNumber`（double/int 皆可）、`CreateMessageRequestParams.maxTokens` 须 `IsInt`（类型不符抛 `DeserializeFailed`）。
+所有类型都有成对 `SerializeXxx/DeserializeXxx` 自由函数（87 对：McpTypes.hpp 56 + Content.hpp 16 + Capabilities.hpp 9 + JsonRpc.cpp 6，另有 `SerializeTaskStatusNotificationParams` 单边无配套反序列化、JsonRpc 的 Request/Response/Message 提供 `&&` 移动重载；公共类型声明于 [McpTypes.hpp](../../include/mcp/McpTypes.hpp)，实现分布在各 `McpTypes*.cpp`）。Result 序列化统一带 `resultType` 键。`List*Result` 五件套收敛为模板辅助 `SerializeListItems / WriteListResultCommon / DeserializeListItems / ReadListResultCommon`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）；各 `McpTypes*.cpp` 不再放置前向声明，以公共头声明为准。`LoggingMessageNotificationParams.logger` 为 `std::optional<std::string>`（[McpTypes.hpp:328](../../include/mcp/McpTypes.hpp)）。反序列化类型校验：`ProgressNotificationParams.progress` 须 `IsNumber`（double/int 皆可）、`CreateMessageRequestParams.maxTokens` 须 `IsInt`（类型不符抛 `DeserializeFailed`）。
 
 ## 常量集
 

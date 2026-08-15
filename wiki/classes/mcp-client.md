@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、MRTR、响应缓存与任务轮询。
 tags: [client, 门面, 协商, mrt]
-timestamp: 2026-08-15T03:15:00+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -32,11 +32,11 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:248](../../src/client/M
 
 - `WireClientHandlers()` 注册 5 个通知处理器（[McpClient.cpp:484](../../src/client/McpClient.cpp)）：三个 listChanged → `response_cache_->Clear()`；`resources/updated` → 按 uri 键**单键失效**（`Invalidate`，其余缓存保留）；`subscriptions/acknowledged` → 匹配 `SubscribeAsync` 待确认订阅并转发用户处理器（经 `SetNotificationHandler` 特判存储的 `user_ack_notification_handler_`，不覆盖内部逻辑）；另注册 elicit 请求处理器
 - 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置 → `MethodNotFound`；`SetLoggingHandler` 未设置 → 静默丢弃
-- 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），读取 `GetAny` 双分区查（public 优先）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint`/`CacheIfHinted` 兼容两种形态（顶层 `ttlMs`/`cacheScope` 优先，回退嵌套 `cacheHint`）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
-- MRTR：`SendRequestWithMrtr` 循环 `input_required`，`max_rounds`（默认 10）超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout；`input_requests` 三类型（elicit/confirm → elicitation、sampling、roots）分派对应 handler，无请求项时 state-only 退避（50ms ×2、封顶 250ms，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
+- 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），读取 `GetAny` 双分区查（public 优先）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint` 顶层 `ttlMs`/`cacheScope` 优先回退嵌套 `cacheHint`，而 `CacheIfHinted` 顺序**相反**（嵌套优先、顶层兜底，[McpClient.cpp:86](../../src/client/McpClient.cpp)）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
+- MRTR：`SendRequestWithMrtr` 循环 `input_required`——**仅当 `ClientOptions::input_required_config` 显式配置**（`auto_fulfill` 默认开）时启用，未配置 `max_rounds=0` 仅 1 轮；配置时 `max_rounds`（默认 10）超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout；`input_requests` 三类型（elicit/confirm → elicitation、sampling、roots）分派对应 handler，无请求项时 state-only 退避（50ms ×2、封顶 250ms，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
 - 自动翻页上限 `kMaxAutoPages = 64` 页；任务轮询 500ms 间隔 / 300s 超时（`PollTaskToCompletion` 默认参）
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）
-- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.0"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`
+- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.1"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`
 
 ## 相关页面
 

@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，以及任务/令牌存储的失败语义。
 tags: [storage, 原子写入, fsync, 持久化]
-timestamp: 2026-08-13T12:36:14+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -11,7 +11,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 ## AtomicJsonFile（[AtomicJsonFile.hpp](../../include/mcp/detail/AtomicJsonFile.hpp)）
 
-- `WriteAtomic(path, contents)`：临时文件名为 `<path>.tmp.<pid>`（**多进程不踩踏**）；写入后 `fflush` + 刷盘（Windows `FlushFileBuffers` / POSIX `fsync`）再 rename
+- `WriteAtomic(path, contents)`：临时文件名为 `<path>.tmp.<pid>.<counter>`（pid + 进程内静态自增计数器，多进程与同进程并发均不踩踏，[AtomicJsonFile.cpp:21](../../src/detail/AtomicJsonFile.cpp)）；写入后 `fflush` + 刷盘（Windows `FlushFileBuffers` / POSIX `fsync`）再 rename
 - 失败（打开/写/刷盘/rename）删除残留 tmp 并记 Error 日志、返回 false
 - `WriteAtomic(path, JsonValue)`：`Dump(2)` 缩进 2 后走字节重载
 - `LoadJson(path)`：文件不存在返回 null；打开失败或解析出 null 抛 `runtime_error`
@@ -38,7 +38,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 ## 失败语义约定
 
-- `CreateTask/UpdateTask/CancelTask/SetTaskStatus` 返回 `false` **仅表示任务不存在**（不是持久化失败——持久化失败抛异常）
+- `UpdateTask/CancelTask/SetTaskStatus` 返回 `false` **仅表示任务不存在**（不是持久化失败——持久化失败抛异常）；`CreateTask` 不返回 bool（返回 `TaskState`，重复创建直接抛 `runtime_error`）
 - token 刷新失败不回退旧 token
 
 ## 相关页面

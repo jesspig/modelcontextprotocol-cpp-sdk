@@ -3,7 +3,7 @@ type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-08-15T20:49:00+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -18,8 +18,8 @@ resource: include/mcp/detail/ThreadUtils.hpp
 | McpSessionHandler | 消息循环线程 + 超时检查线程（100ms 轮询）+ **响应回发线程**（response_worker_） |
 | Stdio 传输 | 读循环线程 |
 | SSE 客户端 | SSE 读线程 + 发送线程 |
-| Streamable HTTP 客户端 | 发送线程 + SSE 读线程（Win32） |
-| HttpServer | accept 线程 + 每连接线程（上限 256） |
+| Streamable HTTP 客户端 | 仅发送线程（SSE 响应由发送线程同步读，Win32 原先独立 SSE 读线程已移除） |
+| HttpServer | accept 线程 + 每连接线程（上限 256）+ SSE keepalive 线程 |
 
 ## 响应回发机制（response_worker_）
 

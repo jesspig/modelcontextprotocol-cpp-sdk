@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、任务存储集成。
 tags: [server, 工具注册, 资源, 提示词, 任务]
-timestamp: 2026-08-15T03:15:00+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -19,14 +19,14 @@ resource: src/server/McpServer.cpp
 
 ## WireHandlers 方法清单
 
-`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:386](../../src/server/McpServer.cpp)）：
+`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:420](../../src/server/McpServer.cpp)）：
 
 - **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件）
 - **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时）、`resources/subscribe|unsubscribe`（有资源时，2025-era）
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）
 - **WireExtensionHandlers**：`server/extensions/list`
-- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:576](../../src/server/McpServer.cpp)）
+- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:616](../../src/server/McpServer.cpp)）
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
 `initialized_` 标志守护除 `initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 外的所有处理器（现代协议经 discover 直接视为已初始化）。
