@@ -407,7 +407,10 @@ private:
         double double_val = 0;
         auto res = std::from_chars(first, last, double_val);
         if (res.ec == std::errc()) return JsonValue(double_val);
-        if (res.ec == std::errc::result_out_of_range) Fail("number out of range");
+        if (res.ec == std::errc::result_out_of_range) {
+            if (!std::isfinite(double_val)) Fail("number out of range");
+            return JsonValue(double_val);
+        }
         Fail("invalid number");
 #endif
     }
