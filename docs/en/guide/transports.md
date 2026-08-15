@@ -82,7 +82,7 @@ Controls how the HTTP client transport connects:
 | `enable_legacy_sse`    | `bool`                             | `true`       | Serve SSE stream on GET              |
 | `event_store`          | `std::shared_ptr<EventStore>`      | `nullptr`    | Event store for resumption           |
 | `server_name`          | `std::string`                      | `"mcp-server"` | Server name for discovery         |
-| `server_version`       | `std::string`                      | `"0.3.0"`    | Server version for discovery         |
+| `server_version`       | `std::string`                      | `"0.3.1"`    | Server version for discovery         |
 
 ### `InMemoryTransport::Pair`
 ```cpp

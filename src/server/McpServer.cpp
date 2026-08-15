@@ -3,6 +3,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/McpVersion.hpp>
 #include <mcp/Log.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerialize_fwd.hpp>
@@ -1058,7 +1059,7 @@ void McpServer::HandleDiscover(
             {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.3.0", {}};
+        result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
@@ -1125,7 +1126,7 @@ void McpServer::HandleInitialize(
             {}
         };
     } else {
-        result.server_info = Implementation{"mcp-server", "0.3.0", {}};
+        result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
     }
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;

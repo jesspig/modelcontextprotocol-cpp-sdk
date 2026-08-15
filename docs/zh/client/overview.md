@@ -19,7 +19,7 @@ auto client = McpClient::Create(transport, opts);
 
 | 字段 | 类型 | 描述 |
 |-------|------|-------------|
-| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.3.0"}`） |
+| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.3.1"}`） |
 | `capabilities` | `optional<ClientCapabilities>` | 声明的能力 |
 | `connect_mode` | `ConnectMode` | `Auto`（发现 → 初始化）、`Legacy`、`Pin` |
 | `initialization_timeout` | `chrono::seconds` | 握手超时（默认 60s） |

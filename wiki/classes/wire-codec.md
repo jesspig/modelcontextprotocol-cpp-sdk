@@ -3,7 +3,7 @@ type: Class
 title: WireCodec
 description: 按协议时代划分的线协议词汇表：方法成员判定、消息校验、meta 处理与错误码映射。
 tags: [protocol, codec, 双时代, 2026]
-timestamp: 2026-08-15T03:15:00+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: src/protocol/WireCodec.cpp
 ---
 
@@ -32,7 +32,7 @@ resource: src/protocol/WireCodec.cpp
 - 2025 独有（13）：initialize、ping、resources/subscribe、resources/unsubscribe、logging/setLevel、roots/list、sampling/createMessage、elicitation/create、tasks/get、tasks/update、tasks/cancel、tasks/result、tasks/list
 - 2026 独有（2）：server/discover、subscriptions/listen（2026 合计 10 个请求方法）
 
-通知共 **17 种**：公共 7 + 2025 独有 9（initialized、roots/list_changed、elicitation/complete、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required）+ 2026 独有 1（subscriptions/acknowledged）。2026 = 8 种、2025 = 16 种。5 个 `notifications/tasks/*` 独有通知于 2026-08-15 加回 2025-only 集合（服务端 `SendTaskStatus`/任务完成通知使用，[WireCodec.cpp:50](../../src/protocol/WireCodec.cpp)）。
+通知共 **17 种**：公共 7 + 2025 独有 9（initialized、roots/list_changed、elicitation/complete、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required）+ 2026 独有 1（subscriptions/acknowledged）。2026 = 8 种、2025 = 16 种。6 个 `notifications/tasks/*` 独有通知于 2026-08-15 加回 2025-only 集合（服务端 `SendTaskStatus`/任务完成通知使用，[WireCodec.cpp:50](../../src/protocol/WireCodec.cpp)）。
 
 2026 时代入站收到 ping、tasks/*、elicitation/create 等不在时代的方法：`ValidateRequest` 判定为 `NotInEra`，McpSessionHandler 回 `-32601 MethodNotFound`（initialize 豁免，[McpSessionHandler.cpp:227](../../src/protocol/McpSessionHandler.cpp)）。
 

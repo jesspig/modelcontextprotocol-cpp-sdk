@@ -7,6 +7,7 @@
 #include <mcp/Implementation.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>
+#include <mcp/McpVersion.hpp>
 
 #include <chrono>
 #include <optional>
@@ -25,7 +26,7 @@ enum class ConnectMode {
 // ── ClientOptions (对应 C# McpClientOptions) ──
 struct MCP_API ClientOptions {
     // Client identity
-    Implementation client_info{"mcp-cpp-client", "0.3.0"};
+    Implementation client_info{"mcp-cpp-client", std::string(kSdkVersion)};
     std::optional<ClientCapabilities> capabilities;
 
     // Connection mode

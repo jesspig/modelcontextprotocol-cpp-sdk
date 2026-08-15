@@ -3,7 +3,7 @@ type: Module
 title: mcp-client 客户端库
 description: McpClient 门面：连接模式协商、请求/响应、OAuth 与令牌缓存。
 tags: [client, oauth, 缓存, 协商]
-timestamp: 2026-08-15T03:15:00+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: src/client/McpClient.cpp
 ---
 
@@ -38,7 +38,7 @@ resource: src/client/McpClient.cpp
 
 ### 缓存读取兼容
 
-`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 同样识别两种形态（[McpClient.cpp:67](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private），`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
+`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp:86](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private），`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
 
 ## 相关页面
 

@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存。
 tags: [oauth, pkce, 安全, rfc9207]
-timestamp: 2026-08-14T21:59:51+08:00
+timestamp: 2026-08-15T22:30:00+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -19,7 +19,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 ## 授权码流
 
-- **PKCE S256**：`GenerateCodeVerifier` 32 随机字节 → Base64url（OpenSSL `RAND_bytes`，无则 `random_device + mt19937` 回退）；`ComputeCodeChallenge` 经内置 SHA-256（[sha256.hpp](../../include/mcp/detail/sha256.hpp)，FIPS 180-4 独立实现，不依赖 OpenSSL）
+- **PKCE S256**：`GenerateCodeVerifier` 32 随机字节 → Base64url（OpenSSL `RAND_bytes`；无 OpenSSL 时 Win32 走 `BCryptGenRandom`，仅 POSIX 回退 `random_device + mt19937`）；`ComputeCodeChallenge` 经内置 SHA-256（[sha256.hpp](../../include/mcp/detail/sha256.hpp)，FIPS 180-4 独立实现，不依赖 OpenSSL）
 - **CSRF 校验**（RFC 6749 §10.12）：回调返回的 state 必须等于发送的 state
 - `ValidateTokenIssuer`（**RFC 9207 强制**）：token/refresh 响应缺 `iss` 或与 metadata issuer 不匹配即拒绝
 
