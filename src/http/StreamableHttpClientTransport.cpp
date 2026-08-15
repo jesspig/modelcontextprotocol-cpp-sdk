@@ -401,6 +401,16 @@ private:
                 while (WinHttpReadData(hRequest, sbuf, sizeof(sbuf), &sread) && sread > 0) {
                     sse_body.append(sbuf, sread);
                     sread = 0;
+                    if (sse_body.size() > detail::kMaxMessageSize) {
+                        sse_request_ = nullptr;
+                        sse_body.clear();
+                        MCP_LOG(Error, "HTTP SSE response exceeded max message size");
+                        NotifyError("HTTP SSE response exceeded max message size");
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        return;
+                    }
                 }
                 sse_request_ = nullptr;
                 size_t pos;

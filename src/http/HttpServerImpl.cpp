@@ -196,19 +196,13 @@ void Impl::Stop() {
             listen_fd_ = -1;
         }
     }
-    std::vector<int> fds;
+    std::vector<std::shared_ptr<net::TcpSocket>> conns;
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
-        fds = conn_fds_;
+        conns = conn_fds_;
     }
-    for (int cfd : fds) {
-#ifdef _WIN32
-        ::shutdown(static_cast<SOCKET>(cfd), SD_BOTH);
-#else
-        ::shutdown(cfd, SHUT_RDWR);
-#endif
-        CloseFd(cfd);
-    }
+    for (auto& conn : conns)
+        conn->Close();
     // Join the keepalive thread after connection shutdown so a blocked SSE
     // write is aborted by the closed socket instead of stalling Stop().
     detail::JoinThreadSafely(keepalive_thread_);
@@ -284,12 +278,14 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
         }
 #endif
         bool over_limit = false;
+        std::shared_ptr<net::TcpSocket> conn_obj;
         {
             std::lock_guard<std::mutex> lock(conns_mutex_);
             if (conn_fds_.size() >= kMaxConnections) {
                 over_limit = true;
             } else {
-                conn_fds_.push_back(cfd);
+                conn_obj = std::make_shared<net::TcpSocket>(net::TcpSocket::FromFd(cfd));
+                conn_fds_.push_back(conn_obj);
             }
         }
         if (over_limit) {
@@ -303,9 +299,12 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
         try {
             auto done = std::make_shared<std::atomic<bool>>(false);
             conn_threads_.emplace_back(ConnEntry{
-                std::thread(&Impl::HandleConnection, this, cfd, handlers, done), done});
+                std::thread(&Impl::HandleConnection, this, conn_obj, handlers, done), done});
         } catch (const std::exception&) {
-            CloseFd(cfd);
+            std::lock_guard<std::mutex> lock(conns_mutex_);
+            auto it = std::find(conn_fds_.begin(), conn_fds_.end(), conn_obj);
+            if (it != conn_fds_.end())
+                conn_fds_.erase(it);
         }
     }
     std::lock_guard<std::mutex> lock(conns_mutex_);
@@ -315,24 +314,25 @@ void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
     }
 }
 
-void Impl::HandleConnection(int fd, HandlerMap handlers,
+void Impl::HandleConnection(const std::shared_ptr<net::TcpSocket>& conn,
+                            HandlerMap handlers,
                             std::shared_ptr<std::atomic<bool>> done) {
     try {
-        HandleConnectionInner(fd, std::move(handlers));
+        HandleConnectionInner(conn, std::move(handlers));
     } catch (const std::exception& e) {
         MCP_LOG(Warning, std::string("connection handler error: ") + e.what());
     }
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
-        auto it = std::find(conn_fds_.begin(), conn_fds_.end(), fd);
+        auto it = std::find(conn_fds_.begin(), conn_fds_.end(), conn);
         if (it != conn_fds_.end())
             conn_fds_.erase(it);
     }
     done->store(true);
 }
 
-void Impl::HandleConnectionInner(int fd, HandlerMap handlers) {
-    auto conn = std::make_shared<net::TcpSocket>(net::TcpSocket::FromFd(fd));
+void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
+                                 HandlerMap handlers) {
     std::string buffer;
     bool keep_alive = true;
     bool first_request = true;
