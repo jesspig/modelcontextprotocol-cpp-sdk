@@ -255,14 +255,14 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
     }
 }
 
-void TcpSocket::WaitWriteable(std::chrono::milliseconds timeout) {
-    if (fd_ == INVALID_SOCKET) return;
-    WaitForEvents(POLLOUT, ClampTimeoutMs(timeout));
+bool TcpSocket::WaitWriteable(std::chrono::milliseconds timeout) {
+    if (fd_ == INVALID_SOCKET) return false;
+    return WaitForEvents(POLLOUT, ClampTimeoutMs(timeout));
 }
 
-void TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
-    if (fd_ == INVALID_SOCKET) return;
-    WaitForEvents(POLLIN, ClampTimeoutMs(timeout));
+bool TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
+    if (fd_ == INVALID_SOCKET) return false;
+    return WaitForEvents(POLLIN, ClampTimeoutMs(timeout));
 }
 
 void TcpSocket::Close() {

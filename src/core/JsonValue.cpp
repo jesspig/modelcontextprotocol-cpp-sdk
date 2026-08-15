@@ -4,11 +4,13 @@
 #include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
 
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 
 namespace mcp::detail {
 
@@ -21,6 +23,26 @@ JsonValue ParseJsonString(std::string_view json) {
 }
 
 // ── Hand-written JSON serializer ──
+
+namespace {
+
+std::string JsonValueFormatDoubleFallback(double d) {
+    char buf[64];
+    int len = std::snprintf(buf, sizeof(buf), "%.*g",
+        std::numeric_limits<double>::max_digits10, d);
+    return std::string(buf, static_cast<size_t>(len));
+}
+
+std::string JsonValueFormatDouble(double d) {
+#if defined(_MSC_VER) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11) || defined(__cpp_lib_to_chars)
+    char buf[64];
+    auto res = std::to_chars(buf, buf + sizeof(buf), d, std::chars_format::general);
+    if (res.ec == std::errc()) return std::string(buf, res.ptr);
+#endif
+    return JsonValueFormatDoubleFallback(d);
+}
+
+} // namespace
 
 static void AppendEscapedString(std::string& out, const std::string& s) {
     out.push_back('"');
@@ -94,10 +116,7 @@ static void DumpValue(std::string& out, const JsonValue& jv, int indent, int dep
     } else if (jv.IsDouble()) {
         double d = jv.GetDouble();
         if (std::isfinite(d)) {
-            char buf[64];
-            int len = std::snprintf(buf, sizeof(buf), "%.*g",
-                std::numeric_limits<double>::max_digits10, d);
-            std::string_view repr(buf, static_cast<size_t>(len));
+            std::string repr = JsonValueFormatDouble(d);
             out += repr;
             if (repr.find_first_of(".eE") == std::string_view::npos) out += ".0";
         } else {

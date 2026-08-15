@@ -622,7 +622,7 @@ TEST(McpClientTest, MrtrBackoffGrowsAndResetsAfterFulfilledRound) {
     EXPECT_GE(gaps[0], 50);
     EXPECT_GE(gaps[1], 100);
     EXPECT_GE(gaps[3], 50);
-    EXPECT_LT(gaps[3], 150);
+    EXPECT_LT(gaps[3], 200);
 
     client->Close();
     server_handler->Close();

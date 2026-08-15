@@ -27,6 +27,7 @@ namespace {
 
 constexpr std::chrono::milliseconds kBackoffBase(1000);
 constexpr std::chrono::milliseconds kBackoffCap(30000);
+constexpr std::chrono::milliseconds kSseClientIdleTimeout(5 * 60 * 1000);
 constexpr int kMaxReconnectAttempts = 2;
 
 std::string ResolveEndpoint(const std::string& server_url, const std::string& endpoint) {
@@ -177,6 +178,7 @@ private:
             detail::net::HttpRequestSpec req;
             req.method = "GET";
             req.url = server_url_;
+            req.timeout = kSseClientIdleTimeout;
             req.headers["Accept"] = "text/event-stream";
             if (!last_event_id_.empty()) {
                 req.headers["Last-Event-ID"] = last_event_id_;
@@ -256,9 +258,7 @@ private:
             !evt.retry_ms.has_value()) {
             return;
         }
-        if (evt.id.empty()) {
-            last_event_id_.clear();
-        } else {
+        if (!evt.id.empty()) {
             last_event_id_ = std::move(evt.id);
         }
 

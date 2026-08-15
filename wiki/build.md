@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、系统依赖（仅可选 OpenSSL）。
 tags: [cmake, ninja, unity, lto]
-timestamp: 2026-08-14T10:56:04+08:00
+timestamp: 2026-08-15T20:49:00+08:00
 resource: CMakePresets.json
 ---
 
@@ -45,6 +45,11 @@ ctest --preset debug --output-on-failure
 | 依赖 | 版本 | 说明 |
 |------|------|------|
 | OpenSSL | 系统 | 可选；`MCP_HAVE_OPENSSL` 定义，PKCE 失败回落内置 SHA-256 |
+
+## CI 工作流（.github/workflows/）
+
+- `ci.yml`（三 OS × debug/release 6 job，fail-fast false）：actions 升版——checkout/cache @v5；**删除 Setup Ninja 步骤**（GitHub 镜像预装）；sccache 统一 `mozilla-actions/sccache-action@v0.0.7` 三平台（删除 Windows choco/macOS brew/Linux apt 安装步骤），`SCCACHE_DIR` 统一 `~/.cache/sccache`（缓存路径单一化，Windows 不再用 `AppData\Local\Mozilla\sccache`）；OpenSSL：Linux 显式 `libssl-dev`、macOS `brew install openssl`（`HOMEBREW_NO_AUTO_UPDATE`/`HOMEBREW_NO_INSTALL_CLEANUP`）、**Windows 删除 choco openssl**（镜像预装）
+- `docs.yml`（VitePress 发布）：触发分支 `master`→`develop`（与仓库主分支一致）；pnpm/action-setup@v5、setup-node@v5、cache@v5、configure-pages@v6、upload-pages-artifact@v4、deploy-pages@v5；cache key 修正为 `hashFiles('docs/**', 'docs/pnpm-lock.yaml')`（原路径错误导致缓存永不命中）
 
 ## 相关页面
 

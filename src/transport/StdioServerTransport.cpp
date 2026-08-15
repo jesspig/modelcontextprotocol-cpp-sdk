@@ -52,6 +52,7 @@ void StdioServerTransport::SendMessageAsync(JsonRpcMessage message) {
 }
 
 void StdioServerTransport::ReadLoop() {
+    std::shared_ptr<TransportBase> self = shared_from_this();
     std::string buffer;
 
     while (running_) {

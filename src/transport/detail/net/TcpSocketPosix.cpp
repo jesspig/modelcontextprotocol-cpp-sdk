@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstring>
@@ -27,6 +28,13 @@ constexpr int kSendFlags = 0;
 #else
 constexpr int kSendFlags = MSG_NOSIGNAL;
 #endif
+
+void EnableNoSigpipe(int fd) {
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+}
 
 template <typename Rep, typename Period>
 int ClampTimeoutMs(std::chrono::duration<Rep, Period> ms) {
@@ -47,6 +55,17 @@ bool WaitForSocket(int fd, short events, int timeout_ms) {
     } while (rc < 0 && errno == EINTR);
     return rc > 0;
 }
+
+struct SigpipeIgnorer {
+    SigpipeIgnorer() {
+        struct sigaction sa = {};
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, nullptr);
+    }
+};
+
+const SigpipeIgnorer kSigpipeIgnorer;
 
 } // anonymous namespace
 
@@ -70,6 +89,7 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     s.fd_ = fd;
     s.closed_.store(false);
     s.eof_ = false;
+    EnableNoSigpipe(fd);
     return s;
 }
 
@@ -166,10 +186,7 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
                        "connect failed for " + host_str + ":" + port_str + ": " + std::strerror(last_error));
 
     fd_ = connected_fd;
-#ifdef __APPLE__
-    int one = 1;
-    ::setsockopt(fd_, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
+    EnableNoSigpipe(fd_);
     closed_.store(false);
     eof_ = false;
 }
@@ -196,6 +213,10 @@ std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
     }
     if (n < 0) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
+        if (errno == ECONNRESET) {
+            eof_ = true;
+            return 0;
+        }
         throw McpError(McpErrorCode::ConnectionClosed,
                        std::string("socket read failed: ") + std::strerror(errno));
     }
@@ -239,14 +260,14 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
     }
 }
 
-void TcpSocket::WaitWriteable(std::chrono::milliseconds timeout) {
-    if (fd_ < 0) return;
-    WaitForEvents(POLLOUT, ClampTimeoutMs(timeout));
+bool TcpSocket::WaitWriteable(std::chrono::milliseconds timeout) {
+    if (fd_ < 0) return false;
+    return WaitForEvents(POLLOUT, ClampTimeoutMs(timeout));
 }
 
-void TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
-    if (fd_ < 0) return;
-    WaitForEvents(POLLIN, ClampTimeoutMs(timeout));
+bool TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
+    if (fd_ < 0) return false;
+    return WaitForEvents(POLLIN, ClampTimeoutMs(timeout));
 }
 
 void TcpSocket::Close() {

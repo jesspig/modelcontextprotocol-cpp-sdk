@@ -3,20 +3,20 @@ type: Class
 title: HttpServer
 description: 自研 HTTP/1.1 PIMPL 服务端：SSE 广播、单响应流关闭、并发限制、Host/Origin 校验。
 tags: [http, sse, pimpl]
-timestamp: 2026-08-15T02:12:31+08:00
+timestamp: 2026-08-15T20:49:00+08:00
 resource: include/mcp/http/HttpServer.hpp
 ---
 
 # HttpServer
 
-PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:324](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id, true)` 移除。
+PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`，后者存 `shared_ptr<TcpSocket>`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:324](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id, true)` 移除。
 
 ## 关键行为
 
 - accept 线程 + 每连接独立线程，连接数上限 `kMaxConnections = 256`（超出直接 503）
 - `running_` 为 `std::atomic<bool>`：`Start()` 以 `exchange(true)` 防重入，`Stop()` 以 `exchange(false)`，`SetHandler` 用 `load()` 检查
 - `Start()`：建监听 socket（SO_REUSEADDR、backlog 16）→ 起 accept 线程；请求行/头在连接线程内解析，**请求头名统一转小写**
-- `Stop()`：关 listen/连接 fd 解除 accept 与读写阻塞 → join **keepalive 线程**（在连接 fd 关闭之后，避免阻塞写卡住）→ join accept 线程与全部连接线程 → 释放 impl，移入**独立 `std::thread`** 后 `JoinThreadSafely`——从连接线程回调内调用 `Stop()`（如 handler 中触发销毁）不会自 join 死锁或 UAF（self-join 防护）
+- `Stop()`：关 listen fd，对每条连接调用 `conn->Close()`（连接对象化——accept 线程与连接线程共享同一 `shared_ptr<TcpSocket>`，**不再裸 `close` 原生 fd**，消除连接线程自清理与 Stop 并发 close 的 double-close 竞态）解除读写阻塞 → join **keepalive 线程**（在连接关闭之后，避免阻塞写卡住）→ join accept 线程与全部连接线程 → 释放 impl，移入**独立 `std::thread`** 后 `JoinThreadSafely`——从连接线程回调内调用 `Stop()`（如 handler 中触发销毁）不会自 join 死锁或 UAF（self-join 防护）
 - **`SetHandler` 必须在 `Start()` 之前**：运行期抛 `std::logic_error`
 - `on_request` 钩子在处理器之前调用，抛异常仅记 Warning 不中断
 - Host 校验（403）：无 Host 直接拒；`allowed_hosts` 非空精确匹配，否则仅允许 localhost/127.0.0.1/::1；Origin 仅在 `allowed_origins` 非空时强制匹配

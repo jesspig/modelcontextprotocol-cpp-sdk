@@ -5,6 +5,7 @@
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
+#include <cstdint>
 #include <string>
 #include <type_traits>
 
@@ -18,6 +19,33 @@ void ValidateVersion(std::string_view ver) {
         throw McpError(McpErrorCode::InvalidRequest,
             std::string("JSON-RPC version mismatch: got '") + std::string(ver) +
             "', expected '" + std::string(kJsonRpcVersion) + "'");
+}
+
+bool JsonRpcIsKnownErrorCode(int64_t code) {
+    switch (code) {
+    case static_cast<int64_t>(McpErrorCode::ParseError):
+    case static_cast<int64_t>(McpErrorCode::InvalidRequest):
+    case static_cast<int64_t>(McpErrorCode::MethodNotFound):
+    case static_cast<int64_t>(McpErrorCode::InvalidParams):
+    case static_cast<int64_t>(McpErrorCode::InternalError):
+    case static_cast<int64_t>(McpErrorCode::HeaderMismatch):
+    case static_cast<int64_t>(McpErrorCode::MissingRequiredClientCapability):
+    case static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion):
+    case static_cast<int64_t>(McpErrorCode::UrlElicitationRequired):
+    case static_cast<int64_t>(McpErrorCode::ResourceNotFound):
+    case static_cast<int64_t>(McpErrorCode::ConnectionClosed):
+    case static_cast<int64_t>(McpErrorCode::RequestTimeout):
+    case static_cast<int64_t>(McpErrorCode::RequestCancelled):
+    case static_cast<int64_t>(McpErrorCode::ConnectionRefused):
+    case static_cast<int64_t>(McpErrorCode::TlsHandshakeFailed):
+    case static_cast<int64_t>(McpErrorCode::ProtocolViolation):
+    case static_cast<int64_t>(McpErrorCode::TaskNotFound):
+    case static_cast<int64_t>(McpErrorCode::HandlerError):
+    case static_cast<int64_t>(McpErrorCode::DeserializeFailed):
+        return true;
+    default:
+        return false;
+    }
 }
 
 } // namespace
@@ -43,7 +71,11 @@ JsonValue SerializeErrorData(const ErrorData& v) {
 
 ErrorData DeserializeErrorData(const JsonValue& j) {
     ErrorData v;
-    v.code = static_cast<McpErrorCode>(j[detail::kCode].GetInt());
+    int64_t code = j[detail::kCode].GetInt();
+    if (!JsonRpcIsKnownErrorCode(code))
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("JSON-RPC error code out of range: ") + std::to_string(code));
+    v.code = static_cast<McpErrorCode>(code);
     v.message = j[detail::kMessage].GetString();
     detail::DeserializeOptional(j, detail::kData, v.data);
     return v;

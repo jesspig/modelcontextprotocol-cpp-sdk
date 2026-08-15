@@ -3,7 +3,7 @@ type: Transport
 title: Stdio 传输
 description: 服务端（stdin/stdout 管道）+ 客户端（子进程）双向传输，'\n' 分隔的 JSON-RPC 行。
 tags: [transport, stdio, 管道, 子进程]
-timestamp: 2026-08-15T03:15:00+08:00
+timestamp: 2026-08-15T20:49:00+08:00
 resource: src/transport/StdioServerTransport.cpp
 ---
 
@@ -18,6 +18,7 @@ resource: src/transport/StdioServerTransport.cpp
 - 发送：`SerializeMessage(message) + "\n"` 写 stdout；写字节数不符 → `NotifyError`
 - 缓冲超限防护：`buffer.append` 后检查 > `detail::kMaxMessageSize`（8MB，[Limits.hpp](../../include/mcp/transport/detail/Limits.hpp)）→ 清空 + `NotifyError` + 退出读循环；单行超限同样 `NotifyError`（不退出，丢弃该行）
 - 读到真 EOF / 读错误 / 超限自行退出时：**不置 `running_`**（留待 Close 完整收尾并 join），关通道 + `SetDisconnected`
+- `ReadLoop` 入口 `shared_from_this()` **自持有保活**（[StdioServerTransport.cpp:55](../../src/transport/StdioServerTransport.cpp)）：IO 线程回调内 `Close()` 触发 `JoinThreadSafely` detach 后线程仍存活，成员访问不 UAF
 
 ## 客户端（工厂）
 
@@ -31,13 +32,13 @@ resource: src/transport/StdioServerTransport.cpp
 
 `PipeHandle::Read` 返回 0 **不一定是 EOF**——读循环必须用 `IsEof()` 区分"超时无数据"（继续轮询）与"真 EOF"（退出），否则空闲时被误判为断连。判停语义按平台（[win32_platform.cpp](../../src/transport/detail/win32_platform.cpp) / [posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)，接口见 [PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)）：
 
-- **POSIX**：`poll` 100ms 超时无数据即返回 0；`read` 返回 0 置 `eof_`
+- **POSIX**：`poll` 100ms 超时无数据即返回 0；`read` 返回 0 置 `eof_`；fork 安全——argv/envp 构造与 PATH 搜索在 `fork()` 前完成（fork 后仅 async-signal-safe 调用），管道 fd 与标准流 dup 设 `FD_CLOEXEC`（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）
 - **Win32 已全面 Overlapped 化**：`Win32Pipe` 持有 read/write/cancel 三个事件 + `io_mutex_` + `io_in_flight_` 计数 + `closed_`（atomic）+ `eof_`
   - `Read`：`ReadOverlapped`（`ReadFile(OVERLAPPED)` → `WaitForMultipleObjects({io_event, cancel_event}, 100ms)` → 完成走 `GetOverlappedResult`；超时或取消走 `CancelIoEx` 并等待完成）或 `ReadSync`（`PeekNamedPipe` 轮询，100ms 与 POSIX poll 对齐）
   - `Write` 同构：`WriteOverlapped`（无限等待 + cancel 解除）或 `WriteSync`
   - `Close`：置 `closed_` + `SetEvent(cancel)` + 摘句柄 + `CancelIoEx` + **等 `io_in_flight_ == 0` 才 `CloseHandle`**（消除 CloseHandle 与阻塞 ReadFile 并发 UB）
   - `IsEof()` override：`closed_ || eof_`
-- `OpenStandardInput/Output`（Win32）：优先 `CreateFileA("CONIN$"/"CONOUT$", FILE_FLAG_OVERLAPPED)`，失败 `DuplicateHandle` 复制（同步降级），再失败 `INVALID_HANDLE_VALUE`；stderr 直接包装。`CreateProcess` 的管道（`CreatePipe` 句柄）走同步路径（`overlapped_ = false`）
+- `OpenStandardInput/Output`（Win32）：优先 `CreateFileA("CONIN$"/"CONOUT$", FILE_FLAG_OVERLAPPED)`，失败 `DuplicateHandle` 复制（同步降级），再失败 `INVALID_HANDLE_VALUE`；stderr 直接包装。`CreateProcess` 的管道改 `CreateNamedPipeW` + `CreateFileW`（**父端 `FILE_FLAG_OVERLAPPED`**，64KB 缓冲），`WriteSync` 锁外化——`io_mutex_` 只在循环内短暂持锁检查 `closed_`，`WriteFile` 在锁外（原锁内阻塞写满管道会让 `Close()` 死锁等锁）
 
 ## 相关页面
 

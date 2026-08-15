@@ -3,7 +3,7 @@ type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-08-15T00:13:23+08:00
+timestamp: 2026-08-15T20:49:00+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -32,6 +32,7 @@ resource: include/mcp/detail/ThreadUtils.hpp
 ## 易翻车点
 
 - **IO 线程回调内调用 `Close()` 会 self-join**：stdio/SSE/HTTP 传输的 IO 线程直接执行用户回调（`on_transport_close`/`on_transport_error`），回调里调 `Close()` 会 join 自身线程抛异常。所有 `Close()` 必须用 `detail::JoinThreadSafely`（[ThreadUtils.hpp](../../include/mcp/detail/ThreadUtils.hpp)）：self 时 detach，否则 join
+- **detach 后线程仍会访问 `this`**：`JoinThreadSafely` detach 自身线程后该线程继续执行直到退出——`StdioServerTransport::ReadLoop` 入口 `shared_from_this()` 自持有，保证 IO 线程回调内 Close（detach）后成员访问不 UAF（[StdioServerTransport.cpp:55](../../src/transport/StdioServerTransport.cpp)）；同理，读循环退出前引用的共享对象（`shared_ptr<TcpSocket>` 等）在 stop 路径上保持存活
 - `Start()` 在 `closed_` 之后调用抛 `std::logic_error`（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:76)）
 - `SendRequest`：注册 pending 后复查 `closed_`，已关闭则立即以 `ConnectionClosed` 满足 promise（锁内注册防竞态，[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:505)）
 - `negotiated_version_` 为 `shared_ptr<const std::string>`：`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下与 codec 原子交换，`NegotiatedProtocolVersion()` 读锁下拷贝 shared_ptr、锁外解引用返回 `std::string`
