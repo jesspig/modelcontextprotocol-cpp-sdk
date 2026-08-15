@@ -3,7 +3,7 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-08-15T03:07:42+08:00
+timestamp: 2026-08-15T20:49:00+08:00
 resource: include/mcp/Transport.hpp
 ---
 
@@ -38,9 +38,14 @@ resource: include/mcp/Transport.hpp
 关键语义（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）：
 
 - `PipeHandle::Read` 返回 0 **不一定是 EOF**——POSIX 实现 poll 轮询（100ms 超时）无数据即返回 0，必须用 `IsEof()` 区分
-- POSIX 子进程：fork + 手动 PATH 搜索 + execve（execvpe 在 macOS/BSD 不可用），stderr 继承父进程；析构 SIGKILL + WNOHANG reap
-- Win32：`ArgvToCommandLine` 引号转义、`CREATE_NO_WINDOW`、stderr = 父进程标准错误
+- POSIX 子进程：**argv/envp 构造与 PATH 搜索（`access` X_OK）全部在 `fork()` 之前完成**（fork 后仅 `chdir`/`dup2`/`execve` 等 async-signal-safe 调用），stderr 继承父进程；管道 fd 与标准流 dup 均设 `FD_CLOEXEC`（`SetCloseOnExec`）；析构 SIGKILL + WNOHANG reap
+- Win32：`ArgvToCommandLine` 引号转义、`CREATE_NO_WINDOW`、stderr = 父进程标准错误；stdio 管道用 `CreateNamedPipeW` + `CreateFileW`（父端 `FILE_FLAG_OVERLAPPED`，64KB 缓冲 `kPipeBufferSize`），`WriteSync` 锁外化——`WriteFile` 不在 `io_mutex_` 内（满管道阻塞不再拖住 `Close()`）
 - 线程命名：POSIX 限 16 字节；macOS 用单参 `pthread_setname_np`；Win32 动态加载 `SetThreadDescription`
+
+## 网络栈加固（detail/net）
+
+- **SIGPIPE**（[TcpSocketPosix.cpp](../../src/transport/detail/net/TcpSocketPosix.cpp)）：`FromFd`/`Connect` 统一经 `EnableNoSigpipe` 设置 `SO_NOSIGPIPE`；TU 顶部安装进程级 `SIGPIPE` 忽略（静态 `SigpipeIgnorer` 兜底）；`Read` 遇 `ECONNRESET` 置 `eof_` 返回 0 视为 EOF（对齐 Win32）
+- **Sha1 随机数**（[Sha1.hpp](../../src/transport/detail/net/Sha1.hpp)）：无 OpenSSL 时 Windows 走 `BCryptGenRandom`（bcrypt.lib，`BCRYPT_USE_SYSTEM_PREFERRED_RNG`），其余回退 `std::random_device`
 
 ## 默认限制
 

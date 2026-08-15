@@ -3,7 +3,7 @@ type: Transport
 title: Streamable HTTP 传输
 description: 2026 时代 HTTP 传输：双端实现、stateless 默认、POST SSE 请求响应、Mcp-Method 头、SSE 回放与 504 语义。
 tags: [transport, http, streamable, stateless, winhttp]
-timestamp: 2026-08-15T02:40:07+08:00
+timestamp: 2026-08-15T20:49:00+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -31,6 +31,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 - 选项：`endpoint / transport_mode（默认 AutoDetect）/ name / known_session_id / additional_headers / auth_challenge_handler`（RFC 9728：401/403 收到 WWW-Authenticate 时回调，返回非空 Authorization 头则**恰好重试一次**）
 - `HttpTransportMode`：`AutoDetect`（先试 StreamableHttp，失败回落 SSE）/ `StreamableHttp` / `Sse`
 - **平台双实现**：Win32 用 WinHTTP（`#pragma comment(lib, "winhttp.lib")`），POSIX 用自研 `detail::net::HttpClient`；发送路径共用 `send_thread_ + send_queue_ + condition_variable`；Win32 会话 `Start()` 补 `SetConnected()`（与 POSIX 对齐，状态机不再恒为 Initial）
+- **IPv6 Host 头**（detail/net/HttpClient.cpp，POSIX 分支）：Host 含 `:` 时自动加方括号 `[v6]` 形式
 - **Mcp-Method 头动态生成**：解析 body 的 method 字段（SEP-2243）；另生成 `Mcp-Param-*`（string/int/bool/double）与 `Mcp-Name`（params.name 回退 uri）；解析失败回退（Win32 → `tools/call`，POSIX → `unknown`）
 - **每请求固定带 `MCP-Protocol-Version: 2026-07-28` 头**（Win32/POSIX 两分支一致；transport 层无协商状态，固定取最新版本）
 - **会话头（stateful 兼容）**：`known_session_id` 非空则从首个 POST 起携带 `Mcp-Session-Id` 请求头；任意响应（含 4xx）返回 `Mcp-Session-Id` 头时捕获为当前会话 id（存入会话传输内部状态），后续请求携带——stateless 服务端不发该头则全程不带，行为不变
@@ -38,7 +39,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 - **响应分流**（两分支一致）：
   - 4xx/5xx：401/403 challenge 重试优先；否则解析 body 为 JSON-RPC error（如 404 + `-32601`）成功则**入 channel**（连接保持），失败才 `NotifyError`
   - **202**：通知确认，**忽略**（body 含 `id` 时记 Warning 视为异常，否则 Info）；不再存在"伪响应"路径
-  - `Content-Type` 含 `text/event-stream`：**同步读完整 SSE 流**（服务器写完事件后关闭连接；Win32 原先独立 SSE 读线程已移除，读由 send 线程承担，`sse_request_` 仅作 Close 中断句柄），`\n\n` 分块取 `data:` 行反序列化入 channel；单块超限（8MB）→ `NotifyError`
+  - `Content-Type` 含 `text/event-stream`：**同步读完整 SSE 流**（服务器写完事件后关闭连接；Win32 原先独立 SSE 读线程已移除，读由 send 线程承担，`sse_request_` 仅作 Close 中断句柄），`\n\n` 分块取 `data:` 行反序列化入 channel；**响应体累积超过 8MB（`kMaxMessageSize`）→ 丢弃 + `NotifyError`**（Win32/POSIX 一致）
   - 其余：单 JSON 响应解析入 channel（超限 → 错误）
 - 超时：Win32 30s / POSIX 30s
 - `Name()` 空时返回 `"streamable-http"`
