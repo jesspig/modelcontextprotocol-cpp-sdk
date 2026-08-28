@@ -39,6 +39,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/concepts/concurrency.md](/concepts/concurrency.md) — 线程模型与 Close self-join 陷阱
 - [/concepts/storage.md](/concepts/storage.md) — 原子写入与失败语义
 - [/concepts/oauth.md](/concepts/oauth.md) — PKCE、RFC 9207、刷新/吊销
+- [/concepts/logging.md](/concepts/logging.md) — 日志级别、全局钩子与可观测性
 
 ## 工程（build & tests）
 
