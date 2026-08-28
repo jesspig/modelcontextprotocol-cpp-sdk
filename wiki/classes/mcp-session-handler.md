@@ -3,7 +3,7 @@ type: Class
 title: McpSessionHandler
 description: JSON-RPC 引擎：消息分发、请求/响应关联、超时检查、取消、过滤器管线。
 tags: [protocol, jsonrpc, 超时, 并发]
-timestamp: 2026-08-15T02:40:07+08:00
+timestamp: 2026-08-28T18:00:00+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -13,7 +13,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 
 ## 生命周期
 
-- `Start()` CAS 防重入；`closed_` 已置时调用抛 `std::logic_error`（[McpSessionHandler.cpp:75](../../src/protocol/McpSessionHandler.cpp)）。启动 3 个线程：消息循环、超时检查（每 100ms `CheckTimeouts()`）、响应 worker
+- `Start()` CAS 防重入；`closed_` 已置时调用抛 `std::logic_error`（[McpSessionHandler.cpp:77](../../src/protocol/McpSessionHandler.cpp)）。启动 3 个线程：消息循环、超时检查（每 100ms `CheckTimeouts()`）、响应 worker
 - `Close()`：置标志 → 关通道唤醒循环 → `JoinThreadSafely`（self-join 时 detach）→ notify + join 响应 worker（任务内 `closed_` 中止，join 不阻塞）→ 锁内收集并清空 pending 表（含 progress_token_map_）→ 锁外以 `ConnectionClosed` 回调所有 pending → 关 transport
 - 请求 ID：原子计数器从 1 起
 
@@ -37,7 +37,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - `negotiated_version_` 为 `shared_ptr<const std::string>`；`NegotiatedProtocolVersion()` 读锁下仅拷贝 shared_ptr、锁外解引用；`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下写（替换 codec + 版本），消息循环运行中可调用
 - `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp:564](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
 - `SetRequestStateVerifier`（HMAC/AEAD）须在 `Start()` 前调用
-- 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp:655](../../src/protocol/McpSessionHandler.cpp)）
+- 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp:657](../../src/protocol/McpSessionHandler.cpp)）
 - 事件回调全部经 `InvokeSafely` 包异常（记 Error 日志）
 - 过滤器挂接：入站在消息循环分发前，出站在 `SendMessage` 中（`closed_` 时不再发送）
 

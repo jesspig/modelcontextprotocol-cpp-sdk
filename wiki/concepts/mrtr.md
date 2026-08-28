@@ -18,7 +18,7 @@ resource: include/mcp/McpTypes.hpp
 
 ## 客户端（[/classes/mcp-client.md](../classes/mcp-client.md)）
 
-- `SendRequestWithMrtr` 循环处理 `input_required`：显式配置 `input_required_config` 时 `auto_fulfill` 默认开（未配置则自动补全关闭），经 `elicitation_handler` 填 `inputResponses` / `requestState`；`input_requests` 三类型可选字段 `elicit`/`confirm`（elicitation）、`sampling`（[McpTypesResults.cpp:395](../../src/core/McpTypesResults.cpp)）、`roots` 各自分派到对应 handler（未注册 → `MethodNotFound`）
+- `SendRequestWithMrtr` 循环处理 `input_required`：显式配置 `input_required_config` 时 `auto_fulfill` 默认开（未配置则自动补全关闭），经 `elicitation_handler` 填 `inputResponses` / `requestState`；`input_requests` 三类型可选字段 `elicit`/`confirm`（elicitation）、`sampling`（[McpTypesResults.cpp:395](../../src/core/McpTypesResults.cpp)）、`roots` 各自分派到对应 handler（未注册 → `MethodNotFound`，分派逻辑见 [McpClient.cpp:657](../../src/client/McpClient.cpp)）
 - 预算：`max_rounds`（默认 10）超限 → `InternalError`；`max_total_timeout`（默认 0 = 不设总预算，只按轮限时 `round_timeout` 默认 600s）超限 → `RequestTimeout`
 - **state-only 退避**：`input_required` 无任何请求项（仅 `request_state`）时按 50ms 起每轮 ×2 增长、封顶 250ms 退避后重发（`kMrtrStateOnlyBackoffBase`/`kMrtrStateOnlyBackoffMax`，[McpClient.cpp:30](../../src/client/McpClient.cpp)，第 4 轮起不再增长），补全轮后计数清零
 
