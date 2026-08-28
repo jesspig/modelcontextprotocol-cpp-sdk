@@ -2,12 +2,15 @@
 
 // Log.hpp — Logging utilities with level-based filtering
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
-#include <chrono>
-#include <ctime>
 
 namespace mcp {
 
@@ -20,19 +23,47 @@ enum class LogLevel : int {
     Trace = 5
 };
 
-inline LogLevel GetLogLevel() {
-    static const LogLevel level = []() {
-        auto* env = std::getenv("MCP_LOG_LEVEL");
-        if (!env) return LogLevel::Off;
-        int val = std::atoi(env);
-        if (val <= 0) return LogLevel::Off;
-        if (val >= 5) return LogLevel::Trace;
-        return static_cast<LogLevel>(val);
-    }();
-    return level;
-}
+struct LogContext {
+    std::string request_id;
+    std::string method;
+    std::string session_id;
+    std::string peer;
+};
+
+struct LogRecord {
+    LogLevel level;
+    std::string_view tag;        // 可空
+    std::string_view message;
+    const char* file;            // 无则 nullptr
+    int line;                    // 无则 0
+    const LogContext* context;   // 可空
+};
+
+using LogHandler = std::function<void(const LogRecord&)>;
 
 namespace detail {
+
+struct LogState {
+    std::mutex mtx;
+    std::function<void(const LogRecord&)> handler;
+    std::atomic<bool> has_handler{false};
+    std::atomic<LogLevel> level{LogLevel::Off};
+};
+
+inline LogState& GetLogState() {
+    static LogState s;
+    static std::once_flag flag;
+    std::call_once(flag, [] {
+        auto* env = std::getenv("MCP_LOG_LEVEL");
+        LogLevel lvl = LogLevel::Off;
+        if (env) {
+            int v = std::atoi(env);
+            if (v > 0) lvl = v >= 5 ? LogLevel::Trace : static_cast<LogLevel>(v);
+        }
+        s.level.store(lvl);
+    });
+    return s;
+}
 
 inline std::string FormatLogTimestamp() {
     auto now = std::chrono::system_clock::now();
@@ -42,7 +73,7 @@ inline std::string FormatLogTimestamp() {
 #ifdef _WIN32
     gmtime_s(&tm, &tt);
 #else
-    gmtime_r(&tt, &tm);
+    gmtime_r(&tm, &tt);
 #endif
     std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm);
     return time_buf;
@@ -50,8 +81,51 @@ inline std::string FormatLogTimestamp() {
 
 } // namespace detail
 
+inline LogLevel GetLogLevel() {
+    return detail::GetLogState().level.load();
+}
+
+// 设置自定义日志钩子；传 nullptr 恢复默认 stderr 行为。
+// 钩子在发射日志的线程同步调用，须线程安全，禁止在其中调用 Close()。
+inline void SetLogHandler(LogHandler handler) {
+    auto& s = detail::GetLogState();
+    std::lock_guard<std::mutex> g(s.mtx);
+    s.handler = std::move(handler);
+    s.has_handler.store(static_cast<bool>(s.handler));
+}
+
+// 获取当前钩子（无则空 callable）。
+inline LogHandler GetLogHandler() {
+    auto& s = detail::GetLogState();
+    std::lock_guard<std::mutex> g(s.mtx);
+    return s.handler;
+}
+
+// 运行时覆盖 MCP_LOG_LEVEL 环境变量设定的级别。
+inline void SetLogLevel(LogLevel level) {
+    detail::GetLogState().level.store(level);
+}
+
 inline void LogWrite(LogLevel level, std::string_view tag, std::string_view message) {
     if (static_cast<int>(level) > static_cast<int>(GetLogLevel())) return;
+
+    LogRecord rec{level, tag, message, nullptr, 0, nullptr};
+
+    if (detail::GetLogState().has_handler.load(std::memory_order_acquire)) {
+        std::function<void(const LogRecord&)> local;
+        {
+            auto& s = detail::GetLogState();
+            std::lock_guard<std::mutex> g(s.mtx);
+            local = s.handler;
+        }
+        if (local) {
+            try {
+                local(rec);
+            } catch (...) {
+            }
+        }
+        return;
+    }
 
     auto ts = detail::FormatLogTimestamp();
 
@@ -63,15 +137,26 @@ inline void LogWrite(LogLevel level, std::string_view tag, std::string_view mess
             static_cast<int>(message.size()), message.data());
 }
 
-struct LogContext {
-    std::string request_id;
-    std::string method;
-    std::string session_id;
-    std::string peer;
-};
-
 inline void LogMessage(LogLevel level, const char* file, int line, const LogContext& ctx, const std::string& msg) {
     if (static_cast<int>(level) > static_cast<int>(GetLogLevel())) return;
+
+    LogRecord rec{level, {}, msg, file, line, &ctx};
+
+    if (detail::GetLogState().has_handler.load(std::memory_order_acquire)) {
+        std::function<void(const LogRecord&)> local;
+        {
+            auto& s = detail::GetLogState();
+            std::lock_guard<std::mutex> g(s.mtx);
+            local = s.handler;
+        }
+        if (local) {
+            try {
+                local(rec);
+            } catch (...) {
+            }
+        }
+        return;
+    }
 
     std::string ctx_str;
     if (!ctx.request_id.empty())

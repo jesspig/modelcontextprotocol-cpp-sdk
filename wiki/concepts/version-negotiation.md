@@ -3,7 +3,7 @@ type: Concept
 title: 版本协商
 description: 2025（initialize）与 2026（server/discover）双时代协议版本选择与 codec 重建。
 tags: [协议, 版本, 协商, 2026]
-timestamp: 2026-08-14T23:52:10+08:00
+timestamp: 2026-08-28T18:00:00+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -17,7 +17,7 @@ resource: include/mcp/client/VersionNegotiation.hpp
 - **`HandleInitialize` 在支持表中回显客户端的旧版版本号**：客户端版本命中支持表（且非现代）时返回客户端发送的版本（切勿返回 `kLatestProtocolVersion`——TS SDK v2 会校验 `result.protocolVersion` 是否在其旧版列表中）；**未声明（空串）回退 `kDefaultNegotiatedProtocolVersion`**（"2025-03-26"，对齐 5 语言的 `DEFAULT_NEGOTIATED_PROTOCOL_VERSION`）；**非空但未知版本回退 `kLegacyProtocolVersion`**（"2025-11-25"，对齐 python `LATEST_HANDSHAKE_VERSION` 与 rust 服务端默认）
 - `server/discover` 支持版本为 `kProtocolVersions` 全表（5 个，2024-11-05 至 2026-07-28），并**无条件置 `initialized_=true`**
 - 每次协商后 `SetNegotiatedProtocolVersion` 重建 WireCodec（`shared_ptr<WireCodec>` + `codec_mutex_`，原子交换 `shared_ptr<const std::string>`，线程安全，消息循环运行中可调用）；`NegotiatedProtocolVersion()` 锁下拷贝返回 `std::string`
-- **`initialize` 在 2026 时代豁免**：入站验证遇 `NotInEra` 时仅拒绝非 initialize 请求，现代服务端仍须应答遗留握手（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:227)）
+- **`initialize` 在 2026 时代豁免**：入站验证遇 `NotInEra` 时仅拒绝非 initialize 请求，现代服务端仍须应答遗留握手（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:229)）
 
 ## 客户端三种连接模式
 
@@ -41,7 +41,7 @@ resource: include/mcp/client/VersionNegotiation.hpp
 | `-32022` 且 data 缺失/畸形 | 回退 initialize | 同左 |
 | `-32001` / `-32020` / `-32021` / `-32601` 及其他错误码 | 回退 initialize | 同左 |
 
-（[McpClient.cpp](../../src/client/McpClient.cpp:248)）
+（[McpClient.cpp](../../src/client/McpClient.cpp:247)）
 
 ## 时代差异
 

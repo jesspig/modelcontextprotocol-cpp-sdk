@@ -3,7 +3,7 @@ type: Module
 title: mcp-http HTTP 库
 description: HttpServer（自研实现）、EventStore（SSE 回放）、Streamable HTTP 双端传输。
 tags: [http, sse, webserver]
-timestamp: 2026-08-15T22:30:00+08:00
+timestamp: 2026-08-28T18:00:00+08:00
 resource: src/http/HttpServer.cpp
 ---
 
@@ -27,8 +27,9 @@ resource: src/http/HttpServer.cpp
 - SSE 广播带 `id:` 行；GET 支持 `Last-Event-ID` 断线回放（stateless 不回放）
 - `Mcp-Method` 头：客户端从 JSON-RPC body 的 method 字段动态生成（[StreamableHttpClientTransport.cpp:237](../../src/http/StreamableHttpClientTransport.cpp)）；服务端在响应中**回显** `mcp-method`/`mcp-name`/`mcp-protocol-version`（SEP-2243，[StreamableHttpServerTransport.cpp:227](../../src/http/StreamableHttpServerTransport.cpp)）；`mcp-param-*` 头往返镜像
 - EventStore：每会话上限 1024 事件，超出从头部裁剪
-- `Stop()` 的关闭序列（关 listen/连接 fd 解除阻塞 → join accept 与全部连接线程 → 释放 impl）移入独立 `std::thread` + `detail::JoinThreadSafely`（self-join 防护，[HttpServer.cpp:66](../../src/http/HttpServer.cpp)）
+- `Stop()` 的关闭序列（关 listen/连接 fd 解除阻塞 → join accept 与全部连接线程 → 释放 impl）移入独立 `std::thread` + `detail::JoinThreadSafely`（self-join 防护，[HttpServer.cpp:75](../../src/http/HttpServer.cpp)）
 - `running_` 为 `std::atomic<bool>`：`Start` 用 `exchange(true)`、`Stop` 用 `exchange(false)`、`SetHandler` 用 `load()` 检查
+- `HttpServerOptions::bind_host`：可配置监听地址（IPv4/IPv6 字面量，空 = `INADDR_ANY`），`HttpServerImpl::Start` 自动选族（`inet_pton` 先 `AF_INET6` 后 `AF_INET`）；详见 [/classes/http-server.md](classes/http-server.md)
 - `on_disconnect` 三条移除路径（SSE `onclose` / `RemoveSseClient` / `BroadcastSse` 写失败）统一"恰好一次"：`removed` 标志保证回调只在真正移除时触发一次，且回调在锁外执行
 
 ## 相关页面

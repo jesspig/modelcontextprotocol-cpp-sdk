@@ -3,7 +3,8 @@ include(McpDiscoverTests)
 add_executable(mcp-core-tests
     JsonRpcTests.cpp
     McpTypesTests.cpp
-    JsonParserTests.cpp)
+    JsonParserTests.cpp
+    LogTests.cpp)
 
 target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-test-main)
 target_include_directories(mcp-core-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

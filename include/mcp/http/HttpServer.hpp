@@ -58,6 +58,10 @@ struct HttpServerOptions {
 
     // SSE keepalive comment-frame interval in ms (0 disables)
     int sse_keep_alive_ms{0};
+
+    // 绑定监听地址；接受 IPv4/IPv6 字面量（如 "127.0.0.1" / "::1" / "::"），可用 [] 包围（如 "[::1]"）。
+    // 空字符串 = 仅监听 IPv4 所有接口 (INADDR_ANY)，与历史行为一致。不支持主机名解析。
+    std::string bind_host;
 };
 
 // ── HttpServer — minimal HTTP server ──

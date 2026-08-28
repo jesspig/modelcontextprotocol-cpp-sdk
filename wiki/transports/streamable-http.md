@@ -3,7 +3,7 @@ type: Transport
 title: Streamable HTTP 传输
 description: 2026 时代 HTTP 传输：双端实现、stateless 默认、POST SSE 请求响应、Mcp-Method 头、SSE 回放与 504 语义。
 tags: [transport, http, streamable, stateless, winhttp]
-timestamp: 2026-08-15T22:30:00+08:00
+timestamp: 2026-08-28T18:00:00+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -13,7 +13,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 
 ## 服务端
 
-- 选项：`port`（默认 3001）、`endpoint`（默认 `/mcp`）、`stateless`（**默认 true**，对齐 python/rust/go/csharp 2026；false 为 sessionful 传统模式）、`enable_legacy_sse`（默认 true）、`sse_keep_alive_ms`（SSE 注释帧间隔毫秒，默认 15000，0 禁用）、可注入 `event_store`、`server_name/server_version`；`session_id_ = "srv-" + 时钟计数`
+- 选项：`port`（默认 3001）、`endpoint`（默认 `/mcp`）、`host`（监听绑定地址，透传至 `HttpServerOptions::bind_host`，空 = `INADDR_ANY`）、`stateless`（**默认 true**，对齐 python/rust/go/csharp 2026；false 为 sessionful 传统模式）、`enable_legacy_sse`（默认 true）、`sse_keep_alive_ms`（SSE 注释帧间隔毫秒，默认 15000，0 禁用）、可注入 `event_store`、`server_name/server_version`；`session_id_ = "srv-" + 时钟计数`
 - 路由：POST 与 DELETE 总是注册，GET 仅 `enable_legacy_sse` 时
 - **POST**：body 超限（4MiB）→ 413 `-32700`；解析失败 → 400；Mcp-Method/Mcp-Name 头与 body 不符 → 400 `HeaderMismatch`；回显 `mcp-protocol-version/mcp-method/mcp-name` 响应头；`mcp-param-*` 请求头存入 `req.meta["x-mcp-headers"]`
   - **请求（stateless 与 stateful 同一路径）**：inflight 上限 8（仅 stateless）→ 503 `"server busy"`；channel 关闭/TrySend 失败 → 503 `-32000`；送入 channel 前登记 `pending_responses_`（`pending_mutex_` 保护），`SendMessageAsync` 匹配到响应时 set promise
