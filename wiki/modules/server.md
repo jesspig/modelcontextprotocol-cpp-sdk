@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、任务存储集成。
 tags: [server, 工具注册, 资源, 提示词, 任务]
-timestamp: 2026-08-15T22:30:00+08:00
+timestamp: 2026-08-28T18:00:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -19,7 +19,7 @@ resource: src/server/McpServer.cpp
 
 ## WireHandlers 方法清单
 
-`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:420](../../src/server/McpServer.cpp)）：
+`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:421](../../src/server/McpServer.cpp)）：
 
 - **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件）
 - **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时）、`resources/subscribe|unsubscribe`（有资源时，2025-era）

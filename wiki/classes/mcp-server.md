@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、回调四层接线、任务与 elicitation。
 tags: [server, 门面, 注册, 回调]
-timestamp: 2026-08-15T22:30:00+08:00
+timestamp: 2026-08-28T18:00:00+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -13,7 +13,7 @@ resource: include/mcp/server/McpServer.hpp
 
 ## 注册 API
 
-- `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`：每次注册后重跑 `WireHandlers()`（拆为 7 个 `Wire*Handlers` 方法）+ `DeriveCapabilities()`；**同名语义不同**——`RegisterTool` 按名覆盖（map，[McpServer.cpp:262](../../src/server/McpServer.cpp)），资源/模板/提示词为 vector **追加**（同名不覆盖，[McpServer.cpp:290](../../src/server/McpServer.cpp)）；`RegisterTool` 校验工具名 `^[A-Za-z0-9._-]{1,128}$`（`IsValidToolName`，违规抛 `McpError(InvalidParams)`，[McpServer.cpp:88](../../src/server/McpServer.cpp)），同时把 `cached_tools_json_` 置 `nullopt` 失效（[McpServer.cpp:263](../../src/server/McpServer.cpp)）
+- `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`：每次注册后重跑 `WireHandlers()`（拆为 7 个 `Wire*Handlers` 方法）+ `DeriveCapabilities()`；**同名语义不同**——`RegisterTool` 按名覆盖（map，[McpServer.cpp:262](../../src/server/McpServer.cpp)），资源/模板/提示词为 vector **追加**（同名不覆盖，[McpServer.cpp:290](../../src/server/McpServer.cpp)）；`RegisterTool` 校验工具名 `^[A-Za-z0-9._-]{1,128}$`（`IsValidToolName`，违规抛 `McpError(InvalidParams)`，[McpServer.cpp:89](../../src/server/McpServer.cpp)），同时把 `cached_tools_json_` 置 `nullopt` 失效（[McpServer.cpp:263](../../src/server/McpServer.cpp)）
 - 工具/资源/提示词条目内部结构见 [McpServer.hpp](../../include/mcp/server/McpServer.hpp)（ResourceEntry 含 uri_pattern/is_template 等）
 
 ## 回调接线（四层）
