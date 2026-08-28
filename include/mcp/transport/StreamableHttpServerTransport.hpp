@@ -43,7 +43,7 @@ struct StreamableHttpServerOptions {
     std::string server_version{std::string(kSdkVersion)};
 
     // 监听绑定地址，透传至 HttpServerOptions::bind_host。
-    // 空字符串 = 所有接口 (INADDR_ANY)。仅接受 IPv4 字面量。
+    // 空字符串 = 所有接口 (INADDR_ANY)。接受 IPv4/IPv6 字面量（如 "127.0.0.1" / "::1" / "::"）。
     std::string host;
 };
 

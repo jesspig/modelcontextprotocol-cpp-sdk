@@ -3,7 +3,7 @@ type: Concept
 title: 日志与可观测性
 description: 日志级别、全局钩子（SetLogHandler/SetLogLevel/LogRecord）、诊断增强与 bind_host 可配置。
 tags: [日志, 可观测性, 诊断, bind_host]
-timestamp: 2026-08-28T15:00:00+08:00
+timestamp: 2026-08-28T16:00:00+08:00
 resource: include/mcp/Log.hpp
 ---
 
@@ -37,5 +37,5 @@ resource: include/mcp/Log.hpp
 ## 绑定地址可配置
 
 - `HttpServerOptions::bind_host` 与 `StreamableHttpServerOptions::host`：监听地址可配置。
-- 仅接受 IPv4 字面量（如 `127.0.0.1` / `0.0.0.0`）；空字符串 = 监听所有接口（`INADDR_ANY`，与历史一致）；不支持主机名解析与 IPv6。
+- 接受 IPv4/IPv6 字面量（如 `127.0.0.1` / `::1` / `::`，可用 `[]` 包围）；空字符串 = 仅监听 IPv4 所有接口（`INADDR_ANY`，与历史一致）；不支持主机名解析。
 - 非法 `bind_host` 抛 `std::runtime_error("HttpServer: invalid bind_host: ...")`。

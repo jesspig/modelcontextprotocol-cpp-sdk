@@ -256,6 +256,96 @@ TEST(HttpServerTest, HostHeaderMissingRejectedNoCrash) {
     server.Stop();
 }
 
+TEST(HttpServerTest, BindHostIpv6LoopbackAccepts) {
+    // 探测本机是否支持 IPv6，不支持则跳过（避免无 IPv6 的 CI 误红）
+#ifdef _WIN32
+    {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+        SOCKET probe = socket(AF_INET6, SOCK_STREAM, 0);
+        if (probe == INVALID_SOCKET) { WSACleanup(); return; }
+        closesocket(probe);
+        WSACleanup();
+    }
+#else
+    {
+        int probe = socket(AF_INET6, SOCK_STREAM, 0);
+        if (probe < 0) return;
+        close(probe);
+    }
+#endif
+    auto port = PickFreePort(kTestBasePort);
+    mcp::HttpServerOptions opts;
+    opts.bind_host = "::1";
+    mcp::HttpServer server(port, opts);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    // 服务器仅绑 ::1（IPv6），不能用 IPv4 的 WaitUntilReady，自行用 IPv6 探测就绪
+    bool ipv6_ready = false;
+    for (int i = 0; i < 50 && !ipv6_ready; ++i) {
+#ifdef _WIN32
+        SOCKET probe = socket(AF_INET6, SOCK_STREAM, 0);
+        if (probe == INVALID_SOCKET) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); continue; }
+        struct sockaddr_in6 pa {};
+        pa.sin6_family = AF_INET6; pa.sin6_port = htons(static_cast<uint16_t>(port));
+        inet_pton(AF_INET6, "::1", &pa.sin6_addr);
+        if (connect(probe, reinterpret_cast<struct sockaddr*>(&pa), sizeof(pa)) == 0) ipv6_ready = true;
+        closesocket(probe);
+#else
+        int probe = socket(AF_INET6, SOCK_STREAM, 0);
+        if (probe < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); continue; }
+        struct sockaddr_in6 pa {};
+        pa.sin6_family = AF_INET6; pa.sin6_port = htons(static_cast<uint16_t>(port));
+        inet_pton(AF_INET6, "::1", &pa.sin6_addr);
+        if (connect(probe, reinterpret_cast<struct sockaddr*>(&pa), sizeof(pa)) == 0) ipv6_ready = true;
+        close(probe);
+#endif
+        if (!ipv6_ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ASSERT_TRUE(ipv6_ready);
+
+    // 用原始 socket 连 ::1（避免依赖 HttpClient 对 [::1] 的解析）
+    std::string first_line;
+#ifdef _WIN32
+    WSADATA wsa; ASSERT_EQ(WSAStartup(MAKEWORD(2, 2), &wsa), 0);
+    SOCKET sock = socket(AF_INET6, SOCK_STREAM, 0);
+    ASSERT_NE(sock, INVALID_SOCKET);
+#else
+    int sock = socket(AF_INET6, SOCK_STREAM, 0);
+    ASSERT_GE(sock, 0);
+#endif
+    struct sockaddr_in6 a6{};
+    a6.sin6_family = AF_INET6;
+    a6.sin6_port = htons(static_cast<uint16_t>(port));
+    inet_pton(AF_INET6, "::1", &a6.sin6_addr);
+    ASSERT_EQ(connect(sock, reinterpret_cast<struct sockaddr*>(&a6), sizeof(a6)), 0);
+    std::string req = "GET /ping HTTP/1.1\r\nHost: [::1]\r\n\r\n";
+    ASSERT_GT(send(sock, req.c_str(), static_cast<int>(req.size()), 0), 0);
+    char buf[1024];
+    int n = recv(sock, buf, sizeof(buf) - 1, 0);
+    if (n > 0) { buf[n] = '\0'; first_line = std::string(buf, static_cast<size_t>(n)); }
+#ifdef _WIN32
+    closesocket(sock); WSACleanup();
+#else
+    close(sock);
+#endif
+    if (!first_line.empty()) EXPECT_NE(first_line.find("200"), std::string::npos);
+    server.Stop();
+}
+
+TEST(HttpServerTest, BindHostInvalidIpv6Throws) {
+    auto port = PickFreePort(kTestBasePort);
+    mcp::HttpServerOptions opts;
+    opts.bind_host = "gggg::1";
+    mcp::HttpServer server(port, opts);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    EXPECT_THROW(server.Start(), std::exception);
+}
+
 // ============================================================
 // EventStore
 // ============================================================

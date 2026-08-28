@@ -37,4 +37,4 @@ mcp::SetLogHandler([](const mcp::LogRecord& r) {
 
 ## 绑定地址可配置
 
-`HttpServer` 现支持 `HttpServerOptions::bind_host`（及 `StreamableHttpServerOptions::host`）指定监听地址，仅接受 IPv4 字面量，空字符串表示监听所有接口（默认行为）。
+`HttpServer` 现支持 `HttpServerOptions::bind_host`（及 `StreamableHttpServerOptions::host`）指定监听地址，接受 IPv4/IPv6 字面量（如 `127.0.0.1` / `::1` / `::`，可用 `[]` 包围），空字符串表示仅监听 IPv4 所有接口（默认行为）。

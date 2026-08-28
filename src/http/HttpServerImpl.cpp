@@ -134,7 +134,35 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
     EnsureWinsockOnce();
 #endif
 
-    int fd = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+    int family = AF_INET;
+    sockaddr_storage addr{};
+    if (options.bind_host.empty()) {
+        auto* v4 = reinterpret_cast<sockaddr_in*>(&addr);
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons(port);
+        v4->sin_addr.s_addr = htonl(INADDR_ANY);
+    } else {
+        std::string host = options.bind_host;
+        if (host.size() >= 2 && host.front() == '[' && host.back() == ']')
+            host = host.substr(1, host.size() - 2);
+        sockaddr_in6 v6{};
+        sockaddr_in v4{};
+        if (::inet_pton(AF_INET6, host.c_str(), &v6.sin6_addr) == 1) {
+            family = AF_INET6;
+            v6.sin6_family = AF_INET6;
+            v6.sin6_port = htons(port);
+            *reinterpret_cast<sockaddr_in6*>(&addr) = v6;
+        } else if (::inet_pton(AF_INET, host.c_str(), &v4.sin_addr) == 1) {
+            family = AF_INET;
+            v4.sin_family = AF_INET;
+            v4.sin_port = htons(port);
+            *reinterpret_cast<sockaddr_in*>(&addr) = v4;
+        } else {
+            throw std::runtime_error("HttpServer: invalid bind_host: " + options.bind_host);
+        }
+    }
+
+    int fd = static_cast<int>(::socket(family, SOCK_STREAM, IPPROTO_TCP));
     if (fd < 0)
         throw std::runtime_error("HttpServer: socket() failed: " +
                                  SocketErrorText(LastSocketError()));
@@ -143,23 +171,11 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
     MCP_LOG(Info, std::string("binding ") +
         (options.bind_host.empty() ? std::string("0.0.0.0") : options.bind_host) +
         ":" + std::to_string(port));
-    if (!options.bind_host.empty()) {
-        in_addr parsed{};
-        if (::inet_pton(AF_INET, options.bind_host.c_str(), &parsed) != 1) {
-            CloseFd(fd);
-            throw std::runtime_error("HttpServer: invalid bind_host: " + options.bind_host);
-        }
-        addr.sin_addr = parsed;
-    } else {
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    }
-    if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr),
+              family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
         CloseFd(fd);
         throw std::runtime_error("HttpServer: bind failed on " +
                                  (options.bind_host.empty() ? std::string("0.0.0.0") : options.bind_host) +
