@@ -67,9 +67,10 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     : TransportBase()
     , options_(std::move(options))
     , http_server_(std::make_unique<HttpServer>(options_.port,
-          [keep_alive_ms = options_.sse_keep_alive_ms] {
+          [keep_alive_ms = options_.sse_keep_alive_ms, host = options_.host] {
               HttpServerOptions http_options;
               http_options.sse_keep_alive_ms = keep_alive_ms;
+              http_options.bind_host = host;
               return http_options;
           }()))
     , event_store_(options_.event_store

@@ -146,11 +146,24 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    MCP_LOG(Info, std::string("binding ") +
+        (options.bind_host.empty() ? std::string("0.0.0.0") : options.bind_host) +
+        ":" + std::to_string(port));
+    if (!options.bind_host.empty()) {
+        in_addr parsed{};
+        if (::inet_pton(AF_INET, options.bind_host.c_str(), &parsed) != 1) {
+            CloseFd(fd);
+            throw std::runtime_error("HttpServer: invalid bind_host: " + options.bind_host);
+        }
+        addr.sin_addr = parsed;
+    } else {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    }
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) < 0) {
         CloseFd(fd);
-        throw std::runtime_error("HttpServer: bind failed on port " +
-                                 std::to_string(port) + ": " +
+        throw std::runtime_error("HttpServer: bind failed on " +
+                                 (options.bind_host.empty() ? std::string("0.0.0.0") : options.bind_host) +
+                                 ":" + std::to_string(port) + ": " +
                                  SocketErrorText(LastSocketError()));
     }
     if (::listen(fd, 16) < 0) {
@@ -408,7 +421,9 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
         if (!IsRequestAllowed(req, options_)) {
             resp.status_code = 403;
             resp.status_text = "Forbidden";
-            MCP_LOG(Warning, "HTTP request rejected: Host/Origin not allowed");
+            auto host_it = req.headers.find("host");
+            MCP_LOG(Warning, std::string("HTTP request rejected: Host not allowed: ") +
+                (host_it != req.headers.end() ? host_it->second : std::string("<missing>")));
         } else {
             auto it = handlers.find({method, path});
             if (it == handlers.end()) {
