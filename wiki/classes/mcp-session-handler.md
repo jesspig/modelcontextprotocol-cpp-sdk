@@ -2,8 +2,8 @@
 type: Class
 title: McpSessionHandler
 description: JSON-RPC 引擎：消息分发、请求/响应关联、超时检查、取消、过滤器管线。
-tags: [protocol, jsonrpc, 超时, 并发]
-timestamp: 2026-08-28T18:00:00+08:00
+tags: [protocol, jsonrpc, 超时, 并发, meta]
+timestamp: 2026-09-11T04:00:00+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -27,15 +27,16 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 
 - handler 抛 `McpError` → 回 `e.Code()`（错误码保留）；其他异常 → `InternalError "handler error: ..."`
 - 校验失败：方法不在时代（非 initialize）→ `MethodNotFound`（-32601）；`Invalid` → `InvalidRequest`；未注册 handler → `MethodNotFound`
-- 入站校验用轻量视图：只构造 `{method, _meta 占位, initialize 的 params}` 三个键交给 codec，不完整序列化请求（[McpSessionHandler.cpp:222](../../src/protocol/McpSessionHandler.cpp)）
+- 入站校验用轻量视图：只构造 `{method, initialize 的 params, params._meta}`（`req.meta` 存在时置于视图 params 内，与线上一致）交给 codec，不完整序列化请求（[McpSessionHandler.cpp:222](../../src/protocol/McpSessionHandler.cpp)）
 - 响应回发：`EnqueueResponse` 入队（锁内检查 `closed_`，已关闭直接丢弃），单一 `response_worker_` 线程经 `response_queue_`（`deque<std::function>`）+ `response_cv_` 消费；任务先 `wait_for(0)` 快检（同步 handler 零延迟），未就绪则 10ms 间隔轮询 promise（`kResponsePollInterval`），`closed_` 时中止（保证 Close 不阻塞）。`SendResponseAsync`/`ReapCompletedResponses` 已删除
-- `SendRequest` 注册 pending 后复查 `closed_`：已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:505](../../src/protocol/McpSessionHandler.cpp)）
+- `SendRequest` 注册 pending 后复查 `closed_`：已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:518](../../src/protocol/McpSessionHandler.cpp)）
+- `SendRequest` 双 era meta：modern era 把 `SerializeRequestMeta(meta)` 信封写入 `req.meta`（序列化层落 `params._meta`）；legacy era 仅当带 progressToken 时写 `params._meta.progressToken`（[McpSessionHandler.cpp:491](../../src/protocol/McpSessionHandler.cpp)）
 - `RequiredClientCapability`：`createMessage→sampling`、`listRoots→roots`；缺失回 `MissingRequiredClientCapability`（data 含 `requiredCapabilities`）
 
 ## 其他
 
 - `negotiated_version_` 为 `shared_ptr<const std::string>`；`NegotiatedProtocolVersion()` 读锁下仅拷贝 shared_ptr、锁外解引用；`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下写（替换 codec + 版本），消息循环运行中可调用
-- `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp:564](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
+- `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp:577](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
 - `SetRequestStateVerifier`（HMAC/AEAD）须在 `Start()` 前调用
 - 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp:657](../../src/protocol/McpSessionHandler.cpp)）
 - 事件回调全部经 `InvokeSafely` 包异常（记 Error 日志）

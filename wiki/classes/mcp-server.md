@@ -1,9 +1,9 @@
 ---
 type: Class
 title: McpServer
-description: MCP 服务端门面：注册与分发、能力推导、回调四层接线、任务与 elicitation。
-tags: [server, 门面, 注册, 回调]
-timestamp: 2026-08-28T18:00:00+08:00
+description: MCP 服务端门面：注册与分发、能力推导、progress 推送、回调四层接线、任务与 elicitation。
+tags: [server, 门面, 注册, 回调, progress]
+timestamp: 2026-09-11T04:00:00+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -34,6 +34,7 @@ resource: include/mcp/server/McpServer.hpp
 - `HandleInitialize`：已配置 `options_.protocol_version` 时直接采用（可含现代版本），未配置才遍历 `kProtocolVersions` 选非现代公共版本；**未声明（空串）回退 `kDefaultNegotiatedProtocolVersion`，非空未知版本回退 `kLegacyProtocolVersion`**（[McpServer.cpp:1096](../../src/server/McpServer.cpp)）；`result.protocol_version` 回显协商结果
 - `HandleDiscover`：无条件置 `initialized_=true`；**协商版本 = `options_.protocol_version`（配置时）否则 `kLatestProtocolVersion`**（[McpServer.cpp:1043](../../src/server/McpServer.cpp)）；支持版本 = `kProtocolVersions` 全表（5 个，2024-11-05 至 2026-07-28）
 - tasks 处理器守卫反转：仅 2025 及更早时代可用，`IsModernProtocolVersion` 时回 `MethodNotFound`（[McpServer.cpp:616](../../src/server/McpServer.cpp)）；任务 wire 状态为官方字符串 `TaskStatusToWireString`（working/input_required/completed/failed/cancelled，`Pending→working`，[McpServer.cpp:70](../../src/server/McpServer.cpp)）；`GetTaskResult` 填充提取为 `MakeGetTaskResultJson`（含 include_optional_fields 开关）；`tasks/update` 完成时发 `tasks/completed` 或 `tasks/working` 通知、`tasks/cancel` 发 `tasks/cancelled` 通知；公开方法 `SendTaskStatus(task_id, status)` 直接发送 `tasks/status` 通知（[McpServer.hpp:86](../../include/mcp/server/McpServer.hpp)）
+- `SendProgress(token, progress, total?, message?)`（[McpServer.cpp:389](../../src/server/McpServer.cpp)）：向客户端发 `notifications/progress`，token 原样透传不校验归属，`total`/`message` 可选；异步工具 handler 内经 `RequestContext::Server()` 调用——`RequestContext` 持有 `JsonRpcRequest` **值**（替代指针），异步场景 `GetRequest()` 安全
 - `subscriptions/listen`：仅现代版本，订阅 ID 单调分配（原子量从 1 起）；订阅后**同步回发 `subscriptions/acknowledged` 通知帧**（`SendSubscriptionsAcknowledged`，[McpServer.cpp:1170](../../src/server/McpServer.cpp)）——`honored` 回显 filter、meta 带 `protocolVersion` + `subscriptionId`（优先客户端 `_meta` 传入 ID，未设置回退服务端自增 ID）
 - `SendLoggingMessage`：低于当前级别直接丢弃，logger 固定 `"mcp-server"`
 - `Elicit`：无 config 时超时 600s；结果 `code` 为负抛 McpError

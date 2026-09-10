@@ -602,6 +602,78 @@ TEST(McpServerTest, SendTaskStatusDeliversStatusNotification) {
     client->Close();
 }
 
+TEST(McpServerTest, SendProgressDeliversNotificationWithInt64Token) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    client->SetNotificationHandler(notifications::kProgress,
+        [&received](const JsonRpcNotification& n) { received.set_value(n); });
+
+    server->SendProgress(ProgressToken{int64_t{42}}, 0.75, 1.0, "three quarters");
+
+    ASSERT_EQ(received_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto notif = received_future.get();
+    EXPECT_EQ(notif.method, std::string(notifications::kProgress));
+    ASSERT_TRUE(notif.params.has_value());
+    auto* token = notif.params->Find("progressToken");
+    ASSERT_NE(token, nullptr);
+    EXPECT_TRUE(token->IsInt());
+    EXPECT_EQ(token->GetInt(), 42);
+    auto* progress = notif.params->Find("progress");
+    ASSERT_NE(progress, nullptr);
+    EXPECT_EQ(progress->GetDouble(), 0.75);
+    auto* total = notif.params->Find("total");
+    ASSERT_NE(total, nullptr);
+    EXPECT_EQ(total->GetDouble(), 1.0);
+    auto* message = notif.params->Find("message");
+    ASSERT_NE(message, nullptr);
+    EXPECT_EQ(message->GetString(), "three quarters");
+
+    server->Close();
+    client->Close();
+}
+
+TEST(McpServerTest, SendProgressDeliversNotificationWithStringToken) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    client->SetNotificationHandler(notifications::kProgress,
+        [&received](const JsonRpcNotification& n) { received.set_value(n); });
+
+    server->SendProgress(ProgressToken{std::string("tok-1")}, 0.5);
+
+    ASSERT_EQ(received_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto notif = received_future.get();
+    EXPECT_EQ(notif.method, std::string(notifications::kProgress));
+    ASSERT_TRUE(notif.params.has_value());
+    auto* token = notif.params->Find("progressToken");
+    ASSERT_NE(token, nullptr);
+    EXPECT_TRUE(token->IsString());
+    EXPECT_EQ(token->GetString(), "tok-1");
+    auto* progress = notif.params->Find("progress");
+    ASSERT_NE(progress, nullptr);
+    EXPECT_EQ(progress->GetDouble(), 0.5);
+    EXPECT_FALSE(notif.params->Contains("total"));
+    EXPECT_FALSE(notif.params->Contains("message"));
+
+    server->Close();
+    client->Close();
+}
+
 // ── subscriptions/listen acknowledges the honored filter (2026 era) ──
 namespace {
 

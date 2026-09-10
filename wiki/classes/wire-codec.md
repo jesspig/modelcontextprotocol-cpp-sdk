@@ -2,8 +2,8 @@
 type: Class
 title: WireCodec
 description: 按协议时代划分的线协议词汇表：方法成员判定、消息校验、meta 处理与错误码映射。
-tags: [protocol, codec, 双时代, 2026]
-timestamp: 2026-08-28T18:00:00+08:00
+tags: [protocol, codec, 双时代, 2026, meta]
+timestamp: 2026-09-11T04:00:00+08:00
 resource: src/protocol/WireCodec.cpp
 ---
 
@@ -15,9 +15,9 @@ resource: src/protocol/WireCodec.cpp
 
 | | Rev2025Codec（"2025-11-25"） | Rev2026Codec（"2026-07-28"） |
 |--|--|--|
-| 请求校验 | 仅 initialize 检查 `params` 含 protocolVersion/capabilities/clientInfo | 方法不在时代→NotInEra；除 discover 外缺 `_meta`→Invalid |
+| 请求校验 | 仅 initialize 检查 `params` 含 protocolVersion/capabilities/clientInfo | 方法不在时代→NotInEra；除 discover 外缺 `params._meta`→Invalid |
 | 响应校验 | 无额外要求 | 所有响应必须含 `resultType`；4 个列表方法（tools/list、resources/list、resources/templates/list、prompts/list）要求 `"complete"` |
-| StampOutgoingRequest | 空操作 | 写 `_meta`：protocolVersion/clientInfo/clientCapabilities |
+| StampOutgoingRequest | 空操作 | 写 `params._meta`：protocolVersion/clientInfo/clientCapabilities |
 | ExtractIncomingMeta | 无 override | 无 override——基类为非纯虚默认返回 `nullopt`（WireCodec.hpp:48），meta 解析在 McpSessionHandler 层 |
 | EncodeResult | 原样 | 嵌套 `cacheHint` 扁平化为顶层 `ttlMs`/`cacheScope`（移除嵌套键）；无 resultType 补 `"complete"` |
 | EncodeErrorCode | 原样 | 内部错误（RequestTimeout/ConnectionRefused/TlsHandshakeFailed）记日志并映射为 InternalError(-32603)；协议码（-32020/-32021/-32022/-32042）原样传递 |

@@ -59,6 +59,7 @@ mcp_discover_tests(mcp-task-store-tests)
 
 add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp)
 target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http mcp-test-main)
+target_include_directories(mcp-streamable-http-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-streamable-http-tests)
 
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)

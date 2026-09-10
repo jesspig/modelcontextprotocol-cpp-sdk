@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-server 服务端库
-description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、任务存储集成。
-tags: [server, 工具注册, 资源, 提示词, 任务]
-timestamp: 2026-08-28T18:00:00+08:00
+description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送与任务存储集成。
+tags: [server, 工具注册, 资源, 提示词, 任务, progress]
+timestamp: 2026-09-11T04:00:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -40,6 +40,8 @@ resource: src/server/McpServer.cpp
 
 ## 实现要点
 
+- `SendProgress(token, progress, total?, message?)`：服务端向客户端发 `notifications/progress`（[McpServer.cpp:389](../../src/server/McpServer.cpp)），token 原样透传、`total`/`message` 可选；异步工具 handler 内经 `RequestContext::Server()` 调用可向发起方回报进度
+- `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全
 - 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）

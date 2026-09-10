@@ -1103,3 +1103,244 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
     client->Close();
     server_handler->Close();
 }
+
+// ── SendRootsListChanged: allowed at the 2025-06-18 boundary and later ──
+TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
+    // Boundary: pinned exactly at 2025-06-18, the notification goes through.
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::promise<void> received;
+    auto received_future = received.get_future();
+    server_handler->SetNotificationHandler(notifications::kRootsListChanged,
+        [&received](const JsonRpcNotification&) {
+            received.set_value();
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-06-18");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_EQ(client->GetNegotiatedProtocolVersion(), std::string("2025-06-18"));
+
+    EXPECT_NO_THROW(client->SendRootsListChanged());
+    EXPECT_EQ(received_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    client->Close();
+    server_handler->Close();
+
+    // Later legacy era (2025-11-25) is after 2025-06-18, so it is allowed too.
+    auto pair2 = InMemoryTransport::CreatePair();
+    auto server_handler2 = std::make_shared<McpSessionHandler>(
+        std::move(pair2.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::promise<void> received2;
+    auto received2_future = received2.get_future();
+    server_handler2->SetNotificationHandler(notifications::kRootsListChanged,
+        [&received2](const JsonRpcNotification&) {
+            received2.set_value();
+        });
+    server_handler2->SetRequestHandler(methods::kInitialize,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] = SerializeImplementation(Implementation{"legacy-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler2->Start();
+
+    ClientOptions legacy_opts;
+    legacy_opts.connect_mode = ConnectMode::Legacy;
+    legacy_opts.initialization_timeout = std::chrono::seconds(5);
+    auto legacy_client = McpClient::Create(std::move(pair2.client), legacy_opts);
+    ASSERT_EQ(legacy_client->GetNegotiatedProtocolVersion(),
+              std::string(kLegacyProtocolVersion));
+
+    EXPECT_NO_THROW(legacy_client->SendRootsListChanged());
+    EXPECT_EQ(received2_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    legacy_client->Close();
+    server_handler2->Close();
+}
+
+// ── SendRootsListChanged: rejected with McpError below 2025-06-18 ──
+TEST(McpClientTest, SendRootsListChangedRejectedBelowMinVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kInitialize,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string("2025-03-26"));
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] = SerializeImplementation(Implementation{"old-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_EQ(client->GetNegotiatedProtocolVersion(), std::string("2025-03-26"));
+
+    bool threw = false;
+    try {
+        client->SendRootsListChanged();
+    } catch (const McpError& e) {
+        threw = true;
+        EXPECT_NE(std::string(e.ErrorMessage()).find("2025-06-18"),
+                  std::string::npos);
+    }
+    EXPECT_TRUE(threw);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── progress: CallTool on_progress 收到服务端按请求 token 回显的通知 ──
+TEST(McpClientTest, CallToolReceivesProgressNotifications) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool("progress-tool",
+        ToolOptions{},
+        std::function<CallToolResult(const Ctx&)>(
+            [](const Ctx& ctx) -> CallToolResult {
+                const auto& req = ctx.GetRequest();
+                ProgressToken token{std::string("unknown")};
+                if (req.meta) {
+                    if (auto* pt = req.meta->Find("progressToken")) {
+                        if (pt->IsInt()) token = ProgressToken{pt->GetInt()};
+                        else if (pt->IsString())
+                            token = ProgressToken{pt->GetString()};
+                    }
+                }
+                ctx.Server().SendProgress(token, 0.5, 1.0, "half");
+                CallToolResult r;
+                r.structured_content = JsonValue(JsonValue::object_tag);
+                return r;
+            }));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Auto;
+    cops.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), cops);
+
+    std::promise<void> got_progress;
+    auto got_future = got_progress.get_future();
+    std::atomic<bool> callback_called{false};
+
+    RequestOptions ropts;
+    ropts.on_progress = [&](const ProgressNotificationParams& p) {
+        ASSERT_TRUE(std::holds_alternative<int64_t>(p.progress_token));
+        EXPECT_EQ(std::get<int64_t>(p.progress_token), int64_t(1));
+        EXPECT_DOUBLE_EQ(p.progress, 0.5);
+        ASSERT_TRUE(p.total.has_value());
+        EXPECT_DOUBLE_EQ(*p.total, 1.0);
+        ASSERT_TRUE(p.message.has_value());
+        EXPECT_EQ(*p.message, "half");
+        callback_called.store(true);
+        got_progress.set_value();
+    };
+
+    auto result =
+        client->CallTool("progress-tool", JsonValue(JsonValue::object_tag), ropts);
+
+    EXPECT_EQ(got_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_TRUE(callback_called.load());
+    EXPECT_FALSE(result.is_error);
+
+    client->Close();
+    server->Close();
+}
+
+// ── progress: 未注册 on_progress 时收到的通知被静默忽略 ──
+TEST(McpClientTest, CallToolWithoutProgressCallbackIgnoresProgress) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool("plain-tool",
+        ToolOptions{},
+        std::function<CallToolResult(const Ctx&)>(
+            [](const Ctx& ctx) -> CallToolResult {
+                ctx.Server().SendProgress(ProgressToken{std::string("stray")}, 0.25);
+                CallToolResult r;
+                r.structured_content = JsonValue(JsonValue::object_tag);
+                return r;
+            }));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Auto;
+    cops.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), cops);
+
+    EXPECT_NO_THROW(
+        client->CallTool("plain-tool", JsonValue(JsonValue::object_tag)));
+
+    client->Close();
+    server->Close();
+}
+
+// ── progress: 请求结束后同 token 的通知不再触发回调 ──
+TEST(McpClientTest, ProgressCallbackRemovedAfterRequestCompletes) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    std::atomic<int64_t> seen_token{0};
+    std::atomic<bool> has_token{false};
+    server->RegisterTool("progress-tool",
+        ToolOptions{},
+        std::function<CallToolResult(const Ctx&)>(
+            [&](const Ctx& ctx) -> CallToolResult {
+                const auto& req = ctx.GetRequest();
+                ProgressToken token{std::string("unknown")};
+                if (req.meta) {
+                    if (auto* pt = req.meta->Find("progressToken")) {
+                        if (pt->IsInt()) {
+                            token = ProgressToken{pt->GetInt()};
+                            seen_token.store(pt->GetInt());
+                            has_token.store(true);
+                        } else if (pt->IsString()) {
+                            token = ProgressToken{pt->GetString()};
+                        }
+                    }
+                }
+                ctx.Server().SendProgress(token, 0.5);
+                CallToolResult r;
+                r.structured_content = JsonValue(JsonValue::object_tag);
+                return r;
+            }));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Auto;
+    cops.discover_probe_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), cops);
+
+    std::atomic<int> progress_count{0};
+    RequestOptions ropts;
+    ropts.on_progress = [&progress_count](const ProgressNotificationParams&) {
+        progress_count.fetch_add(1);
+    };
+
+    client->CallTool("progress-tool", JsonValue(JsonValue::object_tag), ropts);
+    EXPECT_TRUE(has_token.load());
+    EXPECT_EQ(progress_count.load(), 1);
+
+    server->SendProgress(ProgressToken{seen_token.load()}, 0.9);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(progress_count.load(), 1);
+
+    client->Close();
+    server->Close();
+}

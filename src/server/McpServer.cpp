@@ -386,6 +386,18 @@ void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
     SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status);
 }
 
+void McpServer::SendProgress(const ProgressToken& token, double progress,
+                             std::optional<double> total,
+                             std::optional<std::string> message) {
+    ProgressNotificationParams params;
+    params.progress_token = token;
+    params.progress = progress;
+    params.total = total;
+    params.message = std::move(message);
+    handler_->SendNotification(notifications::kProgress,
+        SerializeProgressNotificationParams(params));
+}
+
 // ====================================================================
 // Elicitation
 // ====================================================================

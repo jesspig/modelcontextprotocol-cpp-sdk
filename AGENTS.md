@@ -15,7 +15,7 @@ ctest --preset debug --output-on-failure
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`。
 - `-DMCP_WERROR=ON` 才开警告即错误（CI 自动加，本地默认关）。
 - configure 无第三方拉取；唯一可选系统依赖是 OpenSSL（未找到则禁用 TLS、PKCE 回退内置 SHA-256）。
-- 验证全量：`ctest -N` 看实际用例数（约 16 目标 / 445 用例）。
+- 验证全量：`ctest -N` 看实际用例数（约 16 目标 / 482 用例）。
 - 自研测试框架（`tests/framework/`）：套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*/ASSERT_*`，链接 `mcp-test-main`；`--gtest_filter` 参数名兼容。
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删。
 - 集成测试 `RunWithTimeout`：body 挂起超 10s 会 `std::_Exit(1)` 快速失败（勿改回永久阻塞）。

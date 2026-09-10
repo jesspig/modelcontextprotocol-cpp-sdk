@@ -420,7 +420,7 @@ TEST(StreamableHttpTest, StatelessResponseMirrorsMcpParamHeaders) {
     hdrs["Mcp-Method"] = "tools/call";
     auto r = HttpPost(
         "http://127.0.0.1:" + std::to_string(port) + "/mcp",
-        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})",
         hdrs);
     ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
@@ -578,7 +578,7 @@ TEST(StreamableHttpTest, StatefulRequestResponseViaSseStream) {
     hdrs["Mcp-Method"] = "tools/call";
     auto r = HttpPost(
         "http://127.0.0.1:" + std::to_string(port) + "/mcp",
-        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})",
         hdrs);
     ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
@@ -643,7 +643,7 @@ TEST(StreamableHttpTest, StatefulRequestTimeoutReturns504) {
     mcp::detail::net::HttpRequestSpec req;
     req.method = "POST";
     req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
-    req.body = R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})";
+    req.body = R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})";
     req.headers["Content-Type"] = "application/json";
     req.headers["Mcp-Method"] = "tools/call";
     req.timeout = std::chrono::milliseconds(60000);
@@ -673,7 +673,7 @@ TEST(StreamableHttpTest, UnknownMethodMapsTo404) {
 
     auto r = HttpPost(
         "http://127.0.0.1:" + std::to_string(port) + "/mcp",
-        R"({"jsonrpc":"2.0","id":7,"method":"unknown/method","params":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
+        R"({"jsonrpc":"2.0","id":7,"method":"unknown/method","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})",
         {});
     ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 404);

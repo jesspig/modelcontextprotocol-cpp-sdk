@@ -84,6 +84,9 @@ public:
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
     void SendTaskStatus(std::string_view task_id, TaskStatus status);
+    void SendProgress(const ProgressToken& token, double progress,
+                      std::optional<double> total = std::nullopt,
+                      std::optional<std::string> message = std::nullopt);
 
     // ── Properties ──
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;

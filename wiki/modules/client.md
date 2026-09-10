@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-client 客户端库
-description: McpClient 门面：连接模式协商、请求/响应、OAuth 与令牌缓存。
-tags: [client, oauth, 缓存, 协商]
-timestamp: 2026-08-28T18:00:00+08:00
+description: McpClient 门面：连接模式协商、请求/响应、progress 回调、OAuth 与令牌缓存。
+tags: [client, oauth, 缓存, 协商, progress]
+timestamp: 2026-09-11T04:00:00+08:00
 resource: src/client/McpClient.cpp
 ---
 
@@ -23,13 +23,13 @@ resource: src/client/McpClient.cpp
 ## 客户端行为要点
 
 - **创建即阻塞**：`McpClient::Create` 构造后立即同步 `NegotiateProtocol()`，返回前协商完成
-- `WireClientHandlers()` 注册 5 个通知处理器：三个 listChanged（清空响应缓存）、`resources/updated`（按 uri 单键失效）、`subscriptions/acknowledged`（匹配 `SubscribeAsync` 待确认订阅并转发用户处理器）
+- `WireClientHandlers()` 注册 6 个通知处理器：三个 listChanged（清空响应缓存）、`resources/updated`（按 uri 单键失效）、`notifications/progress`（重置对应请求超时 + 分发 `on_progress` 回调）、`subscriptions/acknowledged`（匹配 `SubscribeAsync` 待确认订阅并转发用户处理器）
 - 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置时收到请求抛 `MethodNotFound`；`SetLoggingHandler` 未设置时静默丢弃
 - 自动翻页：无 cursor 的列表请求自动翻页，上限 `kMaxAutoPages = 64` 页
 - 任务轮询：`resultType=="task"` 结果经 `PollTaskToCompletion`（500ms 间隔 / 300s 超时）
 - 超时：任务类请求 `kTaskRequestTimeout = 600s`、Ping `kPingTimeout = 10s`
 
-### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp:247](../../src/client/McpClient.cpp)）
+### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp:261](../../src/client/McpClient.cpp)）
 
 - **stdio 类传输**（RTTI 判定 typeid name 含 `InMemoryTransportImpl`/`StdioClientSessionTransport`）：discover 探测超时/网络失败→回退 initialize
 - **HTTP 类传输**：超时→抛 `McpError(RequestTimeout)`；网络异常→`McpError(ConnectionClosed)`，不回退
@@ -38,7 +38,17 @@ resource: src/client/McpClient.cpp
 
 ### 缓存读取兼容
 
-`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp:769](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private），`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
+`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp:856](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private），`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
+
+### progress 接收（客户端方向）
+
+- `RequestOptions::on_progress`（`std::function<void(const ProgressNotificationParams&)>`）设置后，`CallTool`/`GetPrompt` 经 `AttachProgressCallback` 注册回调并生成 progressToken——`options.meta.progressToken`（string/int）显式提供时优先，否则自动生成自 1 起的原子计数；请求结束经 RAII（`ScopedProgressCleanup`）清理回调
+- `notifications/progress` 处理器先 `ResetTimeoutByProgressToken` 顺延该请求 deadline，再按 token 分发回调；**回调在会话消息循环线程同步执行，必须快速返回**
+- 双 era 落点：legacy era progressToken 写 `params._meta.progressToken`；modern era 经 `_meta` 信封（序列化层落 `params._meta`）
+
+### 客户端 → 服务端通知
+
+`SendRootsListChanged()` 发送 `notifications/roots/list_changed`，协商版本 **>= 2025-06-18** 才允许，否则抛 `McpError(ProtocolViolation)`（[McpClient.cpp:1226](../../src/client/McpClient.cpp)）。
 
 ## 相关页面
 

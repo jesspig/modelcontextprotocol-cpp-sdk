@@ -30,7 +30,7 @@ struct JsonRpcRequest {
     RequestId id;
     std::string method;
     std::optional<JsonValue> params;
-    std::optional<JsonValue> meta;   // top-level _meta (2026 era)
+    std::optional<JsonValue> meta;   // _meta carried inside params (per-request envelope)
 };
 
 // ── JsonRpcNotification ──
@@ -38,7 +38,7 @@ struct JsonRpcNotification {
     std::string jsonrpc = "2.0";
     std::string method;
     std::optional<JsonValue> params;
-    std::optional<JsonValue> meta;   // top-level _meta (2026 era)
+    std::optional<JsonValue> meta;   // _meta carried inside params (per-request envelope)
 };
 
 // ── JsonRpcResponse ──
