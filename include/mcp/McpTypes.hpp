@@ -10,6 +10,7 @@
 
 #include <mcp/JsonValue.hpp>
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -386,6 +387,7 @@ struct RequestOptions {
     std::optional<int64_t> read_timeout_ms;
     std::optional<JsonValue> input_responses;
     std::optional<std::string> request_state;
+    std::function<void(const ProgressNotificationParams&)> on_progress;
 };
 
 struct CacheableRequestOptions : RequestOptions {

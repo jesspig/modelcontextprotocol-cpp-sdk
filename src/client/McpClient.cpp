@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <typeinfo>
 
 namespace mcp {
@@ -187,6 +188,20 @@ namespace {
         return result.Contains(detail::kCode) &&
                static_cast<int32_t>(result[detail::kCode].GetInt()) < 0;
     }
+
+    // RAII: run the cleanup callable on scope exit (normal or exceptional)
+    class ScopedProgressCleanup {
+    public:
+        explicit ScopedProgressCleanup(std::function<void()> cleanup)
+            : cleanup_(std::move(cleanup)) {}
+        ~ScopedProgressCleanup() {
+            if (cleanup_) cleanup_();
+        }
+        ScopedProgressCleanup(const ScopedProgressCleanup&) = delete;
+        ScopedProgressCleanup& operator=(const ScopedProgressCleanup&) = delete;
+    private:
+        std::function<void()> cleanup_;
+    };
 }
 
 // ── Helper: build RequestMeta from ClientOptions and version ──
@@ -494,6 +509,37 @@ void McpClient::WireClientHandlers() {
                 }
             }
         });
+
+    // ── notifications/progress: reset the pending deadline, then dispatch to
+    // the per-request callback registered via RequestOptions::on_progress ──
+    handler_->SetNotificationHandler(notifications::kProgress,
+        [this](const JsonRpcNotification& notif) {
+            if (!notif.params || !notif.params->IsObject()) return;
+            ProgressNotificationParams params;
+            try {
+                params = DeserializeProgressNotificationParams(*notif.params);
+            } catch (...) {
+                return;
+            }
+            auto key = std::visit([](const auto& v) -> std::string {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::string>) return v;
+                else return std::to_string(v);
+            }, params.progress_token);
+            handler_->ResetTimeoutByProgressToken(key);
+            ProgressCallback callback;
+            {
+                std::lock_guard<std::mutex> lk(progress_callbacks_mutex_);
+                auto it = progress_callbacks_.find(key);
+                if (it == progress_callbacks_.end()) return;
+                callback = it->second;
+            }
+            try {
+                callback(params);
+            } catch (...) {
+                MCP_LOG(Error, "progress notification handler threw");
+            }
+        });
     handler_->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
         [this](const JsonRpcNotification& notif) {
             std::string sid;
@@ -615,6 +661,47 @@ void McpClient::SetLoggingHandler(
                 MCP_LOG(Error, "logging notification handler threw");
             }
         });
+}
+
+// ====================================================================
+// Progress callback registration
+// ====================================================================
+std::optional<std::string> McpClient::AttachProgressCallback(
+    const RequestOptions& options, RequestMeta& meta)
+{
+    if (!options.on_progress) return std::nullopt;
+
+    std::string key;
+    bool explicit_token = false;
+    if (options.meta && options.meta->IsObject()) {
+        if (auto* pt = options.meta->Find(detail::kProgressToken)) {
+            if (pt->IsString()) {
+                key = pt->GetString();
+                meta.progress_token = key;
+                explicit_token = true;
+            } else if (pt->IsInt()) {
+                key = std::to_string(pt->GetInt());
+                meta.progress_token = pt->GetInt();
+                explicit_token = true;
+            }
+        }
+    }
+    if (!explicit_token) {
+        auto token = next_progress_token_.fetch_add(1);
+        key = std::to_string(token);
+        meta.progress_token = token;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(progress_callbacks_mutex_);
+        progress_callbacks_[key] = options.on_progress;
+    }
+    return key;
+}
+
+void McpClient::DetachProgressCallback(const std::string& key) {
+    std::lock_guard<std::mutex> lk(progress_callbacks_mutex_);
+    progress_callbacks_.erase(key);
 }
 
 // ====================================================================
@@ -841,6 +928,13 @@ CallToolResult McpClient::CallTool(
     // Send with meta
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
+    auto progress_key = AttachProgressCallback(options, meta);
+    std::optional<ScopedProgressCleanup> progress_cleanup;
+    if (progress_key) {
+        progress_cleanup.emplace([this, key = *progress_key] {
+            DetachProgressCallback(key);
+        });
+    }
 
     JsonValue req_json(JsonValue::object_tag);
     req_json[detail::kName] = JsonValue(params.name);
@@ -962,6 +1056,13 @@ GetPromptResult McpClient::GetPrompt(
 {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
+    auto progress_key = AttachProgressCallback(options, meta);
+    std::optional<ScopedProgressCleanup> progress_cleanup;
+    if (progress_key) {
+        progress_cleanup.emplace([this, key = *progress_key] {
+            DetachProgressCallback(key);
+        });
+    }
 
     JsonValue req_json(JsonValue::object_tag);
     req_json[detail::kName] = JsonValue(std::string(name));
@@ -1117,6 +1218,29 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
             "subscriptions/listen: acknowledged frame not received within " +
             std::to_string(kSubscriptionAckTimeout.count()) + "ms");
     }
+}
+
+// ====================================================================
+// Notifications
+// ====================================================================
+void McpClient::SendRootsListChanged() {
+    static constexpr std::string_view kMinVersion = "2025-06-18";
+    const std::string_view negotiated = negotiation_.negotiated_version;
+    std::optional<size_t> negotiated_index;
+    std::optional<size_t> min_index;
+    size_t i = 0;
+    for (std::string_view v : kProtocolVersions) {
+        if (v == negotiated) negotiated_index = i;
+        if (v == kMinVersion) min_index = i;
+        ++i;
+    }
+    if (!negotiated_index || !min_index || *negotiated_index < *min_index) {
+        throw McpError(McpErrorCode::ProtocolViolation,
+            "notifications/roots/list_changed requires protocol version >= " +
+            std::string(kMinVersion) + ", negotiated: " +
+            std::string(negotiated));
+    }
+    handler_->SendNotification(notifications::kRootsListChanged, {});
 }
 
 } // namespace mcp

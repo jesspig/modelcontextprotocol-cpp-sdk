@@ -6,12 +6,14 @@
 #include <mcp/client/ClientOptions.hpp>
 #include <mcp/client/VersionNegotiation.hpp>
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mcp {
@@ -33,6 +35,10 @@ using RootsHandler = std::function<ListRootsResult(
 // Elicitation: server requests user input
 using ElicitationHandler = std::function<ElicitResult(
     const ElicitRequestParams&)>;
+
+// Progress: server pushes notifications/progress for an in-flight request.
+// Invoked synchronously on the session message loop thread; must return fast.
+using ProgressCallback = std::function<void(const ProgressNotificationParams&)>;
 
 // Notification handler: server sends notification
 using ClientNotificationHandler = std::function<void(
@@ -126,6 +132,10 @@ public:
     // ── Subscriptions ──
     void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
 
+    // ── Notifications (client → server) ──
+    // notifications/roots/list_changed requires negotiated version >= 2025-06-18.
+    void SendRootsListChanged();
+
     // ── Close ──
     void Close();
 
@@ -137,6 +147,12 @@ private:
     // Internal helpers
     void WireClientHandlers();
     NegotiationResult NegotiateProtocol();
+
+    // Register options.on_progress under a progress token key and stamp the
+    // token onto meta; returns the key, or nullopt when no callback is set.
+    std::optional<std::string> AttachProgressCallback(
+        const RequestOptions& options, RequestMeta& meta);
+    void DetachProgressCallback(const std::string& key);
 
     // MRTR-aware request: handles input_required loop
     JsonValue SendRequestWithMrtr(
@@ -170,6 +186,11 @@ private:
     std::condition_variable ack_cv_;
     std::optional<std::string> pending_ack_id_;
     std::optional<ClientNotificationHandler> user_ack_notification_handler_;
+
+    // Progress callbacks for in-flight requests, keyed by progress token
+    std::atomic<int64_t> next_progress_token_{1};
+    std::unordered_map<std::string, ProgressCallback> progress_callbacks_;
+    std::mutex progress_callbacks_mutex_;
 
 };
 
