@@ -219,11 +219,16 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     }
     // Lightweight codec-validation view: only method/_meta (and initialize
     // params) are inspected, so avoid building the full request tree.
+    // _meta is presented inside params, matching the wire location.
     JsonValue validation_view(JsonValue::object_tag);
     validation_view[detail::kMethod] = JsonValue(req.method);
-    if (req.meta) validation_view[detail::kMeta] = JsonValue(JsonValue::object_tag);
     if (req.method == methods::kInitialize && req.params)
         validation_view[detail::kParams] = *req.params;
+    if (req.meta) {
+        JsonValue& view_params = validation_view[detail::kParams];
+        if (!view_params.IsObject()) view_params = JsonValue(JsonValue::object_tag);
+        view_params[detail::kMeta] = *req.meta;
+    }
     auto validation = codec->ValidateRequest(req.method, validation_view);
     // initialize is exempt: a modern server must still answer legacy handshakes
     if (validation == WireValidation::NotInEra && req.method != methods::kInitialize) {
@@ -481,9 +486,17 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     // Ensure params is an object (matches the pre-meta-stamping wire format)
     if (req.params->IsNull()) *req.params = JsonValue(JsonValue::object_tag);
 
-    // Stamp _meta at the top level for 2026 era (serialized from req.meta)
+    // 2026 era: the meta envelope lives in req.meta; serialization places
+    // it inside params._meta on the wire.
     if (IsModernProtocolVersion(meta.protocol_version)) {
         req.meta = SerializeRequestMeta(meta);
+    } else if (meta.progress_token) {
+        JsonValue* legacy_meta = req.params->Find(detail::kMeta);
+        if (!legacy_meta) {
+            (*req.params)[detail::kMeta] = JsonValue(JsonValue::object_tag);
+            legacy_meta = req.params->Find(detail::kMeta);
+        }
+        (*legacy_meta)[detail::kProgressToken] = SerializeProgressToken(*meta.progress_token);
     }
 
     // Register pending request

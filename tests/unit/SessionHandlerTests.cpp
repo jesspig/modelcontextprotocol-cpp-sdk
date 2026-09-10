@@ -5,6 +5,7 @@
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/JsonRpc.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
@@ -261,6 +262,78 @@ TEST(SessionHandlerTest, ProgressNotificationExtendsDeadline) {
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto result = future.get();
     EXPECT_FALSE(result.Contains("code"));
+}
+
+// Legacy era: progressToken travels inside params._meta so pre-2026 peers
+// receive it in the conventional wire location.
+TEST(SessionHandlerTest, LegacyEraRequestCarriesProgressTokenInParams) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+
+    std::promise<JsonRpcRequest> req_promise;
+    auto req_future = req_promise.get_future();
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&req_promise](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            req_promise.set_value(req);
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    meta.progress_token = int64_t(1);
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto req = req_future.get();
+    ASSERT_TRUE(req.params);
+    auto* legacy_meta = req.params->Find("_meta");
+    ASSERT_TRUE(legacy_meta);
+    auto* pt = legacy_meta->Find("progressToken");
+    ASSERT_TRUE(pt);
+    EXPECT_EQ(*pt, JsonValue(int64_t(1)));
+    EXPECT_FALSE(req.meta);
+}
+
+// Modern era: the in-memory meta envelope stays in req.meta, and the wire
+// JSON (via serialization round-trip) carries progressToken and
+// protocolVersion inside params._meta, never at the top level.
+TEST(SessionHandlerTest, ModernEraRequestCarriesProgressTokenInParamsMetaOnWire) {
+    HandlerPair hp;
+
+    std::promise<JsonRpcRequest> req_promise;
+    auto req_future = req_promise.get_future();
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&req_promise](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            req_promise.set_value(req);
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.progress_token = int64_t(1);
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto req = req_future.get();
+
+    ASSERT_TRUE(req.meta);
+    auto* pt = req.meta->Find("progressToken");
+    ASSERT_TRUE(pt);
+    EXPECT_EQ(*pt, JsonValue(int64_t(1)));
+    ASSERT_TRUE(req.params);
+    EXPECT_FALSE(req.params->Contains("_meta"));
+
+    auto wire = JsonValue::Parse(SerializeMessage(JsonRpcMessage(req)));
+    EXPECT_FALSE(wire.Contains("_meta"));
+    ASSERT_TRUE(wire["params"].Contains("_meta"));
+    EXPECT_EQ(wire["params"]["_meta"]["progressToken"], JsonValue(int64_t(1)));
+    EXPECT_EQ(
+        wire["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+        std::string(kLatestProtocolVersion));
+    future.get();
 }
 
 // A request dropped by an incoming filter never reaches the handler map;
