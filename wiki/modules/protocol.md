@@ -2,8 +2,8 @@
 type: Module
 title: mcp-protocol 协议库
 description: JSON-RPC 引擎（McpSessionHandler）与双时代线协议编解码（WireCodec）。
-tags: [protocol, jsonrpc, codec, 双时代]
-timestamp: 2026-08-15T22:30:00+08:00
+tags: [protocol, jsonrpc, codec, 双时代, meta]
+timestamp: 2026-09-11T04:00:00+08:00
 resource: src/protocol/McpSessionHandler.cpp
 ---
 
@@ -23,15 +23,15 @@ resource: src/protocol/McpSessionHandler.cpp
 
 ## 通知处理器
 
-WireCodec 编解码器集合共 **17 种**通知：公共 7 + 2025 独有 9（initialized、roots/list_changed、elicitation/complete、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required）+ 2026 独有 1（subscriptions/acknowledged）。[Methods.hpp](../../include/mcp/Methods.hpp) 的 `notifications` 命名空间保留 17 个常量，与编解码器集合一致（tasks 系列 6 个独有通知 2026-08-15 加回，服务端 `SendTaskStatus`/任务完成通知使用）。服务端在 `McpServer::WireHandlers()` 接线；客户端注册 5 个处理器（`tools/list_changed`、`resources/list_changed`、`prompts/list_changed` 于 [McpClient.cpp:481-486](../../src/client/McpClient.cpp)，`resources/updated` 于 [McpClient.cpp:487-496](../../src/client/McpClient.cpp)，`subscriptions/acknowledged` 于 [McpClient.cpp:497-516](../../src/client/McpClient.cpp)——匹配 `SubscribeAsync` 的待确认订阅并转发用户处理器，`notifications/message` 于 [McpClient.cpp:607](../../src/client/McpClient.cpp)，另有公共 `SetNotificationHandler` 转发 [McpClient.cpp:588](../../src/client/McpClient.cpp)，对 `subscriptions/acknowledged` 特判存储不覆盖内部处理器）。`notifications/cancelled` 在 `OnNotification` 中硬编码处理，先于处理器表查找。
+WireCodec 编解码器集合共 **17 种**通知：公共 7 + 2025 独有 9（initialized、roots/list_changed、elicitation/complete、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required）+ 2026 独有 1（subscriptions/acknowledged）。[Methods.hpp](../../include/mcp/Methods.hpp) 的 `notifications` 命名空间保留 17 个常量，与编解码器集合一致（tasks 系列 6 个独有通知 2026-08-15 加回，服务端 `SendTaskStatus`/任务完成通知使用）。服务端在 `McpServer::WireHandlers()` 接线；客户端注册 6 个处理器（`tools/list_changed`、`resources/list_changed`、`prompts/list_changed` 于 [McpClient.cpp:496-501](../../src/client/McpClient.cpp)，`resources/updated` 于 [McpClient.cpp:502](../../src/client/McpClient.cpp)，`notifications/progress` 于 [McpClient.cpp:515](../../src/client/McpClient.cpp)——重置超时 + 分发 `on_progress` 回调，`subscriptions/acknowledged` 于 [McpClient.cpp:543](../../src/client/McpClient.cpp)——匹配 `SubscribeAsync` 的待确认订阅并转发用户处理器，`notifications/message` 于 [McpClient.cpp:653](../../src/client/McpClient.cpp)，另有公共 `SetNotificationHandler` 转发 [McpClient.cpp:634](../../src/client/McpClient.cpp)，对 `subscriptions/acknowledged` 特判存储不覆盖内部处理器）。`notifications/cancelled` 在 `OnNotification` 中硬编码处理，先于处理器表查找。
 
 ## 关键语义
 
 - `McpSessionHandler::OnRequest` 对 handler 抛出的 `McpError` 直接回 `e.Code()`；其他异常一律 `InternalError`（"handler error: ..."）
 - 超时：默认 60s（`kDefaultRequestTimeout`），超时检查线程每 100ms 轮询；progress 通知延长截止时间 30s（仅当剩余时间 < 30s 时）
 - 响应回发：单一 `response_worker_` 线程 + 有界 `response_queue_`（`deque<std::function>`）取代每请求一线程；任务内先 `wait_for(0)` 快检（同步 handler 零延迟）、未就绪 10ms 兜底轮询（`kResponsePollInterval`），`closed_` 时中止（保证 `Close()` 不阻塞）
-- `SendRequest` 注册 pending 后复查 `closed_`，已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:505](../../src/protocol/McpSessionHandler.cpp)）
-- 2026 时代 `SendRequest` 顶层 stamp `_meta`；`SendNotification` 的 meta 只带 `negotiated_version_`
+- `SendRequest` 注册 pending 后复查 `closed_`，已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:518](../../src/protocol/McpSessionHandler.cpp)）
+- 双 era meta 落点：modern era `req.meta` 写 `_meta` 信封、legacy era progressToken 写 `params._meta.progressToken`；`SendNotification` 的 meta 只带 `negotiated_version_`。序列化层（[JsonRpc.cpp](../../src/core/JsonRpc.cpp)）统一把 `meta` 合并进 `params._meta`，反序列化后从 params 移除 `_meta` 键——线上形态一律 `params._meta`，内存结构 `req.meta`/`notif.meta` 语义不变
 
 ## 相关页面
 

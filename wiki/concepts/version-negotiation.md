@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 版本协商
-description: 2025（initialize）与 2026（server/discover）双时代协议版本选择与 codec 重建。
+description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、codec 重建与 HTTP 版本头自学习。
 tags: [协议, 版本, 协商, 2026]
-timestamp: 2026-08-28T18:00:00+08:00
+timestamp: 2026-09-11T04:00:00+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -41,7 +41,19 @@ resource: include/mcp/client/VersionNegotiation.hpp
 | `-32022` 且 data 缺失/畸形 | 回退 initialize | 同左 |
 | `-32001` / `-32020` / `-32021` / `-32601` 及其他错误码 | 回退 initialize | 同左 |
 
-（[McpClient.cpp](../../src/client/McpClient.cpp:247)）
+（[McpClient.cpp](../../src/client/McpClient.cpp:261)）
+
+## Streamable HTTP 客户端的版本头自学习
+
+transport 层无协商状态，改为**从流量中学习**（[StreamableHttpClientTransport.cpp:52](../../src/http/StreamableHttpClientTransport.cpp)）：
+
+- initialize 请求**不带** `MCP-Protocol-Version` 头（版本尚未确定，由 body 的 `params.protocolVersion` 表达）
+- 从 initialize 响应 `result.protocolVersion` 学习协商版本（POST 响应体与 GET 流首帧两处均可学习，`NegotiatedVersionFromResponse`）
+- 后续所有请求与 GET 接收流按学习到的版本携带 `MCP-Protocol-Version` 头；尚无学习值时兜底 `2026-07-28`（`EffectiveProtocolVersion`）
+
+## 客户端通知的版本门控
+
+`McpClient::SendRootsListChanged()`（notifications/roots/list_changed）要求协商版本 **>= 2025-06-18**（按 `kProtocolVersions` 序位比较），不满足抛 `McpError(ProtocolViolation)`。
 
 ## 时代差异
 
