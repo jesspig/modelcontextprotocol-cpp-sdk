@@ -29,6 +29,8 @@ struct HttpClientTransportOptions {
     // to give up. A non-empty return triggers exactly one retry with the
     // returned header attached.
     std::function<std::string(std::string_view www_authenticate)> auth_challenge_handler;
+    // 服务器经 GET SSE 流主动推送通知；发送 notifications/initialized 后自动开启
+    bool enable_listen_stream = true;
 };
 
 class StreamableHttpClientTransport : public IClientTransport {
