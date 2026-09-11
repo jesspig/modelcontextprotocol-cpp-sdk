@@ -185,6 +185,8 @@ struct Phase1HttpFixture : mcp::test::TestCase {
     std::unique_ptr<McpClient> client;
     std::thread server_thread;
     std::shared_ptr<std::atomic<bool>> progress_ack;
+    std::shared_ptr<std::atomic<bool>> server_initialized =
+        std::make_shared<std::atomic<bool>>(false);
 
     void SetUp() override {
         progress_ack = std::make_shared<std::atomic<bool>>(false);
@@ -197,8 +199,12 @@ struct Phase1HttpFixture : mcp::test::TestCase {
         topts.endpoint = "/mcp";
         server_transport = std::make_shared<StreamableHttpServerTransport>(topts);
 
+        auto initialized_flag = server_initialized;
         ServerOptions sopts;
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
+        sopts.on_initialized = [initialized_flag]() {
+            initialized_flag->store(true);
+        };
         server = McpServer::Create(server_transport, sopts);
         RegisterProgressTool(*server, progress_ack);
 
@@ -217,6 +223,12 @@ struct Phase1HttpFixture : mcp::test::TestCase {
         // Legacy mode runs the initialize handshake, which does.
         cops.connect_mode = ConnectMode::Legacy;
         client = McpClient::Create(client_transport, cops);
+
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!initialized_flag->load() &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        ASSERT_TRUE(initialized_flag->load());
     }
 
     void TearDown() override {

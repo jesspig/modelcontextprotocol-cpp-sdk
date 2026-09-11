@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -305,10 +306,19 @@ TEST(TcpSocketTest, CloseInterruptsBlockingRead) {
     client.Connect("127.0.0.1", server.Port(), std::chrono::seconds(5));
     char buf[4] = {};
     auto start = std::chrono::steady_clock::now();
+    std::promise<void> read_started;
     std::thread reader([&] {
-        EXPECT_THROW(client.Read(buf, 4, std::chrono::seconds(5)), mcp::McpError);
+        read_started.set_value();
+        try {
+            std::size_t n = client.Read(buf, 4, std::chrono::seconds(5));
+            EXPECT_EQ(n, std::size_t{0});
+            EXPECT_TRUE(client.IsEof());
+        } catch (const mcp::McpError&) {
+        }
     });
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    ASSERT_EQ(read_started.get_future().wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     client.Close();
     reader.join();
     EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
