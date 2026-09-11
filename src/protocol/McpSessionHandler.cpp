@@ -117,6 +117,7 @@ void McpSessionHandler::Close() {
         for (auto& [id, pending] : pending_) to_fire.push_back(std::move(pending));
         pending_.clear();
         progress_token_map_.clear();
+        absolute_deadlines_.clear();
     }
     for (auto& pending : to_fire) {
         if (pending) {
@@ -161,9 +162,13 @@ void McpSessionHandler::CheckTimeouts() {
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         for (auto it = pending_.begin(); it != pending_.end(); ) {
-            if (now >= it->second->deadline) {
+            auto abs_it = absolute_deadlines_.find(it->first);
+            const bool total_expired =
+                abs_it != absolute_deadlines_.end() && now >= abs_it->second;
+            if (total_expired || now >= it->second->deadline) {
                 to_fire.push_back(std::move(it->second));
                 EraseProgressTokens(it->first);
+                absolute_deadlines_.erase(it->first);
                 it = pending_.erase(it);
             } else {
                 ++it;
@@ -192,6 +197,11 @@ void McpSessionHandler::ResetTimeoutByProgressToken(const std::string& pt_key) {
             }
         }
     }
+}
+
+void McpSessionHandler::SetMaxTotalTimeout(std::chrono::seconds total) {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    max_total_timeout_ = total;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -389,6 +399,7 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
         if (it != pending_.end()) {
             pending = std::move(it->second);
             EraseProgressTokens(id);
+            absolute_deadlines_.erase(id);
             pending_.erase(it);
         }
     }
@@ -411,6 +422,7 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
         if (it != pending_.end()) {
             pending = std::move(it->second);
             EraseProgressTokens(id);
+            absolute_deadlines_.erase(id);
             pending_.erase(it);
         }
     }
@@ -523,6 +535,10 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
         } else {
             pending_[id_key] = pending;
             if (pt_key) progress_token_map_[*pt_key] = id_key;
+            if (max_total_timeout_ > std::chrono::seconds{0}) {
+                absolute_deadlines_[id_key] =
+                    std::chrono::steady_clock::now() + max_total_timeout_;
+            }
         }
     }
 
@@ -727,6 +743,7 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
         if (it != pending_.end()) {
             pending = std::move(it->second);
             EraseProgressTokens(target_id_key);
+            absolute_deadlines_.erase(target_id_key);
             pending_.erase(it);
         }
     }
