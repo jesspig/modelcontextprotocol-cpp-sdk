@@ -30,6 +30,8 @@ ListenState ListenStateForStatusCode(int status_code);
 std::string EffectiveProtocolVersion(const std::string& negotiated_version);
 std::optional<std::string> ProtocolVersionHeaderFor(const std::string& method,
                                                     const std::string& negotiated_version);
+std::optional<std::string> SessionIdHeaderFor(const std::string& method,
+                                              const std::string& session_id);
 std::optional<std::string> NegotiatedVersionFromResponse(const std::string& response_json);
 
 } // namespace streamable_http_client_impl
@@ -354,4 +356,278 @@ TEST(StreamableHttpTransportTest, ClientProtocolVersionHeaderNegotiationFlow) {
 
     transport->Close();
     mock.Stop();
+}
+
+// ── U8：initialize 请求不带 Mcp-Session-Id 头 ──
+TEST(StreamableHttpTransportTest, SessionIdHeaderOmittedForInitialize) {
+    using mcp::streamable_http_client_impl::SessionIdHeaderFor;
+    EXPECT_FALSE(SessionIdHeaderFor("initialize", "stale-session").has_value());
+    EXPECT_FALSE(SessionIdHeaderFor("initialize", "").has_value());
+    EXPECT_FALSE(SessionIdHeaderFor("tools/list", "").has_value());
+    auto sid = SessionIdHeaderFor("tools/list", "stale-session");
+    ASSERT_TRUE(sid.has_value());
+    EXPECT_EQ(*sid, "stale-session");
+}
+
+// ── U8 回环：404 交付 SessionExpired 类型化错误；initialize 无 session id 头、
+//    响应学习新 id 后后续请求携带新 id ──
+TEST(StreamableHttpTransportTest, Post404DeliversSessionExpiredError) {
+    auto port = PickFreePort(kTestBasePort + 1450);
+    HttpServer mock(port);
+    std::atomic<int> post_calls{0};
+    std::atomic<bool> init_sid_absent{false};
+    std::atomic<bool> followup_sid_learned{false};
+    mock.SetHandler("POST", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
+        if (post_calls.fetch_add(1) == 0) {
+            init_sid_absent =
+                req.headers.find("mcp-session-id") == req.headers.end();
+            resp.headers["Mcp-Session-Id"] = "fresh-session";
+            resp.body =
+                R"({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25",)"
+                R"("capabilities":{},"serverInfo":{"name":"mock","version":"0.0.1"}}})";
+            return;
+        }
+        auto it = req.headers.find("mcp-session-id");
+        followup_sid_learned = it != req.headers.end() && it->second == "fresh-session";
+        resp.status_code = 404;
+        resp.status_text = "Not Found";
+        resp.body = "session expired";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.known_session_id = "stale-session";
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+    auto& channel = transport->GetMessageChannel();
+
+    std::atomic<bool> got1{false};
+    std::atomic<bool> got2{false};
+    JsonRpcMessage received2;
+
+    JsonRpcRequest init;
+    init.method = "initialize";
+    init.id = 1;
+    transport->SendMessageAsync(std::move(init));
+
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage) {
+        if (!ec) got1.store(true);
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got1.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(got1.load());
+
+    JsonRpcRequest listing;
+    listing.method = "tools/list";
+    listing.id = 2;
+    transport->SendMessageAsync(std::move(listing));
+
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (!ec) {
+            received2 = std::move(msg);
+            got2.store(true);
+        }
+    });
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got2.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(got2.load());
+
+    EXPECT_TRUE(init_sid_absent.load());
+    EXPECT_TRUE(followup_sid_learned.load());
+
+    auto* err = AsError(received2);
+    ASSERT_TRUE(err != nullptr);
+    EXPECT_EQ(err->error.code, McpErrorCode::SessionExpired);
+    ASSERT_TRUE(err->id.has_value());
+    EXPECT_EQ(std::get<int64_t>(*err->id), 2);
+
+    transport->Close();
+    mock.Stop();
+}
+
+// ── 死锁回归：首笔 Request 的 POST 被 mock 挂起时，后续 Notification 必须经
+//    即时通道立即发出并释放首笔响应。修复前通知排队等待 send 线程，与挂起的
+//    server→client 请求（如 elicitation complete）互等死锁，本用例失败。──
+TEST(StreamableHttpTransportTest, ImmediatePostWhileRequestInFlight) {
+    auto port = PickFreePort(kTestBasePort + 1500);
+    HttpServer mock(port);
+    std::atomic<int> post_calls{0};
+    std::atomic<bool> notification_arrived{false};
+    std::atomic<bool> release_first{false};
+    mock.SetHandler("POST", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
+        auto method_it = req.headers.find("mcp-method");
+        bool is_notification = method_it != req.headers.end() &&
+            method_it->second.compare(0, 14, "notifications/") == 0;
+        if (post_calls.fetch_add(1) == 0 && !is_notification) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+            while (!release_first.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            resp.body = R"({"jsonrpc":"2.0","id":1,"result":{}})";
+            return;
+        }
+        if (is_notification) {
+            notification_arrived.store(true);
+            release_first.store(true);
+        }
+        resp.status_code = 202;
+        resp.status_text = "Accepted";
+        resp.body = "{}";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+    auto& channel = transport->GetMessageChannel();
+
+    JsonRpcRequest call;
+    call.method = "tools/call";
+    call.id = 1;
+    transport->SendMessageAsync(std::move(call));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (post_calls.load() < 1 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(post_calls.load() >= 1);
+
+    JsonRpcNotification complete;
+    complete.method = "notifications/elicitation/complete";
+    transport->SendMessageAsync(std::move(complete));
+
+    std::atomic<bool> got_response{false};
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (!ec) {
+            auto* response = AsResponse(msg);
+            if (response && std::get<int64_t>(response->id) == 1)
+                got_response.store(true);
+        }
+    });
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got_response.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(notification_arrived.load());
+    ASSERT_TRUE(got_response.load());
+
+    transport->Close();
+    mock.Stop();
+}
+
+// ── 死锁回归：POST 的 SSE 响应在流打开期间先达的 server→client 请求帧
+//    （如 elicitation/create）必须立即分发进 channel；修复前读取循环只累积
+//    不切分，帧滞留至流关闭，与等应答的服务端互等死锁，本用例超时失败。──
+TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
+    auto port = PickFreePort(kTestBasePort + 1550);
+    HttpServer mock(port);
+    std::atomic<int> post_calls{0};
+    mock.SetHandler("POST", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
+        auto method_it = req.headers.find("mcp-method");
+        if (post_calls.fetch_add(1) == 0 && method_it != req.headers.end() &&
+            method_it->second == "tools/call") {
+            resp.is_sse = true;
+            resp.sse_close_after_write = false;
+            resp.body =
+                "data: {\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"elicitation/create\","
+                "\"params\":{}}\n\n";
+            return;
+        }
+        try {
+            auto jv = JsonValue::Parse(req.body);
+            auto* id = jv.Find("id");
+            if (id && id->IsInt() && id->GetInt() == 100) {
+                mock.BroadcastSse(
+                    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"action\":\"accept\"}}\n\n");
+            }
+        } catch (...) {
+        }
+        resp.status_code = 202;
+        resp.status_text = "Accepted";
+        resp.body = "{}";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+    auto& channel = transport->GetMessageChannel();
+
+    JsonRpcRequest call;
+    call.method = "tools/call";
+    call.id = 1;
+    transport->SendMessageAsync(std::move(call));
+
+    std::atomic<bool> got_elicitation{false};
+    JsonRpcMessage elicitation_msg;
+    std::thread receiver([&] {
+        channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+            if (!ec) {
+                elicitation_msg = std::move(msg);
+                got_elicitation.store(true);
+            }
+        });
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got_elicitation.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(got_elicitation.load());
+    if (!got_elicitation.load()) {
+        mock.Stop();
+        transport->Close();
+        receiver.join();
+        return;
+    }
+    receiver.join();
+
+    auto* server_request = AsRequest(elicitation_msg);
+    ASSERT_TRUE(server_request != nullptr);
+    EXPECT_EQ(server_request->method, "elicitation/create");
+
+    JsonRpcResponse answer;
+    answer.id = server_request->id;
+    answer.result = JsonValue::Parse(R"({"action":"accept"})");
+    transport->SendMessageAsync(std::move(answer));
+
+    std::atomic<bool> got_result{false};
+    JsonRpcMessage result_msg;
+    std::thread receiver2([&] {
+        channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+            if (!ec) {
+                result_msg = std::move(msg);
+                got_result.store(true);
+            }
+        });
+    });
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got_result.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(got_result.load());
+    if (!got_result.load()) {
+        mock.Stop();
+        transport->Close();
+        receiver2.join();
+        return;
+    }
+    receiver2.join();
+
+    auto* response = AsResponse(result_msg);
+    ASSERT_TRUE(response != nullptr);
+    EXPECT_EQ(std::get<int64_t>(response->id), 1);
+
+    mock.Stop();
+    transport->Close();
 }

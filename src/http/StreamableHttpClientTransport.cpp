@@ -60,6 +60,23 @@ std::optional<std::string> ProtocolVersionHeaderFor(
     return EffectiveProtocolVersion(negotiated_version);
 }
 
+std::optional<std::string> SessionIdHeaderFor(
+    const std::string& method, const std::string& session_id) {
+    if (method == kInitializeMethod) return std::nullopt;
+    if (session_id.empty()) return std::nullopt;
+    return session_id;
+}
+
+JsonRpcMessage MakeSessionExpiredError(const JsonValue& request_body) {
+    JsonRpcErrorResponse err;
+    if (auto* id = request_body.Find("id"); id && !id->IsNull()) {
+        err.id = RequestIdFromJson(*id);
+    }
+    err.error.code = McpErrorCode::SessionExpired;
+    err.error.message = "session expired (HTTP 404)";
+    return JsonRpcMessage(std::move(err));
+}
+
 std::optional<std::string> NegotiatedVersionFromResponse(
     const std::string& response_json) {
     try {
@@ -208,15 +225,45 @@ public:
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
         MaybeStartListenStream(message);
-        auto j = SerializeMessage(std::move(message));
-        {
+        bool is_request = IsRequest(message);
+        auto body = SerializeMessage(std::move(message));
+        if (is_request) {
             std::lock_guard<std::mutex> lk(send_mutex_);
-            send_queue_.push(j);
+            send_queue_.push(std::move(body));
+        } else {
+            // Notifications/responses carry no response-awaiting semantics;
+            // posting them immediately cannot wait behind an in-flight
+            // request POST, which would deadlock server→client requests
+            // (e.g. elicitation completing a suspended tools/call).
+            LaunchImmediatePost(std::move(body));
+            return;
         }
         send_cv_.notify_one();
     }
 
 private:
+    // Fire-and-forget POST on a short-lived detached thread. The thread keeps
+    // the session alive via shared_from_this, so a detached thread outliving
+    // Close() never touches a destroyed object; DoPost's HTTP timeouts bound
+    // the thread's lifetime.
+    void LaunchImmediatePost(std::string body) {
+        try {
+            auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
+                shared_from_this());
+            std::thread([self, body = std::move(body)]() mutable {
+                detail::SetThreadName("mcp-post");
+                try {
+                    self->DoPost(body);
+                } catch (const std::exception& e) {
+                    MCP_LOG(Error, std::string("immediate POST failed: ") + e.what());
+                } catch (...) {
+                    MCP_LOG(Error, "immediate POST failed");
+                }
+            }).detach();
+        } catch (const std::exception& e) {
+            MCP_LOG(Error, std::string("immediate POST launch failed: ") + e.what());
+        }
+    }
     void MaybeStartListenStream(const JsonRpcMessage& message) {
         if (!options_.enable_listen_stream) return;
         auto* notification = AsNotification(message);
@@ -296,9 +343,10 @@ private:
         hdrs += L"MCP-Protocol-Version: " + ToWideStr(
             streamable_http_client_impl::EffectiveProtocolVersion(
                 NegotiatedVersion())) + L"\r\n";
-        if (!current_session_id_.empty()) {
+        auto listen_sid = CurrentSessionId();
+        if (!listen_sid.empty()) {
             hdrs += L"Mcp-Session-Id: " +
-                ToWideStr(current_session_id_) + L"\r\n";
+                ToWideStr(listen_sid) + L"\r\n";
         }
         {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
@@ -352,11 +400,16 @@ private:
         }
         std::string pending;
         char buf[4096];
-        DWORD nread = 0;
-        while (running_ &&
-               WinHttpReadData(hRequest, buf, sizeof(buf), &nread) && nread > 0) {
+        for (;;) {
+            if (!running_) break;
+            DWORD navail = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &navail) || navail == 0)
+                break;
+            DWORD nread = 0;
+            DWORD nwant = navail < sizeof(buf) ? navail : static_cast<DWORD>(sizeof(buf));
+            if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
+                break;
             pending.append(buf, nread);
-            nread = 0;
             if (pending.size() > detail::kMaxMessageSize) {
                 MCP_LOG(Error, "Listen SSE stream exceeded max message size");
                 break;
@@ -414,7 +467,8 @@ private:
     }
 
     void DoDelete() {
-        if (current_session_id_.empty()) return;
+        auto sid = CurrentSessionId();
+        if (sid.empty()) return;
         HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -442,7 +496,7 @@ private:
         }
 
         std::wstring hdrs = L"Mcp-Session-Id: " +
-            ToWideStr(current_session_id_) + L"\r\n";
+            ToWideStr(sid) + L"\r\n";
         WinHttpAddRequestHeaders(hRequest, hdrs.data(),
             static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
 
@@ -512,10 +566,6 @@ private:
             // Headers per MCP Streamable HTTP spec
             std::wstring hdrs = L"Content-Type: application/json\r\n"
                                 L"Accept: application/json, text/event-stream\r\n";
-            if (!current_session_id_.empty()) {
-                hdrs += L"Mcp-Session-Id: " +
-                    ToWideStr(current_session_id_) + L"\r\n";
-            }
             std::string method;
             try {
                 auto body_jv2 = JsonValue::Parse(body);
@@ -549,6 +599,10 @@ private:
             }
             bool is_initialize =
                 method == streamable_http_client_impl::kInitializeMethod;
+            if (auto sid = streamable_http_client_impl::SessionIdHeaderFor(
+                    method, CurrentSessionId())) {
+                hdrs += L"Mcp-Session-Id: " + ToWideStr(*sid) + L"\r\n";
+            }
             if (auto version = streamable_http_client_impl::ProtocolVersionHeaderFor(
                     method, NegotiatedVersion())) {
                 hdrs += L"MCP-Protocol-Version: " + ToWideStr(*version) + L"\r\n";
@@ -600,7 +654,7 @@ private:
             DWORD sid_size = sizeof(sid_buf);
             if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
                     L"Mcp-Session-Id", sid_buf, &sid_size, nullptr)) {
-                current_session_id_ = wide_to_utf8(sid_buf);
+                StoreSessionId(wide_to_utf8(sid_buf));
             }
 
             if (status_ok && status_code >= 400)
@@ -639,6 +693,17 @@ private:
                         JsonRpcMessage msg = DeserializeMessage(err_body);
                         if (channel_) channel_->Send(std::move(msg));
                         delivered = true;
+                    } catch (...) {
+                    }
+                }
+                if (!delivered && status_code == 404) {
+                    try {
+                        auto req_body = JsonValue::Parse(body);
+                        if (channel_) {
+                            channel_->Send(streamable_http_client_impl::
+                                MakeSessionExpiredError(req_body));
+                            delivered = true;
+                        }
                     } catch (...) {
                     }
                 }
@@ -683,15 +748,25 @@ private:
             }
 
             if (isSse) {
-                // POST SSE response stream: read until the server closes it
-                // after the final event, then dispatch every block.
+                // POST SSE response stream: dispatch each complete event block
+                // as its bytes arrive; a held-open stream (server→client request
+                // awaiting our reply) must not defer dispatch until EOF.
+                // QueryDataAvailable + ReadData(available) is the documented
+                // incremental read pairing: bare WinHttpReadData would wait to
+                // fill the whole 4KB buffer before returning.
                 sse_request_ = hRequest;
                 std::string sse_body;
                 char sbuf[4096];
-                DWORD sread = 0;
-                while (WinHttpReadData(hRequest, sbuf, sizeof(sbuf), &sread) && sread > 0) {
+                for (;;) {
+                    DWORD savail = 0;
+                    if (!WinHttpQueryDataAvailable(hRequest, &savail) || savail == 0)
+                        break;
+                    DWORD sread = 0;
+                    DWORD swant = savail < sizeof(sbuf) ? savail
+                                                        : static_cast<DWORD>(sizeof(sbuf));
+                    if (!WinHttpReadData(hRequest, sbuf, swant, &sread) || sread == 0)
+                        break;
                     sse_body.append(sbuf, sread);
-                    sread = 0;
                     if (sse_body.size() > detail::kMaxMessageSize) {
                         sse_request_ = nullptr;
                         sse_body.clear();
@@ -702,14 +777,14 @@ private:
                         WinHttpCloseHandle(hSession);
                         return;
                     }
+                    size_t pos;
+                    while ((pos = sse_body.find("\n\n")) != std::string::npos) {
+                        std::string block = sse_body.substr(0, pos);
+                        sse_body.erase(0, pos + 2);
+                        DispatchSseBlock(block, is_initialize);
+                    }
                 }
                 sse_request_ = nullptr;
-                size_t pos;
-                while ((pos = sse_body.find("\n\n")) != std::string::npos) {
-                    std::string block = sse_body.substr(0, pos);
-                    sse_body.erase(0, pos + 2);
-                    DispatchSseBlock(block, is_initialize);
-                }
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
@@ -779,12 +854,23 @@ private:
         return negotiated_version_;
     }
 
+    std::string CurrentSessionId() {
+        std::lock_guard<std::mutex> lk(session_id_mutex_);
+        return current_session_id_;
+    }
+
+    void StoreSessionId(std::string sid) {
+        std::lock_guard<std::mutex> lk(session_id_mutex_);
+        current_session_id_ = std::move(sid);
+    }
+
     void StoreNegotiatedVersion(std::string version) {
         std::lock_guard<std::mutex> lk(version_mutex_);
         if (negotiated_version_.empty()) negotiated_version_ = std::move(version);
     }
 
     HttpClientTransportOptions options_;
+    std::mutex session_id_mutex_;
     std::string current_session_id_;
     std::mutex version_mutex_;
     std::string negotiated_version_;
@@ -837,6 +923,8 @@ constexpr int kHttpRequestTimeoutSeconds = 30;
 
 struct ListenAbort {};
 
+struct PostBodyTooLarge {};
+
 class StreamableHttpSessionTransport : public TransportBase {
 public:
     explicit StreamableHttpSessionTransport(
@@ -882,12 +970,44 @@ public:
     void SendMessageAsync(JsonRpcMessage message) override {
         if (!running_) return;
         MaybeStartListenStream(message);
+        bool is_request = IsRequest(message);
         auto body = SerializeMessage(std::move(message));
-        { std::lock_guard<std::mutex> lk(send_mutex_); send_queue_.push(std::move(body)); }
+        if (is_request) {
+            std::lock_guard<std::mutex> lk(send_mutex_);
+            send_queue_.push(std::move(body));
+        } else {
+            // Notifications/responses carry no response-awaiting semantics;
+            // posting them immediately cannot wait behind an in-flight
+            // request POST, which would deadlock server→client requests
+            // (e.g. elicitation completing a suspended tools/call).
+            LaunchImmediatePost(std::move(body));
+            return;
+        }
         send_cv_.notify_one();
     }
 
 private:
+    // Fire-and-forget POST on a short-lived detached thread. The thread keeps
+    // the session alive via shared_from_this, so a detached thread outliving
+    // Close() never touches a destroyed object; DoPost's HTTP timeouts bound
+    // the thread's lifetime.
+    void LaunchImmediatePost(std::string body) {
+        try {
+            auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
+                shared_from_this());
+            std::thread([self, body = std::move(body)]() mutable {
+                try {
+                    self->DoPost(body);
+                } catch (const std::exception& e) {
+                    MCP_LOG(Error, std::string("immediate POST failed: ") + e.what());
+                } catch (...) {
+                    MCP_LOG(Error, "immediate POST failed");
+                }
+            }).detach();
+        } catch (const std::exception& e) {
+            MCP_LOG(Error, std::string("immediate POST launch failed: ") + e.what());
+        }
+    }
     void MaybeStartListenStream(const JsonRpcMessage& message) {
         if (!options_.enable_listen_stream) return;
         auto* notification = AsNotification(message);
@@ -940,8 +1060,9 @@ private:
         req.headers["MCP-Protocol-Version"] =
             streamable_http_client_impl::EffectiveProtocolVersion(
                 NegotiatedVersion());
-        if (!current_session_id_.empty()) {
-            req.headers["Mcp-Session-Id"] = current_session_id_;
+        auto listen_sid = CurrentSessionId();
+        if (!listen_sid.empty()) {
+            req.headers["Mcp-Session-Id"] = std::move(listen_sid);
         }
         {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
@@ -1028,12 +1149,13 @@ private:
     }
 
     void DoDelete() {
-        if (current_session_id_.empty()) return;
+        auto sid = CurrentSessionId();
+        if (sid.empty()) return;
         detail::net::HttpRequestSpec req;
         req.method = "DELETE";
         req.url = options_.endpoint;
         req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
-        req.headers["Mcp-Session-Id"] = current_session_id_;
+        req.headers["Mcp-Session-Id"] = std::move(sid);
         try {
             detail::net::HttpClient client;
             (void)client.Request(req);
@@ -1048,9 +1170,6 @@ private:
             std::unordered_map<std::string, std::string> headers;
             headers["Content-Type"] = "application/json";
             headers["Accept"] = "application/json, text/event-stream";
-            if (!current_session_id_.empty()) {
-                headers["Mcp-Session-Id"] = current_session_id_;
-            }
             std::string method;
             try {
                 auto jv = JsonValue::Parse(body);
@@ -1081,6 +1200,10 @@ private:
             }
             bool is_initialize =
                 method == streamable_http_client_impl::kInitializeMethod;
+            if (auto sid = streamable_http_client_impl::SessionIdHeaderFor(
+                    method, CurrentSessionId())) {
+                headers["Mcp-Session-Id"] = *sid;
+            }
             if (auto version = streamable_http_client_impl::ProtocolVersionHeaderFor(
                     method, NegotiatedVersion())) {
                 headers["MCP-Protocol-Version"] = *version;
@@ -1099,8 +1222,30 @@ private:
             req.headers = headers;
             detail::net::HttpClient client;
             detail::net::HttpResponseInfo resp;
+            std::string full_body;
+            std::string sse_pending;
             try {
-                resp = client.Request(req);
+                resp = client.Request(req, [&](std::string_view chunk) {
+                    full_body.append(chunk.data(), chunk.size());
+                    if (full_body.size() > detail::kMaxMessageSize) {
+                        throw PostBodyTooLarge{};
+                    }
+                    // Headers are invisible inside the callback (HttpClient
+                    // fills them on return), so split unconditionally: a JSON
+                    // body never yields a block whose lines start with "data:",
+                    // and DispatchSseBlock silently ignores such blocks.
+                    sse_pending.append(chunk.data(), chunk.size());
+                    size_t pos;
+                    while ((pos = sse_pending.find("\n\n")) != std::string::npos) {
+                        std::string block = sse_pending.substr(0, pos);
+                        sse_pending.erase(0, pos + 2);
+                        DispatchSseBlock(block, is_initialize);
+                    }
+                });
+            } catch (const PostBodyTooLarge&) {
+                MCP_LOG(Error, "HTTP response exceeded max message size");
+                NotifyError("HTTP response exceeded max message size");
+                return;
             } catch (...) {
                 MCP_LOG(Error, "HTTP POST failed");
                 NotifyError("HTTP POST failed");
@@ -1110,7 +1255,7 @@ private:
             // Capture a session id from any response; later requests carry it.
             auto sid = httpclient_posix_impl::GetHeader(resp, "Mcp-Session-Id");
             if (!sid.empty()) {
-                current_session_id_ = std::move(sid);
+                StoreSessionId(std::move(sid));
             }
 
             if (resp.status_code >= 400) {
@@ -1127,12 +1272,23 @@ private:
                 // mapped to HTTP 404); deliver it to the channel instead of
                 // failing the connection.
                 bool delivered = false;
-                if (!resp.body.empty() && resp.body.size() <= detail::kMaxMessageSize) {
+                if (!full_body.empty() && full_body.size() <= detail::kMaxMessageSize) {
                     try {
-                        JsonRpcMessage msg = DeserializeMessage(resp.body);
+                        JsonRpcMessage msg = DeserializeMessage(full_body);
                         if (channel_) channel_->Send(std::move(msg));
                         delivered = true;
                     } catch (const std::exception&) {
+                    }
+                }
+                if (!delivered && resp.status_code == 404) {
+                    try {
+                        auto req_body = JsonValue::Parse(body);
+                        if (channel_) {
+                            channel_->Send(streamable_http_client_impl::
+                                MakeSessionExpiredError(req_body));
+                            delivered = true;
+                        }
+                    } catch (...) {
                     }
                 }
                 if (!delivered) {
@@ -1161,29 +1317,24 @@ private:
 
             auto ct = httpclient_posix_impl::GetHeader(resp, "Content-Type");
             if (ct.find("text/event-stream") != std::string::npos) {
-                auto sse_data = resp.body;
-                size_t pos;
-                while ((pos = sse_data.find("\n\n")) != std::string::npos) {
-                    std::string block = sse_data.substr(0, pos);
-                    sse_data.erase(0, pos + 2);
-                    DispatchSseBlock(block, is_initialize);
-                }
+                // Complete blocks were already dispatched from the streaming
+                // callback; a held-open stream simply keeps being read.
                 return;
             } else {
-                if (resp.body.empty()) return;
-                if (resp.body.size() > detail::kMaxMessageSize) {
+                if (full_body.empty()) return;
+                if (full_body.size() > detail::kMaxMessageSize) {
                     MCP_LOG(Error, "HTTP response exceeded max message size");
                     NotifyError("HTTP response exceeded max message size");
                     return;
                 }
                 if (is_initialize) {
                     if (auto v = streamable_http_client_impl::NegotiatedVersionFromResponse(
-                            resp.body)) {
+                            full_body)) {
                         StoreNegotiatedVersion(std::move(*v));
                     }
                 }
                 try {
-                    JsonRpcMessage msg = DeserializeMessage(resp.body);
+                    JsonRpcMessage msg = DeserializeMessage(full_body);
                     if (channel_) channel_->Send(std::move(msg));
                 } catch (const std::exception& e) {
                     MCP_LOG(Error, std::string("HTTP response parse failed: ") + e.what());
@@ -1220,12 +1371,23 @@ private:
         return negotiated_version_;
     }
 
+    std::string CurrentSessionId() {
+        std::lock_guard<std::mutex> lk(session_id_mutex_);
+        return current_session_id_;
+    }
+
+    void StoreSessionId(std::string sid) {
+        std::lock_guard<std::mutex> lk(session_id_mutex_);
+        current_session_id_ = std::move(sid);
+    }
+
     void StoreNegotiatedVersion(std::string version) {
         std::lock_guard<std::mutex> lk(version_mutex_);
         if (negotiated_version_.empty()) negotiated_version_ = std::move(version);
     }
 
     HttpClientTransportOptions options_;
+    std::mutex session_id_mutex_;
     std::string current_session_id_;
     std::mutex version_mutex_;
     std::string negotiated_version_;
