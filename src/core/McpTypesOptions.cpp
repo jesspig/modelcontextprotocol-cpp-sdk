@@ -67,6 +67,7 @@ JsonValue SerializeToolOptions(const ToolOptions& v) {
     detail::SerializeVector(obj, detail::kIcons, v.icons,
         [](const Icon& icon) { return SerializeIcon(icon); });
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
+    if (v.execution) obj["execution"] = SerializeToolExecution(*v.execution);
     return obj;
 }
 
@@ -86,6 +87,7 @@ ToolOptions DeserializeToolOptions(const JsonValue& j) {
     v.icons = detail::DeserializeVector<Icon>(j, detail::kIcons,
         [](const JsonValue& ic) { return DeserializeIcon(ic); });
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
+    if (auto* e = j.Find("execution")) v.execution = DeserializeToolExecution(*e);
     return v;
 }
 

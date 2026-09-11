@@ -138,6 +138,11 @@ JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kMessage] = JsonValue(v.message);
     detail::SerializeOptional(obj, detail::kRequestedSchema, v.requested_schema);
+    if (v.mode != detail::kForm) {
+        obj[detail::kMode] = JsonValue(v.mode);
+        detail::SerializeOptional(obj, detail::kUrl, v.url);
+        detail::SerializeOptional(obj, "elicitationId", v.elicitation_id);
+    }
     return obj;
 }
 
@@ -145,6 +150,10 @@ ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j) {
     ElicitRequestParams v;
     v.message = j[detail::kMessage].GetString();
     detail::DeserializeOptional(j, detail::kRequestedSchema, v.requested_schema);
+    auto* mode = j.Find(detail::kMode);
+    if (mode && mode->IsString()) v.mode = mode->GetString();
+    detail::DeserializeOptional(j, detail::kUrl, v.url);
+    detail::DeserializeOptional(j, "elicitationId", v.elicitation_id);
     return v;
 }
 

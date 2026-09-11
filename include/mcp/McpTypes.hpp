@@ -336,9 +336,13 @@ struct LoggingMessageNotificationParams {
 struct ElicitRequestParams {
     std::string message;
     std::optional<JsonValue> requested_schema;
+    std::string mode{"form"};
+    std::optional<std::string> url;
+    std::optional<std::string> elicitation_id;
 };
 
 struct ElicitResult : Result {
+    std::string action;
     std::optional<JsonValue> values;
 };
 
@@ -415,6 +419,12 @@ struct GetTaskResult {
     std::optional<JsonValue> meta;
 };
 
+struct CreateTaskResult : Result {
+    std::string task_id;        // wire: task.taskId
+    std::string status;         // wire: task.status
+    std::string created_at;     // wire: task.createdAt (ISO8601)
+};
+
 using UpdateTaskResult = EmptyResult;
 using CancelTaskResult = EmptyResult;
 
@@ -453,6 +463,7 @@ struct ToolOptions {
     std::optional<JsonValue> output_schema;
     std::vector<Icon> icons;
     std::optional<JsonValue> meta;
+    std::optional<ToolExecution> execution;
 
     ToolOptions& Description(std::string_view d) { description = std::string(d); return *this; }
     ToolOptions& Title(std::string_view t) { title = std::string(t); return *this; }
@@ -589,6 +600,8 @@ SetLevelRequestParams DeserializeSetLevelRequestParams(const JsonValue& j);
 
 JsonValue SerializeGetTaskResult(const GetTaskResult& v);
 GetTaskResult DeserializeGetTaskResult(const JsonValue& j);
+JsonValue SerializeCreateTaskResult(const CreateTaskResult& v);
+CreateTaskResult DeserializeCreateTaskResult(const JsonValue& j);
 JsonValue SerializeGetTaskRequestParams(const GetTaskRequestParams& v);
 GetTaskRequestParams DeserializeGetTaskRequestParams(const JsonValue& j);
 JsonValue SerializeUpdateTaskRequestParams(const UpdateTaskRequestParams& v);
