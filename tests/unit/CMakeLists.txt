@@ -17,7 +17,7 @@ target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol mcp-test-main)
 mcp_discover_tests(mcp-wire-codec-tests)
 
 add_executable(mcp-server-tests McpServerTests.cpp)
-target_link_libraries(mcp-server-tests PRIVATE mcp-server mcp-test-main)
+target_link_libraries(mcp-server-tests PRIVATE mcp-client mcp-server mcp-test-main)
 mcp_discover_tests(mcp-server-tests)
 
 add_executable(mcp-client-tests McpClientTests.cpp)

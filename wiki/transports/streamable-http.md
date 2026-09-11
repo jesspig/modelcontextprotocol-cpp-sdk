@@ -1,9 +1,9 @@
 ---
 type: Transport
 title: Streamable HTTP 传输
-description: 2026 时代 HTTP 传输：双端实现、stateless 默认、POST SSE 请求响应、GET SSE 接收流、Mcp-Method 头、SSE 回放与 504 语义。
+description: 2026 时代 HTTP 传输：双端实现、stateless 默认、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 504 语义。
 tags: [transport, http, streamable, stateless, winhttp, sse]
-timestamp: 2026-09-11T04:00:00+08:00
+timestamp: 2026-09-11T08:40:00+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -30,18 +30,19 @@ resource: src/http/StreamableHttpServerTransport.cpp
 
 - 选项：`endpoint / transport_mode（默认 AutoDetect）/ name / known_session_id / additional_headers / auth_challenge_handler`（RFC 9728：401/403 收到 WWW-Authenticate 时回调，返回非空 Authorization 头则**恰好重试一次**）/ `enable_listen_stream`（**默认 true**：发送 `notifications/initialized` 后自动开启 GET SSE 接收流，见下）
 - `HttpTransportMode`：`AutoDetect` / `StreamableHttp` / `Sse`——注意 `Connect()` 始终固定走 Streamable HTTP，`transport_mode` 字段当前**无运行时读取点**（仅声明与测试引用）；SSE 模式由用户直接选用 `SseClientTransport`，"AutoDetect 失败回落 SSE" 未实现
-- **平台双实现**：Win32 用 WinHTTP（`#pragma comment(lib, "winhttp.lib")`），POSIX 用自研 `detail::net::HttpClient`；发送路径共用 `send_thread_ + send_queue_ + condition_variable`；Win32 会话 `Start()` 补 `SetConnected()`（与 POSIX 对齐，状态机不再恒为 Initial）
+- **平台双实现**：Win32 用 WinHTTP（`#pragma comment(lib, "winhttp.lib")`），POSIX 用自研 `detail::net::HttpClient`；**Request 走 `send_thread_ + send_queue_` 串行队列**，Notification/Response 改为 `LaunchImmediatePost` **独立即时 POST**（短命 detached 线程 `mcp-post`，`shared_from_this` 保活、HTTP 超时兜底线程寿命）——否则 server→client 请求场景（如 elicitation 挂起的 tools/call 等完成通知）互等死锁；Win32 会话 `Start()` 补 `SetConnected()`（与 POSIX 对齐，状态机不再恒为 Initial）
 - **IPv6 Host 头**（detail/net/HttpClient.cpp，POSIX 分支）：Host 含 `:` 时自动加方括号 `[v6]` 形式
 - **Mcp-Method 头动态生成**：解析 body 的 method 字段（SEP-2243）；另生成 `Mcp-Param-*`（string/int/bool/double）与 `Mcp-Name`（params.name 回退 uri）；解析失败回退（Win32 → `tools/call`，POSIX → `unknown`）
-- **`MCP-Protocol-Version` 头自学习**：initialize 请求**不带**该头；从 initialize 响应 `result.protocolVersion` 学习（POST 响应体与 GET 流首帧均可学习），后续请求与 GET 流按协商版本携带，无学习值兜底 `2026-07-28`（`ProtocolVersionHeaderFor`/`NegotiatedVersionFromResponse`，[StreamableHttpClientTransport.cpp:57](../../src/http/StreamableHttpClientTransport.cpp)）
+- **`MCP-Protocol-Version` 头自学习**：initialize 请求**不带**该头；从 initialize 响应 `result.protocolVersion` 学习（POST 响应体与 GET 流首帧均可学习），后续请求与 GET 流按协商版本携带，无学习值兜底 `2026-07-28`（`ProtocolVersionHeaderFor`/`NegotiatedVersionFromResponse`，[StreamableHttpClientTransport.cpp:57](../../src/http/StreamableHttpClientTransport.cpp)）；**initialize 请求同样不带 `Mcp-Session-Id` 头**（`SessionIdHeaderFor` 对 initialize 豁免，避免握手期携带过期会话 id）
 - **GET SSE 接收流**（`enable_listen_stream` 默认 true）：发送 `notifications/initialized` 后在独立 `mcp-listen` 线程发起 GET 长流（WinHTTP/POSIX 两平台一致），服务端主动推送的通知经 SSE 分块解析、反序列化后并入 MessageChannel，由会话引擎统一分发；单流读超时 600s；**405 视为服务器不支持**（`ListenState::Unsupported`，静默放弃不再重试）；断线退避重连——1s 起倍增封顶 30s、**最多 5 次**（超限 `GivenUp`），重连携带 `Last-Event-ID` 头；流内消息超 8MB 丢弃并 `NotifyError`
 - **会话头（stateful 兼容）**：`known_session_id` 非空则从首个 POST 起携带 `Mcp-Session-Id` 请求头；任意响应（含 4xx）返回 `Mcp-Session-Id` 头时捕获为当前会话 id（存入会话传输内部状态），后续请求携带——stateless 服务端不发该头则全程不带，行为不变
 - **Close 顺序**：先停 listen 流（`listen_request_` 句柄中断在途 GET 并 join `mcp-listen` 线程，避免 Close 阻塞在读上），再走 POST 通路收尾（置 `delete_pending_` 唤醒发送线程，发送线程退出循环后**仅当已持有会话 id** 时同步发送 `DELETE`（带 `Mcp-Session-Id` 头；Win32 独立 WinHTTP 请求 / POSIX `HttpClient`），随后 join——无会话 id（stateless）不发 DELETE，默认路径无额外请求）
 - **响应分流**（两分支一致）：
-  - 4xx/5xx：401/403 challenge 重试优先；否则解析 body 为 JSON-RPC error（如 404 + `-32601`）成功则**入 channel**（连接保持），失败才 `NotifyError`
+  - 4xx/5xx：401/403 challenge 重试优先；body 可解析为 JSON-RPC error（如 404 + `-32601`）则**入 channel**（连接保持）；**body 不可解析且状态码 404 → 构造 `SessionExpired(-32009)` 错误响应交付 channel**（`MakeSessionExpiredError`，会话过期自愈入口，客户端层据此重协商重放）；仍无法交付才 `NotifyError`
   - **202**：通知确认，**忽略**（body 含 `id` 时记 Warning 视为异常，否则 Info）；不再存在"伪响应"路径
-  - `Content-Type` 含 `text/event-stream`：**同步读完整 SSE 流**（服务器写完事件后关闭连接；Win32 原先独立 SSE 读线程已移除，读由 send 线程承担，`sse_request_` 仅作 Close 中断句柄），`\n\n` 分块取 `data:` 行反序列化入 channel；**响应体累积超过 8MB（`kMaxMessageSize`）→ 丢弃 + `NotifyError`**（Win32/POSIX 一致）
+  - `Content-Type` 含 `text/event-stream`：**边读边分块分发**——分块回调内即时按 `\n\n` 切块（`DispatchSseBlock`）反序列化入 channel，server→client 请求在流打开期间即可达（原"同步读完整流再处理"会饿死并发请求；Win32 原先独立 SSE 读线程已移除，读由 POST 线程承担，`sse_request_` 仅作 Close 中断句柄）；**响应体累积超过 8MB（`kMaxMessageSize`）→ 丢弃 + `NotifyError`**（Win32/POSIX 一致）
   - 其余：单 JSON 响应解析入 channel（超限 → 错误）
+- **Win32 增量读**：`WinHttpReadData` 的"填满缓冲"语义改为 `WinHttpQueryDataAvailable` 先查可用字节数再按量读（DoPost SSE 与 DoListenGet 同修），消除流式响应尾部等待
 - 超时：Win32 30s / POSIX 30s
 - `Name()` 空时返回 `"streamable-http"`
 

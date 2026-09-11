@@ -1,9 +1,9 @@
 ---
 type: Class
 title: McpClient
-description: MCP 客户端门面：创建即协商、请求/通知 API、progress 回调、MRTR、响应缓存与任务轮询。
-tags: [client, 门面, 协商, mrt, progress]
-timestamp: 2026-09-11T04:00:00+08:00
+description: MCP 客户端门面：创建即协商、请求/通知 API、任务化工具调用、404 会话自愈、progress 回调、MRTR、响应缓存与翻页聚合。
+tags: [client, 门面, 协商, mrt, progress, tasks]
+timestamp: 2026-09-11T08:40:00+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -34,9 +34,13 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:261](../../src/client/M
 - 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置 → `MethodNotFound`；`SetLoggingHandler` 未设置 → 静默丢弃
 - 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），读取 `GetAny` 双分区查（public 优先）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint` 顶层 `ttlMs`/`cacheScope` 优先回退嵌套 `cacheHint`，而 `CacheIfHinted` 顺序**相反**（嵌套优先、顶层兜底，[McpClient.cpp:856](../../src/client/McpClient.cpp)）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
 - MRTR：`SendRequestWithMrtr` 循环 `input_required`——**仅当 `ClientOptions::input_required_config` 显式配置**（`auto_fulfill` 默认开）时启用，未配置 `max_rounds=0` 仅 1 轮；配置时 `max_rounds`（默认 10）超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout；`input_requests` 三类型（elicit/confirm → elicitation、sampling、roots）分派对应 handler，无请求项时 state-only 退避（50ms ×2、封顶 250ms，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
-- 自动翻页上限 `kMaxAutoPages = 64` 页；任务轮询 500ms 间隔 / 300s 超时（`PollTaskToCompletion` 默认参）
+- 自动翻页：`ListPages` 上限 `kMaxListPages = 64` 页，不收敛抛 `McpError(ProtocolViolation)`（修复原静默截断）；聚合入口 `ListToolsAll/ListResourcesAll/ListResourceTemplatesAll/ListPromptsAll` 自带 cursor 循环（同样 64 页上限，返回时 `next_cursor` 为空）
+- 任务客户端流：`CallToolAsTask(name, arguments?, options?)` 发起任务化 tools/call——对端返回 `resultType=="task"` 时立即得到 `GetTaskResult`（任务句柄），后续 `GetTask`/`PollTaskToCompletion`（500ms 间隔 / 300s 超时；失败/取消抛错）轮询至终态，`CancelTask` 请求取消
+- 404 会话自愈：`SessionExpired(-32009)` 且 `reinit_on_expired_session`（默认 true）时，`SendRequestWithMrtr` 捕获后调 `RecoverExpiredSession()`——`session_generation_` 原子世代计数 + `reinit_mutex_` 串行化重协商，持锁前先读世代、并发等待者见世代已变则跳过；随后原请求**恰一次重放**（`SendRequestWithMrtrOnce` 不再捕获，避免二次重放）
+- 总量超时：构造时 `SetMaxTotalTimeout(options_.max_total_timeout)` 接线至会话引擎（默认 0 禁用），progress 续命不可越过每请求绝对截止（见 [/classes/mcp-session-handler.md](mcp-session-handler.md)）；MRTR 循环自身的总预算仍取 `input_required_config->max_total_timeout`
+- URL elicitation：`SetUrlElicitationHandler` 注册 url 模式处理器——收到 `mode=="url"` 的 `elicitation/create` 时调用（缺 `elicitationId` 直接回 `InvalidParams`），返回后 SDK 自动回 `action="accept"` 并发送 `notifications/elicitation/complete`；处理器抛异常则异常回传服务端
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）
-- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.1"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`
+- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.1"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`
 
 ## progress 接收
 

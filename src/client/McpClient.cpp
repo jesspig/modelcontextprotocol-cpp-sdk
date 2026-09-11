@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -55,8 +56,8 @@ namespace {
     }
 
     // ── Pagination ──
-    // Defensive cap: never page more than this many times (cursor loop guard).
-    constexpr size_t kMaxAutoPages = 64;
+    // Defensive cap: pagination must converge within this many pages.
+    constexpr size_t kMaxListPages = 64;
 
     // ── Helper: send request and check for protocol errors ──
     static JsonValue DoSendRequest(
@@ -129,7 +130,7 @@ namespace {
         JsonValue::Array merged;
         std::optional<std::string> current;
         std::optional<JsonValue> first_hint;
-        for (size_t page = 0; page < kMaxAutoPages; ++page) {
+        for (size_t page = 0; page < kMaxListPages; ++page) {
             PaginatedRequestParams params;
             params.cursor = current;
             auto result = DoSendRequest(handler, method,
@@ -142,13 +143,17 @@ namespace {
                 for (const auto& item : arr->GetArray()) merged.push_back(item);
             }
             auto* nc = result.Find(detail::kNextCursor);
-            if (!nc || !nc->IsString() || nc->GetString().empty()) break;
+            if (!nc || !nc->IsString() || nc->GetString().empty()) {
+                JsonValue out(JsonValue::object_tag);
+                out[std::string(result_key)] = JsonValue(std::move(merged));
+                if (first_hint) out[detail::kCacheHint] = std::move(*first_hint);
+                return out;
+            }
             current = nc->GetString();
         }
-        JsonValue out(JsonValue::object_tag);
-        out[std::string(result_key)] = JsonValue(std::move(merged));
-        if (first_hint) out[detail::kCacheHint] = std::move(*first_hint);
-        return out;
+        throw McpError(McpErrorCode::ProtocolViolation,
+            "list pagination did not converge within " +
+            std::to_string(kMaxListPages) + " pages");
     }
 
     // ── Helper: classify the active transport for probe-failure handling ──
@@ -187,6 +192,36 @@ namespace {
     {
         return result.Contains(detail::kCode) &&
                static_cast<int32_t>(result[detail::kCode].GetInt()) < 0;
+    }
+
+    // ── Helper: does the discover response declare any client-supported
+    // version? Only a declared supportedVersions array is judged; a response
+    // that omits the field made no claim and accepts the probed version.
+    static bool DeclaresSharedClientVersion(
+        const JsonValue& response, const std::vector<std::string>& parsed_versions)
+    {
+        auto* sv = response.Find(detail::kSupportedVersions);
+        if (!sv || !sv->IsArray()) return true;
+        for (const auto& v : parsed_versions) {
+            for (const auto& cv : kProtocolVersions)
+                if (cv == v) return true;
+        }
+        return false;
+    }
+
+    // ── Helper: newest client-supported version the server also lists.
+    // kProtocolVersions is ordered oldest → newest; an undeclared (empty)
+    // list keeps the probed kLatestProtocolVersion, which the server
+    // implicitly accepted by answering the probe.
+    static std::string SelectSharedVersion(const std::vector<std::string>& supported)
+    {
+        for (auto it = std::rbegin(kProtocolVersions);
+             it != std::rend(kProtocolVersions); ++it) {
+            if (std::find(supported.begin(), supported.end(), std::string(*it))
+                != supported.end())
+                return std::string(*it);
+        }
+        return std::string(kLatestProtocolVersion);
     }
 
     // RAII: run the cleanup callable on scope exit (normal or exceptional)
@@ -267,7 +302,8 @@ NegotiationResult VersionNegotiation::Negotiate(
         NegotiationResult result;
         result.is_modern = true;
         result.discover = std::move(discover);
-        result.negotiated_version = kLatestProtocolVersion.data();
+        result.negotiated_version =
+            SelectSharedVersion(result.discover->supported_versions);
         result.capabilities = result.discover->capabilities;
         result.server_info = result.discover->server_info;
         result.instructions = result.discover->instructions;
@@ -373,13 +409,19 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
                         "server/discover rejected the shared protocol version " +
                         std::string(kLatestProtocolVersion));
                 }
+                DiscoverResult parsed;
                 try {
-                    return DeserializeDiscoverResult(*retried);
+                    parsed = DeserializeDiscoverResult(*retried);
                 } catch (...) {
                     throw McpError(McpErrorCode::UnsupportedProtocolVersion,
                         "server/discover retry result could not be parsed for " +
                         std::string(kLatestProtocolVersion));
                 }
+                if (!DeclaresSharedClientVersion(*retried, parsed.supported_versions)) {
+                    throw McpError(McpErrorCode::UnsupportedProtocolVersion,
+                        "server/discover retry listed no client-supported protocol version");
+                }
+                return parsed;
             }
 
             if (!has_modern) return std::nullopt;  // only legacy versions → initialize
@@ -394,12 +436,16 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
         return std::nullopt;
     }
 
+    DiscoverResult parsed;
     try {
-        return DeserializeDiscoverResult(*first);
+        parsed = DeserializeDiscoverResult(*first);
     } catch (...) {
         // Unrecognized result shape falls back to initialize.
         return std::nullopt;
     }
+    if (!DeclaresSharedClientVersion(*first, parsed.supported_versions))
+        return std::nullopt;
+    return parsed;
 }
 
 InitializeResult VersionNegotiation::HandshakeInitialize(
@@ -436,6 +482,7 @@ McpClient::McpClient(
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(
         transport_, std::move(codec));
+    handler_->SetMaxTotalTimeout(options_.max_total_timeout);
     handler_->Start();
     WireClientHandlers();
 }
@@ -476,13 +523,40 @@ void McpClient::WireClientHandlers() {
     // Elicitation handler
     handler_->SetRequestHandler(methods::kElicit,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            ElicitRequestParams params;
+            if (req.params) params = DeserializeElicitRequestParams(*req.params);
+            if (params.mode == "url") {
+                if (!params.elicitation_id) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InvalidParams,
+                            "url elicitation missing elicitationId")));
+                    return;
+                }
+                std::string action = "decline";
+                if (url_elicitation_handler_) {
+                    try {
+                        (*url_elicitation_handler_)(params);
+                        action = "accept";
+                    } catch (...) {
+                        p.set_exception(std::current_exception());
+                        return;
+                    }
+                }
+                JsonValue result = SerializeElicitResult(ElicitResult{});
+                result["action"] = JsonValue(action);
+                p.set_value(std::move(result));
+                JsonValue complete_params(JsonValue::object_tag);
+                complete_params["elicitationId"] = JsonValue(*params.elicitation_id);
+                handler_->SendNotification(
+                    notifications::kElicitationComplete,
+                    std::move(complete_params));
+                return;
+            }
             if (!elicitation_handler_) {
                 p.set_exception(std::make_exception_ptr(
                     McpError(McpErrorCode::MethodNotFound, "elicitation not supported")));
                 return;
             }
-            ElicitRequestParams params;
-            if (req.params) params = DeserializeElicitRequestParams(*req.params);
             try {
                 auto result = (*elicitation_handler_)(params);
                 p.set_value(SerializeElicitResult(result));
@@ -629,6 +703,10 @@ void McpClient::SetRootsHandler(RootsHandler handler) {
 
 void McpClient::SetElicitationHandler(ElicitationHandler handler) {
     elicitation_handler_ = std::move(handler);
+}
+
+void McpClient::SetUrlElicitationHandler(UrlElicitationHandler handler) {
+    url_elicitation_handler_ = std::move(handler);
 }
 
 void McpClient::SetNotificationHandler(
@@ -793,6 +871,24 @@ JsonValue McpClient::SendRequestWithMrtr(
     const RequestMeta& meta,
     std::chrono::milliseconds timeout)
 {
+    try {
+        return SendRequestWithMrtrOnce(method, params_json, meta, timeout);
+    } catch (const McpError& e) {
+        if (e.Code() != McpErrorCode::SessionExpired ||
+            !options_.reinit_on_expired_session) {
+            throw;
+        }
+        RecoverExpiredSession();
+        return SendRequestWithMrtrOnce(method, params_json, meta, timeout);
+    }
+}
+
+JsonValue McpClient::SendRequestWithMrtrOnce(
+    std::string_view method,
+    JsonValue params_json,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout)
+{
     auto& cfg = options_.input_required_config;
     int max_rounds = cfg ? cfg->max_rounds : 0;
     auto round_timeout = cfg ? cfg->round_timeout : timeout;
@@ -853,6 +949,14 @@ JsonValue McpClient::SendRequestWithMrtr(
         "MRTR: exceeded max_rounds (" + std::to_string(max_rounds) + ")");
 }
 
+void McpClient::RecoverExpiredSession() {
+    uint64_t observed = session_generation_.load();
+    std::lock_guard<std::mutex> lk(reinit_mutex_);
+    if (session_generation_.load() != observed) return;
+    negotiation_ = NegotiateProtocol();
+    session_generation_.fetch_add(1);
+}
+
 void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
     auto* ttl = result.Find(detail::kCacheHint);
     if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
@@ -885,6 +989,21 @@ ListToolsResult McpClient::ListTools(
     auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
     CacheIfHinted(key, result);
     return DeserializeListToolsResult(result);
+}
+
+ListToolsResult McpClient::ListToolsAll() {
+    ListToolsResult all;
+    std::optional<std::string> cursor;
+    for (size_t page = 0; page < kMaxListPages; ++page) {
+        auto page_result = ListTools(cursor);
+        for (auto& tool : page_result.tools) all.tools.push_back(std::move(tool));
+        if (!page_result.next_cursor || page_result.next_cursor->empty())
+            return all;
+        cursor = std::move(page_result.next_cursor);
+    }
+    throw McpError(McpErrorCode::ProtocolViolation,
+        "list pagination did not converge within " +
+        std::to_string(kMaxListPages) + " pages");
 }
 
 // ── Helper: complete a task-typed result by polling to completion ──
@@ -971,6 +1090,22 @@ ListResourcesResult McpClient::ListResources(
     return DeserializeListResourcesResult(result);
 }
 
+ListResourcesResult McpClient::ListResourcesAll() {
+    ListResourcesResult all;
+    std::optional<std::string> cursor;
+    for (size_t page = 0; page < kMaxListPages; ++page) {
+        auto page_result = ListResources(cursor);
+        for (auto& resource : page_result.resources)
+            all.resources.push_back(std::move(resource));
+        if (!page_result.next_cursor || page_result.next_cursor->empty())
+            return all;
+        cursor = std::move(page_result.next_cursor);
+    }
+    throw McpError(McpErrorCode::ProtocolViolation,
+        "list pagination did not converge within " +
+        std::to_string(kMaxListPages) + " pages");
+}
+
 ListResourceTemplatesResult McpClient::ListResourceTemplates(
     std::optional<std::string> cursor)
 {
@@ -983,6 +1118,22 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
     CacheIfHinted(key, result);
     return DeserializeListResourceTemplatesResult(result);
+}
+
+ListResourceTemplatesResult McpClient::ListResourceTemplatesAll() {
+    ListResourceTemplatesResult all;
+    std::optional<std::string> cursor;
+    for (size_t page = 0; page < kMaxListPages; ++page) {
+        auto page_result = ListResourceTemplates(cursor);
+        for (auto& tmpl : page_result.resource_templates)
+            all.resource_templates.push_back(std::move(tmpl));
+        if (!page_result.next_cursor || page_result.next_cursor->empty())
+            return all;
+        cursor = std::move(page_result.next_cursor);
+    }
+    throw McpError(McpErrorCode::ProtocolViolation,
+        "list pagination did not converge within " +
+        std::to_string(kMaxListPages) + " pages");
 }
 
 ReadResourceResult McpClient::ReadResource(
@@ -1049,6 +1200,21 @@ ListPromptsResult McpClient::ListPrompts(
     return DeserializeListPromptsResult(result);
 }
 
+ListPromptsResult McpClient::ListPromptsAll() {
+    ListPromptsResult all;
+    std::optional<std::string> cursor;
+    for (size_t page = 0; page < kMaxListPages; ++page) {
+        auto page_result = ListPrompts(cursor);
+        for (auto& prompt : page_result.prompts) all.prompts.push_back(std::move(prompt));
+        if (!page_result.next_cursor || page_result.next_cursor->empty())
+            return all;
+        cursor = std::move(page_result.next_cursor);
+    }
+    throw McpError(McpErrorCode::ProtocolViolation,
+        "list pagination did not converge within " +
+        std::to_string(kMaxListPages) + " pages");
+}
+
 GetPromptResult McpClient::GetPrompt(
     std::string_view name,
     std::optional<JsonValue> arguments,
@@ -1085,6 +1251,63 @@ GetPromptResult McpClient::GetPrompt(
 // ====================================================================
 // Tasks
 // ====================================================================
+GetTaskResult McpClient::CallToolAsTask(
+    std::string_view name,
+    std::optional<JsonValue> arguments,
+    const RequestOptions& options)
+{
+    CallToolRequestParams params;
+    params.name = std::string(name);
+    params.arguments = std::move(arguments);
+
+    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    if (options.meta) meta.extensions = options.meta;
+    auto progress_key = AttachProgressCallback(options, meta);
+    std::optional<ScopedProgressCleanup> progress_cleanup;
+    if (progress_key) {
+        progress_cleanup.emplace([this, key = *progress_key] {
+            DetachProgressCallback(key);
+        });
+    }
+
+    JsonValue req_json(JsonValue::object_tag);
+    req_json[detail::kName] = JsonValue(params.name);
+    if (params.arguments) req_json["arguments"] = *params.arguments;
+
+    auto round_timeout = options_.input_required_config
+        ? options_.input_required_config->round_timeout
+        : kTaskRequestTimeout;
+    auto result_json = SendRequestWithMrtr(
+        methods::kCallTool, std::move(req_json), meta, round_timeout);
+
+    auto* result_type = result_json.Find(detail::kResultType);
+    if (result_type && result_type->IsString() &&
+        result_type->GetString() == "task") {
+        auto* task = result_json.Find("task");
+        if (!task || !task->IsObject()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "task result missing task object");
+        }
+        auto* task_id = task->Find(detail::kTaskId);
+        auto* status = task->Find(detail::kStatus);
+        if (!task_id || !task_id->IsString() || !status || !status->IsString()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "task result missing valid taskId/status");
+        }
+        GetTaskResult handle;
+        handle.task_id = task_id->GetString();
+        handle.status = status->GetString();
+        return handle;
+    }
+
+    (void)DeserializeCallToolResult(result_json);
+    GetTaskResult degraded;
+    degraded.task_id = "<none>";
+    degraded.status = "completed";
+    degraded.result = std::move(result_json);
+    return degraded;
+}
+
 GetTaskResult McpClient::GetTask(std::string_view task_id) {
     GetTaskRequestParams params;
     params.task_id = std::string(task_id);

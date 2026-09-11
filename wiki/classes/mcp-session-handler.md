@@ -1,9 +1,9 @@
 ---
 type: Class
 title: McpSessionHandler
-description: JSON-RPC 引擎：消息分发、请求/响应关联、超时检查、取消、过滤器管线。
+description: JSON-RPC 引擎：消息分发、请求/响应关联、idle/总量双超时检查、取消、过滤器管线。
 tags: [protocol, jsonrpc, 超时, 并发, meta]
-timestamp: 2026-09-11T04:00:00+08:00
+timestamp: 2026-09-11T08:40:00+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -22,6 +22,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - 默认 `kDefaultRequestTimeout = 60000ms`（[McpSession.hpp](../../include/mcp/protocol/McpSession.hpp)），`SendRequest` 可覆盖
 - 超时回调 `ErrorData{RequestTimeout, "request timed out"}`，回调在锁外执行
 - `ResetTimeoutByProgressToken`：经 `progress_token_map_ → request_id` 定位 pending，仅当剩余时间 < 30s 时把 deadline 顺延 30s
+- **总量超时封顶**：`SetMaxTotalTimeout(total)`（pending 锁保护，会话运行中可调；0 = 默认禁用）——`SendRequest` 时为每请求记录**绝对截止**（`absolute_deadlines_`，仅封顶启用时有条目），`CheckTimeouts` 同步检查；progress 续命只顺延 idle deadline、**不可越过绝对截止**（来源 `ClientOptions::max_total_timeout`）
 
 ## 请求处理语义
 

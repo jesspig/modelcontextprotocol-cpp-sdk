@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-server 服务端库
-description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送与任务存储集成。
-tags: [server, 工具注册, 资源, 提示词, 任务, progress]
-timestamp: 2026-09-11T04:00:00+08:00
+description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、任务后台执行与 URL elicitation。
+tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
+timestamp: 2026-09-11T08:40:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -21,7 +21,7 @@ resource: src/server/McpServer.cpp
 
 `WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:421](../../src/server/McpServer.cpp)）：
 
-- **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件）
+- **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件，含任务化执行，见下）
 - **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时）、`resources/subscribe|unsubscribe`（有资源时，2025-era）
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）
@@ -29,7 +29,16 @@ resource: src/server/McpServer.cpp
 - **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:616](../../src/server/McpServer.cpp)）
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
-`initialized_` 标志守护除 `initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 外的所有处理器（现代协议经 discover 直接视为已初始化）。
+`initialized_` 守卫经 `RequireInitialized(initialized, modern_era, promise)` 统一判定：**modern era（2026-07-28）直接放行**（Pin-to-2026/纯 modern 客户端无 initialize 握手也可调用），legacy era 未初始化才回 `InvalidRequest "Server not initialized"`；`initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 不经此守卫。
+
+## 任务化 tools/call（[McpServer.cpp](../../src/server/McpServer.cpp)）
+
+- 声明：`ToolOptions::execution`（`ToolExecution`，`mode == ToolExecutionMode::Task`）经 `RegisterTool` 写入工具定义的 `execution` 字段
+- 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径仅 **2025 及更早时代**可用（modern era 回 `MethodNotFound`）
+- 立即返回：登记取消标志 → `CreateTask` + 置 `Working` → 发 `notifications/tasks/status` → 同步返回 `CreateTaskResult`（wire `task.taskId/task.status/createdAt`，`resultType` 落 `"task"`）
+- 后台执行：`std::async` 调用工具 handler，完成后结果写入 store 并发 `notifications/tasks/status`（Working→Completed/Failed；取消判定优先于 Failed，Cancelled 静默收尾不发通知）；失败任务把首个文本 content 作为 `error` 写入 store
+- 协作取消：`RequestContext::IsCancellationRequested()` 读共享取消标志（`shared_ptr<const std::atomic<bool>>`，handler 轮询自愿退出）；`tasks/cancel` 置位标志并落 `Cancelled` 终态，**终态不迁移**（已终态直接返回空结果）
+- future 进 `pending_async_futures_`（顺带清理已完成项），`Close()` 全部等待
 
 ## 失败语义
 
@@ -41,8 +50,9 @@ resource: src/server/McpServer.cpp
 ## 实现要点
 
 - `SendProgress(token, progress, total?, message?)`：服务端向客户端发 `notifications/progress`（[McpServer.cpp:389](../../src/server/McpServer.cpp)），token 原样透传、`total`/`message` 可选；异步工具 handler 内经 `RequestContext::Server()` 调用可向发起方回报进度
-- `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全
-- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`
+- `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全；构造多参 `cancellation_flag` 供任务化执行传入协作取消标志
+- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`，任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`
+- `ElicitUrl(url, message, timeout=600s)`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）

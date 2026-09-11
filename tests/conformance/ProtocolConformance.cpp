@@ -607,7 +607,7 @@ TEST(Conformance, ElicitResultAcceptRoundTrip) {
     r.result_type = ResultType::Complete;
 
     auto jv = SerializeElicitResult(r);
-    EXPECT_EQ(jv["values"]["name"].GetString(), "Alice");
+    EXPECT_EQ(jv["content"]["name"].GetString(), "Alice");
     EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
     auto recovered = DeserializeElicitResult(jv);
@@ -686,7 +686,7 @@ TEST(Conformance, MakeInputResponseFromElicitResult) {
     result.result_type = ResultType::Complete;
 
     auto jv = MakeInputResponseFromElicitResult(result);
-    EXPECT_EQ(jv["values"]["ok"].GetBool(), true);
+    EXPECT_EQ(jv["content"]["ok"].GetBool(), true);
     EXPECT_EQ(jv["resultType"].GetString(), "complete");
 }
 

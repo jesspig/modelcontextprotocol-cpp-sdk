@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-protocol 协议库
-description: JSON-RPC 引擎（McpSessionHandler）与双时代线协议编解码（WireCodec）。
-tags: [protocol, jsonrpc, codec, 双时代, meta]
-timestamp: 2026-09-11T04:00:00+08:00
+description: JSON-RPC 引擎（McpSessionHandler，含 idle/总量双超时）与双时代线协议编解码（WireCodec）。
+tags: [protocol, jsonrpc, codec, 双时代, meta, 超时]
+timestamp: 2026-09-11T08:40:00+08:00
 resource: src/protocol/McpSessionHandler.cpp
 ---
 
@@ -29,6 +29,7 @@ WireCodec 编解码器集合共 **17 种**通知：公共 7 + 2025 独有 9（in
 
 - `McpSessionHandler::OnRequest` 对 handler 抛出的 `McpError` 直接回 `e.Code()`；其他异常一律 `InternalError`（"handler error: ..."）
 - 超时：默认 60s（`kDefaultRequestTimeout`），超时检查线程每 100ms 轮询；progress 通知延长截止时间 30s（仅当剩余时间 < 30s 时）
+- 总量超时封顶：`SetMaxTotalTimeout`（会话运行中可调，0 禁用）——每请求在 `SendRequest` 时记录**绝对截止**（`absolute_deadlines_`，pending 锁保护），progress 续命只顺延 idle deadline、不可越过总量
 - 响应回发：单一 `response_worker_` 线程 + 有界 `response_queue_`（`deque<std::function>`）取代每请求一线程；任务内先 `wait_for(0)` 快检（同步 handler 零延迟）、未就绪 10ms 兜底轮询（`kResponsePollInterval`），`closed_` 时中止（保证 `Close()` 不阻塞）
 - `SendRequest` 注册 pending 后复查 `closed_`，已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:518](../../src/protocol/McpSessionHandler.cpp)）
 - 双 era meta 落点：modern era `req.meta` 写 `_meta` 信封、legacy era progressToken 写 `params._meta.progressToken`；`SendNotification` 的 meta 只带 `negotiated_version_`。序列化层（[JsonRpc.cpp](../../src/core/JsonRpc.cpp)）统一把 `meta` 合并进 `params._meta`，反序列化后从 params 移除 `_meta` 键——线上形态一律 `params._meta`，内存结构 `req.meta`/`notif.meta` 语义不变
