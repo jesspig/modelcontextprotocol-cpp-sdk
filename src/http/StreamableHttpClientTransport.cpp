@@ -302,7 +302,7 @@ private:
             }
             ++reconnects;
             streamable_http_client_impl::SleepInterruptibly(running_, delay);
-            delay = std::min(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
+            delay = (std::min)(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
         }
     }
 
@@ -1045,7 +1045,7 @@ private:
             }
             ++reconnects;
             streamable_http_client_impl::SleepInterruptibly(running_, delay);
-            delay = std::min(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
+            delay = (std::min)(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
         }
     }
 

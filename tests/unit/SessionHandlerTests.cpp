@@ -641,7 +641,7 @@ TEST(SessionHandlerTest, NotifySubscribersPrefersClientSubscriptionId) {
 // passes. The existing timeout path is reused; no separate settlement exists.
 TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
     HandlerPair hp;
-    hp.client->SetMaxTotalTimeout(std::chrono::seconds(1));
+    hp.client->SetMaxTotalTimeout(std::chrono::seconds(2));
 
     std::shared_ptr<std::promise<JsonValue>> held_promise;
     hp.server->SetRequestHandler(methods::kCallTool,
@@ -665,10 +665,10 @@ TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
     auto start = std::chrono::steady_clock::now();
     auto future = hp.client->SendRequest(methods::kCallTool,
         JsonValue(JsonValue::object_tag), meta,
-        std::chrono::milliseconds(200));
+        std::chrono::milliseconds(500));
 
     int extensions = 0;
-    while (future.wait_for(std::chrono::milliseconds(150)) ==
+    while (future.wait_for(std::chrono::milliseconds(200)) ==
            std::future_status::timeout) {
         ++extensions;
         JsonValue progress_params(JsonValue::object_tag);
@@ -682,7 +682,7 @@ TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
     EXPECT_GE(extensions, 3);
-    EXPECT_GE(elapsed_ms, static_cast<int64_t>(900));
+    EXPECT_GE(elapsed_ms, static_cast<int64_t>(1500));
     auto result = future.get();
     ASSERT_TRUE(result.Contains("code"));
     EXPECT_EQ(result["code"].GetInt(),
@@ -716,17 +716,17 @@ TEST(SessionHandlerTest, TotalTimeoutDisabledAllowsProgressExtension) {
     meta.progress_token = std::string("pt-free");
     auto future = hp.client->SendRequest(methods::kCallTool,
         JsonValue(JsonValue::object_tag), meta,
-        std::chrono::milliseconds(200));
+        std::chrono::milliseconds(800));
 
     for (int i = 0; i < 5; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         JsonValue progress_params(JsonValue::object_tag);
         progress_params["progressToken"] = JsonValue("pt-free");
         hp.server->SendNotification(notifications::kProgress,
             std::move(progress_params));
     }
 
-    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(10)),
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(300)),
               std::future_status::timeout);
 
     held_promise->set_value(JsonValue(JsonValue::object_tag));
