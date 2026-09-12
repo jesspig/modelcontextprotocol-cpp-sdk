@@ -78,11 +78,29 @@ Controls how the HTTP client transport connects:
 |------------------------|------------------------------------|--------------|--------------------------------------|
 | `port`                 | `uint16_t`                         | `3001`       | HTTP server port                     |
 | `endpoint`             | `std::string`                      | `"/mcp"`     | HTTP endpoint path                   |
-| `stateless`            | `bool`                             | `false`      | Enable 2026-07-28 stateless mode     |
+| `host`                 | `std::string`                      | `""`         | Listen bind address; empty = all interfaces, accepts IPv4/IPv6 literals |
+| `stateless`            | `bool`                             | `true`       | 2026-07-28 stateless mode            |
 | `enable_legacy_sse`    | `bool`                             | `true`       | Serve SSE stream on GET              |
-| `event_store`          | `std::shared_ptr<EventStore>`      | `nullptr`    | Event store for resumption           |
+| `sse_keep_alive_ms`    | `int`                              | `15000`      | SSE keepalive comment-frame interval in ms; `0` disables |
+| `event_store`          | `std::shared_ptr<EventStore>`      | `nullptr`    | Event store for resumption; defaults to the built-in in-memory store when unset — plug in `FileEventStore` for a custom implementation |
+| `session_store`        | `std::shared_ptr<SessionStore>`    | `nullptr`    | External session store (session mode only); instances sharing the same store can adopt each other's sessions |
+| `bearer_auth`          | `std::optional<BearerAuthConfig>`  | `std::nullopt` | Bearer auth config (RFC 6750/9728); see below |
 | `server_name`          | `std::string`                      | `"mcp-server"` | Server name for discovery         |
-| `server_version`       | `std::string`                      | `"0.3.1"`    | Server version for discovery         |
+| `server_version`       | `std::string`                      | `kSdkVersion` | Server version for discovery         |
+
+### `BearerAuthConfig`
+Once `bearer_auth` is set, `StreamableHttpServerTransport` runs the bearer auth gate at the top of POST/GET handling, before any session handling:
+
+| Field                      | Type                                       | Description                                             |
+|----------------------------|--------------------------------------------|---------------------------------------------------------|
+| `verify`                   | `function<AuthResult(const std::string&)>` | Required; returns `AuthResult{ok, scopes}` — `ok=false` rejects with `401 error="invalid_token"` |
+| `resource_metadata_url`    | `std::string`                              | Full URL of the protected-resource metadata document; also referenced by the `WWW-Authenticate` challenge |
+| `scopes_supported`         | `vector<string>`                           | Scopes advertised in the metadata document               |
+| `required_scopes`          | `vector<string>`                           | Token scopes must cover all of them; empty disables scope checks (missing scopes → 403) |
+| `authorization_servers`    | `vector<string>`                           | Authorization servers written into the metadata document |
+| `serve_metadata_endpoint`  | `bool`                                     | Register `GET /.well-known/oauth-protected-resource` (no auth); default `true` |
+
+Outcomes on both the POST and GET (SSE) paths: a missing or malformed `Authorization: Bearer` header → `401` challenge; `verify` returning `ok=false` → `401` with `error="invalid_token"`; a token missing any `required_scopes` entry → `403` with `error="insufficient_scope"`. When `bearer_auth` is unconfigured, behavior is exactly as before — zero regression. For the client-side counterpart see [OAuth Support](/client/oauth).
 
 ### `InMemoryTransport::Pair`
 ```cpp
@@ -96,7 +114,7 @@ struct Pair {
 
 ## Stateless Mode
 
-`StreamableHttpServerTransport` supports stateless mode controlled by `StreamableHttpServerOptions::stateless` (default `false`). When `true`, `IsStateless()` returns `true` and:
+`StreamableHttpServerTransport` supports stateless mode controlled by `StreamableHttpServerOptions::stateless` (default `true`). When `true`, `IsStateless()` returns `true` and:
 
 - **No sessions**: Each request is independent; the response is correlated synchronously via `std::promise` with a 30-second timeout.
 - **No SSE**: No SSE broadcast or `EventStore` append; only responses correlated to pending requests are delivered via JSON.

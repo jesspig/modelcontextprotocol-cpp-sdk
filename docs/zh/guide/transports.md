@@ -78,11 +78,29 @@ IClientTransport（连接工厂）
 |-------------------|------------------------------------|-----------------|-------------------------------|
 | `port`            | `uint16_t`                         | `3001`          | HTTP 服务端口                 |
 | `endpoint`        | `std::string`                      | `"/mcp"`        | HTTP 端点路径                 |
-| `stateless`       | `bool`                             | `false`         | 启用 2026-07-28 无状态模式    |
+| `host`            | `std::string`                      | `""`            | 监听绑定地址；空 = 仅监听 IPv4 所有接口（INADDR_ANY），接受 IPv4/IPv6 字面量 |
+| `stateless`       | `bool`                             | `true`          | 启用 2026-07-28 无状态模式    |
 | `enable_legacy_sse` | `bool`                           | `true`          | 在 GET 上提供 SSE 流          |
-| `event_store`     | `std::shared_ptr<EventStore>`      | `nullptr`       | 用于恢复的事件存储            |
+| `sse_keep_alive_ms` | `int`                            | `15000`         | SSE keepalive 注释帧间隔，0 禁用 |
+| `event_store`     | `std::shared_ptr<EventStore>`      | `nullptr`       | 用于恢复的事件存储；不设置时使用进程内内存存储，可注入 `FileEventStore` 等自定义实现 |
+| `session_store`   | `std::shared_ptr<SessionStore>`    | `nullptr`       | 外部会话存储（仅会话模式）；多实例共享同一存储时可互相接管会话，未知/过期的会话 id 返回 404 与 `-32009`（SessionExpired） |
+| `bearer_auth`     | `std::optional<BearerAuthConfig>`  | `std::nullopt`  | Bearer 鉴权配置（RFC 6750/9728），见下文 |
 | `server_name`     | `std::string`                      | `"mcp-server"`  | 用于发现的服务器名称          |
-| `server_version`  | `std::string`                      | `"0.3.1"`       | 用于发现的服务器版本          |
+| `server_version`  | `std::string`                      | `kSdkVersion`   | 用于发现的服务器版本          |
+
+### `BearerAuthConfig`
+设置 `bearer_auth` 后，`StreamableHttpServerTransport` 在 POST/GET 处理顶部执行 Bearer 鉴权门（先于任何会话处理）：
+
+| 字段                       | 类型                                     | 描述                                             |
+|---------------------------|------------------------------------------|--------------------------------------------------|
+| `verify`                  | `function<AuthResult(const std::string&)>` | 必填；`AuthResult{ok, scopes}`，`ok=false` 拒绝并返回 401 `error="invalid_token"` |
+| `resource_metadata_url`   | `std::string`                            | 受保护资源元数据文档的完整 URL，同时被 `WWW-Authenticate` 挑战引用 |
+| `scopes_supported`        | `vector<string>`                         | 声明支持的作用域                                  |
+| `required_scopes`         | `vector<string>`                         | 令牌作用域须全部覆盖；为空则禁用作用域检查（不足返回 403） |
+| `authorization_servers`   | `vector<string>`                         | 授权服务器列表，写入元数据文档                    |
+| `serve_metadata_endpoint` | `bool`                                   | 注册 `GET /.well-known/oauth-protected-resource`（免鉴权），默认 `true` |
+
+POST 与 GET（SSE）两条路径上的结果一致：缺失或格式错误的 `Authorization: Bearer` 头 → `401` 挑战并引用 `resource_metadata_url`；`verify` 返回 `ok=false` → `401` 携带 `error="invalid_token"`；令牌未覆盖任一 `required_scopes` → `403` 携带 `error="insufficient_scope"`。未配置 `bearer_auth` 时行为与之前完全一致，零回归。客户端侧对接见 [OAuth 鉴权](/client/oauth)。
 
 ### `InMemoryTransport::Pair`
 ```cpp
@@ -96,7 +114,7 @@ struct Pair {
 
 ## 无状态模式
 
-`StreamableHttpServerTransport` 支持无状态模式，由 `StreamableHttpServerOptions::stateless` 控制（默认 `false`）。当为 `true` 时，`IsStateless()` 返回 `true`，并且：
+`StreamableHttpServerTransport` 支持无状态模式，由 `StreamableHttpServerOptions::stateless` 控制（默认 `true`，对应 2026-07-28）。当为 `true` 时，`IsStateless()` 返回 `true`，并且：
 
 - **无会话**：每个请求独立；通过 `std::promise` 同步关联响应，超时时间 30 秒。
 - **无 SSE**：不进行 SSE 广播或 `EventStore` 追加；仅与待处理请求关联的响应通过 JSON 交付。
