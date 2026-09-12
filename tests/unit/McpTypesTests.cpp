@@ -318,11 +318,41 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
 TEST(McpTypesTest, EmptyResultSerializes) {
     EmptyResult r;
     auto jv = SerializeEmptyResult(r);
-    ASSERT_TRUE(jv.Contains("resultType"));
-    EXPECT_EQ(jv["resultType"], JsonValue("complete"));
+    EXPECT_FALSE(jv.Contains("resultType"));
 
     auto r2 = DeserializeEmptyResult(jv);
     EXPECT_EQ(r2.result_type, ResultType::Complete);
+}
+
+// ── CompleteRequestParams ──
+TEST(McpTypesTest, CompleteRequestParamsStandardShape) {
+    const char* wire =
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"}}";
+    auto jv = JsonValue::Parse(wire);
+
+    auto params = DeserializeCompleteRequestParams(jv);
+    EXPECT_EQ(params.argument_name, "language");
+    EXPECT_EQ(params.argument_value, "py");
+    EXPECT_TRUE(params.ref.Contains("type"));
+
+    auto out = SerializeCompleteRequestParams(params);
+    EXPECT_TRUE(out.Contains("ref"));
+    EXPECT_TRUE(out.Contains("argument"));
+    EXPECT_EQ(out["argument"]["name"], JsonValue("language"));
+    EXPECT_EQ(out["argument"]["value"], JsonValue("py"));
+    EXPECT_FALSE(out.Contains("argumentName"));
+}
+
+TEST(McpTypesTest, CompleteRequestParamsFlatShapeCompat) {
+    const char* wire =
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argumentName\":\"language\",\"argumentValue\":\"py\"}";
+    auto jv = JsonValue::Parse(wire);
+
+    auto params = DeserializeCompleteRequestParams(jv);
+    EXPECT_EQ(params.argument_name, "language");
+    EXPECT_EQ(params.argument_value, "py");
 }
 
 // ── CompleteResult ──

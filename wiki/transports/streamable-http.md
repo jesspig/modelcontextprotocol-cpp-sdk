@@ -1,9 +1,9 @@
 ---
 type: Transport
 title: Streamable HTTP 传输
-description: 2026 时代 HTTP 传输：双端实现、stateless 默认、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 504 语义。
-tags: [transport, http, streamable, stateless, winhttp, sse]
-timestamp: 2026-09-11T08:40:00+08:00
+description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战、外部 SessionStore 会话接管、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 504 语义。
+tags: [transport, http, streamable, stateless, winhttp, sse, bearer]
+timestamp: 2026-09-12T06:05:00+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -14,7 +14,10 @@ resource: src/http/StreamableHttpServerTransport.cpp
 ## 服务端
 
 - 选项：`port`（默认 3001）、`endpoint`（默认 `/mcp`）、`host`（监听绑定地址，透传至 `HttpServerOptions::bind_host`，空 = `INADDR_ANY`）、`stateless`（**默认 true**，对齐 python/rust/go/csharp 2026；false 为 sessionful 传统模式）、`enable_legacy_sse`（默认 true）、`sse_keep_alive_ms`（SSE 注释帧间隔毫秒，默认 15000，0 禁用）、可注入 `event_store`、`server_name/server_version`；`session_id_ = "srv-" + 时钟计数`
-- 路由：POST 与 DELETE 总是注册，GET 仅 `enable_legacy_sse` 时
+- **Bearer 鉴权**（RFC 6750/9728）：`bearer_auth`（`optional<BearerAuthConfig>`）设置即启用，`verify` 回调必填（缺失构造抛 `McpError(InvalidRequest)`）；`resource_metadata_url`（挑战与元数据文档 URL）、`scopes_supported`、`required_scopes`（token scopes 须**全覆盖**，空禁用 scope 检查）、`authorization_servers`、`serve_metadata_endpoint`（默认 true）。`HandlePost`/`HandleGet` 入口先过 `AuthorizeRequest`：无 Authorization 头或非 `Bearer` 方案 → **401** + `WWW-Authenticate: Bearer resource_metadata="<url>"`；`verify` 不通过 → **401** + 追加 `error="invalid_token"`；required_scopes 未全覆盖 → **403** + `error="insufficient_scope", scope="..."`；错误体均为 JSON-RPC `-32000`。auth gate 位于一切会话处理之前
+- **受保护资源元数据端点**：`serve_metadata_endpoint` 时注册 `GET <resource_metadata_url 路径>`（默认 `/.well-known/oauth-protected-resource`），**匿名**访问；返回 RFC 9728 字段：`resource`（从 metadata URL 剥掉 well-known 后缀反推）、`authorization_servers`、`scopes_supported`、`bearer_methods_supported: ["header"]`
+- **外部 SessionStore（stateful 模式）**：`session_store`（`SessionStore` 抽象，见 [/concepts/storage.md](../concepts/storage.md)）设置后会话可被共享同一 store 的其他实例接管（多实例部署/实例重启）；构造时有 stateful+store 即 `Save` 初始记录；请求入口 `EnsureSession`——请求头会话 id 等于当前会话且 channel 存活则直通，store 中存在则 `AdoptSession` 切换当前会话（后续 `EventStore`/DELETE 均按 `ActiveSessionId`），未知 id → **404 + `-32009 Session expired`**（客户端自愈入口）；`initialize` 响应回 `mcp-session-id` 头；DELETE 时 `store->Remove`
+- 路由：POST 与 DELETE 总是注册，GET 仅 `enable_legacy_sse` 时（metadata 端点按 Bearer 配置另行注册）
 - **POST**：body 超限（4MiB）→ 413 `-32700`；解析失败 → 400；Mcp-Method/Mcp-Name 头与 body 不符 → 400 `HeaderMismatch`；回显 `mcp-protocol-version/mcp-method/mcp-name` 响应头；`mcp-param-*` 请求头存入 `req.meta["x-mcp-headers"]`
   - **请求（stateless 与 stateful 同一路径）**：inflight 上限 8（仅 stateless）→ 503 `"server busy"`；channel 关闭/TrySend 失败 → 503 `-32000`；送入 channel 前登记 `pending_responses_`（`pending_mutex_` 保护），`SendMessageAsync` 匹配到响应时 set promise
     - 成功：**200 + `text/event-stream`**，body 为 SSE 首帧 `event: message\ndata: <serialized response>\n\n`，头含 `cache-control: no-cache`、`x-accel-buffering: no`；`sse_close_after_write = true`（见 HttpServer 页）——**响应不再经 GET 流广播**（2025-era 客户端依赖 GET 收响应属已知协议行为变化）

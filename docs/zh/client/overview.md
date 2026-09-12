@@ -84,7 +84,7 @@ client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         // 提示用户输入，返回结果
         ElicitResult result;
-        result.values = JsonValue(JsonValue::Object{{"name", "Alice"}});
+        result.content = JsonValue(JsonValue::Object{{"name", "Alice"}});
         return result;
     });
 

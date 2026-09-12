@@ -276,7 +276,10 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         auto* rs = req.params->Find(detail::kRequestState);
         if (rs && rs->IsString()) {
             if (!request_state_verifier_(rs->GetString())) {
-                SendErrorResponse(req.id, McpErrorCode::InvalidParams, "invalid requestState");
+                JsonValue data(JsonValue::object_tag);
+                data[detail::kReason] = JsonValue("invalid_request_state");
+                SendErrorResponse(req.id, McpErrorCode::InvalidParams,
+                    "invalid requestState", std::move(data));
                 return;
             }
         }

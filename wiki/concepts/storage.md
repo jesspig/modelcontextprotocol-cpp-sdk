@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 存储与原子写入
-description: 临时文件 + fsync + rename 的原子持久化，以及任务/令牌存储的失败语义。
-tags: [storage, 原子写入, fsync, 持久化]
-timestamp: 2026-08-15T22:30:00+08:00
+description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
+tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
+timestamp: 2026-09-12T06:05:00+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -23,6 +23,19 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 |------|------|----|
 | FileTaskStore | 双锁 + 锁外写盘（见下）；损坏文件备份 `<path>.corrupt` 继续 | [/classes/file-task-store.md](../classes/file-task-store.md) |
 | FileTokenCache | Windows DPAPI 加密、POSIX chmod 0600；解密失败不回落明文 | [/classes/file-token-cache.md](../classes/file-token-cache.md) |
+| FileEventStore | SSE 事件 JSONL 持久化（跨进程文件锁，见下） | [/classes/file-event-store.md](../classes/file-event-store.md) |
+
+## FileEventStore 事件持久化
+
+`FileEventStore : EventStore`（[FileEventStore.hpp](../../include/mcp/storage/FileEventStore.hpp)），SSE 断线回放事件的参考实现（详见 [/classes/file-event-store.md](../classes/file-event-store.md)）：
+
+- 每会话一个 JSONL 文件（`<dir>/sess-<净化id>.jsonl`，行 `{"id":N,"data":"..."}`）+ 一个 `.lock` 锁文件
+- **跨进程文件锁**：每操作独立句柄阻塞排他锁（Win32 `LockFileEx` / POSIX `flock`），同进程多线程与其他进程在同一会话上串行
+- 超过 1024 事件经 `WriteAtomic` 全量重写裁剪；崩溃残留的半行（torn tail）读取时跳过、追加时先补换行
+
+## SessionStore 会话记录抽象
+
+`SessionStore`（[SessionStore.hpp](../../include/mcp/http/SessionStore.hpp)）：`Save/Load/Remove` 会话记录 `SessionRecord{protocol_version, created_at_ms}`，键为会话 id。`InMemorySessionStore`（mutex map）为默认实现；stateful 模式注入 `StreamableHttpServerOptions::session_store` 后会话可被共享 store 的其他实例接管（[/transports/streamable-http.md](../transports/streamable-http.md)），未知会话 id 回 404 + `-32009`。
 
 ## FileTaskStore 双锁结构
 
@@ -44,5 +57,6 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 ## 相关页面
 
 - [/modules/server.md](../modules/server.md) — 服务端存储集成
+- [/classes/file-event-store.md](../classes/file-event-store.md) — 事件存储实现
 - [/concepts/oauth.md](oauth.md) — 令牌生命周期
 - [/tests.md](../tests.md) — 损坏处理测试

@@ -43,6 +43,15 @@ struct MCP_API ServerOptions {
     // Request state security (HMAC/AEAD verification)
     std::function<bool(std::string_view)> request_state_verifier;
 
+    // HMAC key for server-side requestState minting (input_required results).
+    // When set and no explicit request_state_verifier is provided, a built-in
+    // HMAC verifier is wired to reject tampered/expired states before handlers.
+    std::optional<std::string> request_state_key;
+
+    // Max age of minted requestState payloads ("iat" unix seconds). Zero
+    // disables expiry checking.
+    std::chrono::seconds request_state_ttl{0};
+
     // Input required (MRTR) config
     struct InputRequiredConfig {
         int max_rounds{10};
@@ -54,6 +63,10 @@ struct MCP_API ServerOptions {
     // JSON Schema validation
     bool validate_tool_input{false};
     bool validate_tool_output{false};
+
+    // Explicit capability declaration (merged into derived capabilities)
+    bool declare_logging{false};
+    bool declare_completions{false};
 
     // Event callbacks (high-level shorthand)
     std::function<void(std::string_view method)> on_method_called;

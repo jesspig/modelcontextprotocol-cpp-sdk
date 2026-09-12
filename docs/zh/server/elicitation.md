@@ -21,8 +21,8 @@ params.requested_schema = JsonValue::Parse(R"({
 
 auto future = server->Elicit(params);
 auto result = future.get();
-if (result.values) {
-    auto street = (*result.values)["street"];
+if (result.content) {
+    auto street = (*result.content)["street"];
 }
 ```
 
@@ -32,7 +32,7 @@ if (result.values) {
 
 | 字段 | 类型 | 说明 |
 |-------|------|------|
-| `values` | `optional<JsonValue>` | 提交的表单数据（接受时存在） |
+| `content` | `optional<JsonValue>` | 提交的表单数据（接受时存在） |
 
 继承的 `result_type`（`Complete` 或 `InputRequired`）指示输入是否已完成或仍在等待。
 
@@ -49,12 +49,12 @@ struct AddressForm {
 
 ElicitResult raw = future.get();
 ElicitResultTyped<AddressForm> typed;
-if (raw.values) {
+if (raw.content) {
     typed.action = "accept";
     typed.content = AddressForm{
-        (*raw.values)["street"].GetString(),
-        (*raw.values)["city"].GetString(),
-        (*raw.values)["zip_code"].GetString()
+        (*raw.content)["street"].GetString(),
+        (*raw.content)["city"].GetString(),
+        (*raw.content)["zip_code"].GetString()
     };
 }
 

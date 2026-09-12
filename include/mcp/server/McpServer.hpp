@@ -176,6 +176,7 @@ private:
         std::optional<std::string> description;
         std::optional<std::string> title;
         std::vector<Icon> icons;
+        std::optional<std::vector<PromptArgument>> arguments;
         std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)> handler;
     };
     std::vector<PromptEntry> prompts_;

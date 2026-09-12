@@ -1,6 +1,7 @@
 // McpServerTests — unit tests for McpServer creation, tool/resource/prompt registration
 
 #include <mcp/server/McpServer.hpp>
+#include <mcp/server/RequestState.hpp>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/storage/FileTaskStore.hpp>
@@ -130,6 +131,137 @@ TEST(McpServerTest, RegisterPrompt) {
 
     EXPECT_TRUE(server->GetCapabilities().prompts.has_value());
     server->Close();
+}
+
+// ── Explicit capability declaration defaults off ──
+TEST(McpServerTest, ExplicitCapabilityDeclarationDefaultsOff) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    EXPECT_FALSE(server->GetCapabilities().logging.has_value());
+    EXPECT_FALSE(server->GetCapabilities().completions.has_value());
+    server->Close();
+}
+
+// ── initialize result carries declared logging/completions capabilities ──
+TEST(McpServerTest, InitializeDeclaresExplicitLoggingAndCompletions) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.declare_logging = true;
+    sopts.declare_completions = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    EXPECT_TRUE(server->GetCapabilities().logging.has_value());
+    EXPECT_TRUE(server->GetCapabilities().completions.has_value());
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    InitializeRequestParams params;
+    params.protocol_version = std::string(kLegacyProtocolVersion);
+    params.client_info = Implementation{"test-client", "1.0"};
+    auto future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_FALSE(result.Contains("code"));
+    auto* caps = result.Find("capabilities");
+    ASSERT_NE(caps, nullptr);
+    auto* logging = caps->Find("logging");
+    ASSERT_NE(logging, nullptr);
+    EXPECT_TRUE(logging->IsObject());
+    auto* completions = caps->Find("completions");
+    ASSERT_NE(completions, nullptr);
+    EXPECT_TRUE(completions->IsObject());
+
+    server->Close();
+    client->Close();
+}
+
+// ── notifications/message encodes level as the spec's lowercase string ──
+TEST(McpServerTest, SendLoggingMessageEncodesLevelAsString) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    client->SetNotificationHandler(notifications::kMessage,
+        [&received](const JsonRpcNotification& n) { received.set_value(n); });
+
+    server->SendLoggingMessage(LoggingLevel::Info, "hello");
+
+    ASSERT_EQ(received_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto notif = received_future.get();
+    ASSERT_TRUE(notif.params.has_value());
+    auto* level = notif.params->Find("level");
+    ASSERT_NE(level, nullptr);
+    EXPECT_TRUE(level->IsString());
+    EXPECT_EQ(level->GetString(), "info");
+    auto* data = notif.params->Find("data");
+    ASSERT_NE(data, nullptr);
+    EXPECT_EQ(data->GetString(), "hello");
+
+    server->Close();
+    client->Close();
+}
+
+// ── prompts/list carries registered arguments metadata ──
+TEST(McpServerTest, ListPromptsIncludesArguments) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    PromptArgument arg;
+    arg.name = "city";
+    arg.description = "City name";
+    arg.required = true;
+    server->RegisterPrompt("weather",
+        PromptOptions{}.Description("Weather lookup").Arguments({arg}),
+        [](const std::string& name,
+           const std::optional<JsonValue>& args) -> GetPromptResult {
+            (void)name; (void)args;
+            return GetPromptResult{};
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    auto future = client->SendRequest(methods::kListPrompts,
+        JsonValue(JsonValue::object_tag), {}, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* prompts_arr = resp.Find("prompts");
+    ASSERT_NE(prompts_arr, nullptr);
+    ASSERT_TRUE(prompts_arr->IsArray());
+    ASSERT_EQ(prompts_arr->Size(), 1u);
+    const auto& entry = (*prompts_arr)[0];
+    EXPECT_EQ(entry.Find("name")->GetString(), "weather");
+    auto* args = entry.Find("arguments");
+    ASSERT_NE(args, nullptr);
+    ASSERT_TRUE(args->IsArray());
+    ASSERT_EQ(args->Size(), 1u);
+    const auto& wire_arg = (*args)[0];
+    EXPECT_EQ(wire_arg.Find("name")->GetString(), "city");
+    ASSERT_NE(wire_arg.Find("description"), nullptr);
+    EXPECT_EQ(wire_arg.Find("description")->GetString(), "City name");
+    ASSERT_NE(wire_arg.Find("required"), nullptr);
+    EXPECT_EQ(wire_arg.Find("required")->GetBool(), true);
+
+    server->Close();
+    client->Close();
 }
 
 // ── McpServerTool::Create ──
@@ -1240,7 +1372,7 @@ TEST(McpServerTest, ElicitUrlResolvesOnElicitationComplete) {
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto result = future.get();
     EXPECT_EQ(result.action, "accept");
-    EXPECT_FALSE(result.values.has_value());
+    EXPECT_FALSE(result.content.has_value());
 
     server->Close();
     client->Close();
@@ -1275,6 +1407,174 @@ TEST(McpServerTest, ElicitUrlTimesOutWhenNoCompleteArrives) {
         threw_timeout = e.Code() == McpErrorCode::RequestTimeout;
     }
     EXPECT_TRUE(threw_timeout);
+
+    server->Close();
+    client->Close();
+}
+
+// ── MRTR: a tool returns input_required (elicit user_name); the client
+// auto-fulfills the round and receives the completed "Hello, <name>!" ──
+TEST(McpServerTest, MrtrToolInputRequiredElicitationRoundTrip) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool(McpServerTool::Create("greeter",
+        std::function<CallToolResult(const Ctx&)>(
+            [](const Ctx& ctx) -> CallToolResult {
+                if (ctx.Params().input_responses) {
+                    auto* elicit = ctx.Params().input_responses->Find("elicit");
+                    if (elicit) {
+                        auto* name = elicit->Find("user_name");
+                        if (name && name->IsString()) {
+                            CallToolResult done;
+                            done.content.push_back(
+                                TextContent{"text", "Hello, " + name->GetString() + "!"});
+                            return done;
+                        }
+                    }
+                }
+                CallToolResult result;
+                InputRequiredResult ir;
+                InputRequestElicit elicit_request;
+                elicit_request.message = "What is your name?";
+                JsonValue schema(JsonValue::object_tag);
+                schema["type"] = JsonValue("object");
+                JsonValue properties(JsonValue::object_tag);
+                JsonValue field(JsonValue::object_tag);
+                field["type"] = JsonValue("string");
+                properties["user_name"] = std::move(field);
+                schema["properties"] = std::move(properties);
+                elicit_request.requested_schema = std::move(schema);
+                ir.input_requests.elicit = std::move(elicit_request);
+                result.input_required = std::move(ir);
+                return result;
+            }),
+        ToolOptions{}.Description("MRTR elicitation fixture")));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Pin;
+    cops.pin_protocol_version = std::string(kLatestProtocolVersion);
+    cops.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), cops);
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["user_name"] = JsonValue("Alice");
+        result.content = std::move(content);
+        return result;
+    });
+
+    auto done = client->CallTool("greeter", JsonValue(JsonValue::object_tag));
+    EXPECT_FALSE(done.is_error);
+    ASSERT_EQ(done.content.size(), 1u);
+    auto* text = std::get_if<TextContent>(&done.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "Hello, Alice!");
+
+    client->Close();
+    server->Close();
+}
+
+// ── MRTR: the server mints an HMAC requestState; the built-in verifier
+// accepts the retry and the tool reads its round payload back ──
+TEST(McpServerTest, MrtrMintedRequestStateRoundTrip) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.request_state_key = std::string("unit-test-key");
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool(McpServerTool::Create("counter",
+        std::function<CallToolResult(const Ctx&)>(
+            [](const Ctx& ctx) -> CallToolResult {
+                int round = 0;
+                if (ctx.Params().request_state) {
+                    auto payload =
+                        detail::DecodeRequestStatePayload(*ctx.Params().request_state);
+                    if (payload) {
+                        auto* stored = payload->Find("round");
+                        if (stored && stored->IsInt())
+                            round = static_cast<int>(stored->GetInt());
+                    }
+                }
+                if (round >= 2) {
+                    CallToolResult done;
+                    done.content.push_back(TextContent{"text", "round-2-done"});
+                    return done;
+                }
+                CallToolResult result;
+                InputRequiredResult ir;
+                InputRequestElicit elicit_request;
+                elicit_request.message = "ack round";
+                ir.input_requests.elicit = std::move(elicit_request);
+                JsonValue payload(JsonValue::object_tag);
+                payload["round"] = JsonValue(static_cast<int64_t>(round + 1));
+                ir.request_state = payload.Dump();
+                result.input_required = std::move(ir);
+                return result;
+            }),
+        ToolOptions{}.Description("MRTR requestState fixture")));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Pin;
+    cops.pin_protocol_version = std::string(kLatestProtocolVersion);
+    cops.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), cops);
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["ack"] = JsonValue("ok");
+        result.content = std::move(content);
+        return result;
+    });
+
+    auto done = client->CallTool("counter", JsonValue(JsonValue::object_tag));
+    EXPECT_FALSE(done.is_error);
+    ASSERT_EQ(done.content.size(), 1u);
+    auto* text = std::get_if<TextContent>(&done.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "round-2-done");
+
+    client->Close();
+    server->Close();
+}
+
+// ── MRTR: a forged requestState is rejected before the tool handler with
+// -32602 and data.reason "invalid_request_state" ──
+TEST(McpServerTest, MrtrForgedRequestStateRejectedWithReason) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.request_state_key = std::string("unit-test-key");
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    JsonValue params(JsonValue::object_tag);
+    params["name"] = JsonValue("any-tool");
+    params["requestState"] = JsonValue("forged-state");
+    auto future = client->SendRequest(methods::kCallTool, std::move(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+    auto* data = result.Find("data");
+    ASSERT_NE(data, nullptr);
+    auto* reason = data->Find("reason");
+    ASSERT_NE(reason, nullptr);
+    EXPECT_EQ(reason->GetString(), std::string("invalid_request_state"));
 
     server->Close();
     client->Close();

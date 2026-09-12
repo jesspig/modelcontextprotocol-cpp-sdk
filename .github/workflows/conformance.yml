@@ -1,0 +1,124 @@
+name: Conformance
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONFORMANCE_PACKAGE: '@modelcontextprotocol/conformance@0.2.0-alpha.11'
+  CONFORMANCE_SPEC_VERSION: '2025-11-25'
+  CONFORMANCE_BASELINE: tests/conformance/baseline.yaml
+
+jobs:
+  server:
+    name: conformance server (legacy 2025-11-25)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install OpenSSL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Configure
+        run: cmake --preset debug -DMCP_BUILD_CONFORMANCE=ON -DMCP_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build --preset debug --target conformance-server
+
+      - name: Install conformance referee
+        run: npm install -g "$CONFORMANCE_PACKAGE"
+
+      - name: Run official conformance suite (server)
+        shell: bash
+        run: |
+          set -e
+          PORT=3010
+          SERVER_URL="http://localhost:${PORT}/mcp"
+          SERVER_BIN="${GITHUB_WORKSPACE}/build/debug/examples/conformance/server/conformance-server"
+
+          # 与 scripts/run-conformance.sh 一致：端口被占时拒跑，防止对残留
+          # 旧进程做 conformance 得出假结论。
+          if (: > "/dev/tcp/localhost/${PORT}") 2>/dev/null; then
+              echo "Error: port ${PORT} is already in use."
+              exit 1
+          fi
+
+          "${SERVER_BIN}" --port "${PORT}" &
+          SERVER_PID=$!
+          cleanup() {
+              kill "${SERVER_PID}" 2>/dev/null || true
+              wait "${SERVER_PID}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for conformance server to be ready..."
+          MAX_RETRIES=30
+          RETRY_COUNT=0
+          while ! curl -s --max-time 2 "${SERVER_URL}" > /dev/null 2>&1; do
+              if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+                  echo "Server process exited unexpectedly"
+                  exit 1
+              fi
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              if [ "${RETRY_COUNT}" -ge "${MAX_RETRIES}" ]; then
+                  echo "Server failed to start after ${MAX_RETRIES} attempts"
+                  exit 1
+              fi
+              sleep 0.5
+          done
+
+          echo "Server is ready. Running conformance tests..."
+          conformance server --url "${SERVER_URL}" \
+              --spec-version "${CONFORMANCE_SPEC_VERSION}" \
+              --expected-failures "${CONFORMANCE_BASELINE}" \
+              --verbose
+
+  client:
+    name: conformance client (legacy 2025-11-25)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install OpenSSL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Configure
+        run: cmake --preset debug -DMCP_BUILD_CONFORMANCE=ON -DMCP_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build --preset debug --target conformance-client
+
+      - name: Install conformance referee
+        run: npm install -g "$CONFORMANCE_PACKAGE"
+
+      # client 模式由 referee 自带 per-scenario test server 驱动 C++ client
+      # （URL 作 argv[1]，场景名经 MCP_CONFORMANCE_SCENARIO 下发），无需 TS
+      # SDK 源码与 tsx。
+      - name: Run official conformance suite (client)
+        shell: bash
+        run: |
+          set -e
+          CLIENT_BIN="${GITHUB_WORKSPACE}/build/debug/examples/conformance/client/conformance-client"
+          conformance client --command "${CLIENT_BIN}" \
+              --suite core \
+              --spec-version "${CONFORMANCE_SPEC_VERSION}" \
+              --expected-failures "${CONFORMANCE_BASELINE}" \
+              --verbose

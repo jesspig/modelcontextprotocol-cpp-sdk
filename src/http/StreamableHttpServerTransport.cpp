@@ -2,9 +2,13 @@
 
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
+#include <mcp/ErrorCodes.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/McpError.hpp>
+#include <mcp/ProtocolVersion.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -60,6 +64,86 @@ std::optional<int> MapRequestErrorHttpStatus(int code) {
             return std::nullopt;
     }
 }
+
+constexpr const char* kWellKnownMetadataPath = "/.well-known/oauth-protected-resource";
+constexpr size_t kBearerSchemeLength = 7;
+
+bool IsBearerAuthorization(const std::string& value) {
+    static constexpr const char* kScheme = "bearer ";
+    if (value.size() < kBearerSchemeLength) return false;
+    for (size_t i = 0; i < kBearerSchemeLength; ++i) {
+        if (std::tolower(static_cast<unsigned char>(value[i])) != kScheme[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string TrimWhitespace(const std::string& value) {
+    auto first = value.find_first_not_of(" \t");
+    if (first == std::string::npos) return {};
+    auto last = value.find_last_not_of(" \t");
+    return value.substr(first, last - first + 1);
+}
+
+std::string JoinWithSpaces(const std::vector<std::string>& items) {
+    std::string out;
+    for (const auto& item : items) {
+        if (!out.empty()) out += ' ';
+        out += item;
+    }
+    return out;
+}
+
+std::string MetadataPathFromUrl(const std::string& url) {
+    auto scheme_end = url.find("://");
+    auto path_start = scheme_end == std::string::npos
+        ? url.find('/')
+        : url.find('/', scheme_end + 3);
+    if (path_start == std::string::npos) return kWellKnownMetadataPath;
+    auto query = url.find('?', path_start);
+    auto path = query == std::string::npos
+        ? url.substr(path_start)
+        : url.substr(path_start, query - path_start);
+    return path.empty() ? std::string(kWellKnownMetadataPath) : path;
+}
+
+std::string ResourceUrlFromMetadataUrl(const std::string& metadata_url) {
+    auto base = metadata_url;
+    auto query = base.find('?');
+    if (query != std::string::npos) base.resize(query);
+    const std::string suffix = kWellKnownMetadataPath;
+    if (base.size() > suffix.size() &&
+        base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        base.resize(base.size() - suffix.size());
+    }
+    return base;
+}
+
+void RespondUnauthorized(HttpResponse& resp, const std::string& metadata_url,
+                         bool invalid_token) {
+    std::string challenge =
+        "Bearer resource_metadata=\"" + metadata_url + "\"";
+    if (invalid_token) challenge += ", error=\"invalid_token\"";
+    resp.status_code = 401;
+    resp.status_text = "Unauthorized";
+    resp.headers["www-authenticate"] = std::move(challenge);
+    resp.body =
+        R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"unauthorized"}})";
+    resp.headers["content-type"] = "application/json";
+}
+
+void RespondInsufficientScope(HttpResponse& resp,
+                              const std::vector<std::string>& required_scopes) {
+    resp.status_code = 403;
+    resp.status_text = "Forbidden";
+    resp.headers["www-authenticate"] =
+        "Bearer error=\"insufficient_scope\", scope=\"" +
+        JoinWithSpaces(required_scopes) + "\"";
+    resp.body =
+        R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"insufficient_scope"}})";
+    resp.headers["content-type"] = "application/json";
+}
 } // namespace
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
@@ -76,9 +160,23 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     , event_store_(options_.event_store
         ? options_.event_store
         : std::make_shared<EventStore>())
+    , session_store_(options_.session_store)
 {
+    if (options_.bearer_auth && !options_.bearer_auth->verify) {
+        throw McpError(McpErrorCode::InvalidRequest,
+            "bearer_auth.verify is required when bearer auth is enabled");
+    }
+
     session_id_ = "srv-" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count());
+
+    if (session_store_ && !options_.stateless) {
+        SessionRecord record;
+        record.protocol_version = std::string(kDefaultNegotiatedProtocolVersion);
+        record.created_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        session_store_->Save(session_id_, record);
+    }
 
     // Wire HTTP handlers
     http_server_->SetHandler("POST", options_.endpoint,
@@ -104,6 +202,7 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
                 resp.headers["content-type"] = "application/json";
                 return;
             }
+            if (session_store_) session_store_->Remove(ActiveSessionId());
             if (channel_) channel_->Close();
             SetDisconnected();
             resp.status_code = 200;
@@ -111,6 +210,14 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
             resp.body = "{}";
             resp.headers["content-type"] = "application/json";
         });
+
+    if (options_.bearer_auth && options_.bearer_auth->serve_metadata_endpoint) {
+        http_server_->SetHandler("GET",
+            MetadataPathFromUrl(options_.bearer_auth->resource_metadata_url),
+            [this](const HttpRequest&, HttpResponse& resp) {
+                HandleMetadataRequest(resp);
+            });
+    }
 }
 
 StreamableHttpServerTransport::~StreamableHttpServerTransport() {
@@ -123,9 +230,95 @@ void StreamableHttpServerTransport::Start() {
 
 void StreamableHttpServerTransport::Close() {
     if (http_server_) http_server_->Stop();
-    if (!options_.stateless && event_store_) event_store_->Clear(session_id_);
+    if (!options_.stateless && event_store_) event_store_->Clear(ActiveSessionId());
     if (channel_) channel_->Close();
     SetDisconnected();
+}
+
+// ── Bearer auth (RFC 6750/9728) ──
+bool StreamableHttpServerTransport::AuthorizeRequest(
+    const HttpRequest& req, HttpResponse& resp)
+{
+    if (!options_.bearer_auth) return true;
+    const auto& config = *options_.bearer_auth;
+
+    auto authorization = GetMcpHeader(req, "authorization");
+    if (!authorization || !IsBearerAuthorization(*authorization)) {
+        RespondUnauthorized(resp, config.resource_metadata_url, false);
+        return false;
+    }
+    auto token = TrimWhitespace(authorization->substr(kBearerSchemeLength));
+
+    auto result = config.verify(token);
+    if (!result.ok) {
+        RespondUnauthorized(resp, config.resource_metadata_url, true);
+        return false;
+    }
+    for (const auto& required : config.required_scopes) {
+        if (std::find(result.scopes.begin(), result.scopes.end(), required)
+            == result.scopes.end()) {
+            RespondInsufficientScope(resp, config.required_scopes);
+            return false;
+        }
+    }
+    return true;
+}
+
+void StreamableHttpServerTransport::HandleMetadataRequest(HttpResponse& resp) {
+    const auto& config = *options_.bearer_auth;
+    JsonValue::Object doc;
+    doc["resource"] =
+        JsonValue(ResourceUrlFromMetadataUrl(config.resource_metadata_url));
+    if (!config.authorization_servers.empty()) {
+        JsonValue::Array servers;
+        for (const auto& server : config.authorization_servers)
+            servers.push_back(JsonValue(server));
+        doc["authorization_servers"] = JsonValue(std::move(servers));
+    }
+    if (!config.scopes_supported.empty()) {
+        JsonValue::Array scopes;
+        for (const auto& scope : config.scopes_supported)
+            scopes.push_back(JsonValue(scope));
+        doc["scopes_supported"] = JsonValue(std::move(scopes));
+    }
+    JsonValue::Array methods;
+    methods.push_back(JsonValue("header"));
+    doc["bearer_methods_supported"] = JsonValue(std::move(methods));
+    resp.status_code = 200;
+    resp.status_text = "OK";
+    resp.body = JsonValue(std::move(doc)).Dump();
+    resp.headers["content-type"] = "application/json";
+}
+
+// ── Session adoption (external SessionStore) ──
+std::string StreamableHttpServerTransport::ActiveSessionId() const {
+    std::lock_guard<std::mutex> lock(session_state_mutex_);
+    return session_id_;
+}
+
+void StreamableHttpServerTransport::AdoptSession(const std::string& session_id) {
+    std::lock_guard<std::mutex> lock(session_state_mutex_);
+    session_id_ = session_id;
+}
+
+bool StreamableHttpServerTransport::EnsureSession(
+    const HttpRequest& req, HttpResponse& resp)
+{
+    if (options_.stateless || !session_store_) return true;
+    auto session_id = GetMcpHeader(req, "mcp-session-id");
+    if (!session_id || session_id->empty()) return true;
+    if (*session_id == ActiveSessionId() && channel_ && channel_->IsOpen()) {
+        return true;
+    }
+    if (session_store_->Load(*session_id)) {
+        AdoptSession(*session_id);
+        return true;
+    }
+    resp.status_code = 404;
+    resp.status_text = "Not Found";
+    resp.body = R"({"jsonrpc":"2.0","error":{"code":-32009,"message":"Session expired"}})";
+    resp.headers["content-type"] = "application/json";
+    return false;
 }
 
 // ── ValidateMcpHeaders ──
@@ -167,6 +360,9 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
 void StreamableHttpServerTransport::HandlePost(
     const HttpRequest& req, HttpResponse& resp)
 {
+    if (!AuthorizeRequest(req, resp)) return;
+    if (!EnsureSession(req, resp)) return;
+
     // Extract MCP headers
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     auto mcp_method = GetMcpHeader(req, "mcp-method");
@@ -260,9 +456,11 @@ void StreamableHttpServerTransport::HandlePost(
 
     // Extract request ID before msg is moved (request/response correlation)
     std::optional<RequestId> req_id;
+    bool is_initialize = false;
     if (needs_response) {
         if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
             req_id = r->id;
+            is_initialize = (r->method == methods::kInitialize);
         }
     }
 
@@ -355,6 +553,9 @@ void StreamableHttpServerTransport::HandlePost(
                 }
             }
         }
+        if (is_initialize && session_store_ && !options_.stateless) {
+            resp.headers["mcp-session-id"] = ActiveSessionId();
+        }
         resp.status_code = 200;
         resp.status_text = "OK";
         resp.is_sse = true;
@@ -384,6 +585,9 @@ void StreamableHttpServerTransport::HandlePost(
 void StreamableHttpServerTransport::HandleGet(
     const HttpRequest& req, HttpResponse& resp)
 {
+    if (!AuthorizeRequest(req, resp)) return;
+    if (!EnsureSession(req, resp)) return;
+
     resp.is_sse = true;
     resp.headers["content-type"] = "text/event-stream";
     resp.headers["cache-control"] = "no-cache";
@@ -399,7 +603,7 @@ void StreamableHttpServerTransport::HandleGet(
             try {
                 auto from = std::stoull(*last_id);
                 for (const auto& [ev_id, ev_data] :
-                        event_store_->GetEventsSince(session_id_, from)) {
+                        event_store_->GetEventsSince(ActiveSessionId(), from)) {
                     resp.body += "id: " + std::to_string(ev_id) + "\n" + ev_data;
                 }
             } catch (const std::exception&) {
@@ -438,7 +642,7 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     // Normal path: store event and broadcast via SSE
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
-        auto event_id = event_store_->Append(session_id_, event_data);
+        auto event_id = event_store_->Append(ActiveSessionId(), event_data);
         event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
     }
     if (http_server_) {

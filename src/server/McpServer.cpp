@@ -2,6 +2,8 @@
 
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
+#include <mcp/server/RequestState.hpp>
+#include <mcp/Content.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/McpVersion.hpp>
 #include <mcp/Log.hpp>
@@ -196,6 +198,14 @@ McpServer::McpServer(
     // Wire request state verifier if configured
     if (options_.request_state_verifier) {
         handler_->SetRequestStateVerifier(options_.request_state_verifier);
+    } else if (options_.request_state_key) {
+        auto key = *options_.request_state_key;
+        auto ttl = options_.request_state_ttl;
+        handler_->SetRequestStateVerifier(
+            [key, ttl](std::string_view state) {
+                JsonValue payload;
+                return detail::VerifyRequestState(key, state, payload, ttl);
+            });
     }
 
     // Wire event callbacks — chain new full-message callbacks with existing shorthands
@@ -347,6 +357,7 @@ void McpServer::RegisterPrompt(
     entry.description = opts.description;
     entry.title = opts.title;
     entry.icons = opts.icons;
+    entry.arguments = opts.arguments;
     entry.handler = std::move(handler);
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
@@ -383,7 +394,7 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     if (current_level && static_cast<int>(level) < static_cast<int>(*current_level))
         return;
     JsonValue params(JsonValue::object_tag);
-    params[detail::kLevel] = JsonValue(static_cast<int64_t>(level));
+    params[detail::kLevel] = SerializeLoggingLevel(level);
     params[detail::kData] = JsonValue(std::string(data));
     params["logger"] = JsonValue(std::string(kDefaultLoggerName));
     handler_->SendNotification(notifications::kMessage, std::move(params));
@@ -920,6 +931,12 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts = PromptsCapability{};
         capabilities_.prompts->list_changed = true;
     }
+    if (options_.declare_logging) {
+        capabilities_.logging = LoggingCapability{};
+    }
+    if (options_.declare_completions) {
+        capabilities_.completions = CompletionsCapability{};
+    }
     if (options_.task_store) {
         capabilities_.extensions = std::map<std::string, JsonValue>{};
     }
@@ -1076,13 +1093,31 @@ void McpServer::HandleCallTool(
     }
 
     auto captured_promise = std::make_shared<std::promise<JsonValue>>(std::move(promise));
+    auto request_state_key = options_.request_state_key;
     auto fut = std::async(std::launch::async,
-        [tool, ctx = std::move(ctx), captured_promise]() mutable {
+        [tool, ctx = std::move(ctx), captured_promise,
+         request_state_key = std::move(request_state_key)]() mutable {
             auto result_promise = std::make_shared<std::promise<CallToolResult>>();
             auto result_future = result_promise->get_future();
             tool->InvokeAsync(ctx, std::move(*result_promise));
             try {
                 auto result = result_future.get();
+                if (result.input_required) {
+                    if (request_state_key) {
+                        JsonValue payload(JsonValue::object_tag);
+                        if (result.input_required->request_state) {
+                            auto parsed =
+                                JsonValue::Parse(*result.input_required->request_state);
+                            if (parsed.IsObject()) payload = parsed;
+                        }
+                        payload["iat"] = JsonValue(
+                            static_cast<int64_t>(std::time(nullptr)));
+                        result.input_required->request_state =
+                            detail::MintRequestState(*request_state_key, payload);
+                    }
+                    captured_promise->set_value(SerializeCallToolResult(result));
+                    return;
+                }
                 const auto& tool_def = tool->ProtocolTool();
                 if (tool_def.output_schema && result.structured_content) {
                     std::string schema_error;
@@ -1217,6 +1252,7 @@ void McpServer::HandleListPrompts(
                 p.name = entry.name;
                 p.description = entry.description;
                 p.title = entry.title;
+                p.arguments = entry.arguments;
                 if (!entry.icons.empty()) p.icons = entry.icons;
                 result.prompts.push_back(std::move(p));
             })) {

@@ -124,6 +124,10 @@ JsonValue SerializePromptOptions(const PromptOptions& v) {
     detail::SerializeOptional(obj, detail::kTitle, v.title);
     detail::SerializeVector(obj, detail::kIcons, v.icons,
         [](const Icon& icon) { return SerializeIcon(icon); });
+    if (v.arguments) {
+        detail::SerializeVector(obj, detail::kArguments, *v.arguments,
+            [](const PromptArgument& arg) { return SerializePromptArgument(arg); });
+    }
     return obj;
 }
 
@@ -134,6 +138,11 @@ PromptOptions DeserializePromptOptions(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kTitle, v.title);
     v.icons = detail::DeserializeVector<Icon>(j, detail::kIcons,
         [](const JsonValue& ic) { return DeserializeIcon(ic); });
+    auto* args = j.Find(detail::kArguments);
+    if (args && args->IsArray()) {
+        v.arguments = detail::DeserializeVector<PromptArgument>(*args,
+            [](const JsonValue& av) { return DeserializePromptArgument(av); });
+    }
     return v;
 }
 

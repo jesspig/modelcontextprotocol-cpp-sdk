@@ -91,7 +91,7 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
         use_tls_ = want_tls;
         host_ = url.host;
         port_ = url.port;
-        auto connect_timeout = std::min(req.timeout, kMaxConnectTimeout);
+        auto connect_timeout = (std::min)(req.timeout, kMaxConnectTimeout);
         if (use_tls_) {
             tls_ = std::make_unique<TlsSocket>(req.verify_tls);
             tls_->Connect(host_, port_, connect_timeout);
@@ -273,7 +273,7 @@ void HttpClient::ReadFixedBody(HttpResponseInfo& resp, std::size_t length,
     char buffer[kReadChunk];
     std::size_t total = 0;
     while (total < length) {
-        std::size_t want = std::min(length - total, sizeof(buffer));
+        std::size_t want = (std::min)(length - total, sizeof(buffer));
         std::size_t n = ReadRaw(buffer, want, deadline);
         if (n == 0) continue;
         total += n;
@@ -307,7 +307,7 @@ void HttpClient::ReadChunkedBody(HttpResponseInfo& resp,
 
         std::size_t remaining = chunk_len;
         while (remaining > 0) {
-            std::size_t want = std::min(remaining, sizeof(buffer));
+            std::size_t want = (std::min)(remaining, sizeof(buffer));
             std::size_t n = ReadRaw(buffer, want, deadline);
             if (n == 0) continue;
             remaining -= n;
