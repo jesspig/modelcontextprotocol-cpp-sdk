@@ -157,7 +157,7 @@ inline void RandomBytes(unsigned char* out, int n) {
     std::random_device rd;
     for (int i = 0; i < n; i += 4) {
         uint32_t v = rd();
-        int copy = std::min(4, n - i);
+        int copy = (std::min)(4, n - i);
         for (int j = 0; j < copy; ++j)
             out[i + j] = static_cast<unsigned char>((v >> (j * 8)) & 0xFF);
     }

@@ -33,7 +33,7 @@ public:
         auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
         Partition(scope)[std::string(key)] = {
-            std::move(value), now + std::min(ttl, kMaxTtl), now};
+            std::move(value), now + (std::min)(ttl, kMaxTtl), now};
     }
 
     // Returns the cached value when fresh, or nullopt when absent, expired,

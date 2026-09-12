@@ -236,7 +236,7 @@ private:
     bool WaitForReconnect(int attempt) {
         auto delay = kBackoffBase;
         for (int i = 1; i < attempt; ++i)
-            delay = std::min(delay * 3 / 2, kBackoffCap);
+            delay = (std::min)(delay * 3 / 2, kBackoffCap);
         if (retry_ms_.has_value())
             delay = std::chrono::milliseconds(*retry_ms_);
         auto deadline = std::chrono::steady_clock::now() + delay;

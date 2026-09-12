@@ -828,8 +828,8 @@ static bool TryFulfillInputRequired(
         ep.message = elicit_req.message;
         ep.requested_schema = elicit_req.requested_schema;
         auto elicit_result = (*elicitation_handler)(ep);
-        if (elicit_result.values)
-            responses["elicit"] = *elicit_result.values;
+        if (elicit_result.content)
+            responses["elicit"] = *elicit_result.content;
     }
 
     if (input_req.input_requests.confirm) {
@@ -841,8 +841,8 @@ static bool TryFulfillInputRequired(
         ep.message = confirm_req.message;
         ep.requested_schema = confirm_req.requested_schema;
         auto confirm_result = (*elicitation_handler)(ep);
-        if (confirm_result.values)
-            responses["confirm"] = *confirm_result.values;
+        if (confirm_result.content)
+            responses["confirm"] = *confirm_result.content;
     }
 
     if (input_req.input_requests.sampling) {
@@ -929,8 +929,8 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
                 input_responses, request_state, state_only)) {
             if (state_only) {
                 int64_t delay_ms = kMrtrStateOnlyBackoffBase.count()
-                    << std::min(state_only_rounds, 3);
-                delay_ms = std::min(delay_ms, kMrtrStateOnlyBackoffMax.count());
+                    << (std::min)(state_only_rounds, 3);
+                delay_ms = (std::min)(delay_ms, kMrtrStateOnlyBackoffMax.count());
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
                 ++state_only_rounds;
             } else {

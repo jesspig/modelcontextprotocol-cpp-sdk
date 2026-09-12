@@ -20,6 +20,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
         add_compile_definitions(_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS)
         add_compile_definitions(_WIN32_WINNT=0x0A00)
+        add_compile_definitions(NOMINMAX)
         message(STATUS "[mcp] clang-cl flags applied")
     else()
         add_compile_options(
@@ -48,6 +49,7 @@ elseif(MSVC)
         _CRT_SECURE_NO_WARNINGS
         _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
         _WIN32_WINNT=0x0A00
+        NOMINMAX
     )
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded CACHE INTERNAL "")
     message(STATUS "[mcp] MSVC flags applied")
