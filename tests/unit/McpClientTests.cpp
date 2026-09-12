@@ -741,7 +741,7 @@ TEST(McpClientTest, MrtrBackoffGrowsAndResetsAfterFulfilledRound) {
 
     client->SetElicitationHandler([](const ElicitRequestParams&) {
         ElicitResult r;
-        r.values = JsonValue("ok");
+        r.content = JsonValue("ok");
         return r;
     });
 
@@ -789,7 +789,7 @@ TEST(McpClientTest, MrtrMaxRoundsDefaultTen) {
 
     client->SetElicitationHandler([](const ElicitRequestParams&) {
         ElicitResult r;
-        r.values = JsonValue("ok");
+        r.content = JsonValue("ok");
         return r;
     });
 

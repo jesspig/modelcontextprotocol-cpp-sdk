@@ -107,7 +107,6 @@ void ReadListResultCommon(const JsonValue& j,
 JsonValue SerializeEmptyResult(const EmptyResult& v) {
     JsonValue obj(JsonValue::object_tag);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;
 }
 
@@ -131,7 +130,13 @@ JsonValue SerializeCallToolResult(const CallToolResult& v) {
     obj["isError"] = JsonValue(v.is_error);
     detail::SerializeOptional(obj, detail::kStructuredContent, v.structured_content);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        obj[detail::kResultType] = JsonValue(detail::kInputRequiredValue);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    } else {
+        obj[detail::kResultType] = SerializeResultType(v.result_type);
+    }
     return obj;
 }
 
@@ -435,7 +440,7 @@ InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j) {
 JsonValue SerializeElicitResult(const ElicitResult& v) {
     JsonValue obj(JsonValue::object_tag);
     if (!v.action.empty()) obj["action"] = JsonValue(v.action);
-    detail::SerializeOptional(obj, "content", v.values);
+    detail::SerializeOptional(obj, "content", v.content);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
@@ -445,7 +450,7 @@ ElicitResult DeserializeElicitResult(const JsonValue& j) {
     ElicitResult v;
     auto* action = j.Find("action");
     if (action && action->IsString()) v.action = action->GetString();
-    detail::DeserializeOptional(j, "content", v.values);
+    detail::DeserializeOptional(j, "content", v.content);
     auto* rt = j.Find(detail::kResultType);
     if (rt) v.result_type = DeserializeResultType(*rt);
     detail::DeserializeOptional(j, detail::kMeta, v.meta);

@@ -1,0 +1,101 @@
+# C++ SDK 官方 conformance 已知偏差基线。
+#
+# 驱动包：@modelcontextprotocol/conformance@0.2.0-alpha.11（与 TS SDK 的 pin
+# 一致）。升级 referee 版本时须在同一变更里对账本文件——新增场景按实际结果
+# 决定是否入基线，绝不预先臆测。
+#
+# 退出码语义（referee 保证，CI 不得用 continue-on-error 替代本机制）：
+#   失败 + 在基线   -> exit 0（已知偏差，放行）
+#   失败 + 不在基线 -> exit 1（真回归，job 变红）
+#   通过 + 在基线   -> exit 1（过期条目，必须删除——实现落地后基线只减不增）
+#   通过 + 不在基线 -> exit 0
+#   本 leg 未运行的场景：其条目被容忍（不会误判过期）。
+#
+# 本地复现：scripts/run-conformance.sh server|client
+#
+# 双 era 说明：C++ conformance-server / conformance-client 当前仅覆盖 legacy
+# 2025-11-25 有状态 wire（initialize 握手），两个 leg 均以 --spec-version
+# 2025-11-25 运行。modern（2026-07-28）per-request _meta 场景因 applicability
+# 窗口之外被 referee skip：这是运行配置层面的排除而非逐条偏差，故不为其
+# 伪造基线条目；待两侧 fixture 实现 modern 生命周期后另开 modern leg 再对账。
+#
+# server 侧现状：`--spec-version 2025-11-25` + 默认 active suite 覆盖 2025-11-25
+# revision 要求的全部 30 个 scored server 场景。条目按 2026-09-12 referee
+# （conformance@0.2.0-alpha.11）实跑失败清单逐条归因补录，禁止整场景无归因
+# 兜底。tasks-*（SEP-2663 扩展）与 auth 类 server 场景不在 active suite 选择
+# 范围内，C++ server 亦无对应表面，不开 --suite all 前无需条目。
+
+server:
+    # --- resources-templates-read（生产缺陷）---
+    # McpServer::HandleReadResource 只匹配静态资源，显式跳过 is_template 条目；
+    # 全仓库无 URI 模板匹配实现，resources/read 对模板实例 URI
+    # （如 test://template/123/data）一律 -32602 resource not found。
+    # 实现模板匹配后删除本条目（届时 runner 会以过期条目报错）。
+    - resources-templates-read
+
+    # --- server→client 消息流关联缺口（SEP-2260 请求-流关联）---
+    # server 主动消息（progress notification / elicitation request）经
+    # BroadcastSse 走 GET SSE 流广播，而 POST 响应流单写即关
+    # （sse_close_after_write）：无 per-request 流关联能力。referee client
+    # 不开 GET 流，故 tools-call-with-progress 收不到 progress。
+    - tools-call-with-progress
+
+    # --- server-sse-multiple-streams（传输层多流能力缺口，归因为推断）---
+    # 传输层 POST 响应流单写即关、server 主动消息依赖 GET 流广播，无多路
+    # SSE 流并存/路由管理；未逐断言核对 referee 输出，按代码证据归因，
+    # 复跑时若失败特征不同须重审本条目。
+    - server-sse-multiple-streams
+
+client:
+    # --- SEP-1034 elicitation 默认值 ---
+    # SDK 客户端缺 applyDefaults：elicitation handler 返回空 content 时未按
+    # 请求 schema 的默认值填充即回传，server 侧校验失败，预期 FAIL。
+    # 实现 applyDefaults 后删除本条目（届时 runner 会以过期条目报错）。
+    - elicitation-sep1034-client-defaults
+
+    # --- fetch-shim / discover 注入点依赖场景（2026-07-28 scored）---
+    # referee 经 MCP_CONFORMANCE_CONTEXT 注入 toolCalls 与自定义 header 断言，
+    # 依赖 TS 侧 fetch shim（undici interceptor）注入 discover 请求头；C++
+    # client 无对应注入点，无法受测。当前 legacy leg 下这些场景本就被 skip，
+    # 条目为 future-proofing：modern leg 开通后按实际结果对账或删除。
+    - http-standard-headers
+    - http-custom-headers
+    - http-invalid-tool-headers
+    - sep-2322-client-request-state
+
+    # --- auth/*（C++ client 无 OAuth 表面，全部 untestable）---
+    # core suite 不选择 auth 场景，条目当前依赖 referee 对未运行场景的容忍；
+    # 未来扩到 --suite auth / --suite all 时由这些条目兜底。清单为 conformance
+    # 0.2.0-alpha.11 requirements/2025-11-25.yaml 与 2026-07-28.yaml 中 client
+    # leg auth 场景的并集（含 extension）。
+    - auth/metadata-default
+    - auth/metadata-var1
+    - auth/metadata-var2
+    - auth/metadata-var3
+    - auth/basic-cimd
+    - auth/scope-from-www-authenticate
+    - auth/scope-from-scopes-supported
+    - auth/scope-omitted-when-undefined
+    - auth/scope-step-up
+    - auth/scope-retry-limit
+    - auth/token-endpoint-auth-basic
+    - auth/token-endpoint-auth-post
+    - auth/token-endpoint-auth-none
+    - auth/pre-registration
+    - auth/resource-mismatch
+    - auth/offline-access-scope
+    - auth/offline-access-not-supported
+    - auth/authorization-server-migration
+    - auth/iss-supported
+    - auth/iss-not-advertised
+    - auth/iss-supported-missing
+    - auth/iss-wrong-issuer
+    - auth/iss-unexpected
+    - auth/iss-normalized
+    - auth/metadata-issuer-mismatch
+    - auth/client-credentials-jwt
+    - auth/client-credentials-basic
+    - auth/enterprise-managed-authorization
+    - auth/dpop
+    - auth/dpop-nonce
+    - auth/wif-jwt-bearer
