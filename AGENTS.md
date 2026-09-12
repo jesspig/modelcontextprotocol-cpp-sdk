@@ -11,11 +11,11 @@ ctest --preset debug --output-on-failure
 ```
 
 - 单用例：`ctest --preset debug -R 'XxxTest.CaseName'`，或直接跑 `build/debug/tests/unit/mcp-core-tests --gtest_filter='XxxTest.*'`（自研框架兼容该参数名）。
-- 示例需 `-DMCP_BUILD_EXAMPLES=ON`（预设默认 OFF）。
+- 示例需 `-DMCP_BUILD_EXAMPLES=ON`（预设默认 OFF）；官方 conformance fixture 需 `-DMCP_BUILD_CONFORMANCE=ON`（`examples/conformance/server`，配套 `.github/workflows/conformance.yml` 与 `scripts/run-conformance.sh`）。
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`。
 - `-DMCP_WERROR=ON` 才开警告即错误（CI 自动加，本地默认关）。
 - configure 无第三方拉取；唯一可选系统依赖是 OpenSSL（未找到则禁用 TLS、PKCE 回退内置 SHA-256）。
-- 验证全量：`ctest -N` 看实际用例数（约 16 目标 / 521 用例）。
+- 验证全量：`ctest -N` 看实际用例数（17 目标 / 554 用例）。
 - 自研测试框架（`tests/framework/`）：套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*/ASSERT_*`，链接 `mcp-test-main`；`--gtest_filter` 参数名兼容。
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删。
 - 集成测试 `RunWithTimeout`：body 挂起超 10s 会 `std::_Exit(1)` 快速失败（勿改回永久阻塞）。
@@ -60,5 +60,5 @@ ctest --preset debug --output-on-failure
 ## 文档导航
 
 - 在线文档：[docs/zh/](docs/zh/)（教程）、[docs/en/](docs/en/)（镜像）。
-- 源码知识库：[wiki/index.md](wiki/index.md) — modules/（按库）、classes/（关键类）、transports/、concepts/（版本协商、MRTR、并发、存储、OAuth、日志）。
+- 源码知识库：[wiki/index.md](wiki/index.md) — modules/（按库）、classes/（关键类）、transports/、concepts/（版本协商、MRTR、并发、存储、OAuth、_meta 与过滤器、日志）。
 - 示例：`examples/EchoServer`（注册 API 样板）、`examples/WeatherServer`（多工具）、`examples/SimpleClient`（客户端用法）。

@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: MRTR 多轮请求-响应
-description: 服务端发起的 elicitation（form 与 URL 双模式）：InputRequiredResult 内嵌、客户端自动补全循环与超时预算。
-tags: [协议, mrtr, elicitation, 多轮]
-timestamp: 2026-09-11T08:40:00+08:00
+description: 服务端发起的 elicitation（form 与 URL 双模式）：InputRequiredResult 内嵌、requestState HMAC 签发/校验、客户端自动补全循环与超时预算。
+tags: [协议, mrtr, elicitation, 多轮, hmac]
+timestamp: 2026-09-12T11:30:00+08:00
 resource: include/mcp/McpTypes.hpp
 ---
 
@@ -29,6 +29,8 @@ resource: include/mcp/McpTypes.hpp
 - `Elicit`：无 config 时超时 600s；结果 `code` 为负抛 McpError
 - `ElicitUrl(url, message, timeout=600s)`：URL 模式 elicitation——发 `mode="url"` 请求（自增 `elicitationId`）后挂起等待客户端 `notifications/elicitation/complete` 唤醒，以 `action="accept"` 完成；客户端经 `SetUrlElicitationHandler` 消费（SDK 自动回 complete 通知）
 - `ServerOptions::InputRequiredConfig`：`max_rounds{10}`、`round_timeout{600s}`、`legacy_shim{true}`
+- **`CallToolResult::input_required`**（`std::optional<InputRequiredResult>`）：工具 handler 返回内嵌 MRTR 结果时，wire 写 `resultType: "input_required"` + `inputRequests` + `requestState`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)——该分支独有，普通结果仍写自身 `resultType`）
+- **requestState HMAC 签发/校验**（[RequestState.hpp](../../include/mcp/server/RequestState.hpp)）：`ServerOptions::request_state_key` 配置后，`HandleCallTool` 对 `input_required` 结果自动 mint——payload（bare JSON，可空）注入 `iat` 经 `MintRequestState` 签名（`base64url(payload).hex(HMAC-SHA256)`）；下一轮请求携带的 requestState 在 handler 运行前经 `McpSessionHandler::SetRequestStateVerifier` 校验，失败回 `InvalidParams` + `data.reason="invalid_request_state"`；`request_state_ttl`（默认 0 不校验过期）超期拒绝；显式 `request_state_verifier` 优先于内置 HMAC 校验器
 
 ## 相关页面
 

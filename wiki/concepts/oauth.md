@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: OAuth 授权流程
-description: 授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存。
-tags: [oauth, pkce, 安全, rfc9207]
-timestamp: 2026-08-15T22:30:00+08:00
+description: 客户端授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728）。
+tags: [oauth, pkce, 安全, rfc9207, bearer]
+timestamp: 2026-09-12T06:05:00+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -35,9 +35,19 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
 
+## 服务端 Bearer 资源服务器（RFC 6750/9728）
+
+`StreamableHttpServerOptions::bearer_auth`（[StreamableHttpServerTransport.hpp](../../include/mcp/transport/StreamableHttpServerTransport.hpp)）把服务端变成受保护资源：
+
+- `verify` 回调必填（`AuthResult{ok, scopes}`），token 校验完全委托调用方（SDK 不解析 JWT）
+- POST/GET 入口挑战：无头/非 Bearer → 401 + `WWW-Authenticate: Bearer resource_metadata="<url>"`；校验失败 → 401 + `error="invalid_token"`；`required_scopes` 未被 token scopes 全覆盖 → 403 + `error="insufficient_scope", scope="..."`
+- `serve_metadata_endpoint` 注册匿名 `GET /.well-known/oauth-protected-resource`（RFC 9728 文档：`resource`/`authorization_servers`/`scopes_supported`/`bearer_methods_supported`）
+- 未配置时零回归（无任何鉴权路径）；wire 细节见 [/transports/streamable-http.md](../transports/streamable-http.md)；客户端侧对接入口为 `auth_challenge_handler`（收到 401/403 挑战后重试）
+
 ## 相关页面
 
 - [/modules/client.md](../modules/client.md) — 所属库
+- [/transports/streamable-http.md](../transports/streamable-http.md) — 服务端 Bearer 挑战落点
 - [/classes/file-token-cache.md](../classes/file-token-cache.md) — 持久化
 - [/concepts/storage.md](storage.md) — 原子写入
 - [/docs/en/client/oauth.md](../../docs/en/client/oauth.md) — 在线文档

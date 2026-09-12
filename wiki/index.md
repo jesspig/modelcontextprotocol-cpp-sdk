@@ -9,7 +9,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/modules/protocol.md](/modules/protocol.md) — mcp-protocol：JSON-RPC 引擎与双时代线协议编解码
 - [/modules/server.md](/modules/server.md) — mcp-server：注册 API、能力推导、任务存储集成
 - [/modules/client.md](/modules/client.md) — mcp-client：连接模式协商、OAuth 与令牌缓存
-- [/modules/http.md](/modules/http.md) — mcp-http：HttpServer、EventStore、Streamable HTTP 双端
+- [/modules/http.md](/modules/http.md) — mcp-http：HttpServer、EventStore（含 FileEventStore）、SessionStore、Streamable HTTP 双端（Bearer 鉴权）
 
 ## 关键类（classes）
 
@@ -21,6 +21,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/classes/mcp-client.md](/classes/mcp-client.md) — 客户端门面：创建即协商
 - [/classes/http-server.md](/classes/http-server.md) — 自研 HTTP 服务端与 SSE 广播
 - [/classes/file-task-store.md](/classes/file-task-store.md) — 任务存储：双锁与锁外写盘、回滚与损坏备份
+- [/classes/file-event-store.md](/classes/file-event-store.md) — 事件存储：JSONL 持久化与跨进程文件锁
 - [/classes/file-token-cache.md](/classes/file-token-cache.md) — 令牌缓存：DPAPI 与 0600
 
 ## 传输（transports）
@@ -38,13 +39,13 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/concepts/meta-and-filters.md](/concepts/meta-and-filters.md) — _meta 元数据与过滤器管线
 - [/concepts/concurrency.md](/concepts/concurrency.md) — 线程模型与 Close self-join 陷阱
 - [/concepts/storage.md](/concepts/storage.md) — 原子写入与失败语义
-- [/concepts/oauth.md](/concepts/oauth.md) — PKCE、RFC 9207、刷新/吊销
+- [/concepts/oauth.md](/concepts/oauth.md) — PKCE、RFC 9207、刷新/吊销、服务端 Bearer 资源服务器
 - [/concepts/logging.md](/concepts/logging.md) — 日志级别、全局钩子与可观测性
 
 ## 工程（build & tests）
 
 - [/build.md](/build.md) — CMake 预设、Unity/LTO、系统依赖
-- [/tests.md](/tests.md) — 16 个测试目标与守护测试（自研框架）
+- [/tests.md](/tests.md) — 17 个测试目标与守护测试（自研框架）、官方 conformance suite
 
 ## 维护
 
