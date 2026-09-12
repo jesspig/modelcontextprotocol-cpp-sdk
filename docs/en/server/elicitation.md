@@ -21,8 +21,8 @@ params.requested_schema = JsonValue::Parse(R"({
 
 auto future = server->Elicit(params);
 auto result = future.get();
-if (result.values) {
-    auto street = (*result.values)["street"];
+if (result.content) {
+    auto street = (*result.content)["street"];
 }
 ```
 
@@ -32,7 +32,8 @@ if (result.values) {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `values` | `optional<JsonValue>` | Submitted form data (present on accept) |
+| `action` | `string` | `"accept"`, `"decline"`, or `"cancel"` |
+| `content` | `optional<JsonValue>` | Submitted form data (present on accept) |
 
 The inherited `result_type` (`Complete` or `InputRequired`) indicates whether the input was fulfilled or is still pending.
 
@@ -49,12 +50,12 @@ struct AddressForm {
 
 ElicitResult raw = future.get();
 ElicitResultTyped<AddressForm> typed;
-if (raw.values) {
+if (raw.content) {
     typed.action = "accept";
     typed.content = AddressForm{
-        (*raw.values)["street"].GetString(),
-        (*raw.values)["city"].GetString(),
-        (*raw.values)["zip_code"].GetString()
+        (*raw.content)["street"].GetString(),
+        (*raw.content)["city"].GetString(),
+        (*raw.content)["zip_code"].GetString()
     };
 }
 

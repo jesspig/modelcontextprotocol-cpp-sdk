@@ -5,6 +5,7 @@
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/JsonRpc.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
@@ -261,6 +262,78 @@ TEST(SessionHandlerTest, ProgressNotificationExtendsDeadline) {
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto result = future.get();
     EXPECT_FALSE(result.Contains("code"));
+}
+
+// Legacy era: progressToken travels inside params._meta so pre-2026 peers
+// receive it in the conventional wire location.
+TEST(SessionHandlerTest, LegacyEraRequestCarriesProgressTokenInParams) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+
+    std::promise<JsonRpcRequest> req_promise;
+    auto req_future = req_promise.get_future();
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&req_promise](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            req_promise.set_value(req);
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    meta.progress_token = int64_t(1);
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto req = req_future.get();
+    ASSERT_TRUE(req.params);
+    auto* legacy_meta = req.params->Find("_meta");
+    ASSERT_TRUE(legacy_meta);
+    auto* pt = legacy_meta->Find("progressToken");
+    ASSERT_TRUE(pt);
+    EXPECT_EQ(*pt, JsonValue(int64_t(1)));
+    EXPECT_FALSE(req.meta);
+}
+
+// Modern era: the in-memory meta envelope stays in req.meta, and the wire
+// JSON (via serialization round-trip) carries progressToken and
+// protocolVersion inside params._meta, never at the top level.
+TEST(SessionHandlerTest, ModernEraRequestCarriesProgressTokenInParamsMetaOnWire) {
+    HandlerPair hp;
+
+    std::promise<JsonRpcRequest> req_promise;
+    auto req_future = req_promise.get_future();
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&req_promise](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            req_promise.set_value(req);
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.progress_token = int64_t(1);
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto req = req_future.get();
+
+    ASSERT_TRUE(req.meta);
+    auto* pt = req.meta->Find("progressToken");
+    ASSERT_TRUE(pt);
+    EXPECT_EQ(*pt, JsonValue(int64_t(1)));
+    ASSERT_TRUE(req.params);
+    EXPECT_FALSE(req.params->Contains("_meta"));
+
+    auto wire = JsonValue::Parse(SerializeMessage(JsonRpcMessage(req)));
+    EXPECT_FALSE(wire.Contains("_meta"));
+    ASSERT_TRUE(wire["params"].Contains("_meta"));
+    EXPECT_EQ(wire["params"]["_meta"]["progressToken"], JsonValue(int64_t(1)));
+    EXPECT_EQ(
+        wire["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+        std::string(kLatestProtocolVersion));
+    future.get();
 }
 
 // A request dropped by an incoming filter never reaches the handler map;
@@ -560,4 +633,131 @@ TEST(SessionHandlerTest, NotifySubscribersPrefersClientSubscriptionId) {
     ASSERT_EQ(sid_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
     EXPECT_EQ(sid_future.get(), std::string("client-sub-9"));
+}
+
+// With a total-timeout cap enabled, a request whose idle deadline is kept
+// being extended by matching progress notifications is settled with
+// RequestTimeout once the absolute deadline (measured from SendRequest)
+// passes. The existing timeout path is reused; no separate settlement exists.
+TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
+    HandlerPair hp;
+    hp.client->SetMaxTotalTimeout(std::chrono::seconds(2));
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    hp.client->SetNotificationHandler(notifications::kProgress,
+        [client = hp.client.get()](const JsonRpcNotification& notif) {
+            if (notif.params && notif.params->IsObject()) {
+                auto* pt = notif.params->Find("progressToken");
+                if (pt && pt->IsString()) {
+                    client->ResetTimeoutByProgressToken(pt->GetString());
+                }
+            }
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.progress_token = std::string("pt-cap");
+    auto start = std::chrono::steady_clock::now();
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(500));
+
+    int extensions = 0;
+    while (future.wait_for(std::chrono::milliseconds(200)) ==
+           std::future_status::timeout) {
+        ++extensions;
+        JsonValue progress_params(JsonValue::object_tag);
+        progress_params["progressToken"] = JsonValue("pt-cap");
+        hp.server->SendNotification(notifications::kProgress,
+            std::move(progress_params));
+        ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start).count(), 5000);
+    }
+
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    EXPECT_GE(extensions, 3);
+    EXPECT_GE(elapsed_ms, static_cast<int64_t>(1500));
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestTimeout));
+    EXPECT_EQ(result["message"].GetString(), std::string("request timed out"));
+}
+
+// With the cap disabled (default zero), progress notifications keep a request
+// alive well past its original idle deadline and it still completes normally.
+TEST(SessionHandlerTest, TotalTimeoutDisabledAllowsProgressExtension) {
+    HandlerPair hp;
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    hp.client->SetNotificationHandler(notifications::kProgress,
+        [client = hp.client.get()](const JsonRpcNotification& notif) {
+            if (notif.params && notif.params->IsObject()) {
+                auto* pt = notif.params->Find("progressToken");
+                if (pt && pt->IsString()) {
+                    client->ResetTimeoutByProgressToken(pt->GetString());
+                }
+            }
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.progress_token = std::string("pt-free");
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(800));
+
+    for (int i = 0; i < 5; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        JsonValue progress_params(JsonValue::object_tag);
+        progress_params["progressToken"] = JsonValue("pt-free");
+        hp.server->SendNotification(notifications::kProgress,
+            std::move(progress_params));
+    }
+
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_FALSE(future.get().Contains("code"));
+}
+
+// A plain request without progress still settles on its idle deadline even
+// when the total-timeout cap is enabled and would expire later.
+TEST(SessionHandlerTest, MaxTotalTimeoutDoesNotAffectPlainIdleTimeout) {
+    HandlerPair hp;
+    hp.client->SetMaxTotalTimeout(std::chrono::seconds(1));
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    auto start = std::chrono::steady_clock::now();
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(300));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    EXPECT_LT(elapsed_ms, static_cast<int64_t>(900));
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestTimeout));
 }

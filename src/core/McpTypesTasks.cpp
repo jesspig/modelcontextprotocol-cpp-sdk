@@ -33,6 +33,34 @@ GetTaskResult DeserializeGetTaskResult(const JsonValue& j) {
     return v;
 }
 
+// ── CreateTaskResult ──
+
+JsonValue SerializeCreateTaskResult(const CreateTaskResult& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kResultType] = JsonValue("task");
+    JsonValue task(JsonValue::object_tag);
+    task[detail::kTaskId] = JsonValue(v.task_id);
+    task[detail::kStatus] = JsonValue(v.status);
+    task["createdAt"] = JsonValue(v.created_at);
+    obj["task"] = std::move(task);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
+    return obj;
+}
+
+CreateTaskResult DeserializeCreateTaskResult(const JsonValue& j) {
+    CreateTaskResult v;
+    if (auto* task = j.Find("task")) {
+        if (auto* id = task->Find(detail::kTaskId); id && id->IsString())
+            v.task_id = id->GetString();
+        if (auto* st = task->Find(detail::kStatus); st && st->IsString())
+            v.status = st->GetString();
+        if (auto* ca = task->Find("createdAt"); ca && ca->IsString())
+            v.created_at = ca->GetString();
+    }
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
+    return v;
+}
+
 // ── GetTaskRequestParams ──
 
 JsonValue SerializeGetTaskRequestParams(const GetTaskRequestParams& v) {

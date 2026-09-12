@@ -62,6 +62,8 @@ auto codec = MakeWireCodec("2026-07-28");
 - **2025 时代**：`EncodeResult`/`DecodeResult` 为恒等操作——原始 JSON 直接通过。
 - **2026 时代**：`EncodeResult` 自动在结果中标记 `resultType: "complete"`（如果尚未存在）。`resultType` 字段使下游能够区分正常结果和 `input_required`（MRTR）结果。
 
+注意 `SerializeEmptyResult` 本身只输出 `_meta`，不携带 `resultType`——2026 时代出站时由 `EncodeResult` 统一补全标记，用户侧构造 `EmptyResult` 无需关心该字段。
+
 ### IncomingRequestMeta
 
 `IncomingRequestMeta` 结构体从 2026 时代的 `_meta` 信封中提取以下字段：

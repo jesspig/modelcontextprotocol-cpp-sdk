@@ -159,9 +159,11 @@ public:
         if (!HasRequestMethod(method)) {
             return WireValidation::NotInEra;
         }
-        if (method != "server/discover" &&
-            !raw.Contains(detail::kMeta)) {
-            return WireValidation::Invalid;
+        if (method != "server/discover") {
+            const JsonValue* params = raw.Find(detail::kParams);
+            if (!params || !params->IsObject() || !params->Contains(detail::kMeta)) {
+                return WireValidation::Invalid;
+            }
         }
         return WireValidation::Ok;
     }
@@ -195,6 +197,11 @@ public:
     void StampOutgoingRequest(
         JsonValue& body,
         const RequestMeta& meta) const override {
+        JsonValue* params = body.Find(detail::kParams);
+        if (!params || !params->IsObject()) {
+            body[detail::kParams] = JsonValue(JsonValue::object_tag);
+            params = body.Find(detail::kParams);
+        }
         JsonValue meta_obj(JsonValue::object_tag);
         if (meta.client_info) {
             meta_obj[detail::kMetaClientInfoKey] =
@@ -205,7 +212,7 @@ public:
                 SerializeClientCapabilities(*meta.client_capabilities);
         }
         meta_obj[detail::kMetaProtocolVersionKey] = JsonValue(meta.protocol_version);
-        body[detail::kMeta] = std::move(meta_obj);
+        (*params)[detail::kMeta] = std::move(meta_obj);
     }
 
     JsonValue EncodeResult(

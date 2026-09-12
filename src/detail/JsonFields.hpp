@@ -123,6 +123,7 @@ inline constexpr char kMetaClientInfoKey[] = "io.modelcontextprotocol/clientInfo
 inline constexpr char kMetaClientCapabilitiesKey[] = "io.modelcontextprotocol/clientCapabilities";
 inline constexpr char kMetaLogLevelKey[] = "io.modelcontextprotocol/logLevel";
 inline constexpr char kMetaSubscriptionIdKey[] = "io.modelcontextprotocol/subscriptionId";
+inline constexpr char kMetaServerInfoKey[] = "io.modelcontextprotocol/serverInfo";
 
 // ResultType enum value strings
 inline constexpr char kInputRequiredValue[] = "input_required";

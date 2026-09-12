@@ -88,17 +88,24 @@ GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j) {
 JsonValue SerializeCompleteRequestParams(const CompleteRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj["ref"] = v.ref;
-    obj["argumentName"] = JsonValue(v.argument_name);
-    obj["argumentValue"] = JsonValue(v.argument_value);
+    JsonValue argument(JsonValue::object_tag);
+    argument["name"] = JsonValue(v.argument_name);
+    argument["value"] = JsonValue(v.argument_value);
+    obj["argument"] = std::move(argument);
     if (v.meta) obj[detail::kMeta] = SerializeRequestMeta(*v.meta);
     return obj;
 }
 
 CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j) {
     CompleteRequestParams v;
-    v.ref = j["ref"];
-    v.argument_name = j["argumentName"].GetString();
-    v.argument_value = j["argumentValue"].GetString();
+    if (auto* r = j.Find("ref")) v.ref = *r;
+    if (auto* a = j.Find("argument"); a && a->IsObject()) {
+        if (auto* n = a->Find("name"); n && n->IsString()) v.argument_name = n->GetString();
+        if (auto* val = a->Find("value"); val && val->IsString()) v.argument_value = val->GetString();
+    } else {
+        if (auto* n = j.Find("argumentName"); n && n->IsString()) v.argument_name = n->GetString();
+        if (auto* val = j.Find("argumentValue"); val && val->IsString()) v.argument_value = val->GetString();
+    }
     auto* m = j.Find(detail::kMeta);
     if (m) v.meta = DeserializeRequestMeta(*m);
     return v;
@@ -138,6 +145,11 @@ JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kMessage] = JsonValue(v.message);
     detail::SerializeOptional(obj, detail::kRequestedSchema, v.requested_schema);
+    if (v.mode != detail::kForm) {
+        obj[detail::kMode] = JsonValue(v.mode);
+        detail::SerializeOptional(obj, detail::kUrl, v.url);
+        detail::SerializeOptional(obj, "elicitationId", v.elicitation_id);
+    }
     return obj;
 }
 
@@ -145,6 +157,10 @@ ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j) {
     ElicitRequestParams v;
     v.message = j[detail::kMessage].GetString();
     detail::DeserializeOptional(j, detail::kRequestedSchema, v.requested_schema);
+    auto* mode = j.Find(detail::kMode);
+    if (mode && mode->IsString()) v.mode = mode->GetString();
+    detail::DeserializeOptional(j, detail::kUrl, v.url);
+    detail::DeserializeOptional(j, "elicitationId", v.elicitation_id);
     return v;
 }
 

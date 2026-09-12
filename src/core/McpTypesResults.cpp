@@ -107,7 +107,6 @@ void ReadListResultCommon(const JsonValue& j,
 JsonValue SerializeEmptyResult(const EmptyResult& v) {
     JsonValue obj(JsonValue::object_tag);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;
 }
 
@@ -131,7 +130,13 @@ JsonValue SerializeCallToolResult(const CallToolResult& v) {
     obj["isError"] = JsonValue(v.is_error);
     detail::SerializeOptional(obj, detail::kStructuredContent, v.structured_content);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        obj[detail::kResultType] = JsonValue(detail::kInputRequiredValue);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    } else {
+        obj[detail::kResultType] = SerializeResultType(v.result_type);
+    }
     return obj;
 }
 
@@ -313,7 +318,7 @@ JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
     {
         JsonValue::Array arr;
         for (const auto& sv : v.supported_versions) arr.push_back(JsonValue(sv));
-        obj["supportedVersions"] = JsonValue(std::move(arr));
+        obj[detail::kSupportedVersions] = JsonValue(std::move(arr));
     }
     obj[detail::kCapabilities] = SerializeServerCapabilities(v.capabilities);
     obj[detail::kServerInfo] = SerializeImplementation(v.server_info);
@@ -326,14 +331,19 @@ JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
 
 DiscoverResult DeserializeDiscoverResult(const JsonValue& j) {
     DiscoverResult v;
-    auto* sv = j.Find("supportedVersions");
+    auto* sv = j.Find(detail::kSupportedVersions);
     if (sv && sv->IsArray()) {
         std::vector<std::string> versions;
         for (const auto& ve : sv->GetArray()) versions.push_back(ve.GetString());
         v.supported_versions = std::move(versions);
     }
     v.capabilities = DeserializeServerCapabilities(j[detail::kCapabilities]);
-    v.server_info = DeserializeImplementation(j[detail::kServerInfo]);
+    if (auto* si = j.Find(detail::kServerInfo); si) {
+        v.server_info = DeserializeImplementation(*si);
+    } else if (auto* meta = j.Find(detail::kMeta); meta && meta->IsObject()) {
+        if (auto* msi = meta->Find(detail::kMetaServerInfoKey); msi)
+            v.server_info = DeserializeImplementation(*msi);
+    }
     detail::DeserializeOptional(j, detail::kInstructions, v.instructions);
     v.cache_hint = DeserializeCacheHintCompat(j);
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
@@ -429,7 +439,8 @@ InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j) {
 
 JsonValue SerializeElicitResult(const ElicitResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    detail::SerializeOptional(obj, "values", v.values);
+    if (!v.action.empty()) obj["action"] = JsonValue(v.action);
+    detail::SerializeOptional(obj, "content", v.content);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
@@ -437,7 +448,9 @@ JsonValue SerializeElicitResult(const ElicitResult& v) {
 
 ElicitResult DeserializeElicitResult(const JsonValue& j) {
     ElicitResult v;
-    detail::DeserializeOptional(j, "values", v.values);
+    auto* action = j.Find("action");
+    if (action && action->IsString()) v.action = action->GetString();
+    detail::DeserializeOptional(j, "content", v.content);
     auto* rt = j.Find(detail::kResultType);
     if (rt) v.result_type = DeserializeResultType(*rt);
     detail::DeserializeOptional(j, detail::kMeta, v.meta);

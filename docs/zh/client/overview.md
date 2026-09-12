@@ -19,12 +19,14 @@ auto client = McpClient::Create(transport, opts);
 
 | 字段 | 类型 | 描述 |
 |-------|------|-------------|
-| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.3.1"}`） |
+| `client_info` | `Implementation` | 客户端标识（默认 `{"mcp-cpp-client", "0.3.3"}`） |
 | `capabilities` | `optional<ClientCapabilities>` | 声明的能力 |
 | `connect_mode` | `ConnectMode` | `Auto`（发现 → 初始化）、`Legacy`、`Pin` |
 | `initialization_timeout` | `chrono::seconds` | 握手超时（默认 60s） |
 | `pin_protocol_version` | `optional<string>` | 固定到特定协议版本（用于 `Pin` 模式） |
 | `discover_probe_timeout` | `chrono::seconds` | 服务发现探测超时（默认 5s） |
+| `max_total_timeout` | `chrono::seconds` | 单个请求的总预算（默认 `0` = 不限；progress 扩展不能越过该期限） |
+| `reinit_on_expired_session` | `bool` | 会话过期（404）时自动重新初始化并恰好重放一次失败请求（默认 `true`） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation 配置：`auto_fulfill=true`、`max_rounds=10`、`round_timeout=600s` |
 | `input_required_config.max_total_timeout` | `chrono::seconds` | 整个 MRTR 流程的硬预算（默认 `0` = 不限，`round_timeout` 按轮生效） |
 | `extensions` | `optional<JsonValue>` | 协议扩展声明 |
@@ -35,9 +37,20 @@ auto client = McpClient::Create(transport, opts);
 // 列出工具（可选游标用于分页）
 auto tools = client->ListTools();
 
+// 聚合全部分页一次取回（next_cursor 为空；分页不收敛于 64 页内抛 McpError）
+auto all_tools = client->ListToolsAll();
+auto all_resources = client->ListResourcesAll();
+auto all_templates = client->ListResourceTemplatesAll();
+auto all_prompts = client->ListPromptsAll();
+
 // 调用工具（支持可选参数、RequestOptions 和 MRTR）
 auto result = client->CallTool("echo",
     JsonValue(JsonValue::Object{{"text", "Hello"}}));
+
+// 任务化工具调用：对端返回 task 句柄时立即返回，之后用 GetTask /
+// PollTaskToCompletion / CancelTask 跟进
+auto task = client->CallToolAsTask("long_running",
+    JsonValue(JsonValue::Object{{"input", "..."}}));
 
 // 读取资源（支持 CacheableRequestOptions）
 auto resource = client->ReadResource("file:///config.json");
@@ -67,7 +80,7 @@ client->SubscribeResource("file:///config.json");
 client->UnsubscribeResource("file:///config.json");
 
 // 任务操作
-auto task = client->GetTask("task-123");
+auto status = client->GetTask("task-123");
 client->UpdateTask("task-123", result_json);
 client->CancelTask("task-123", "不再需要");
 
@@ -84,13 +97,19 @@ client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         // 提示用户输入，返回结果
         ElicitResult result;
-        result.values = JsonValue(JsonValue::Object{{"name", "Alice"}});
+        result.content = JsonValue(JsonValue::Object{{"name", "Alice"}});
         return result;
     });
 
 client->SetNotificationHandler("custom/notification",
     [](const JsonRpcNotification& notif) {
         // 处理服务器发送的通知
+    });
+
+// URL 模式启发式收集：引导用户到站外 URL 完成操作
+client->SetUrlElicitationHandler(
+    [](const ElicitRequestParams& params) {
+        // params.mode == "url"，含 params.url 与 params.elicitation_id
     });
 
 client->SetLoggingHandler(

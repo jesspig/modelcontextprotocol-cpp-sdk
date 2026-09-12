@@ -37,6 +37,11 @@ struct MCP_API ClientOptions {
     std::chrono::seconds initialization_timeout{60};
     std::chrono::seconds discover_probe_timeout{5};
 
+    // Total budget for a single request in seconds. Zero disables the cap
+    // (existing default); progress extensions cannot push a pending request
+    // past this deadline.
+    std::chrono::seconds max_total_timeout{0};
+
     // MRTR (InputRequired) config
     struct InputRequiredConfig {
         bool auto_fulfill{true};
@@ -51,6 +56,9 @@ struct MCP_API ClientOptions {
 
     // Extensions declaration map
     std::optional<JsonValue> extensions;
+
+    // 404 会话过期时自动重新初始化并重放失败请求恰一次。
+    bool reinit_on_expired_session{true};
 
 };
 

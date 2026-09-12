@@ -17,7 +17,7 @@ target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol mcp-test-main)
 mcp_discover_tests(mcp-wire-codec-tests)
 
 add_executable(mcp-server-tests McpServerTests.cpp)
-target_link_libraries(mcp-server-tests PRIVATE mcp-server mcp-test-main)
+target_link_libraries(mcp-server-tests PRIVATE mcp-client mcp-server mcp-test-main)
 mcp_discover_tests(mcp-server-tests)
 
 add_executable(mcp-client-tests McpClientTests.cpp)
@@ -57,8 +57,13 @@ add_executable(mcp-task-store-tests FileTaskStoreTests.cpp)
 target_link_libraries(mcp-task-store-tests PRIVATE mcp-server mcp-test-main)
 mcp_discover_tests(mcp-task-store-tests)
 
-add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp)
+add_executable(mcp-event-store-tests FileEventStoreTests.cpp)
+target_link_libraries(mcp-event-store-tests PRIVATE mcp-http mcp-test-main)
+mcp_discover_tests(mcp-event-store-tests)
+
+add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp SessionStoreTests.cpp)
 target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http mcp-test-main)
+target_include_directories(mcp-streamable-http-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-streamable-http-tests)
 
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)

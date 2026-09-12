@@ -51,7 +51,7 @@ auto elicit_result = ctx.Server().Elicit(
 
 CallToolResult result;
 result.content.push_back(TextContent{"text",
-    elicit_result.values ? "已确认" : "已取消"});
+    elicit_result.content ? "已确认" : "已取消"});
 return result;
 ```
 
@@ -77,22 +77,26 @@ client->SetElicitationHandler(
         ElicitResult result;
         JsonValue obj(JsonValue::object_tag);
         obj["confirmed"] = JsonValue(true);
-        result.values = std::move(obj);
+        result.content = std::move(obj);
         return result;
     });
 ```
 
 ## InputRequired 结果
 
-服务器也可以直接返回 `InputRequiredResult`（无状态模式）：
+推荐方式是在工具处理程序中直接设置 `CallToolResult::input_required`：
 
 ```cpp
+CallToolResult result;
 InputRequiredResult ir;
 ir.input_requests.elicit = InputRequestElicit{"提供值"};
-ir.request_state = "state-token";
-// 服务器将其作为 tools/call 的结果返回
-// 客户端解析并使用 inputResponses + requestState 重试
+result.input_required = std::move(ir);
+return result;
 ```
+
+配置了 `request_state_key` 时，服务端在发送前自动为 `input_required` 结果签名 `request_state`（处理程序无需也无法自行提供）；客户端携带 `inputResponses` + `requestState` 重试时，被篡改或过期的状态在进入处理程序前即被拒绝（-32602，`data.reason="invalid_request_state"`）。
+
+签名与校验的底层助手在 `include/mcp/server/RequestState.hpp`（`MintRequestState` / `VerifyRequestState`）；需要自定义验证逻辑时可改为提供 `ServerOptions::request_state_verifier`。
 
 ## 辅助函数
 
@@ -121,6 +125,8 @@ opts.input_required_config = ServerOptions::InputRequiredConfig{
     .round_timeout = std::chrono::seconds(600),
     .legacy_shim = true
 };
+opts.request_state_key = "server-secret";              // 自动签名 requestState
+opts.request_state_ttl = std::chrono::seconds(300);    // 状态有效期，0 = 不过期
 ```
 
 ### 客户端
@@ -130,7 +136,8 @@ ClientOptions opts;
 opts.input_required_config = ClientOptions::InputRequiredConfig{
     .auto_fulfill = true,
     .max_rounds = 10,
-    .round_timeout = std::chrono::seconds(600)
+    .round_timeout = std::chrono::seconds(600),
+    .max_total_timeout = std::chrono::seconds(0)
 };
 ```
 
@@ -140,3 +147,5 @@ opts.input_required_config = ClientOptions::InputRequiredConfig{
 | `round_timeout` | 是 | 是 | 每轮超时（默认：600 秒） |
 | `legacy_shim` | 是 | 否 | 占位字段，当前尚未生效 |
 | `auto_fulfill` | 否 | 是 | 如可能则自动填充，无需提示 |
+| `max_total_timeout` | 否 | 是 | 整个 MRTR 流程的硬性预算（默认 0 = 不设上限；`round_timeout` 作用于每轮） |
+| `request_state_key` / `request_state_ttl` | 是 | 否 | 服务端请求状态签名密钥与有效期 |

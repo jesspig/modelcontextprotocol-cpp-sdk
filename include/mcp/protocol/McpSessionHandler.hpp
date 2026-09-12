@@ -113,6 +113,14 @@ public:
     // ── Progress tracking ──
     void ResetTimeoutByProgressToken(const std::string& pt_key);
 
+    // ── Total timeout cap ──
+    // Thread-safe: read under pending_mutex_ by SendRequest and the timeout
+    // loop, so it may be called while the session is running. Zero (the
+    // default) disables the cap. Progress extensions reset only the idle
+    // deadline and never push a request past the absolute deadline recorded
+    // per request at SendRequest time.
+    void SetMaxTotalTimeout(std::chrono::seconds total);
+
     // ── Event callbacks ──
     void SetOnRequestCallback(std::function<void(std::string_view method, const JsonRpcRequest&)> cb);
     void SetOnResponseCallback(std::function<void(const JsonRpcResponse&)> cb);
@@ -186,6 +194,12 @@ private:
 
     // Progress token → request_id mapping (for timeout reset)
     std::unordered_map<std::string, std::string> progress_token_map_;
+
+    // Total-timeout cap: per-request absolute deadline (request_id keyed) and
+    // the session-level budget. Both guarded by pending_mutex_; the deadline
+    // map holds entries only while the cap is enabled.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> absolute_deadlines_;
+    std::chrono::seconds max_total_timeout_{0};
 
     // Response worker queue: a single worker thread drains tasks that wait on
     // handler futures and send the reply, replacing one thread per request.

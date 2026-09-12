@@ -117,6 +117,7 @@ void McpSessionHandler::Close() {
         for (auto& [id, pending] : pending_) to_fire.push_back(std::move(pending));
         pending_.clear();
         progress_token_map_.clear();
+        absolute_deadlines_.clear();
     }
     for (auto& pending : to_fire) {
         if (pending) {
@@ -161,9 +162,13 @@ void McpSessionHandler::CheckTimeouts() {
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         for (auto it = pending_.begin(); it != pending_.end(); ) {
-            if (now >= it->second->deadline) {
+            auto abs_it = absolute_deadlines_.find(it->first);
+            const bool total_expired =
+                abs_it != absolute_deadlines_.end() && now >= abs_it->second;
+            if (total_expired || now >= it->second->deadline) {
                 to_fire.push_back(std::move(it->second));
                 EraseProgressTokens(it->first);
+                absolute_deadlines_.erase(it->first);
                 it = pending_.erase(it);
             } else {
                 ++it;
@@ -194,6 +199,11 @@ void McpSessionHandler::ResetTimeoutByProgressToken(const std::string& pt_key) {
     }
 }
 
+void McpSessionHandler::SetMaxTotalTimeout(std::chrono::seconds total) {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    max_total_timeout_ = total;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Dispatch
 // ═══════════════════════════════════════════════════════════════════════
@@ -219,11 +229,16 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     }
     // Lightweight codec-validation view: only method/_meta (and initialize
     // params) are inspected, so avoid building the full request tree.
+    // _meta is presented inside params, matching the wire location.
     JsonValue validation_view(JsonValue::object_tag);
     validation_view[detail::kMethod] = JsonValue(req.method);
-    if (req.meta) validation_view[detail::kMeta] = JsonValue(JsonValue::object_tag);
     if (req.method == methods::kInitialize && req.params)
         validation_view[detail::kParams] = *req.params;
+    if (req.meta) {
+        JsonValue& view_params = validation_view[detail::kParams];
+        if (!view_params.IsObject()) view_params = JsonValue(JsonValue::object_tag);
+        view_params[detail::kMeta] = *req.meta;
+    }
     auto validation = codec->ValidateRequest(req.method, validation_view);
     // initialize is exempt: a modern server must still answer legacy handshakes
     if (validation == WireValidation::NotInEra && req.method != methods::kInitialize) {
@@ -261,7 +276,10 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         auto* rs = req.params->Find(detail::kRequestState);
         if (rs && rs->IsString()) {
             if (!request_state_verifier_(rs->GetString())) {
-                SendErrorResponse(req.id, McpErrorCode::InvalidParams, "invalid requestState");
+                JsonValue data(JsonValue::object_tag);
+                data[detail::kReason] = JsonValue("invalid_request_state");
+                SendErrorResponse(req.id, McpErrorCode::InvalidParams,
+                    "invalid requestState", std::move(data));
                 return;
             }
         }
@@ -384,6 +402,7 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
         if (it != pending_.end()) {
             pending = std::move(it->second);
             EraseProgressTokens(id);
+            absolute_deadlines_.erase(id);
             pending_.erase(it);
         }
     }
@@ -406,6 +425,7 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
         if (it != pending_.end()) {
             pending = std::move(it->second);
             EraseProgressTokens(id);
+            absolute_deadlines_.erase(id);
             pending_.erase(it);
         }
     }
@@ -481,9 +501,17 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     // Ensure params is an object (matches the pre-meta-stamping wire format)
     if (req.params->IsNull()) *req.params = JsonValue(JsonValue::object_tag);
 
-    // Stamp _meta at the top level for 2026 era (serialized from req.meta)
+    // 2026 era: the meta envelope lives in req.meta; serialization places
+    // it inside params._meta on the wire.
     if (IsModernProtocolVersion(meta.protocol_version)) {
         req.meta = SerializeRequestMeta(meta);
+    } else if (meta.progress_token) {
+        JsonValue* legacy_meta = req.params->Find(detail::kMeta);
+        if (!legacy_meta) {
+            (*req.params)[detail::kMeta] = JsonValue(JsonValue::object_tag);
+            legacy_meta = req.params->Find(detail::kMeta);
+        }
+        (*legacy_meta)[detail::kProgressToken] = SerializeProgressToken(*meta.progress_token);
     }
 
     // Register pending request
@@ -510,6 +538,10 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
         } else {
             pending_[id_key] = pending;
             if (pt_key) progress_token_map_[*pt_key] = id_key;
+            if (max_total_timeout_ > std::chrono::seconds{0}) {
+                absolute_deadlines_[id_key] =
+                    std::chrono::steady_clock::now() + max_total_timeout_;
+            }
         }
     }
 
@@ -714,6 +746,7 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
         if (it != pending_.end()) {
             pending = std::move(it->second);
             EraseProgressTokens(target_id_key);
+            absolute_deadlines_.erase(target_id_key);
             pending_.erase(it);
         }
     }

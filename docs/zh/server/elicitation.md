@@ -21,8 +21,8 @@ params.requested_schema = JsonValue::Parse(R"({
 
 auto future = server->Elicit(params);
 auto result = future.get();
-if (result.values) {
-    auto street = (*result.values)["street"];
+if (result.content) {
+    auto street = (*result.content)["street"];
 }
 ```
 
@@ -32,9 +32,31 @@ if (result.values) {
 
 | 字段 | 类型 | 说明 |
 |-------|------|------|
-| `values` | `optional<JsonValue>` | 提交的表单数据（接受时存在） |
+| `action` | `string` | 用户决定：`"accept"`、`"decline"` 或 `"cancel"` |
+| `content` | `optional<JsonValue>` | 提交的表单数据（接受时存在） |
 
 继承的 `result_type`（`Complete` 或 `InputRequired`）指示输入是否已完成或仍在等待。
+
+## URL 模式
+
+`ElicitUrl` 让客户端把用户引导到站外 URL 完成授权等操作（`mode: "url"`，自动生成 `elicitation_id`）：
+
+```cpp
+auto future = server->ElicitUrl(
+    "https://auth.example.com/oauth/authorize",
+    "请在浏览器中完成登录",
+    std::chrono::seconds(600));  // 默认 600s，超时抛 McpError(RequestTimeout)
+auto result = future.get();
+```
+
+客户端通过 `SetUrlElicitationHandler` 接收 URL 收集请求（打开浏览器或展示链接）：
+
+```cpp
+client->SetUrlElicitationHandler(
+    [](const ElicitRequestParams& params) {
+        // params.mode == "url"，含 params.url 与 params.elicitation_id
+    });
+```
 
 ## 类型化辅助结构
 
@@ -49,12 +71,12 @@ struct AddressForm {
 
 ElicitResult raw = future.get();
 ElicitResultTyped<AddressForm> typed;
-if (raw.values) {
+if (raw.content) {
     typed.action = "accept";
     typed.content = AddressForm{
-        (*raw.values)["street"].GetString(),
-        (*raw.values)["city"].GetString(),
-        (*raw.values)["zip_code"].GetString()
+        (*raw.content)["street"].GetString(),
+        (*raw.content)["city"].GetString(),
+        (*raw.content)["zip_code"].GetString()
     };
 }
 

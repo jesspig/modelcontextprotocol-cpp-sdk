@@ -60,6 +60,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ── 构建选项 ──
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
+option(MCP_BUILD_CONFORMANCE "Build conformance server fixture (examples/conformance/server)" OFF)
 
 # ====================================================================
 # mcp_enable_werror — MCP_WERROR=ON 时对目标附加 /WX (MSVC) 或 -Werror。
@@ -221,6 +222,8 @@ target_sources(mcp-http PRIVATE
     src/http/EventStore.cpp
     src/http/StreamableHttpServerTransport.cpp)
 target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
+# FileEventStore.cpp 须保持在 unity TU 末尾：其 windows.h 依赖前面文件先行引入的 winsock 顺序
+target_sources(mcp-http PRIVATE src/http/FileEventStore.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
@@ -260,6 +263,10 @@ endif()
 
 if(MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(MCP_BUILD_CONFORMANCE)
+    add_subdirectory(examples/conformance/server)
 endif()
 
 # ====================================================================

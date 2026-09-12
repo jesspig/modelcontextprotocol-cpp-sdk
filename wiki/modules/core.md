@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-08-15T22:30:00+08:00
+timestamp: 2026-09-12T11:26:01+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -33,7 +33,7 @@ resource: src/core/JsonValue.cpp
 | Notifications | 4 | SubscriptionsAcknowledged、Progress/Cancelled/LoggingMessage 参数 |
 | Options | 5 | RequestOptions、CacheableRequestOptions、ToolOptions、ResourceOptions、PromptOptions |
 
-所有类型都有成对 `SerializeXxx/DeserializeXxx` 自由函数（87 对：McpTypes.hpp 56 + Content.hpp 16 + Capabilities.hpp 9 + JsonRpc.cpp 6，另有 `SerializeTaskStatusNotificationParams` 单边无配套反序列化、JsonRpc 的 Request/Response/Message 提供 `&&` 移动重载；公共类型声明于 [McpTypes.hpp](../../include/mcp/McpTypes.hpp)，实现分布在各 `McpTypes*.cpp`）。Result 序列化统一带 `resultType` 键。`List*Result` 五件套收敛为模板辅助 `SerializeListItems / WriteListResultCommon / DeserializeListItems / ReadListResultCommon`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）；各 `McpTypes*.cpp` 不再放置前向声明，以公共头声明为准。`LoggingMessageNotificationParams.logger` 为 `std::optional<std::string>`（[McpTypes.hpp:328](../../include/mcp/McpTypes.hpp)）。反序列化类型校验：`ProgressNotificationParams.progress` 须 `IsNumber`（double/int 皆可）、`CreateMessageRequestParams.maxTokens` 须 `IsInt`（类型不符抛 `DeserializeFailed`）。
+所有类型都有成对 `SerializeXxx/DeserializeXxx` 自由函数（87 对：McpTypes.hpp 56 + Content.hpp 16 + Capabilities.hpp 9 + JsonRpc.cpp 6，另有 `SerializeTaskStatusNotificationParams` 单边无配套反序列化、JsonRpc 的 Request/Response/Message 提供 `&&` 移动重载；公共类型声明于 [McpTypes.hpp](../../include/mcp/McpTypes.hpp)，实现分布在各 `McpTypes*.cpp`）。多数 Result 带 `resultType` 键；**空结果（`EmptyResult`）不写**（官方 conformance 期望空对象），`CallToolResult` 仅 `input_required` 分支写 `resultType: "input_required"` 并附 `inputRequests`/`requestState`。`List*Result` 五件套收敛为模板辅助 `SerializeListItems / WriteListResultCommon / DeserializeListItems / ReadListResultCommon`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）；各 `McpTypes*.cpp` 不再放置前向声明，以公共头声明为准。`LoggingMessageNotificationParams.logger` 为 `std::optional<std::string>`（[McpTypes.hpp:330](../../include/mcp/McpTypes.hpp)）。反序列化类型校验：`ProgressNotificationParams.progress` 须 `IsNumber`（double/int 皆可）、`CreateMessageRequestParams.maxTokens` 须 `IsInt`（类型不符抛 `DeserializeFailed`）。
 
 ## 常量集
 

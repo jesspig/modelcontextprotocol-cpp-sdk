@@ -10,6 +10,7 @@
 #include <mcp/Meta.hpp>
 #include <mcp/Transport.hpp>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string_view>
@@ -28,14 +29,16 @@ public:
         McpServer& server,
         const JsonRpcRequest& jsonrpc_request,
         TParams params,
-        LogFn log_fn = nullptr)
+        LogFn log_fn = nullptr,
+        std::shared_ptr<const std::atomic<bool>> cancellation_flag = nullptr)
         : server_(&server)
-        , jsonrpc_request_(&jsonrpc_request)
+        , jsonrpc_request_(jsonrpc_request)
         , params_(std::move(params))
         , log_fn_(std::move(log_fn))
+        , cancellation_flag_(std::move(cancellation_flag))
     {
-        if (jsonrpc_request_->meta) {
-            auto* lv = jsonrpc_request_->meta->Find("io.modelcontextprotocol/logLevel");
+        if (jsonrpc_request_.meta) {
+            auto* lv = jsonrpc_request_.meta->Find("io.modelcontextprotocol/logLevel");
             if (lv && lv->IsInt()) {
                 log_level_ = static_cast<LoggingLevel>(lv->GetInt());
             }
@@ -44,7 +47,7 @@ public:
 
     const TParams& Params() const { return params_; }
     McpServer& Server() const { return *server_; }
-    const mcp::JsonRpcRequest& GetRequest() const { return *jsonrpc_request_; }
+    const mcp::JsonRpcRequest& GetRequest() const { return jsonrpc_request_; }
     std::optional<LoggingLevel> LogLevel() const { return log_level_; }
 
     void Log(LoggingLevel level, std::string_view data) const {
@@ -53,12 +56,17 @@ public:
         if (log_fn_) log_fn_(level, data);
     }
 
+    bool IsCancellationRequested() const {
+        return cancellation_flag_ && cancellation_flag_->load();
+    }
+
 private:
     McpServer* server_;
-    const JsonRpcRequest* jsonrpc_request_;
+    JsonRpcRequest jsonrpc_request_;
     TParams params_;
     std::optional<LoggingLevel> log_level_;
     LogFn log_fn_;
+    std::shared_ptr<const std::atomic<bool>> cancellation_flag_;
 };
 
 } // namespace mcp

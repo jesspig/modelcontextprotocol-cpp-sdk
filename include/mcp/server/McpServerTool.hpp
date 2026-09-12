@@ -42,6 +42,7 @@ public:
         tool_.name = std::move(name);
         if (options.title) tool_.title = std::move(options.title);
         if (options.description) tool_.description = std::move(options.description);
+        if (options.execution) tool_.execution = std::move(options.execution);
         if (options.icons.size()) tool_.icons = std::move(options.icons);
         if (options.meta) tool_.meta = std::move(options.meta);
         if (options.input_schema.has_value()) {

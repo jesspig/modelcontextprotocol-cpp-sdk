@@ -40,8 +40,12 @@ server->Run();
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
 | `validate_tool_input` | `bool` | Enable JSON Schema input validation |
 | `validate_tool_output` | `bool` | Enable JSON Schema output validation |
+| `declare_logging` | `bool` | Explicitly declare the `logging` capability (merged into derived capabilities; default `false`) |
+| `declare_completions` | `bool` | Explicitly declare the `completions` capability (default `false`) |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | Task persistence backend |
 | `request_state_verifier` | `function<bool(string_view)>` | HMAC/AEAD verifier for MRTR |
+| `request_state_key` | `optional<string>` | Server-side requestState signing key (HMAC); when set without an explicit `request_state_verifier`, a built-in verifier is wired to reject tampered/expired states before handlers (-32602 with `data.reason="invalid_request_state"`) |
+| `request_state_ttl` | `chrono::seconds` | Max age of minted requestState payloads (default 0 = no expiry check) |
 | `cache_hints` | `optional<map<string, CacheHint, less<>>>` | Per-method cache hints (ttlMs, cacheScope) |
 | `input_required_config` | `optional<InputRequiredConfig>` | Configuration for MRTR/elicitation behavior |
 | `input_required_config.max_rounds` | `int` | Maximum elicitation rounds (default 10) |
@@ -137,4 +141,4 @@ server->SetCompletionHandler(
 
 ## Capability Derivation
 
-Capabilities are automatically derived from registered primitives. For example, registering a tool sets `capabilities.tools.list_changed = true`. There is no `ServerOptions.capabilities` field — capabilities are always auto-derived from registered tools, resources, prompts, and task store.
+Capabilities are automatically derived from registered primitives. For example, registering a tool sets `capabilities.tools.list_changed = true`. There is no `ServerOptions.capabilities` field — capabilities are always auto-derived from registered tools, resources, prompts, and task store. The only explicit overrides are `declare_logging` and `declare_completions`, which merge the `logging` / `completions` capabilities into the derived set (useful when handlers are wired outside the registration APIs, e.g. `SetCompletionHandler`).

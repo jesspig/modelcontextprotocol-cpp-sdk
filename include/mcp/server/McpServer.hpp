@@ -10,6 +10,8 @@
 #include <mcp/server/RequestContext.hpp>
 
 #include <condition_variable>
+#include <chrono>
+#include <exception>
 #include <future>
 #include <memory>
 #include <atomic>
@@ -70,6 +72,9 @@ public:
 
     // ── Elicitation (server→client) ──
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
+    std::future<ElicitResult> ElicitUrl(const std::string& url,
+        const std::string& message,
+        std::chrono::seconds timeout = std::chrono::seconds(600));
 
     // Elicit (server→client) — typed convenience removed; use raw Elicit with explicit schema
 
@@ -84,6 +89,9 @@ public:
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
     void SendTaskStatus(std::string_view task_id, TaskStatus status);
+    void SendProgress(const ProgressToken& token, double progress,
+                      std::optional<double> total = std::nullopt,
+                      std::optional<std::string> message = std::nullopt);
 
     // ── Properties ──
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
@@ -137,6 +145,8 @@ private:
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void SendSubscriptionsAcknowledged(
         const SubscriptionFilter& honored, std::string_view subscription_id);
+    void AbandonPendingUrlElicitation(
+        const std::string& elicitation_id, std::exception_ptr error);
 
     // ── State ──
     std::shared_ptr<ITransport> transport_;
@@ -166,6 +176,7 @@ private:
         std::optional<std::string> description;
         std::optional<std::string> title;
         std::vector<Icon> icons;
+        std::optional<std::vector<PromptArgument>> arguments;
         std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)> handler;
     };
     std::vector<PromptEntry> prompts_;
@@ -182,6 +193,10 @@ private:
     std::mutex pending_async_mutex_;
     std::vector<std::shared_future<void>> pending_async_futures_;
 
+    // Cancellation flags of in-flight task-mode tool executions
+    std::mutex running_task_flags_mutex_;
+    std::unordered_map<std::string, std::shared_ptr<std::atomic<bool>>> running_task_cancel_flags_;
+
     // Initialization state (2025-era protocol)
     std::atomic<bool> initialized_{false};
 
@@ -194,6 +209,22 @@ private:
 
     // Subscription ID allocation (monotonic, process-local)
     std::atomic<uint64_t> next_subscription_id_{1};
+
+    // Task ID allocation (monotonic, process-local)
+    std::atomic<uint64_t> next_task_id_{1};
+
+    // Elicitation ID allocation (monotonic, process-local)
+    std::atomic<uint64_t> next_elicitation_id_{1};
+
+    // Pending URL elicitations awaiting notifications/elicitation/complete
+    struct PendingUrlElicitation {
+        std::promise<ElicitResult> promise;
+        bool completed{false};
+    };
+    std::mutex pending_url_elicitations_mutex_;
+    std::condition_variable pending_url_elicitations_cv_;
+    std::unordered_map<std::string, std::shared_ptr<PendingUrlElicitation>>
+        pending_url_elicitations_;
 
     // Run loop synchronization
     std::mutex run_mutex_;

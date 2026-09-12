@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Set SCCACHE_DIR
         shell: bash

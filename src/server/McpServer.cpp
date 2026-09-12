@@ -2,6 +2,8 @@
 
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
+#include <mcp/server/RequestState.hpp>
+#include <mcp/Content.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/McpVersion.hpp>
 #include <mcp/Log.hpp>
@@ -9,9 +11,11 @@
 #include <detail/JsonSerialize_fwd.hpp>
 #include <detail/JsonSchemaValidator.hpp>
 
+#include <condition_variable>
 #include <thread>
 #include <set>
 #include <algorithm>
+#include <ctime>
 #include <iterator>
 #include <mutex>
 #include <shared_mutex>
@@ -108,6 +112,19 @@ namespace {
         handler.SendNotification(method, SerializeTaskStatusNotificationParams(params));
     }
 
+    std::string MakeIso8601Now() {
+        std::time_t now = std::time(nullptr);
+        std::tm tm_buf{};
+#ifdef _WIN32
+        gmtime_s(&tm_buf, &now);
+#else
+        gmtime_r(&now, &tm_buf);
+#endif
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+        return std::string(buf);
+    }
+
     JsonValue MakeGetTaskResultJson(const TaskState& task, bool include_optional_fields) {
         GetTaskResult r;
         r.task_id = task.task_id;
@@ -133,13 +150,11 @@ CacheHint GetCacheHint(const std::optional<std::map<std::string, CacheHint, std:
 
 }
 
-static bool RequireInitialized(bool initialized, std::promise<JsonValue>& p) {
-    if (!initialized) {
-        p.set_exception(std::make_exception_ptr(
-            McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
-        return false;
-    }
-    return true;
+static bool RequireInitialized(bool initialized, bool modern_era, std::promise<JsonValue>& p) {
+    if (modern_era || initialized) return true;
+    p.set_exception(std::make_exception_ptr(
+        McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
+    return false;
 }
 
 // ====================================================================
@@ -183,6 +198,14 @@ McpServer::McpServer(
     // Wire request state verifier if configured
     if (options_.request_state_verifier) {
         handler_->SetRequestStateVerifier(options_.request_state_verifier);
+    } else if (options_.request_state_key) {
+        auto key = *options_.request_state_key;
+        auto ttl = options_.request_state_ttl;
+        handler_->SetRequestStateVerifier(
+            [key, ttl](std::string_view state) {
+                JsonValue payload;
+                return detail::VerifyRequestState(key, state, payload, ttl);
+            });
     }
 
     // Wire event callbacks — chain new full-message callbacks with existing shorthands
@@ -334,6 +357,7 @@ void McpServer::RegisterPrompt(
     entry.description = opts.description;
     entry.title = opts.title;
     entry.icons = opts.icons;
+    entry.arguments = opts.arguments;
     entry.handler = std::move(handler);
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
@@ -370,7 +394,7 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     if (current_level && static_cast<int>(level) < static_cast<int>(*current_level))
         return;
     JsonValue params(JsonValue::object_tag);
-    params[detail::kLevel] = JsonValue(static_cast<int64_t>(level));
+    params[detail::kLevel] = SerializeLoggingLevel(level);
     params[detail::kData] = JsonValue(std::string(data));
     params["logger"] = JsonValue(std::string(kDefaultLoggerName));
     handler_->SendNotification(notifications::kMessage, std::move(params));
@@ -384,6 +408,18 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, st
 
 void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
     SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status);
+}
+
+void McpServer::SendProgress(const ProgressToken& token, double progress,
+                             std::optional<double> total,
+                             std::optional<std::string> message) {
+    ProgressNotificationParams params;
+    params.progress_token = token;
+    params.progress = progress;
+    params.total = total;
+    params.message = std::move(message);
+    handler_->SendNotification(notifications::kProgress,
+        SerializeProgressNotificationParams(params));
 }
 
 // ====================================================================
@@ -413,6 +449,94 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
     });
 
     return result_future;
+}
+
+std::future<ElicitResult> McpServer::ElicitUrl(
+    const std::string& url,
+    const std::string& message,
+    std::chrono::seconds timeout) {
+    const std::string elicitation_id =
+        "elicit-" + std::to_string(next_elicitation_id_.fetch_add(1));
+
+    ElicitRequestParams params;
+    params.message = message;
+    params.mode = "url";
+    params.url = url;
+    params.elicitation_id = elicitation_id;
+
+    RequestMeta meta;
+    auto vers = handler_->NegotiatedProtocolVersion();
+    meta.protocol_version = vers.empty()
+        ? std::string(kLatestProtocolVersion) : std::string(vers);
+
+    auto request_future = handler_->SendRequest(
+        methods::kElicit, SerializeElicitRequestParams(params), meta, timeout);
+
+    auto pending = std::make_shared<PendingUrlElicitation>();
+    auto result_future = pending->promise.get_future();
+    {
+        std::lock_guard<std::mutex> lock(pending_url_elicitations_mutex_);
+        pending_url_elicitations_.emplace(elicitation_id, pending);
+    }
+
+    auto watchdog = std::async(std::launch::async,
+        [this, elicitation_id, pending, timeout,
+         request_future = std::move(request_future)]() mutable {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+            std::exception_ptr error;
+            if (request_future.wait_until(deadline) != std::future_status::ready) {
+                error = std::make_exception_ptr(McpError(
+                    McpErrorCode::RequestTimeout,
+                    "url elicitation timed out: " + elicitation_id));
+            } else {
+                auto jv = request_future.get();
+                if (auto* c = jv.Find("code"); c && c->IsInt() && c->GetInt() < 0) {
+                    auto msg = jv.Find("message");
+                    error = std::make_exception_ptr(McpError(
+                        static_cast<McpErrorCode>(c->GetInt()),
+                        msg ? msg->GetString() : std::string("elicitation failed")));
+                }
+            }
+            if (error) {
+                AbandonPendingUrlElicitation(elicitation_id, std::move(error));
+                return;
+            }
+
+            std::unique_lock<std::mutex> lock(pending_url_elicitations_mutex_);
+            if (!pending_url_elicitations_cv_.wait_until(lock, deadline,
+                    [&] { return pending->completed; })) {
+                lock.unlock();
+                AbandonPendingUrlElicitation(elicitation_id,
+                    std::make_exception_ptr(McpError(
+                        McpErrorCode::RequestTimeout,
+                        "url elicitation timed out: " + elicitation_id)));
+            }
+        });
+
+    {
+        std::lock_guard<std::mutex> lock(pending_async_mutex_);
+        pending_async_futures_.push_back(watchdog.share());
+        pending_async_futures_.erase(
+            std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
+                [](const auto& f) { return f.wait_for(kNoWait) == std::future_status::ready; }),
+            pending_async_futures_.end());
+    }
+
+    return result_future;
+}
+
+void McpServer::AbandonPendingUrlElicitation(
+    const std::string& elicitation_id, std::exception_ptr error) {
+    std::shared_ptr<PendingUrlElicitation> pending;
+    {
+        std::lock_guard<std::mutex> lock(pending_url_elicitations_mutex_);
+        auto it = pending_url_elicitations_.find(elicitation_id);
+        if (it == pending_url_elicitations_.end()) return;
+        pending = std::move(it->second);
+        pending_url_elicitations_.erase(it);
+    }
+    pending->promise.set_exception(std::move(error));
 }
 
 // ====================================================================
@@ -477,7 +601,7 @@ void McpServer::WireResourceHandlers() {
     if (!resources_.empty()) {
         handler_->SetRequestHandler(methods::kSubscribeResource,
             [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!RequireInitialized(initialized_, p)) return;
+                if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
                 SubscribeRequestParams params;
                 if (req.params) params = DeserializeResourceRequestParams(*req.params);
                 Subscription sub{params.uri, {}};
@@ -488,7 +612,7 @@ void McpServer::WireResourceHandlers() {
 
         handler_->SetRequestHandler(methods::kUnsubscribeResource,
             [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!RequireInitialized(initialized_, p)) return;
+                if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
                 UnsubscribeRequestParams params;
                 if (req.params) params = DeserializeResourceRequestParams(*req.params);
                 handler_->RemoveSubscription(params.uri);
@@ -530,7 +654,7 @@ void McpServer::WireCoreHandlers() {
     // ── ping ──
     handler_->SetRequestHandler(methods::kPing,
         [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            if (!RequireInitialized(initialized_, p)) return;
+            if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
             PingResult r;
             p.set_value(SerializeEmptyResult(r));
         });
@@ -549,7 +673,7 @@ void McpServer::WireCoreHandlers() {
     // ── logging/setLevel ──
     handler_->SetRequestHandler(methods::kSetLoggingLevel,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-            if (!RequireInitialized(initialized_, p)) return;
+            if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
             SetLevelRequestParams params;
             if (req.params) params = DeserializeSetLevelRequestParams(*req.params);
             {
@@ -586,13 +710,34 @@ void McpServer::WireCoreHandlers() {
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleComplete(req, std::move(p));
         });
+
+    // ── notifications/elicitation/complete ──
+    handler_->SetNotificationHandler(notifications::kElicitationComplete,
+        [this](const JsonRpcNotification& notif) {
+            if (!notif.params || !notif.params->IsObject()) return;
+            auto* id = notif.params->Find("elicitationId");
+            if (!id || !id->IsString()) return;
+            std::shared_ptr<PendingUrlElicitation> pending;
+            {
+                std::lock_guard<std::mutex> lock(pending_url_elicitations_mutex_);
+                auto it = pending_url_elicitations_.find(id->GetString());
+                if (it == pending_url_elicitations_.end()) return;
+                pending = std::move(it->second);
+                pending_url_elicitations_.erase(it);
+                pending->completed = true;
+            }
+            pending_url_elicitations_cv_.notify_all();
+            ElicitResult result;
+            result.action = "accept";
+            pending->promise.set_value(std::move(result));
+        });
 }
 
 void McpServer::WireExtensionHandlers() {
     // ── server/extensions/list ──
     handler_->SetRequestHandler(methods::kListExtensions,
         [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            if (!RequireInitialized(initialized_, p)) return;
+            if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
             JsonValue j(JsonValue::object_tag);
             JsonValue ext_list(JsonValue::array_tag);
             if (capabilities_.extensions) {
@@ -673,6 +818,29 @@ void McpServer::WireTaskHandlers() {
                 }
                 CancelTaskRequestParams params;
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
+                {
+                    std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+                    auto flag_it = running_task_cancel_flags_.find(params.task_id);
+                    if (flag_it != running_task_cancel_flags_.end()) {
+                        flag_it->second->store(true);
+                    }
+                }
+                auto existing = store->GetTask(params.task_id);
+                if (!existing) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InvalidParams,
+                                 "task not found: " + params.task_id)));
+                    return;
+                }
+                const bool already_terminal =
+                    existing->status == TaskStatus::Completed
+                    || existing->status == TaskStatus::Failed
+                    || existing->status == TaskStatus::Cancelled;
+                if (already_terminal) {
+                    CancelTaskResult r;
+                    p.set_value(SerializeEmptyResult(r));
+                    return;
+                }
                 try {
                     if (!store->CancelTask(params.task_id, params.reason)) {
                         p.set_exception(std::make_exception_ptr(
@@ -763,6 +931,12 @@ void McpServer::DeriveCapabilities() {
         capabilities_.prompts = PromptsCapability{};
         capabilities_.prompts->list_changed = true;
     }
+    if (options_.declare_logging) {
+        capabilities_.logging = LoggingCapability{};
+    }
+    if (options_.declare_completions) {
+        capabilities_.completions = CompletionsCapability{};
+    }
     if (options_.task_store) {
         capabilities_.extensions = std::map<std::string, JsonValue>{};
     }
@@ -784,7 +958,7 @@ JsonValue McpServer::BuildToolsJson() {
 void McpServer::HandleListTools(
     const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     {
         std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
         if (cached_tools_json_) {
@@ -804,7 +978,7 @@ void McpServer::HandleListTools(
 void McpServer::HandleCallTool(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
 
     // Parse params
     CallToolRequestParams params;
@@ -825,19 +999,125 @@ void McpServer::HandleCallTool(
     auto log_fn = [this](LoggingLevel level, std::string_view data) {
         SendLoggingMessage(level, data);
     };
+    auto cancel_flag = std::make_shared<std::atomic<bool>>(false);
     auto ctx = RequestContext<CallToolRequestParams>(
-        *this, req, std::move(params), std::move(log_fn));
+        *this, req, std::move(params), std::move(log_fn), cancel_flag);
 
     auto tool = it->second;
 
+    const auto& tool_def = tool->ProtocolTool();
+    const bool task_declared = tool_def.execution
+        && tool_def.execution->mode == ToolExecutionMode::Task;
+
+    if (task_declared && options_.task_store) {
+        if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+            promise.set_exception(std::make_exception_ptr(
+                McpError(McpErrorCode::MethodNotFound,
+                    "tools/call with task execution is only available in 2025 and earlier protocol versions")));
+            return;
+        }
+
+        auto store = options_.task_store;
+        const std::string task_id = "task-" + std::to_string(next_task_id_++);
+        {
+            std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+            running_task_cancel_flags_[task_id] = cancel_flag;
+        }
+        store->CreateTask(task_id);
+        store->SetTaskStatus(task_id, TaskStatus::Working);
+        SendTaskNotification(*handler_, notifications::kTaskStatus,
+            task_id, TaskStatus::Working);
+
+        CreateTaskResult created;
+        created.task_id = task_id;
+        created.status = "working";
+        created.created_at = MakeIso8601Now();
+        promise.set_value(SerializeCreateTaskResult(created));
+
+        auto fut = std::async(std::launch::async,
+            [this, tool, ctx = std::move(ctx), store, task_id, cancel_flag]() mutable {
+                auto retire_task = [this, &task_id]() {
+                    std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+                    running_task_cancel_flags_.erase(task_id);
+                };
+                auto finish = [&](TaskStatus status, bool notify) {
+                    store->SetTaskStatus(task_id, status);
+                    if (notify) {
+                        SendTaskNotification(*handler_, notifications::kTaskStatus,
+                            task_id, status);
+                    }
+                    retire_task();
+                };
+                auto result_promise = std::make_shared<std::promise<CallToolResult>>();
+                auto result_future = result_promise->get_future();
+                tool->InvokeAsync(ctx, std::move(*result_promise));
+                try {
+                    auto result = result_future.get();
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                        return;
+                    }
+                    if (result.is_error) {
+                        std::string error_text = "tool execution failed";
+                        for (const auto& c : result.content) {
+                            if (auto* t = std::get_if<TextContent>(&c)) {
+                                error_text = t->text;
+                                break;
+                            }
+                        }
+                        JsonValue error_payload(JsonValue::object_tag);
+                        error_payload["error"] = JsonValue(error_text);
+                        store->UpdateTask(task_id, error_payload);
+                        finish(TaskStatus::Failed, true);
+                        return;
+                    }
+                    store->UpdateTask(task_id, SerializeCallToolResult(result));
+                    finish(TaskStatus::Completed, true);
+                } catch (...) {
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        finish(TaskStatus::Failed, true);
+                    }
+                }
+            });
+
+        // Store future for lifecycle management; clean up completed futures
+        std::lock_guard<std::mutex> lock(pending_async_mutex_);
+        pending_async_futures_.push_back(fut.share());
+        pending_async_futures_.erase(
+            std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
+                [](const auto& f) { return f.wait_for(kNoWait) == std::future_status::ready; }),
+            pending_async_futures_.end());
+        return;
+    }
+
     auto captured_promise = std::make_shared<std::promise<JsonValue>>(std::move(promise));
+    auto request_state_key = options_.request_state_key;
     auto fut = std::async(std::launch::async,
-        [tool, ctx = std::move(ctx), captured_promise]() mutable {
+        [tool, ctx = std::move(ctx), captured_promise,
+         request_state_key = std::move(request_state_key)]() mutable {
             auto result_promise = std::make_shared<std::promise<CallToolResult>>();
             auto result_future = result_promise->get_future();
             tool->InvokeAsync(ctx, std::move(*result_promise));
             try {
                 auto result = result_future.get();
+                if (result.input_required) {
+                    if (request_state_key) {
+                        JsonValue payload(JsonValue::object_tag);
+                        if (result.input_required->request_state) {
+                            auto parsed =
+                                JsonValue::Parse(*result.input_required->request_state);
+                            if (parsed.IsObject()) payload = parsed;
+                        }
+                        payload["iat"] = JsonValue(
+                            static_cast<int64_t>(std::time(nullptr)));
+                        result.input_required->request_state =
+                            detail::MintRequestState(*request_state_key, payload);
+                    }
+                    captured_promise->set_value(SerializeCallToolResult(result));
+                    return;
+                }
                 const auto& tool_def = tool->ProtocolTool();
                 if (tool_def.output_schema && result.structured_content) {
                     std::string schema_error;
@@ -867,7 +1147,7 @@ void McpServer::HandleCallTool(
 void McpServer::HandleListResources(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListResourcesResult result;
     size_t cursor_val = 0;
@@ -897,7 +1177,7 @@ void McpServer::HandleListResources(
 void McpServer::HandleListResourceTemplates(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListResourceTemplatesResult result;
     size_t cursor_val = 0;
@@ -927,7 +1207,7 @@ void McpServer::HandleListResourceTemplates(
 void McpServer::HandleReadResource(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     ReadResourceRequestParams params;
     if (req.params) {
         params = DeserializeResourceRequestParams(*req.params);
@@ -958,7 +1238,7 @@ void McpServer::HandleReadResource(
 void McpServer::HandleListPrompts(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     ListPromptsResult result;
     size_t cursor_val = 0;
@@ -972,6 +1252,7 @@ void McpServer::HandleListPrompts(
                 p.name = entry.name;
                 p.description = entry.description;
                 p.title = entry.title;
+                p.arguments = entry.arguments;
                 if (!entry.icons.empty()) p.icons = entry.icons;
                 result.prompts.push_back(std::move(p));
             })) {
@@ -985,7 +1266,7 @@ void McpServer::HandleListPrompts(
 void McpServer::HandleGetPrompt(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     GetPromptRequestParams params;
     if (req.params) {
         params = DeserializeGetPromptRequestParams(*req.params);
@@ -1017,7 +1298,7 @@ void McpServer::SetCompletionHandler(CompletionHandler handler) {
 void McpServer::HandleComplete(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
-    if (!RequireInitialized(initialized_, promise)) return;
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     CompleteRequestParams params;
     if (req.params) params = DeserializeCompleteRequestParams(*req.params);
 

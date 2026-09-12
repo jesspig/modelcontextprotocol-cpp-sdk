@@ -29,6 +29,7 @@ enum class McpErrorCode : int32_t {
     TaskNotFound = -32006,          // Task not found
     HandlerError = -32007,          // User handler threw exception
     DeserializeFailed = -32008,     // Deserialization failure
+    SessionExpired = -32009,        // Session expired (HTTP 404 on streamable http)
 };
 
 // Enable std::error_code integration
@@ -67,6 +68,7 @@ public:
             case McpErrorCode::ProtocolViolation: return "Protocol violation";
             case McpErrorCode::TaskNotFound: return "Task not found";
             case McpErrorCode::HandlerError: return "Handler error";
+            case McpErrorCode::SessionExpired: return "Session expired";
             default: return "Unknown MCP error";
         }
     }
@@ -76,6 +78,7 @@ public:
             case McpErrorCode::RequestTimeout:
             case McpErrorCode::ConnectionRefused:
             case McpErrorCode::TlsHandshakeFailed:
+            case McpErrorCode::SessionExpired:
                 return std::errc::connection_aborted;
             case McpErrorCode::InternalError:
             case McpErrorCode::DeserializeFailed:

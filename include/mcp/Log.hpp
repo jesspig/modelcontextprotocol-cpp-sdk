@@ -73,7 +73,7 @@ inline std::string FormatLogTimestamp() {
 #ifdef _WIN32
     gmtime_s(&tm, &tt);
 #else
-    gmtime_r(&tm, &tt);
+    gmtime_r(&tt, &tm);
 #endif
     std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm);
     return time_buf;

@@ -632,7 +632,7 @@ bool Impl::ReadBody(net::TcpSocket& conn, std::string& buffer, std::size_t conte
     if (content_length == 0)
         return true;
     body.reserve(content_length);
-    std::size_t from_buffer = std::min(content_length, buffer.size());
+    std::size_t from_buffer = (std::min)(content_length, buffer.size());
     body.append(buffer, 0, from_buffer);
     buffer.erase(0, from_buffer);
     std::size_t got = body.size();
@@ -642,7 +642,7 @@ bool Impl::ReadBody(net::TcpSocket& conn, std::string& buffer, std::size_t conte
         auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::milliseconds(0))
             return false;
-        auto want = std::min(sizeof(chunk), content_length - got);
+        auto want = (std::min)(sizeof(chunk), content_length - got);
         auto n = conn.Read(chunk, want, std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
         if (n > 0) {
             body.append(chunk, n);
@@ -685,11 +685,26 @@ void Impl::WriteSseHeaders(
     net::TcpSocket& conn,
     const std::unordered_map<std::string, std::string>& headers,
     bool close_after_write) {
+    auto has_header = [&headers](std::string_view name) {
+        for (const auto& entry : headers) {
+            const auto& key = entry.first;
+            if (key.size() == name.size() &&
+                std::equal(key.begin(), key.end(), name.begin(),
+                           [](char a, char b) {
+                               return std::tolower(static_cast<unsigned char>(a)) ==
+                                      std::tolower(static_cast<unsigned char>(b));
+                           }))
+                return true;
+        }
+        return false;
+    };
     std::string out;
     out.reserve(512 + headers.size() * 32);
     out += "HTTP/1.1 200 OK\r\n";
-    out += "Content-Type: text/event-stream\r\n";
-    out += "Cache-Control: no-cache\r\n";
+    if (!has_header("Content-Type"))
+        out += "Content-Type: text/event-stream\r\n";
+    if (!has_header("Cache-Control"))
+        out += "Cache-Control: no-cache\r\n";
     out += close_after_write ? "Connection: close\r\n" : "Connection: keep-alive\r\n";
     for (const auto& [k, v] : headers) {
         out += k;

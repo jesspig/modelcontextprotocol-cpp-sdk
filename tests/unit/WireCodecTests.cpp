@@ -90,7 +90,7 @@ TEST(WireCodecTest, Rev2025ValidateInitializeRequestMissingProtocolVersion) {
 }
 
 // ── 2026-era codec ──
-TEST(WireCodecTest, Rev2026StampAddsMeta) {
+TEST(WireCodecTest, Rev2026StampAddsMetaInsideParams) {
     auto codec = MakeWireCodec("2026-07-28");
     JsonValue body(JsonValue::object_tag);
 
@@ -101,15 +101,55 @@ TEST(WireCodecTest, Rev2026StampAddsMeta) {
 
     codec->StampOutgoingRequest(body, meta);
 
-    ASSERT_TRUE(body.Contains("_meta"));
-    EXPECT_EQ(body["_meta"]["io.modelcontextprotocol/protocolVersion"],
+    ASSERT_TRUE(body.Contains("params"));
+    ASSERT_TRUE(body["params"].Contains("_meta"));
+    EXPECT_FALSE(body.Contains("_meta"));
+    EXPECT_EQ(body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
               "2026-07-28");
     EXPECT_EQ(
-        body["_meta"]["io.modelcontextprotocol/clientInfo"]["name"],
+        body["params"]["_meta"]["io.modelcontextprotocol/clientInfo"]["name"],
         "test-client");
     EXPECT_TRUE(
-        body["_meta"].Contains(
+        body["params"]["_meta"].Contains(
             "io.modelcontextprotocol/clientCapabilities"));
+}
+
+// ── 2026-era request validation requires _meta inside params ──
+TEST(WireCodecTest, Rev2026ValidateRequestRequiresMetaInsideParams) {
+    auto codec = MakeWireCodec("2026-07-28");
+
+    JsonValue ok(JsonValue::object_tag);
+    ok["jsonrpc"] = JsonValue("2.0");
+    ok["id"] = JsonValue(int64_t(1));
+    ok["method"] = JsonValue("tools/list");
+    JsonValue params(JsonValue::object_tag);
+    params["_meta"] = JsonValue(JsonValue::object_tag);
+    ok["params"] = std::move(params);
+    EXPECT_EQ(codec->ValidateRequest("tools/list", ok), WireValidation::Ok);
+
+    JsonValue top_level_meta(JsonValue::object_tag);
+    top_level_meta["jsonrpc"] = JsonValue("2.0");
+    top_level_meta["id"] = JsonValue(int64_t(1));
+    top_level_meta["method"] = JsonValue("tools/list");
+    top_level_meta["params"] = JsonValue(JsonValue::object_tag);
+    top_level_meta["_meta"] = JsonValue(JsonValue::object_tag);
+    EXPECT_EQ(codec->ValidateRequest("tools/list", top_level_meta),
+              WireValidation::Invalid);
+
+    JsonValue missing_params(JsonValue::object_tag);
+    missing_params["jsonrpc"] = JsonValue("2.0");
+    missing_params["id"] = JsonValue(int64_t(1));
+    missing_params["method"] = JsonValue("tools/list");
+    missing_params["_meta"] = JsonValue(JsonValue::object_tag);
+    EXPECT_EQ(codec->ValidateRequest("tools/list", missing_params),
+              WireValidation::Invalid);
+
+    JsonValue discover(JsonValue::object_tag);
+    discover["jsonrpc"] = JsonValue("2.0");
+    discover["id"] = JsonValue(int64_t(1));
+    discover["method"] = JsonValue("server/discover");
+    EXPECT_EQ(codec->ValidateRequest("server/discover", discover),
+              WireValidation::Ok);
 }
 
 TEST(WireCodecTest, Rev2026EncodeResult) {
@@ -227,9 +267,67 @@ TEST(WireCodecTest, JsonRpcRequestWithMetaRoundTrip) {
     (*req.meta)["io.modelcontextprotocol/protocolVersion"] = "2026-07-28";
 
     auto json_str = SerializeMessage(JsonRpcMessage(req));
+
+    auto wire = JsonValue::Parse(json_str);
+    EXPECT_FALSE(wire.Contains("_meta"));
+    ASSERT_TRUE(wire["params"].Contains("_meta"));
+    EXPECT_EQ(wire["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+              "2026-07-28");
+    EXPECT_TRUE(wire["params"].Contains("name"));
+
     auto parsed = DeserializeMessage(json_str);
     const auto& req2 = std::get<JsonRpcRequest>(parsed);
     ASSERT_TRUE(req2.meta.has_value());
     EXPECT_EQ((*req2.meta)["io.modelcontextprotocol/protocolVersion"],
               "2026-07-28");
+    ASSERT_TRUE(req2.params);
+    EXPECT_FALSE(req2.params->Contains("_meta"));
+    EXPECT_EQ((*req2.params)["name"], "echo");
+}
+
+// A request without params gets params synthesized to carry _meta on the wire.
+TEST(WireCodecTest, JsonRpcRequestWithoutParamsSynthesizesParamsForMeta) {
+    JsonRpcRequest req;
+    req.id = RequestId{int64_t(1)};
+    req.method = "tools/list";
+    req.meta = JsonValue(JsonValue::object_tag);
+    (*req.meta)["io.modelcontextprotocol/protocolVersion"] = "2026-07-28";
+
+    auto json_str = SerializeMessage(JsonRpcMessage(req));
+
+    auto wire = JsonValue::Parse(json_str);
+    ASSERT_TRUE(wire["params"].Contains("_meta"));
+    EXPECT_EQ(wire["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+              "2026-07-28");
+
+    auto parsed = DeserializeMessage(json_str);
+    const auto& req2 = std::get<JsonRpcRequest>(parsed);
+    ASSERT_TRUE(req2.meta.has_value());
+    ASSERT_TRUE(req2.params);
+    EXPECT_TRUE(req2.params->GetObject().empty());
+}
+
+// A notification's _meta travels inside params on the wire.
+TEST(WireCodecTest, JsonRpcNotificationWithMetaRoundTrip) {
+    JsonRpcNotification notif;
+    notif.method = "notifications/message";
+    notif.params = JsonValue(JsonValue::object_tag);
+    (*notif.params)["level"] = "info";
+    notif.meta = JsonValue(JsonValue::object_tag);
+    (*notif.meta)["io.modelcontextprotocol/protocolVersion"] = "2026-07-28";
+
+    auto json_str = SerializeMessage(JsonRpcMessage(notif));
+
+    auto wire = JsonValue::Parse(json_str);
+    EXPECT_FALSE(wire.Contains("_meta"));
+    ASSERT_TRUE(wire["params"].Contains("_meta"));
+
+    auto parsed = DeserializeMessage(json_str);
+    const auto& notif2 = std::get<JsonRpcNotification>(parsed);
+    ASSERT_TRUE(notif2.meta.has_value());
+    EXPECT_EQ((*notif2.meta)["io.modelcontextprotocol/protocolVersion"],
+              "2026-07-28");
+    ASSERT_TRUE(notif2.params);
+    EXPECT_FALSE(notif2.params->Contains("_meta"));
+    EXPECT_EQ((*notif2.params)["level"], "info");
 }

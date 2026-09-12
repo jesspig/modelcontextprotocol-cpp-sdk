@@ -21,6 +21,26 @@ void ValidateVersion(std::string_view ver) {
             "', expected '" + std::string(kJsonRpcVersion) + "'");
 }
 
+void MergeMetaIntoParams(JsonValue& params_slot, JsonValue meta) {
+    if (!params_slot.IsObject()) params_slot = JsonValue(JsonValue::object_tag);
+    JsonValue* params_meta = params_slot.Find(detail::kMeta);
+    if (!params_meta || !params_meta->IsObject()) {
+        params_slot[detail::kMeta] = std::move(meta);
+        return;
+    }
+    for (auto& [key, value] : meta.GetObject())
+        (*params_meta)[key] = std::move(value);
+}
+
+std::optional<JsonValue> ExtractMetaFromParams(std::optional<JsonValue>& params) {
+    if (!params || !params->IsObject()) return std::nullopt;
+    auto* params_meta = params->Find(detail::kMeta);
+    if (!params_meta) return std::nullopt;
+    std::optional<JsonValue> meta = *params_meta;
+    params->GetObject().erase(std::string(detail::kMeta));
+    return meta;
+}
+
 bool JsonRpcIsKnownErrorCode(int64_t code) {
     switch (code) {
     case static_cast<int64_t>(McpErrorCode::ParseError):
@@ -87,7 +107,7 @@ JsonValue SerializeJsonRpcRequest(const JsonRpcRequest& v) {
     obj[detail::kId] = RequestIdToJson(v.id);
     obj[detail::kMethod] = JsonValue(v.method);
     detail::SerializeOptional(obj, detail::kParams, v.params);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
+    if (v.meta) MergeMetaIntoParams(obj[detail::kParams], *v.meta);
     return obj;
 }
 
@@ -97,7 +117,7 @@ JsonValue SerializeJsonRpcRequest(JsonRpcRequest&& v) {
     obj[detail::kId] = RequestIdToJson(std::move(v.id));
     obj[detail::kMethod] = JsonValue(std::move(v.method));
     if (v.params) obj[detail::kParams] = std::move(*v.params);
-    if (v.meta) obj[detail::kMeta] = std::move(*v.meta);
+    if (v.meta) MergeMetaIntoParams(obj[detail::kParams], std::move(*v.meta));
     return obj;
 }
 
@@ -112,7 +132,7 @@ JsonRpcRequest DeserializeJsonRpcRequest(const JsonValue& j) {
     v.id = RequestIdFromJson(*id_ptr);
     v.method = j[detail::kMethod].GetString();
     detail::DeserializeOptional(j, detail::kParams, v.params);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
+    v.meta = ExtractMetaFromParams(v.params);
     return v;
 }
 
@@ -121,7 +141,7 @@ JsonValue SerializeJsonRpcNotification(const JsonRpcNotification& v) {
     obj[detail::kJsonrpc] = JsonValue(std::string(kJsonRpcVersion));
     obj[detail::kMethod] = JsonValue(v.method);
     detail::SerializeOptional(obj, detail::kParams, v.params);
-    detail::SerializeOptional(obj, detail::kMeta, v.meta);
+    if (v.meta) MergeMetaIntoParams(obj[detail::kParams], *v.meta);
     return obj;
 }
 
@@ -131,7 +151,7 @@ JsonRpcNotification DeserializeJsonRpcNotification(const JsonValue& j) {
     ValidateVersion(v.jsonrpc);
     v.method = j[detail::kMethod].GetString();
     detail::DeserializeOptional(j, detail::kParams, v.params);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
+    v.meta = ExtractMetaFromParams(v.params);
     return v;
 }
 
