@@ -65,6 +65,7 @@ server->RegisterTool(tool);
 | `use_structured_content` | `bool` | `false` | 选择启用结构化输出（将 `output_schema` 设为 `{"type":"object"}`） |
 | `icons` | `vector<Icon>` | — | 工具图标 |
 | `meta` | `optional<JsonValue>` | — | 附加元数据 |
+| `execution` | `optional<ToolExecution>` | — | 执行元数据（`mode`：`Auto` 等；可选 `human_use` 说明） |
 
 注解字段（传播到 `ToolAnnotations`）：
 
@@ -110,3 +111,17 @@ server->RegisterTool("get_weather",
         // ...
     });
 ```
+
+## 多轮工具请求（input_required）
+
+工具处理程序可以在 `CallToolResult` 上设置 `input_required`，向客户端发起 MRTR（多轮往返请求）收集轮次，客户端通过 elicitation 收集输入后携带 `requestState` 重试调用：
+
+```cpp
+CallToolResult result;
+InputRequiredResult ir;
+ir.input_requests.elicit = InputRequestElicit{"请提供 API 密钥"};
+result.input_required = std::move(ir);
+return result;  // 服务端自动签名 requestState（需配置 request_state_key）
+```
+
+配置 `ServerOptions::request_state_key` 后，服务端在返回前自动为 `input_required` 结果签名 `request_state`；重试时篡改或过期的状态会在进入处理程序前被拒绝（-32602，`data.reason="invalid_request_state"`）。完整协议流程见 [MRTR](/advanced/mrtr)。

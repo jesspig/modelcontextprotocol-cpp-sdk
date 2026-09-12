@@ -40,8 +40,12 @@ server->Run();
 | `initialization_timeout` | `chrono::seconds` | 握手超时时间（默认 60s） |
 | `validate_tool_input` | `bool` | 启用 JSON Schema 输入验证 |
 | `validate_tool_output` | `bool` | 启用 JSON Schema 输出验证 |
+| `declare_logging` | `bool` | 显式声明 logging 能力（合并进推导能力，默认 `false`） |
+| `declare_completions` | `bool` | 显式声明 completions 能力（默认 `false`） |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | 任务持久化后端 |
 | `request_state_verifier` | `function<bool(string_view)>` | MRTR 的 HMAC/AEAD 验证器 |
+| `request_state_key` | `optional<string>` | MRTR 服务端请求状态签名密钥（HMAC）；设置后若未显式提供 `request_state_verifier`，自动接线内置验证器，在处理器前拒绝篡改/过期的状态（返回 -32602 且 `data.reason="invalid_request_state"`） |
+| `request_state_ttl` | `chrono::seconds` | 签发的请求状态最大寿命（默认 0 = 不检查过期） |
 | `cache_hints` | `optional<map<string, CacheHint, less<>>>` | 按方法的缓存提示（ttlMs, cacheScope） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR/elicitation 行为的配置 |
 | `input_required_config.max_rounds` | `int` | 最大启发式收集轮次（默认 10） |
@@ -137,4 +141,4 @@ server->SetCompletionHandler(
 
 ## 能力推导
 
-能力从注册的原语中自动推导。例如，注册工具会设置 `capabilities.tools.list_changed = true`。`ServerOptions` 没有 `capabilities` 字段——能力始终从已注册的工具、资源、提示和任务存储自动推导。
+能力从注册的原语中自动推导。例如，注册工具会设置 `capabilities.tools.list_changed = true`。`ServerOptions` 没有 `capabilities` 字段——能力始终从已注册的工具、资源、提示和任务存储自动推导；例外是 `declare_logging` 与 `declare_completions`，为 `true` 时即使尚未注册对应处理器也会显式声明 logging/completions 能力（合并进推导结果）。
