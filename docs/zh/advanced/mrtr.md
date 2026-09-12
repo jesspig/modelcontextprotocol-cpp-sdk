@@ -51,7 +51,7 @@ auto elicit_result = ctx.Server().Elicit(
 
 CallToolResult result;
 result.content.push_back(TextContent{"text",
-    elicit_result.values ? "已确认" : "已取消"});
+    elicit_result.content ? "已确认" : "已取消"});
 return result;
 ```
 
@@ -77,7 +77,7 @@ client->SetElicitationHandler(
         ElicitResult result;
         JsonValue obj(JsonValue::object_tag);
         obj["confirmed"] = JsonValue(true);
-        result.values = std::move(obj);
+        result.content = std::move(obj);
         return result;
     });
 ```

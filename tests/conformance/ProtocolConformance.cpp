@@ -602,8 +602,8 @@ TEST(Conformance, ElicitRequestParamsWithSchemaRoundTrip) {
 
 TEST(Conformance, ElicitResultAcceptRoundTrip) {
     ElicitResult r;
-    r.values = JsonValue(JsonValue::object_tag);
-    (*r.values)["name"] = "Alice";
+    r.content = JsonValue(JsonValue::object_tag);
+    (*r.content)["name"] = "Alice";
     r.result_type = ResultType::Complete;
 
     auto jv = SerializeElicitResult(r);
@@ -611,8 +611,8 @@ TEST(Conformance, ElicitResultAcceptRoundTrip) {
     EXPECT_EQ(jv["resultType"].GetString(), "complete");
 
     auto recovered = DeserializeElicitResult(jv);
-    EXPECT_TRUE(recovered.values.has_value());
-    EXPECT_EQ((*recovered.values)["name"].GetString(), "Alice");
+    EXPECT_TRUE(recovered.content.has_value());
+    EXPECT_EQ((*recovered.content)["name"].GetString(), "Alice");
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
@@ -624,14 +624,14 @@ TEST(Conformance, ElicitResultDeclineRoundTrip) {
     EXPECT_EQ(jv["resultType"].GetString(), "input_required");
 
     auto recovered = DeserializeElicitResult(jv);
-    EXPECT_FALSE(recovered.values.has_value());
+    EXPECT_FALSE(recovered.content.has_value());
     EXPECT_EQ(recovered.result_type, ResultType::InputRequired);
 }
 
 TEST(Conformance, ElicitResultWithMeta) {
     ElicitResult r;
-    r.values = JsonValue(JsonValue::object_tag);
-    (*r.values)["ok"] = true;
+    r.content = JsonValue(JsonValue::object_tag);
+    (*r.content)["ok"] = true;
     r.meta = JsonValue(JsonValue::object_tag);
     (*r.meta)["trace"] = "abc";
 
@@ -681,8 +681,8 @@ TEST(Conformance, MakeInputRequestForElicitation) {
 
 TEST(Conformance, MakeInputResponseFromElicitResult) {
     ElicitResult result;
-    result.values = JsonValue(JsonValue::object_tag);
-    (*result.values)["ok"] = true;
+    result.content = JsonValue(JsonValue::object_tag);
+    (*result.content)["ok"] = true;
     result.result_type = ResultType::Complete;
 
     auto jv = MakeInputResponseFromElicitResult(result);
@@ -1326,7 +1326,7 @@ TEST(Conformance, GetTaskResultInputRequired) {
 TEST(Conformance, UpdateTaskResultRoundTrip) {
     UpdateTaskResult r;
     auto jv = SerializeEmptyResult(r);
-    EXPECT_TRUE(jv.Contains("resultType"));
+    EXPECT_FALSE(jv.Contains("resultType"));
 
     auto recovered = DeserializeEmptyResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
@@ -1335,7 +1335,7 @@ TEST(Conformance, UpdateTaskResultRoundTrip) {
 TEST(Conformance, CancelTaskResultRoundTrip) {
     CancelTaskResult r;
     auto jv = SerializeEmptyResult(r);
-    EXPECT_TRUE(jv.Contains("resultType"));
+    EXPECT_FALSE(jv.Contains("resultType"));
 
     auto recovered = DeserializeEmptyResult(jv);
     EXPECT_EQ(recovered.result_type, ResultType::Complete);

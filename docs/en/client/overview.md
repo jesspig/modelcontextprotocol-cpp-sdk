@@ -84,7 +84,7 @@ client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         // Prompt user for input, return result
         ElicitResult result;
-        result.values = JsonValue(JsonValue::Object{{"name", "Alice"}});
+        result.content = JsonValue(JsonValue::Object{{"name", "Alice"}});
         return result;
     });
 

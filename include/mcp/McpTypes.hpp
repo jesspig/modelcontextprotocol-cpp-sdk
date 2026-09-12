@@ -199,6 +199,48 @@ struct SubscriptionsAcknowledgedNotificationParams {
 };
 
 // ====================================================================
+// InputRequiredResult (MRTR)
+// ====================================================================
+struct SamplingMessage {
+    std::string role;
+    ContentVariant content;
+};
+
+struct CreateMessageRequestParams {
+    std::vector<SamplingMessage> messages;
+    int64_t max_tokens;
+    std::optional<std::string> stop_reason;
+    std::optional<std::string> model_preference;
+};
+
+struct ListRootsRequestParams {};
+
+struct InputRequestElicit {
+    std::string message;
+    std::optional<JsonValue> requested_schema = std::nullopt;
+};
+
+struct InputRequestSampling {
+    CreateMessageRequestParams params;
+};
+
+struct InputRequestRoots {
+    ListRootsRequestParams params;
+};
+
+struct InputRequests {
+    std::optional<InputRequestElicit> confirm;
+    std::optional<InputRequestElicit> elicit;
+    std::optional<InputRequestSampling> sampling;
+    std::optional<InputRequestRoots> roots;
+};
+
+struct InputRequiredResult {
+    InputRequests input_requests;
+    std::optional<std::string> request_state;
+};
+
+// ====================================================================
 // Result types
 // ====================================================================
 struct EmptyResult : Result {};
@@ -207,6 +249,7 @@ struct CallToolResult : Result {
     std::vector<ContentVariant> content;
     std::optional<JsonValue> structured_content;
     bool is_error{false};
+    std::optional<InputRequiredResult> input_required;
 };
 
 struct ListToolsResult : Result {
@@ -265,48 +308,6 @@ struct DiscoverResult : Result {
 using PingResult = EmptyResult;
 
 // ====================================================================
-// InputRequiredResult (MRTR)
-// ====================================================================
-struct SamplingMessage {
-    std::string role;
-    ContentVariant content;
-};
-
-struct CreateMessageRequestParams {
-    std::vector<SamplingMessage> messages;
-    int64_t max_tokens;
-    std::optional<std::string> stop_reason;
-    std::optional<std::string> model_preference;
-};
-
-struct ListRootsRequestParams {};
-
-struct InputRequestElicit {
-    std::string message;
-    std::optional<JsonValue> requested_schema = std::nullopt;
-};
-
-struct InputRequestSampling {
-    CreateMessageRequestParams params;
-};
-
-struct InputRequestRoots {
-    ListRootsRequestParams params;
-};
-
-struct InputRequests {
-    std::optional<InputRequestElicit> confirm;
-    std::optional<InputRequestElicit> elicit;
-    std::optional<InputRequestSampling> sampling;
-    std::optional<InputRequestRoots> roots;
-};
-
-struct InputRequiredResult {
-    InputRequests input_requests;
-    std::optional<std::string> request_state;
-};
-
-// ====================================================================
 // Notification params
 // ====================================================================
 struct ProgressNotificationParams {
@@ -343,7 +344,7 @@ struct ElicitRequestParams {
 
 struct ElicitResult : Result {
     std::string action;
-    std::optional<JsonValue> values;
+    std::optional<JsonValue> content;
 };
 
 // ── Typed elicitation result / schema builder ──
@@ -487,9 +488,11 @@ struct PromptOptions {
     std::optional<std::string> description;
     std::optional<std::string> title;
     std::vector<Icon> icons;
+    std::optional<std::vector<PromptArgument>> arguments;
 
     PromptOptions& Description(std::string_view d) { description = std::string(d); return *this; }
     PromptOptions& Title(std::string_view t) { title = std::string(t); return *this; }
+    PromptOptions& Arguments(std::vector<PromptArgument> a) { arguments = std::move(a); return *this; }
 };
 
 // ── Serialization ──
