@@ -83,15 +83,19 @@ client->SetElicitationHandler(
 
 ## InputRequired Result
 
-The server can also return an `InputRequiredResult` directly (stateless mode):
+The server can also return an `InputRequiredResult` directly by setting `input_required` on the `CallToolResult` (stateless mode):
 
 ```cpp
+CallToolResult result;
 InputRequiredResult ir;
 ir.input_requests.elicit = InputRequestElicit{"Provide value"};
-ir.request_state = "state-token";
-// Server returns this as the tools/call result
-// Client resolves and retries with inputResponses + requestState
+result.input_required = std::move(ir);
+return result;
 ```
+
+When `request_state_key` is configured, the server automatically signs `request_state` on `input_required` results before sending them (handlers don't need to — and cannot — supply one themselves). When the client retries with `inputResponses` + `requestState`, tampered or expired states are rejected before reaching the handler (-32602, `data.reason="invalid_request_state"`).
+
+The underlying mint/verify helpers live in `include/mcp/server/RequestState.hpp` (`MintRequestState` / `VerifyRequestState`); for custom verification logic, provide `ServerOptions::request_state_verifier` instead.
 
 ## Helper Functions
 
@@ -120,6 +124,8 @@ opts.input_required_config = ServerOptions::InputRequiredConfig{
     .round_timeout = std::chrono::seconds(600),
     .legacy_shim = true
 };
+opts.request_state_key = "server-secret";              // auto-signs requestState
+opts.request_state_ttl = std::chrono::seconds(300);    // state lifetime; 0 = never expires
 ```
 
 ### Client Side
@@ -129,7 +135,8 @@ ClientOptions opts;
 opts.input_required_config = ClientOptions::InputRequiredConfig{
     .auto_fulfill = true,
     .max_rounds = 10,
-    .round_timeout = std::chrono::seconds(600)
+    .round_timeout = std::chrono::seconds(600),
+    .max_total_timeout = std::chrono::seconds(0)
 };
 ```
 
@@ -139,3 +146,5 @@ opts.input_required_config = ClientOptions::InputRequiredConfig{
 | `round_timeout` | Yes | Yes | Per-round timeout (default: 600s) |
 | `legacy_shim` | Yes | No | Placeholder field, not yet implemented |
 | `auto_fulfill` | No | Yes | Auto-fulfill without prompting if possible |
+| `max_total_timeout` | No | Yes | Hard budget for the whole MRTR flow (default 0 = unlimited; `round_timeout` applies per round) |
+| `request_state_key` / `request_state_ttl` | Yes | No | Server-side requestState signing key and lifetime |
