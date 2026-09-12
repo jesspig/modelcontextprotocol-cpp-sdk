@@ -110,3 +110,17 @@ server->RegisterTool("get_weather",
         // ...
     });
 ```
+
+## Multi-Round Tool Requests (input_required)
+
+Tool handlers can set `input_required` on the `CallToolResult` to start an MRTR (multi round-trip request) collection round with the client; the client gathers input via elicitation and retries the call with `requestState`:
+
+```cpp
+CallToolResult result;
+InputRequiredResult ir;
+ir.input_requests.elicit = InputRequestElicit{"Please provide the API key"};
+result.input_required = std::move(ir);
+return result;  // the server auto-signs requestState (requires request_state_key)
+```
+
+Once `ServerOptions::request_state_key` is configured, the server automatically signs `request_state` on `input_required` results before returning them; tampered or expired states are rejected on retry before reaching the handler (-32602, `data.reason="invalid_request_state"`). See [MRTR](/advanced/mrtr) for the full protocol flow.

@@ -28,7 +28,7 @@ JSON-RPC engine (`McpSessionHandler`): async message loop over `MessageChannel`,
 
 ### mcp-server (STATIC)
 
-`McpServer`: tool/resource/prompt registration, `IMcpTaskStore` (with `FileTaskStore` for persistence), server-to-client `Elicit`, MRTR (`InputRequiredResult`), subscription management, stateless mode for Streamable HTTP.
+`McpServer`: tool/resource/prompt registration, `IMcpTaskStore` (with `FileTaskStore` for persistence), server-to-client `Elicit`, MRTR (`InputRequiredResult` with server-side `requestState` signing via `MintRequestState`), subscription management, stateless mode for Streamable HTTP.
 
 ### mcp-client (STATIC)
 
@@ -36,7 +36,7 @@ JSON-RPC engine (`McpSessionHandler`): async message loop over `MessageChannel`,
 
 ### mcp-http (STATIC)
 
-HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence and replay), `StreamableHttpServerTransport`, `StreamableHttpClientTransport`.
+HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence and replay, with `FileEventStore` for on-disk persistence), `SessionStore`/`InMemorySessionStore` (external session adoption), `StreamableHttpServerTransport` (with bearer auth), `StreamableHttpClientTransport`.
 
 ## Dependency Graph
 

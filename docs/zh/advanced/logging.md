@@ -22,7 +22,7 @@ MCP_LOG_LEVEL=4 ./your_mcp_server
 mcp::SetLogLevel(mcp::LogLevel::Debug);
 mcp::SetLogHandler([](const mcp::LogRecord& r) {
     my_logger.log(static_cast<int>(r.level),
-                  r.tag.empty() ? std::string(r.tag) : std::string(r.tag),
+                  std::string(r.tag),
                   std::string(r.message));
 });
 // 需要恢复默认 stderr 时：

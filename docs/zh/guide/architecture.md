@@ -28,7 +28,7 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 
 ### mcp-server（STATIC）
 
-`McpServer`：工具/资源/提示注册、`IMcpTaskStore`（含用于持久化的 `FileTaskStore`）、服务器到客户端的 `Elicit`、MRTR（`InputRequiredResult`）、订阅管理、Streamable HTTP 的无状态模式。
+`McpServer`：工具/资源/提示注册、`IMcpTaskStore`（含用于持久化的 `FileTaskStore`）、服务器到客户端的 `Elicit`、MRTR（`InputRequiredResult`，通过 `MintRequestState` 实现服务端 `requestState` 签名）、订阅管理、Streamable HTTP 的无状态模式。
 
 ### mcp-client（STATIC）
 
@@ -36,7 +36,7 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 
 ### mcp-http（STATIC）
 
-用于 Streamable HTTP 模式的 HTTP 服务器：`HttpServer`、`EventStore`（SSE 事件持久化和重放）、`StreamableHttpServerTransport`、`StreamableHttpClientTransport`。
+用于 Streamable HTTP 模式的 HTTP 服务器：`HttpServer`、`EventStore`（SSE 事件持久化和重放，含落盘持久化的 `FileEventStore`）、`SessionStore`/`InMemorySessionStore`（外部会话接管）、`StreamableHttpServerTransport`（含 Bearer 鉴权）、`StreamableHttpClientTransport`。
 
 ## 依赖图
 

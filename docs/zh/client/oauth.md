@@ -59,8 +59,30 @@ auto token = auth->GetAccessToken();
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
 | `StepUpAuthorization(scopes)` | 使用额外的作用域重新授权（返回 `bool`） |
 | `AuthenticateClientCredentials()` | 客户端凭据授权（RFC 6749 §4.4），用于无需用户交互的服务到服务场景（返回 `bool`） |
-| `HandleAuthChallenge(www_authenticate)` | 处理服务端返回的 401/403 认证挑战头（RFC 9728），成功时重试原请求 |
+| `HandleAuthChallenge(www_authenticate)` | 按 RFC 9728 解析 401/403 挑战头中的 `resource_metadata` URL，发现授权服务器并重新走授权流程（返回 `bool`） |
 | `Revoke()` | best-effort 调用 RFC 7009 撤销端点（配置了 `revocation_endpoint` 时），无论成败都清除本地令牌 |
+
+## 与服务端 Bearer 鉴权集成
+
+SDK 服务端内置 RFC 6750/9728 Bearer 鉴权（`StreamableHttpServerOptions::bearer_auth`，配置详见[传输层](/guide/transports)）：验证失败返回 401/403 挑战，`WWW-Authenticate` 头引用受保护资源元数据 URL，并可选在 `/.well-known/oauth-protected-resource` 公开元数据文档。
+
+客户端有两个对接点：
+
+- `HttpClientTransportOptions::auth_challenge_handler`（见[传输层](/guide/transports)）：收到 401/403 的 `WWW-Authenticate` 时回调；返回非空 `Authorization` 头则恰好重试一次。回调内可委托 `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` 解析挑战并获取新令牌。
+- `HandleAuthChallenge(www_authenticate)`（返回 `bool`）：按 RFC 9728 解析挑战中的元数据 URL 以发现授权服务器，必要时重新走授权流程。
+
+```cpp
+auto auth = std::make_shared<OAuthClientProvider>(oauth_opts);
+auth->Authenticate();
+
+HttpClientTransportOptions http_opts;
+http_opts.endpoint = "https://api.example.com/mcp";
+http_opts.auth_challenge_handler =
+    [auth](std::string_view www_authenticate) -> std::string {
+        auth->HandleAuthChallenge(www_authenticate);
+        return auth->GetAuthorizationHeader();
+    };
+```
 
 ## PKCE 辅助函数
 

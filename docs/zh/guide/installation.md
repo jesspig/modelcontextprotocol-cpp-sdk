@@ -34,3 +34,14 @@ target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 | mcp-http        | STATIC     | HTTP/SSE 服务器传输                  |
 | mcp-server      | STATIC     | McpServer、工具/资源/提示             |
 | mcp-client      | STATIC     | McpClient、OAuth、MRTR               |
+
+## 一致性测试 fixture
+
+官方一致性测试服务端 fixture（`examples/conformance/server`）需要显式构建开关（默认 OFF）：
+
+```bash
+cmake --preset debug -DMCP_BUILD_CONFORMANCE=ON -DMCP_BUILD_EXAMPLES=ON
+cmake --build --preset debug
+```
+
+一致性测试客户端（`examples/conformance/client`）随 `MCP_BUILD_EXAMPLES=ON` 构建。本地复现 CI 一致性工作流：`scripts/run-conformance.sh server|client`。

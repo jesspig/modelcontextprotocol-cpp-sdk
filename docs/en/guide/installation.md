@@ -32,3 +32,14 @@ Available library targets:
 | mcp-http        | STATIC     | HTTP/SSE server transport            |
 | mcp-server      | STATIC     | McpServer, tools/resources/prompts   |
 | mcp-client      | STATIC     | McpClient, OAuth, MRTR               |
+
+## Conformance Fixture
+
+The official conformance server fixture (`examples/conformance/server`) requires an explicit build switch (default OFF):
+
+```bash
+cmake --preset debug -DMCP_BUILD_CONFORMANCE=ON -DMCP_BUILD_EXAMPLES=ON
+cmake --build --preset debug
+```
+
+The conformance client (`examples/conformance/client`) builds with `MCP_BUILD_EXAMPLES=ON`. Local reproduction of the CI conformance workflow: `scripts/run-conformance.sh server|client`.

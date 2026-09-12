@@ -32,6 +32,7 @@ if (result.content) {
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `action` | `string` | `"accept"`, `"decline"`, or `"cancel"` |
 | `content` | `optional<JsonValue>` | Submitted form data (present on accept) |
 
 The inherited `result_type` (`Complete` or `InputRequired`) indicates whether the input was fulfilled or is still pending.
