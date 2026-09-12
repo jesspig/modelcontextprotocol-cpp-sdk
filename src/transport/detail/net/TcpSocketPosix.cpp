@@ -72,21 +72,22 @@ const SigpipeIgnorer kSigpipeIgnorer;
 bool TcpSocket::WaitForEvents(short events, int timeout_ms) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     for (;;) {
-        if (closed_.load() || fd_ < 0) return false;
+        int fd = fd_.load();
+        if (closed_.load() || fd < 0) return false;
         long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   deadline - std::chrono::steady_clock::now())
                                   .count();
         int slice = remaining > kPollSliceMs
                         ? kPollSliceMs
                         : remaining > 0 ? static_cast<int>(remaining) : 0;
-        if (WaitForSocket(fd_, events, slice)) return true;
+        if (WaitForSocket(fd, events, slice)) return true;
         if (slice <= 0) return false;
     }
 }
 
 TcpSocket TcpSocket::FromFd(NativeFd fd) {
     TcpSocket s;
-    s.fd_ = fd;
+    s.fd_.store(fd);
     s.closed_.store(false);
     s.eof_ = false;
     EnableNoSigpipe(fd);
@@ -94,18 +95,18 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
 }
 
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
-    : fd_(other.fd_), eof_(other.eof_), closed_(other.closed_.load()) {
-    other.fd_ = kInvalidFd;
+    : fd_(other.fd_.load()), eof_(other.eof_), closed_(other.closed_.load()) {
+    other.fd_.store(kInvalidFd);
     other.closed_.store(true);
 }
 
 TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
         Close();
-        fd_ = other.fd_;
+        fd_.store(other.fd_.load());
         eof_ = other.eof_;
         closed_.store(other.closed_.load());
-        other.fd_ = kInvalidFd;
+        other.fd_.store(kInvalidFd);
         other.closed_.store(true);
     }
     return *this;
@@ -185,8 +186,8 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
         throw McpError(McpErrorCode::ConnectionRefused,
                        "connect failed for " + host_str + ":" + port_str + ": " + std::strerror(last_error));
 
-    fd_ = connected_fd;
-    EnableNoSigpipe(fd_);
+    fd_.store(connected_fd);
+    EnableNoSigpipe(connected_fd);
     closed_.store(false);
     eof_ = false;
 }
@@ -194,17 +195,21 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
 std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::milliseconds timeout) {
     if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
-    if (eof_ || fd_ < 0) return 0;
+    int fd = fd_.load();
+    if (eof_ || fd < 0) return 0;
 
     if (!WaitForEvents(POLLIN, ClampTimeoutMs(timeout))) {
         if (closed_.load())
             throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
         return 0;
     }
+    fd = fd_.load();
+    if (closed_.load() || fd < 0)
+        throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
 
     ssize_t n;
     do {
-        n = ::read(fd_, buf, len);
+        n = ::read(fd, buf, len);
     } while (n < 0 && errno == EINTR);
 
     if (n == 0) {
@@ -226,7 +231,8 @@ std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
 void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::milliseconds timeout) {
     if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
-    if (fd_ < 0)
+    int fd = fd_.load();
+    if (fd < 0)
         throw McpError(McpErrorCode::ConnectionClosed, "write on unconnected socket");
 
     const char* data = static_cast<const char*>(buf);
@@ -242,10 +248,13 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
                 throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
             throw McpError(McpErrorCode::RequestTimeout, "socket write timed out");
         }
+        fd = fd_.load();
+        if (closed_.load() || fd < 0)
+            throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
 
         ssize_t n;
         do {
-            n = ::send(fd_, data + total, len - total, kSendFlags);
+            n = ::send(fd, data + total, len - total, kSendFlags);
         } while (n < 0 && errno == EINTR);
 
         if (n < 0) {
@@ -261,21 +270,21 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
 }
 
 bool TcpSocket::WaitWriteable(std::chrono::milliseconds timeout) {
-    if (fd_ < 0) return false;
+    if (fd_.load() < 0) return false;
     return WaitForEvents(POLLOUT, ClampTimeoutMs(timeout));
 }
 
 bool TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
-    if (fd_ < 0) return false;
+    if (fd_.load() < 0) return false;
     return WaitForEvents(POLLIN, ClampTimeoutMs(timeout));
 }
 
 void TcpSocket::Close() {
     closed_.store(true);
-    if (fd_ >= 0) {
-        ::shutdown(fd_, SHUT_RDWR);
-        ::close(fd_);
-        fd_ = -1;
+    int fd = fd_.exchange(kInvalidFd);
+    if (fd >= 0) {
+        ::shutdown(fd, SHUT_RDWR);
+        ::close(fd);
     }
 }
 
