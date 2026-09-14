@@ -31,12 +31,12 @@
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
 #include <mcp/test/McpTest.hpp>
+#include <mcp/test/McpTimeout.hpp>
 #include "../unit/TestServerUtil.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -50,17 +50,6 @@ using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
 namespace {
-
-template <typename F>
-void RunWithTimeout(F&& body) {
-    auto future = std::async(std::launch::async, std::forward<F>(body));
-    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-        std::fprintf(stderr,
-            "[  FAILED  ] test body hung: call did not complete within 10s\n");
-        std::_Exit(1);
-    }
-    future.get();
-}
 
 template <typename Pred>
 bool WaitFor(Pred&& pred, std::chrono::milliseconds budget) {
@@ -185,7 +174,7 @@ struct Phase2InMemoryTaskFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase2InMemoryTaskFixture, TaskFullLifecycle) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         EXPECT_EQ(std::string(client->GetNegotiatedProtocolVersion()),
                   std::string("2025-11-25"));
 
@@ -234,7 +223,7 @@ TEST_F(Phase2InMemoryTaskFixture, TaskFullLifecycle) {
 }
 
 TEST_F(Phase2InMemoryTaskFixture, CancelRunningTask) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto cancelled_promise = std::make_shared<std::promise<std::string>>();
         auto cancelled_future = cancelled_promise->get_future();
         client->SetNotificationHandler(notifications::kTaskCancelled,
@@ -300,7 +289,7 @@ struct Phase2InMemoryElicitFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase2InMemoryElicitFixture, UrlElicitationRoundTrip) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto captured_promise = std::make_shared<std::promise<ElicitRequestParams>>();
         auto captured_future = captured_promise->get_future();
         client->SetUrlElicitationHandler(
@@ -403,7 +392,7 @@ struct Phase2HttpTaskFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase2HttpTaskFixture, TaskLifecycleOverHttp) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto handle = client->CallToolAsTask("http_task_worker");
         EXPECT_FALSE(handle.task_id.empty());
         EXPECT_EQ(handle.status, "working");
@@ -502,7 +491,7 @@ struct Phase2HttpResilienceFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase2HttpResilienceFixture, ListToolsAllAggregates) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto all = client->ListToolsAll();
         EXPECT_FALSE(all.next_cursor.has_value());
 
@@ -524,7 +513,7 @@ TEST_F(Phase2HttpResilienceFixture, ListToolsAllAggregates) {
 }
 
 TEST_F(Phase2HttpResilienceFixture, MaxTotalTimeoutTruncatesRequest) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto start = std::chrono::steady_clock::now();
         auto call = std::async(std::launch::async, [this]() -> std::exception_ptr {
             try {
@@ -611,7 +600,7 @@ struct Phase2HttpElicitFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase2HttpElicitFixture, UrlElicitationOverHttp) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto captured_promise = std::make_shared<std::promise<ElicitRequestParams>>();
         auto captured_future = captured_promise->get_future();
         client->SetUrlElicitationHandler(
