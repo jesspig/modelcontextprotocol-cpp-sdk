@@ -838,7 +838,7 @@ void Impl::KeepAliveLoop() {
     for (;;) {
         std::unique_lock<std::mutex> lock(sse_mutex_);
         keepalive_cv_.wait_for(lock, interval, [this] {
-            return !running_.load() || !sse_clients_.empty();
+            return !running_.load();
         });
         if (!running_.load())
             return;
