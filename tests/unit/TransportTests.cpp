@@ -5,6 +5,8 @@
 #include <mcp/JsonRpc.hpp>
 #include <mcp/test/McpTest.hpp>
 
+#include "TestFakes.hpp"
+
 using namespace mcp;
 
 // InMemoryTransport creation and basic functionality
@@ -104,4 +106,49 @@ TEST(TransportTest, CloseThenSendDoesNotThrow) {
     req.method = "ping";
     EXPECT_NO_THROW(pair.client->SendMessageAsync(JsonRpcMessage{req}));
     EXPECT_NO_THROW(pair.server->SendMessageAsync(JsonRpcMessage{req}));
+}
+
+// FakeTransport is a hand-written double that records outgoing messages and
+// injects incoming ones, so protocol logic can be tested without real IO.
+TEST(TransportTest, FakeTransportRecordsSends) {
+    FakeTransport fake;
+    fake.SetConnectResult(true);
+    EXPECT_TRUE(fake.ConnectResult());
+    EXPECT_FALSE(fake.Closed());
+    EXPECT_TRUE(fake.Sent().empty());
+
+    JsonRpcRequest initialize;
+    initialize.id = int64_t(1);
+    initialize.method = "initialize";
+    fake.SendMessageAsync(JsonRpcMessage{initialize});
+
+    JsonRpcRequest list_tools;
+    list_tools.id = int64_t(2);
+    list_tools.method = "tools/list";
+    JsonRpcMessage last_sent{list_tools};
+    fake.SendMessageAsync(last_sent);
+
+    EXPECT_CALL_COUNT(fake, 2);
+    EXPECT_EQ(fake.LastSent(), SerializeMessage(last_sent));
+
+    auto first = DeserializeMessage(fake.Sent()[0].payload);
+    ASSERT_TRUE(IsRequest(first));
+    EXPECT_EQ(AsRequest(first)->id, RequestId{int64_t(1)});
+    EXPECT_EQ(AsRequest(first)->method, "initialize");
+
+    JsonRpcNotification initialized;
+    initialized.method = "notifications/initialized";
+    ASSERT_TRUE(fake.PushIncoming(JsonRpcMessage{initialized}));
+
+    JsonRpcMessage received;
+    fake.GetMessageChannel().AsyncReceive(
+        [&received](std::error_code, JsonRpcMessage message) {
+            received = std::move(message);
+        });
+    ASSERT_TRUE(IsNotification(received));
+    EXPECT_EQ(AsNotification(received)->method, "notifications/initialized");
+
+    fake.Close();
+    EXPECT_TRUE(fake.Closed());
+    EXPECT_FALSE(fake.GetMessageChannel().IsOpen());
 }

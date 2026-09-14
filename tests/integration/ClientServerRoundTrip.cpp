@@ -6,32 +6,12 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 
 #include <mcp/test/McpTest.hpp>
+#include <mcp/test/McpTimeout.hpp>
 
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <future>
 #include <thread>
 
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
-
-namespace {
-
-// Run the test body with a hard timeout guard: a hung call fails the test
-// instead of blocking forever. Assertions inside the body keep their semantics.
-template <typename F>
-void RunWithTimeout(F&& body) {
-    auto future = std::async(std::launch::async, std::forward<F>(body));
-    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-        std::fprintf(stderr,
-            "[  FAILED  ] test body hung: call did not complete within 10s\n");
-        std::_Exit(1);
-    }
-    future.get();
-}
-
-} // namespace
 
 struct ClientServerFixture : mcp::test::TestCase {
     std::unique_ptr<McpServer> server;
@@ -105,7 +85,7 @@ struct ClientServerFixture : mcp::test::TestCase {
 
 // ── List tools ──
 TEST_F(ClientServerFixture, ListTools) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto result = client->ListTools();
         ASSERT_GE(result.tools.size(), 2);
 
@@ -122,7 +102,7 @@ TEST_F(ClientServerFixture, ListTools) {
 
 // ── Call echo tool ──
 TEST_F(ClientServerFixture, CallToolEcho) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto result = client->CallTool("echo",
             JsonValue::Parse(R"({"text":"Hello MCP"})"));
 
@@ -136,7 +116,7 @@ TEST_F(ClientServerFixture, CallToolEcho) {
 
 // ── Call add tool ──
 TEST_F(ClientServerFixture, CallToolAdd) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto result = client->CallTool("add",
             JsonValue::Parse(R"({"a":40,"b":2})"));
 
@@ -149,7 +129,7 @@ TEST_F(ClientServerFixture, CallToolAdd) {
 
 // ── Call nonexistent tool ──
 TEST_F(ClientServerFixture, CallToolNotFound) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         EXPECT_THROW(
             client->CallTool("nonexistent"),
             McpError);
@@ -158,7 +138,7 @@ TEST_F(ClientServerFixture, CallToolNotFound) {
 
 // ── Read resource ──
 TEST_F(ClientServerFixture, ReadResource) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         ReadResourceResult result;
         ASSERT_NO_THROW(result = client->ReadResource("hello://world"));
         ASSERT_GE(result.contents.size(), 1);
@@ -171,7 +151,7 @@ TEST_F(ClientServerFixture, ReadResource) {
 
 // ── Server info ──
 TEST_F(ClientServerFixture, ServerInfo) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         EXPECT_EQ(client->GetServerInfo().name, "TestServer");
         EXPECT_EQ(client->GetServerInfo().version, "1.0.0");
     });
@@ -179,7 +159,7 @@ TEST_F(ClientServerFixture, ServerInfo) {
 
 // ── Server capabilities (tools + resources) ──
 TEST_F(ClientServerFixture, ServerCapabilities) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto& caps = client->GetServerCapabilities();
         EXPECT_TRUE(caps.tools.has_value());
         EXPECT_TRUE(caps.resources.has_value());
@@ -189,7 +169,17 @@ TEST_F(ClientServerFixture, ServerCapabilities) {
 
 // ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
-    RunWithTimeout([]() {
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+__pragma(warning(push))
+__pragma(warning(disable : 4996))
+#endif
+    MCP_RUN_WITH_TIMEOUT([]() {
         // Ping is a 2025-only wire method; the fixture's Auto client
         // negotiates 2026, so build a dedicated legacy connection.
         auto pair = InMemoryTransport::CreatePair();
@@ -204,17 +194,12 @@ TEST_F(ClientServerFixture, Ping) {
         cops.connect_mode = ConnectMode::Legacy;
         auto legacy_client = McpClient::Create(pair.client, cops);
 
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#elif defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#elif defined(_MSC_VER)
-__pragma(warning(push))
-__pragma(warning(disable : 4996))
-#endif
         EXPECT_NO_THROW(legacy_client->Ping());
+
+        legacy_client->Close();
+        legacy_server->Close();
+        server_thread.join();
+    });
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #elif defined(__GNUC__)
@@ -222,9 +207,4 @@ __pragma(warning(disable : 4996))
 #elif defined(_MSC_VER)
 __pragma(warning(pop))
 #endif
-
-        legacy_client->Close();
-        legacy_server->Close();
-        server_thread.join();
-    });
 }
