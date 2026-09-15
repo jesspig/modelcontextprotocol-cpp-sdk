@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-09-12T11:26:01+08:00
+timestamp: 2026-09-15T15:49:10+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -20,14 +20,14 @@ resource: src/server/McpServer.cpp
 
 ## WireHandlers 方法清单
 
-`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:545](../../src/server/McpServer.cpp)）：
+`WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:554](../../src/server/McpServer.cpp)）：
 
 - **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件，含任务化执行，见下）
 - **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时）、`resources/subscribe|unsubscribe`（有资源时，2025-era）
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
-- **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）
+- **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）、`notifications/elicitation/complete`（唤醒 URL elicitation 等待）
 - **WireExtensionHandlers**：`server/extensions/list`
-- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:1010](../../src/server/McpServer.cpp)）
+- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:775](../../src/server/McpServer.cpp)）
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
 `initialized_` 守卫经 `RequireInitialized(initialized, modern_era, promise)` 统一判定：**modern era（2026-07-28）直接放行**（Pin-to-2026/纯 modern 客户端无 initialize 握手也可调用），legacy era 未初始化才回 `InvalidRequest "Server not initialized"`；`initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 不经此守卫。

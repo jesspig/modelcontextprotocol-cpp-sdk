@@ -124,4 +124,4 @@ result.input_required = std::move(ir);
 return result;  // 服务端自动签名 requestState（需配置 request_state_key）
 ```
 
-配置 `ServerOptions::request_state_key` 后，服务端在返回前自动为 `input_required` 结果签名 `request_state`；重试时篡改或过期的状态会在进入处理程序前被拒绝（-32602，`data.reason="invalid_request_state"`）。完整协议流程见 [MRTR](/advanced/mrtr)。
+配置 `ServerOptions::request_state_key` 后，服务端在返回前自动为 `input_required` 结果签名 `request_state`；重试时篡改或过期的状态会在进入处理程序前被拒绝（-32602，`data.reason="invalid_request_state"`）。完整协议流程见 [MRTR](/zh/advanced/mrtr)。

@@ -100,7 +100,7 @@ Once `bearer_auth` is set, `StreamableHttpServerTransport` runs the bearer auth 
 | `authorization_servers`    | `vector<string>`                           | Authorization servers written into the metadata document |
 | `serve_metadata_endpoint`  | `bool`                                     | Register `GET /.well-known/oauth-protected-resource` (no auth); default `true` |
 
-Outcomes on both the POST and GET (SSE) paths: a missing or malformed `Authorization: Bearer` header → `401` challenge; `verify` returning `ok=false` → `401` with `error="invalid_token"`; a token missing any `required_scopes` entry → `403` with `error="insufficient_scope"`. When `bearer_auth` is unconfigured, behavior is exactly as before — zero regression. For the client-side counterpart see [OAuth Support](/client/oauth).
+Outcomes on both the POST and GET (SSE) paths: a missing or malformed `Authorization: Bearer` header → `401` challenge; `verify` returning `ok=false` → `401` with `error="invalid_token"`; a token missing any `required_scopes` entry → `403` with `error="insufficient_scope"`. When `bearer_auth` is unconfigured, behavior is exactly as before — zero regression. For the client-side counterpart see [OAuth Support](/en/client/oauth).
 
 ### `InMemoryTransport::Pair`
 ```cpp
