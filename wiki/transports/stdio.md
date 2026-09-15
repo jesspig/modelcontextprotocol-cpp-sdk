@@ -3,7 +3,7 @@ type: Transport
 title: Stdio 传输
 description: 服务端（stdin/stdout 管道）+ 客户端（子进程）双向传输，'\n' 分隔的 JSON-RPC 行。
 tags: [transport, stdio, 管道, 子进程]
-timestamp: 2026-09-12T11:26:01+08:00
+timestamp: 2026-09-15T15:49:10+08:00
 resource: src/transport/StdioServerTransport.cpp
 ---
 
@@ -32,7 +32,7 @@ resource: src/transport/StdioServerTransport.cpp
 
 `PipeHandle::Read` 返回 0 **不一定是 EOF**——读循环必须用 `IsEof()` 区分"超时无数据"（继续轮询）与"真 EOF"（退出），否则空闲时被误判为断连。判停语义按平台（[win32_platform.cpp](../../src/transport/detail/win32_platform.cpp) / [posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)，接口见 [PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)）：
 
-- **POSIX**：`poll` 100ms 超时无数据即返回 0；`read` 返回 0 置 `eof_`；fork 安全——argv/envp 构造与 PATH 搜索在 `fork()` 前完成（fork 后仅 async-signal-safe 调用），管道 fd 与标准流 dup 设 `FD_CLOEXEC`（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）
+- **POSIX**：`poll` 100ms 超时无数据即返回 0；`read` 返回 0 置 `eof_`；fork 安全——argv/envp 构造与 PATH 搜索（自定义环境分支）在 `fork()` 前完成（fork 后仅 async-signal-safe 调用），管道 fd 与标准流 dup 设 `FD_CLOEXEC`（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）
 - **Win32 已全面 Overlapped 化**：`Win32Pipe` 持有 read/write/cancel 三个事件 + `io_mutex_` + `io_in_flight_` 计数 + `closed_`（atomic）+ `eof_`
   - `Read`：`ReadOverlapped`（`ReadFile(OVERLAPPED)` → `WaitForMultipleObjects({io_event, cancel_event}, 100ms)` → 完成走 `GetOverlappedResult`；超时或取消走 `CancelIoEx` 并等待完成）或 `ReadSync`（`PeekNamedPipe` 轮询，100ms 与 POSIX poll 对齐）
   - `Write` 同构：`WriteOverlapped`（无限等待 + cancel 解除）或 `WriteSync`

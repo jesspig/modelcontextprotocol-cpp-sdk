@@ -64,11 +64,11 @@ auto token = auth->GetAccessToken();
 
 ## 与服务端 Bearer 鉴权集成
 
-SDK 服务端内置 RFC 6750/9728 Bearer 鉴权（`StreamableHttpServerOptions::bearer_auth`，配置详见[传输层](/guide/transports)）：验证失败返回 401/403 挑战，`WWW-Authenticate` 头引用受保护资源元数据 URL，并可选在 `/.well-known/oauth-protected-resource` 公开元数据文档。
+SDK 服务端内置 RFC 6750/9728 Bearer 鉴权（`StreamableHttpServerOptions::bearer_auth`，配置详见[传输层](/zh/guide/transports)）：验证失败返回 401/403 挑战，`WWW-Authenticate` 头引用受保护资源元数据 URL，并可选在 `/.well-known/oauth-protected-resource` 公开元数据文档。
 
 客户端有两个对接点：
 
-- `HttpClientTransportOptions::auth_challenge_handler`（见[传输层](/guide/transports)）：收到 401/403 的 `WWW-Authenticate` 时回调；返回非空 `Authorization` 头则恰好重试一次。回调内可委托 `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` 解析挑战并获取新令牌。
+- `HttpClientTransportOptions::auth_challenge_handler`（见[传输层](/zh/guide/transports)）：收到 401/403 的 `WWW-Authenticate` 时回调；返回非空 `Authorization` 头则恰好重试一次。回调内可委托 `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` 解析挑战并获取新令牌。
 - `HandleAuthChallenge(www_authenticate)`（返回 `bool`）：按 RFC 9728 解析挑战中的元数据 URL 以发现授权服务器，必要时重新走授权流程。
 
 ```cpp

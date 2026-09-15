@@ -3,7 +3,7 @@ type: Concept
 title: 版本协商
 description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、supportedVersions 交集、codec 重建与 HTTP 版本头自学习。
 tags: [协议, 版本, 协商, 2026]
-timestamp: 2026-09-12T11:30:00+08:00
+timestamp: 2026-09-15T15:49:10+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -16,9 +16,9 @@ resource: include/mcp/client/VersionNegotiation.hpp
 - **现代版本（2026-07-28+）绝不通过 `initialize` 协商**——只能通过 `server/discover`
 - **`HandleInitialize` 在支持表中回显客户端的旧版版本号**：客户端版本命中支持表（且非现代）时返回客户端发送的版本（切勿返回 `kLatestProtocolVersion`——TS SDK v2 会校验 `result.protocolVersion` 是否在其旧版列表中）；**未声明（空串）回退 `kDefaultNegotiatedProtocolVersion`**（"2025-03-26"，对齐 5 语言的 `DEFAULT_NEGOTIATED_PROTOCOL_VERSION`）；**非空但未知版本回退 `kLegacyProtocolVersion`**（"2025-11-25"，对齐 python `LATEST_HANDSHAKE_VERSION` 与 rust 服务端默认）
 - `server/discover` 支持版本为 `kProtocolVersions` 全表（5 个，2024-11-05 至 2026-07-28），并**无条件置 `initialized_=true`**；服务端 `HandleDiscover` 总是回 `serverInfo`（`options_.server_info` 缺失回退 `{"mcp-server", kSdkVersion}`）；discover 响应**解析侧**（客户端 `DeserializeDiscoverResult`）对 `serverInfo` 容缺——顶层缺失时从 `_meta["io.modelcontextprotocol/serverInfo"]` 提取（官方 TS 服务器即此形态，[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）
-- **客户端 discover 响应的版本交集**（[McpClient.cpp](../../src/client/McpClient.cpp)）：`DeclaresSharedClientVersion` 判定响应 `supportedVersions` 与客户端支持表（`kProtocolVersions`）是否相交——字段缺失/非数组视为**未声明**，接受探测版本；`SelectSharedVersion` 从交集中取客户端支持的**最新**版本（数组从新到旧找第一个命中）；空列表/无交集回退探测版本（服务器应答探测即隐式接受）
-- 每次协商后 `SetNegotiatedProtocolVersion` 重建 WireCodec（`shared_ptr<WireCodec>` + `codec_mutex_`，原子交换 `shared_ptr<const std::string>`，线程安全，消息循环运行中可调用）；`NegotiatedProtocolVersion()` 锁下拷贝返回 `std::string`
-- **`initialize` 在 2026 时代豁免**：入站验证遇 `NotInEra` 时仅拒绝非 initialize 请求，现代服务端仍须应答遗留握手（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:229)）
+- **客户端 discover 响应的版本交集**（[McpClient.cpp](../../src/client/McpClient.cpp)）：`DeclaresSharedClientVersion` 判定响应 `supportedVersions` 与客户端支持表（`kProtocolVersions`）是否相交——字段缺失/非数组视为**未声明**，接受探测版本；`SelectSharedVersion` 从交集中取客户端支持的**最新**版本（数组从新到旧找第一个命中）；声明的列表为空或无交集则回退 `initialize`；仅字段未声明时保留探测版本（服务器应答探测即隐式接受）
+- 每次协商后 `SetNegotiatedProtocolVersion` 重建 WireCodec（`shared_ptr<WireCodec>` + `codec_mutex_`，`shared_mutex` 内整体交换 `negotiated_version_` 与 `codec_`，线程安全，消息循环运行中可调用）；`NegotiatedProtocolVersion()` 锁下拷贝返回 `std::string`
+- **`initialize` 在 2026 时代豁免**：入站验证遇 `NotInEra` 时仅拒绝非 initialize 请求，现代服务端仍须应答遗留握手（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:244)）
 
 ## 客户端三种连接模式
 
@@ -42,14 +42,14 @@ resource: include/mcp/client/VersionNegotiation.hpp
 | `-32022` 且 data 缺失/畸形 | 回退 initialize | 同左 |
 | `-32001` / `-32020` / `-32021` / `-32601` 及其他错误码 | 回退 initialize | 同左 |
 
-（[McpClient.cpp](../../src/client/McpClient.cpp:261)）
+（[McpClient.cpp](../../src/client/McpClient.cpp:329)）
 
 ## Streamable HTTP 客户端的版本头自学习
 
 transport 层无协商状态，改为**从流量中学习**（[StreamableHttpClientTransport.cpp:52](../../src/http/StreamableHttpClientTransport.cpp)）：
 
 - initialize 请求**不带** `MCP-Protocol-Version` 头（版本尚未确定，由 body 的 `params.protocolVersion` 表达）
-- 从 initialize 响应 `result.protocolVersion` 学习协商版本（POST 响应体与 GET 流首帧两处均可学习，`NegotiatedVersionFromResponse`）
+- 从 initialize 响应 `result.protocolVersion` 学习协商版本——**只认 initialize 的 POST 响应**（单 JSON 体或 SSE 块；GET 监听流不参与，`DispatchSseBlock` 仅在 `is_initialize` 时学习，`NegotiatedVersionFromResponse`）
 - 后续所有请求与 GET 接收流按学习到的版本携带 `MCP-Protocol-Version` 头；尚无学习值时兜底 `2026-07-28`（`EffectiveProtocolVersion`）
 
 ## 客户端通知的版本门控
@@ -58,7 +58,7 @@ transport 层无协商状态，改为**从流量中学习**（[StreamableHttpCli
 
 ## 时代差异
 
-详见 [/classes/wire-codec.md](../classes/wire-codec.md)：2026 无状态（每请求 `_meta` 携带版本/客户端信息）、`subscriptions/listen` 取代 `resources/subscribe`、tasks 系列方法仅 2025 存在（2026 时代被 `NotInEra` 拒绝，入站验证抛 MethodNotFound）、2025 通知（`notifications/initialized` 等 4 种）在 2026 时代无效。
+详见 [/classes/wire-codec.md](../classes/wire-codec.md)：2026 无状态（每请求 `_meta` 携带版本/客户端信息）、`subscriptions/listen` 取代 `resources/subscribe`、tasks 系列方法仅 2025 存在（2026 时代被 `NotInEra` 拒绝，入站验证抛 MethodNotFound）、2025 通知（`notifications/initialized`、`notifications/tasks/*` 等 9 种）在 2026 时代无效。
 
 ## 官方互通验证（TS conformance 服务器，端口 3010）
 

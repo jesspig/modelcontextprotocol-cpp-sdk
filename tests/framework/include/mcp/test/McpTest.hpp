@@ -3,6 +3,7 @@
 
 #include "McpApi.hpp"
 #include "McpAssert.hpp"
+#include "McpTrace.hpp"
 #include "McpTestInfo.hpp"
 
 #include <atomic>
@@ -21,7 +22,7 @@
         static const bool kRegistered_; \
     }; \
     const bool mcp_test_##suite##_##name##_test::kRegistered_ = \
-        (::mcp::test::Registry::Instance().Register(#suite, #name, \
+        (::mcp::test::Registry::Instance().Register(#suite, #name, {}, {}, \
              []() -> std::unique_ptr<::mcp::test::TestCase> { \
                  return std::make_unique<mcp_test_##suite##_##name##_test>(); \
              }), \
@@ -37,6 +38,8 @@
     }; \
     const bool mcp_test_##suite##_##name##_test::kRegistered_ = \
         (::mcp::test::Registry::Instance().Register(#suite, #name, \
+             &::mcp::test::detail::SuiteSetUpHook<suite>::Run, \
+             &::mcp::test::detail::SuiteTearDownHook<suite>::Run, \
              []() -> std::unique_ptr<::mcp::test::TestCase> { \
                  return std::make_unique<mcp_test_##suite##_##name##_test>(); \
              }), \

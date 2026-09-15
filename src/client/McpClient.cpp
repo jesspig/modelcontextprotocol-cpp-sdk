@@ -544,12 +544,16 @@ void McpClient::WireClientHandlers() {
                 }
                 JsonValue result = SerializeElicitResult(ElicitResult{});
                 result["action"] = JsonValue(action);
-                p.set_value(std::move(result));
                 JsonValue complete_params(JsonValue::object_tag);
                 complete_params["elicitationId"] = JsonValue(*params.elicitation_id);
-                handler_->SendNotification(
-                    notifications::kElicitationComplete,
-                    std::move(complete_params));
+                try {
+                    handler_->SendNotification(
+                        notifications::kElicitationComplete,
+                        std::move(complete_params));
+                } catch (...) {
+                    MCP_LOG(Error, "failed to send elicitation/complete notification");
+                }
+                p.set_value(std::move(result));
                 return;
             }
             if (!elicitation_handler_) {

@@ -70,7 +70,15 @@ server)
     echo "Waiting for server to be ready..."
     MAX_RETRIES=30
     RETRY_COUNT=0
-    while ! curl -s --max-time 2 "${SERVER_URL}" > /dev/null 2>&1; do
+    # 选 initialize：当前单 leg server 为 legacy 2025-11-25 有状态模式，必有 JSON 应答；POST 探测不会像 GET 一样建立 SSE 长流导致 --max-time 误超时。
+    probe_ready() {
+        curl -s --max-time 2 -X POST "${SERVER_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
+            > /dev/null 2>&1
+    }
+    while ! probe_ready; do
         if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
             echo "Server process exited unexpectedly"
             exit 1

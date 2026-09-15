@@ -469,14 +469,23 @@ std::future<ElicitResult> McpServer::ElicitUrl(
     meta.protocol_version = vers.empty()
         ? std::string(kLatestProtocolVersion) : std::string(vers);
 
-    auto request_future = handler_->SendRequest(
-        methods::kElicit, SerializeElicitRequestParams(params), meta, timeout);
-
     auto pending = std::make_shared<PendingUrlElicitation>();
     auto result_future = pending->promise.get_future();
     {
         std::lock_guard<std::mutex> lock(pending_url_elicitations_mutex_);
         pending_url_elicitations_.emplace(elicitation_id, pending);
+    }
+
+    std::future<JsonValue> request_future;
+    try {
+        request_future = handler_->SendRequest(
+            methods::kElicit, SerializeElicitRequestParams(params), meta, timeout);
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(pending_url_elicitations_mutex_);
+            pending_url_elicitations_.erase(elicitation_id);
+        }
+        throw;
     }
 
     auto watchdog = std::async(std::launch::async,
@@ -488,7 +497,7 @@ std::future<ElicitResult> McpServer::ElicitUrl(
             if (request_future.wait_until(deadline) != std::future_status::ready) {
                 error = std::make_exception_ptr(McpError(
                     McpErrorCode::RequestTimeout,
-                    "url elicitation timed out: " + elicitation_id));
+                    "url elicitation timed out (no response): " + elicitation_id));
             } else {
                 auto jv = request_future.get();
                 if (auto* c = jv.Find("code"); c && c->IsInt() && c->GetInt() < 0) {
@@ -510,7 +519,7 @@ std::future<ElicitResult> McpServer::ElicitUrl(
                 AbandonPendingUrlElicitation(elicitation_id,
                     std::make_exception_ptr(McpError(
                         McpErrorCode::RequestTimeout,
-                        "url elicitation timed out: " + elicitation_id)));
+                        "url elicitation timed out (no complete notification): " + elicitation_id)));
             }
         });
 
@@ -721,7 +730,11 @@ void McpServer::WireCoreHandlers() {
             {
                 std::lock_guard<std::mutex> lock(pending_url_elicitations_mutex_);
                 auto it = pending_url_elicitations_.find(id->GetString());
-                if (it == pending_url_elicitations_.end()) return;
+                if (it == pending_url_elicitations_.end()) {
+                    MCP_LOG(Warning,
+                        "dropping elicitation complete for unknown id: " + id->GetString());
+                    return;
+                }
                 pending = std::move(it->second);
                 pending_url_elicitations_.erase(it);
                 pending->completed = true;

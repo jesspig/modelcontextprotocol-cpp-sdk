@@ -6,6 +6,7 @@
 #include <mcp/protocol/WireCodec.hpp>
 
 #include <mcp/test/McpTest.hpp>
+#include <mcp/test/McpTrace.hpp>
 
 #include <iterator>
 
@@ -444,6 +445,7 @@ TEST(Conformance, SupportedProtocolVersions) {
     };
     ASSERT_EQ(std::size(kProtocolVersions), std::size(kExpected));
     for (size_t i = 0; i < std::size(kExpected); ++i) {
+        SCOPED_TRACE(kExpected[i]);
         EXPECT_EQ(kProtocolVersions[i], kExpected[i]);
     }
 }

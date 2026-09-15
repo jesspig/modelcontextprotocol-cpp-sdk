@@ -26,11 +26,11 @@
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
 #include <mcp/test/McpTest.hpp>
+#include <mcp/test/McpTimeout.hpp>
 #include "../unit/TestServerUtil.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <future>
 #include <memory>
 #include <string>
@@ -41,19 +41,6 @@ using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
 namespace {
-
-// Run the test body with a hard timeout guard: a hung call fails the test
-// instead of blocking forever (same convention as ClientServerRoundTrip).
-template <typename F>
-void RunWithTimeout(F&& body) {
-    auto future = std::async(std::launch::async, std::forward<F>(body));
-    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-        std::fprintf(stderr,
-            "[  FAILED  ] test body hung: call did not complete within 10s\n");
-        std::_Exit(1);
-    }
-    future.get();
-}
 
 constexpr int kMaxProgressSends = 250;
 constexpr auto kProgressSendInterval = std::chrono::milliseconds(20);
@@ -130,7 +117,7 @@ struct Phase1InMemoryFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase1InMemoryFixture, ProgressRoundTrip) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto got = std::make_shared<std::promise<ProgressNotificationParams>>();
         auto fut = got->get_future();
 
@@ -157,7 +144,7 @@ TEST_F(Phase1InMemoryFixture, ProgressRoundTrip) {
 }
 
 TEST_F(Phase1InMemoryFixture, RootsListChangedRoundTrip) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         ASSERT_GE(std::string(client->GetNegotiatedProtocolVersion()),
                   std::string("2025-06-18"));
 
@@ -241,7 +228,7 @@ struct Phase1HttpFixture : mcp::test::TestCase {
 };
 
 TEST_F(Phase1HttpFixture, ProgressRoundTrip) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto got = std::make_shared<std::promise<ProgressNotificationParams>>();
         auto fut = got->get_future();
 
@@ -269,7 +256,7 @@ TEST_F(Phase1HttpFixture, ProgressRoundTrip) {
 }
 
 TEST_F(Phase1HttpFixture, GetSseDeliversToolListChanged) {
-    RunWithTimeout([this]() {
+    MCP_RUN_WITH_TIMEOUT([this]() {
         auto got = std::make_shared<std::promise<std::string>>();
         auto fut = got->get_future();
         client->SetNotificationHandler(notifications::kToolListChanged,

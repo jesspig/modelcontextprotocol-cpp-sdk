@@ -47,6 +47,13 @@ server:
     - server-sse-multiple-streams
 
 client:
+    # --- sse-retry（SEP-1699，legacy client scored）---
+    # graceful-reconnect 断言已过；retry 计时断言失败：server 关流后 client
+    # 未等待 retry 字段声明的 500ms 即重连（实测 -70ms，要求 >=450ms 且 <=1000ms）；
+    # 另有 WARNING/SHOULD：重连未携带 Last-Event-ID 头。实现 retry 等待与
+    # Last-Event-ID 后删除本条目
+    - sse-retry
+
     # --- SEP-1034 elicitation 默认值 ---
     # SDK 客户端缺 applyDefaults：elicitation handler 返回空 content 时未按
     # 请求 schema 的默认值填充即回传，server 侧校验失败，预期 FAIL。
