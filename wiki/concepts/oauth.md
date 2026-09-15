@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728）。
 tags: [oauth, pkce, 安全, rfc9207, bearer]
-timestamp: 2026-09-12T06:05:00+08:00
+timestamp: 2026-09-15T15:49:10+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -16,6 +16,8 @@ resource: src/client/auth/OAuthClientProvider.cpp
 1. `DiscoverMetadata`：先 RFC 8414 `.well-known/oauth-authorization-server`；失败回退硬编码 `/authorize` + `/token` + issuer=server_url
 2. 无 client_id 且 metadata 有 registration_endpoint 时 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client"}`）
 3. 缓存 token 未过期直接成功；过期但有 refresh_token → `RefreshTokens`；否则授权码流
+
+另提供 `AuthenticateClientCredentials()`（client_credentials grant）：要求 `client_id` + `client_secret`，POST `grant_type=client_credentials`，同样强制 `iss` 校验（[OAuthClientProvider.cpp:276](../../src/client/auth/OAuthClientProvider.cpp)）。
 
 ## 授权码流
 
