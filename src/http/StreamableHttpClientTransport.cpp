@@ -108,7 +108,7 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
         if (line.compare(0, 5, "data:") == 0) {
             auto val = line.substr(5);
             auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
+            val = (n == std::string::npos) ? std::string() : val.substr(n);
             if (!result.data.empty()) result.data += "\n";
             result.data += val;
         } else if (line.compare(0, 3, "id:") == 0) {
@@ -139,10 +139,11 @@ inline constexpr std::chrono::milliseconds kListenRetryMaxDelay{30000};
 inline constexpr int kMaxListenReconnectAttempts = 5;
 inline constexpr std::chrono::seconds kListenStreamTimeout{600};
 
-inline void SleepInterruptibly(const std::atomic<bool>& stop,
+// 运行期间可被 Close 打断的退避睡眠：running 转 false 时立即返回。
+inline void SleepInterruptibly(const std::atomic<bool>& running,
                                std::chrono::milliseconds duration) {
     auto deadline = std::chrono::steady_clock::now() + duration;
-    while (!stop.load() && std::chrono::steady_clock::now() < deadline) {
+    while (running.load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
