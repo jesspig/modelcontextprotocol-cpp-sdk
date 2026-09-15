@@ -3,7 +3,7 @@ type: Test Suite
 title: 测试体系
 description: 17 个测试目标（14 unit + integration/conformance/framework），578 个测试用例（ctest 注册口径，自研测试框架）；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-09-15T00:41:54+08:00
+timestamp: 2026-09-15T06:08:10+08:00
 resource: tests/CMakeLists.txt
 ---
 
@@ -60,9 +60,10 @@ resource: tests/CMakeLists.txt
 ## 官方 conformance suite（.github/workflows/conformance.yml）
 
 - referee pin `@modelcontextprotocol/conformance@0.2.0-alpha.11`，server/client 双 leg 均 `--spec-version 2025-11-25`（legacy 有状态 wire；modern 场景因 applicability 窗口外被 referee skip，属运行配置排除而非逐条偏差）
-- **退出码语义由 referee `--expected-failures` 机制保证**（基线 `tests/conformance/baseline.yaml`）：基线外失败 → exit 1 真回归；过期基线条目（实现落地）→ exit 1 必须删条目——基线只减不增
+- **退出码语义由 referee `--expected-failures` 机制保证**（基线 `tests/conformance/baseline.yaml`）：基线外失败 → exit 1 真回归；过期基线条目（实现落地）→ exit 1 必须删条目——基线只减不增；新增场景一律按实跑结果逐条归因后才入基线，绝不预先臆测
 - server fixture：`examples/conformance/server`（`conformance-server`，`MCP_BUILD_CONFORMANCE=ON`），legacy 2025-11-25 有状态，28 工具 / 4 资源（含 1 URI 模板）/ 5 提示词全集；client 驱动：`examples/conformance/client`（`conformance-client`，随 `MCP_BUILD_EXAMPLES`），11 场景注册表，`MCP_CONFORMANCE_SCENARIO` env + argv[1] URL，退出码回报结果
 - server leg 实测：**65 passed / 2 failed，2 failed 均在基线**（`resources-templates-read` 生产缺陷与 `tools-call-with-progress` SEP-2260 缺口）；首轮 29 failed → SSE 头重复修复 → 6 failed → 基线收口至 2
+- client leg 实测：**Baseline check passed**（exit 0）；client 基线 36 → 37 条，含新增 `sse-retry` 已知缺口条目——server 关流后未等待 retry 字段声明的 500ms 即重连（实测 -70ms，要求 >=450ms 且 <=1000ms），另有重连未携带 Last-Event-ID 的 WARNING/SHOULD；实现 retry 等待与 Last-Event-ID 后删除该条目（详见 [/changelog/2026-09-15-log.md](/changelog/2026-09-15-log.md)）
 - CI 配置：server/client 双 job `node-version: 22`（referee 依赖 Node 22+ 的 `fs.globSync`）；server 就绪探测为 POST `initialize`（`probe_ready()`，`--max-time 2`）——旧 `curl GET /mcp` 探测会建立 SSE 长流，`--max-time` 必然超时（退出码 28）
 - 本地复现：`scripts/run-conformance.sh server|client`（就绪探测与 workflow 一致，POST `initialize`）
 
