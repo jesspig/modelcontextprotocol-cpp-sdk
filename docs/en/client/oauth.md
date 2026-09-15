@@ -65,11 +65,11 @@ auto token = auth->GetAccessToken();
 
 ## Integration with Server-Side Bearer Auth
 
-The SDK ships built-in RFC 6750/9728 bearer auth on the server side (`StreamableHttpServerOptions::bearer_auth`, see [Transports](/guide/transports)): failed verification returns a 401/403 challenge, the `WWW-Authenticate` header references the protected-resource metadata URL, and the metadata document is optionally served at `/.well-known/oauth-protected-resource`.
+The SDK ships built-in RFC 6750/9728 bearer auth on the server side (`StreamableHttpServerOptions::bearer_auth`, see [Transports](/en/guide/transports)): failed verification returns a 401/403 challenge, the `WWW-Authenticate` header references the protected-resource metadata URL, and the metadata document is optionally served at `/.well-known/oauth-protected-resource`.
 
 The client has two integration points:
 
-- `HttpClientTransportOptions::auth_challenge_handler` (see [Transports](/guide/transports)): invoked with the `WWW-Authenticate` header on 401/403; returning a non-empty `Authorization` header retries the request exactly once. Inside the callback you can delegate to `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` to parse the challenge and obtain a fresh token.
+- `HttpClientTransportOptions::auth_challenge_handler` (see [Transports](/en/guide/transports)): invoked with the `WWW-Authenticate` header on 401/403; returning a non-empty `Authorization` header retries the request exactly once. Inside the callback you can delegate to `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` to parse the challenge and obtain a fresh token.
 - `HandleAuthChallenge(www_authenticate)` (returns `bool`): parses the metadata URL from the challenge per RFC 9728 to discover the authorization server and re-runs the authorization flow when needed.
 
 ## PKCE Helpers

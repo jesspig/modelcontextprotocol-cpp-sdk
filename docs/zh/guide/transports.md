@@ -100,7 +100,7 @@ IClientTransport（连接工厂）
 | `authorization_servers`   | `vector<string>`                         | 授权服务器列表，写入元数据文档                    |
 | `serve_metadata_endpoint` | `bool`                                   | 注册 `GET /.well-known/oauth-protected-resource`（免鉴权），默认 `true` |
 
-POST 与 GET（SSE）两条路径上的结果一致：缺失或格式错误的 `Authorization: Bearer` 头 → `401` 挑战并引用 `resource_metadata_url`；`verify` 返回 `ok=false` → `401` 携带 `error="invalid_token"`；令牌未覆盖任一 `required_scopes` → `403` 携带 `error="insufficient_scope"`。未配置 `bearer_auth` 时行为与之前完全一致，零回归。客户端侧对接见 [OAuth 鉴权](/client/oauth)。
+POST 与 GET（SSE）两条路径上的结果一致：缺失或格式错误的 `Authorization: Bearer` 头 → `401` 挑战并引用 `resource_metadata_url`；`verify` 返回 `ok=false` → `401` 携带 `error="invalid_token"`；令牌未覆盖任一 `required_scopes` → `403` 携带 `error="insufficient_scope"`。未配置 `bearer_auth` 时行为与之前完全一致，零回归。客户端侧对接见 [OAuth 鉴权](/zh/client/oauth)。
 
 ### `InMemoryTransport::Pair`
 ```cpp
