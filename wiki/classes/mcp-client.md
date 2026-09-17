@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、任务化工具调用、404 会话自愈、progress 回调、MRTR、响应缓存与翻页聚合。
 tags: [client, 门面, 协商, mrt, progress, tasks]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-16T19:10:10Z
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -31,7 +31,7 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:296](../../src/client/M
 ## 行为要点
 
 - `WireClientHandlers()` 注册 6 个通知处理器（[McpClient.cpp:522](../../src/client/McpClient.cpp)）：三个 listChanged → `response_cache_->Clear()`；`resources/updated` → 按 uri 键**单键失效**（`Invalidate`，其余缓存保留）；`notifications/progress` → 重置对应请求超时 + 分发 `on_progress` 回调；`subscriptions/acknowledged` → 匹配 `SubscribeAsync` 待确认订阅并转发用户处理器（经 `SetNotificationHandler` 特判存储的 `user_ack_notification_handler_`，不覆盖内部逻辑）；另注册 elicit 请求处理器
-- 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置 → `MethodNotFound`；`SetLoggingHandler` 未设置 → 静默丢弃
+- 懒注册：`SetSamplingHandler`/`SetRootsHandler`（两 API 已因 SEP-2577 废弃，新代码改用 `SetElicitationHandler`）未设置 → `MethodNotFound`；`SetLoggingHandler` 未设置 → 静默丢弃
 - 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），读取 `GetAny` 双分区查（public 优先）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint` 顶层 `ttlMs`/`cacheScope` 优先回退嵌套 `cacheHint`，而 `CacheIfHinted` 顺序**相反**（嵌套优先、顶层兜底，[McpClient.cpp:964](../../src/client/McpClient.cpp)）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
 - MRTR：`SendRequestWithMrtr` 包装 `SendRequestWithMrtrOnce`（后者循环处理 `input_required`）——**仅当 `ClientOptions::input_required_config` 显式配置**（`auto_fulfill` 默认开）时启用，未配置 `max_rounds=0` 仅 1 轮；配置时 `max_rounds`（默认 10）超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout；`input_requests` 三类型（elicit/confirm → elicitation、sampling、roots）分派对应 handler，elicit/confirm 的 handler 结果取 `ElicitResult::content`（成员已由 `values` 改名对齐 wire 键）填入 responses；无请求项时 state-only 退避（50ms ×2、封顶 250ms，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
 - 自动翻页：`ListPages` 上限 `kMaxListPages = 64` 页，不收敛抛 `McpError(ProtocolViolation)`（修复原静默截断）；聚合入口 `ListToolsAll/ListResourcesAll/ListResourceTemplatesAll/ListPromptsAll` 自带 cursor 循环（同样 64 页上限，返回时 `next_cursor` 为空）

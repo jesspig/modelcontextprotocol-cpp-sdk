@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-16T19:38:35Z
 resource: src/core/JsonValue.cpp
 ---
 
@@ -44,7 +44,7 @@ resource: src/core/JsonValue.cpp
 
 ## 内部头（src/detail）
 
-- `JsonFields.hpp`：全部 JSON 字段名常量（119 个 `kXxx[]`，含 6 个 `_meta` 信封键与 2 个 ResultType 值字符串，另含 `kTTLMs/kCacheScope/kClientInfo/kRequestId/kRequiredCapabilities/kStatus` 等），协议键禁止硬编码
+- `JsonFields.hpp`：全部 JSON 字段名常量（92 个 `kXxx[]`，含 6 个 `_meta` 信封键与 2 个 ResultType 值字符串，另含 `kTTLMs/kCacheScope/kClientInfo/kRequestId/kRequiredCapabilities/kStatus` 等），协议键禁止硬编码
 - `JsonSerializer.hpp`：`DeserializeOptional` 未特化时 `static_assert` 编译失败（非静默）
 - `JsonSchemaValidator.hpp`：最小 JSON Schema 子集校验器（SEP-2106，draft-07 风格）
 - `ResponseCache.hpp`：客户端响应缓存（SEP-2549），键 = method + cursor/uri 上下文，TTL 钳制 24h，public/private 双分区，惰性过期清除（详见 [/classes/mcp-client.md](../classes/mcp-client.md)）

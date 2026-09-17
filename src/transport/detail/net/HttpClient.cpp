@@ -1,6 +1,7 @@
 // HttpClient.cpp — blocking HTTP/1.1 client implementation
 
 #include <transport/detail/net/HttpClient.hpp>
+#include <transport/detail/net/NetIoUtil.hpp>
 #include <transport/detail/net/TlsSocket.hpp>
 #include <mcp/transport/detail/Url.hpp>
 #include <mcp/McpError.hpp>
@@ -15,37 +16,15 @@ namespace mcp { namespace detail { namespace net {
 
 namespace {
 
-constexpr std::size_t kMaxLineBytes = 8 * 1024;
-constexpr std::size_t kMaxHeaderBytes = 64 * 1024;
 constexpr std::size_t kMaxHeaderCount = 100;
 constexpr std::size_t kMaxBodyBytes = 8 * 1024 * 1024;
 constexpr std::size_t kReadChunk = 8 * 1024;
 constexpr std::chrono::milliseconds kMaxConnectTimeout(10000);
 
-std::string ToLower(std::string_view text) {
-    std::string result(text);
-    for (char& c : result)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return result;
-}
-
-void TrimInPlace(std::string& text) {
-    std::size_t first = text.find_first_not_of(" \t");
-    std::size_t last = text.find_last_not_of(" \t");
-    if (first == std::string::npos) text.clear();
-    else text = text.substr(first, last - first + 1);
-}
-
 int HexValue(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return c - 'A' + 10;
-}
-
-std::chrono::milliseconds Remaining(const std::chrono::steady_clock::time_point& deadline) {
-    auto left = deadline - std::chrono::steady_clock::now();
-    if (left <= std::chrono::milliseconds(0)) return std::chrono::milliseconds(0);
-    return std::chrono::duration_cast<std::chrono::milliseconds>(left);
 }
 
 } // anonymous namespace

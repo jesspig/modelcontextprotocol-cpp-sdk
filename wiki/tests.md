@@ -3,7 +3,7 @@ type: Test Suite
 title: 测试体系
 description: 17 个测试目标（14 unit + integration/conformance/framework），578 个测试用例（ctest 注册口径，自研测试框架）；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-09-15T06:08:10+08:00
+timestamp: 2026-09-16T19:38:35Z
 resource: tests/CMakeLists.txt
 ---
 
@@ -54,12 +54,12 @@ resource: tests/CMakeLists.txt
 - **运行控制**：`--gtest_filter` 支持 `:` 多模式与 `-` 取反（glob `*`/`?`，匹配 `Suite.Case`，如 `'McpClientTest.*:TransportTest.Fake*'`）；`--gtest_list_tests`（gtest 风格）与 `--list-tests`（`Suite.Case` 行）；`--gtest_repeat=<n>`（n>=1）；`--gtest_shuffle`/`--gtest_random_seed=<n>`（同套件保持连续，seed 0 取时钟并打印）；`--gtest_break_on_failure`（首个失败即 abort）；`--gtest_output=json:<path>`（跨轮次汇总 status/elapsed_ms/properties，失败用例附 `failures` 消息数组（内含 SCOPED_TRACE 调用链））；`DISABLED_` 前缀自动跳过
 - **生命周期**：`GTEST_SKIP()` 抛 `SkipException`，在 SetUp 中跳过整用例（body 不执行、TearDown 仍执行），body 中跳过同样记为 SKIPPED；`SetUpTestSuite`/`TearDownTestSuite` 经 TEST_F 注册钩子每套件恰执行一次；`Environment` 全局环境（`AddGlobalTestEnvironment`，SetUp 先于全部用例、TearDown 逆序收尾）；`RecordProperty` + `AddTestEndListener`（`TestResult{suite,name,passed,skipped,elapsed_ms}`）
 - **归因**：`CurrentTest` 先取 thread_local、回退全局原子指针，子线程内断言仍归因到当前用例
-- **测试替身**：[TestFakes.hpp](../../tests/unit/TestFakes.hpp) 的 `FakeTransport`（`Sent()` 记录序列化出站消息、`PushIncoming` 注入入站、`LastSent`/`SendCount`/`Closed`/`Started`）与 `EXPECT_CALL_COUNT`，支撑无 IO 传输行为测试
+- **测试替身**：[TestFakes.hpp](../../tests/unit/TestFakes.hpp) 的 `FakeTransport`（`Sent()` 记录序列化出站消息、`PushIncoming` 注入入站、`LastSent`/`Closed`/`Started`）与 `EXPECT_CALL_COUNT`（按 `Sent().size()` 断言），支撑无 IO 传输行为测试
 - **用例数变化**：自测 14 → 37（新增 23 用例：双求值修复与致命语义、SCOPED_TRACE、跳过/套件钩子/全局环境、扩展断言/匹配器/ToString、属性与结束监听）；mcp-transport-tests 11 → 12（`FakeTransportRecordsSends`）
 
 ## 官方 conformance suite（.github/workflows/conformance.yml）
 
-- referee pin `@modelcontextprotocol/conformance@0.2.0-alpha.11`，server/client 双 leg 均 `--spec-version 2025-11-25`（legacy 有状态 wire；modern 场景因 applicability 窗口外被 referee skip，属运行配置排除而非逐条偏差）
+- referee pin `@modelcontextprotocol/conformance@0.2.0-alpha.11`，spec 版本单源 `CONFORMANCE_SPEC_VERSION` 环境变量（workflow env 定值 `2025-11-25`，`scripts/run-conformance.sh` 同名 env 默认兜底同值），server/client 双 leg 均用该变量传 `--spec-version`（legacy 有状态 wire；modern 场景因 applicability 窗口外被 referee skip，属运行配置排除而非逐条偏差）
 - **退出码语义由 referee `--expected-failures` 机制保证**（基线 `tests/conformance/baseline.yaml`）：基线外失败 → exit 1 真回归；过期基线条目（实现落地）→ exit 1 必须删条目——基线只减不增；新增场景一律按实跑结果逐条归因后才入基线，绝不预先臆测
 - server fixture：`examples/conformance/server`（`conformance-server`，`MCP_BUILD_CONFORMANCE=ON`），legacy 2025-11-25 有状态，28 工具 / 4 资源（含 1 URI 模板）/ 5 提示词全集；client 驱动：`examples/conformance/client`（`conformance-client`，随 `MCP_BUILD_EXAMPLES`），11 场景注册表，`MCP_CONFORMANCE_SCENARIO` env + argv[1] URL，退出码回报结果
 - server leg 实测：**65 passed / 2 failed，2 failed 均在基线**（`resources-templates-read` 生产缺陷与 `tools-call-with-progress` SEP-2260 缺口）；首轮 29 failed → SSE 头重复修复 → 6 failed → 基线收口至 2

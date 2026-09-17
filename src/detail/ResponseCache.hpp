@@ -36,15 +36,6 @@ public:
             std::move(value), now + (std::min)(ttl, kMaxTtl), now};
     }
 
-    // Returns the cached value when fresh, or nullopt when absent, expired,
-    // or older than max_age.
-    std::optional<JsonValue> Get(std::string_view key, Scope scope,
-        std::optional<std::chrono::milliseconds> max_age = std::nullopt)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return Lookup(Partition(scope), key, max_age);
-    }
-
     // Returns the cached value from either partition (public first), or
     // nullopt when absent, expired, or older than max_age.
     std::optional<JsonValue> GetAny(std::string_view key,

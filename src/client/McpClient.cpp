@@ -21,7 +21,7 @@ namespace mcp {
 
 namespace {
     // ── Timeouts ──
-    // kDefaultRequestTimeout (60s) comes from mcp/protocol/McpSession.hpp
+    // kDefaultRequestTimeout (60s) comes from mcp/protocol/McpSessionHandler.hpp
     constexpr std::chrono::seconds kTaskRequestTimeout(600);
     constexpr std::chrono::seconds kPingTimeout(10);
     // Waiting window for the subscriptions/acknowledged first frame after a

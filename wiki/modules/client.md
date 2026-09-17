@@ -3,7 +3,7 @@ type: Module
 title: mcp-client 客户端库
 description: McpClient 门面：连接模式协商、请求/响应、progress 回调、任务化工具调用、MRTR elicit 回填、404 会话自愈、OAuth 与令牌缓存。
 tags: [client, oauth, 缓存, 协商, progress, tasks]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-16T19:10:10Z
 resource: src/client/McpClient.cpp
 ---
 
@@ -24,7 +24,7 @@ resource: src/client/McpClient.cpp
 
 - **创建即阻塞**：`McpClient::Create` 构造后立即同步 `NegotiateProtocol()`，返回前协商完成
 - `WireClientHandlers()` 注册 6 个通知处理器：三个 listChanged（清空响应缓存）、`resources/updated`（按 uri 单键失效）、`notifications/progress`（重置对应请求超时 + 分发 `on_progress` 回调）、`subscriptions/acknowledged`（匹配 `SubscribeAsync` 待确认订阅并转发用户处理器）；另接线 `elicitation/create` 请求处理器（form 走 `elicitation_handler`，url 模式走 `url_elicitation_handler_` 并自动回 `notifications/elicitation/complete`）
-- 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置时收到请求抛 `MethodNotFound`；`SetLoggingHandler` 未设置时静默丢弃
+- 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置时收到请求抛 `MethodNotFound`（两 API 已因 SEP-2577 废弃，新代码改用 `SetElicitationHandler`）；`SetLoggingHandler` 未设置时静默丢弃
 - 自动翻页：无 cursor 的列表请求自动翻页，上限 `kMaxListPages = 64` 页，**不收敛抛 `McpError(ProtocolViolation)`**（修复原静默截断缺陷）
 - 聚合 API：`ListToolsAll/ListResourcesAll/ListResourceTemplatesAll/ListPromptsAll` 自带 cursor 循环聚合成单结果（同样 64 页上限防不收敛，超限抛 `ProtocolViolation`，返回时 `next_cursor` 为空）
 - 任务客户端流：`CallToolAsTask` 发起任务化 tools/call（对端返回 `resultType=="task"` 句柄时立即返回），与 `GetTask`/`PollTaskToCompletion`（500ms 间隔 / 300s 超时）/`CancelTask` 串成完整流

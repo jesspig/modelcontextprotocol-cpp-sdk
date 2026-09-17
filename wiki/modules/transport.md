@@ -3,7 +3,7 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-16T19:38:35Z
 resource: include/mcp/Transport.hpp
 ---
 
@@ -33,7 +33,7 @@ resource: include/mcp/Transport.hpp
 
 ## PlatformIO（合并 Win32+POSIX）
 
-[PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)：`ProcessHandle / PipeHandle / ProcessStartInfo / CreatedProcess` + 工厂函数 `CreateProcess / OpenStandardInput / OpenStandardOutput / OpenStandardError / SetThreadName`。
+[PlatformIO.hpp](../../include/mcp/transport/detail/PlatformIO.hpp)：`ProcessHandle / PipeHandle / ProcessStartInfo / CreatedProcess` + 工厂函数 `CreateProcess / OpenStandardInput / OpenStandardOutput / SetThreadName`。
 
 关键语义（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）：
 
@@ -44,6 +44,7 @@ resource: include/mcp/Transport.hpp
 
 ## 网络栈加固（detail/net）
 
+- **共享工具单一来源**（[NetIoUtil.hpp](../../src/transport/detail/net/NetIoUtil.hpp)）：`kMaxLineBytes = 8KB`/`kMaxHeaderBytes = 64KB` 解析上限与 `ToLower`/`TrimInPlace`/`Remaining`，HttpClient/WebSocketClient/HttpServerImpl 共用
 - **SIGPIPE**（[TcpSocketPosix.cpp](../../src/transport/detail/net/TcpSocketPosix.cpp)）：`FromFd`/`Connect` 统一经 `EnableNoSigpipe` 设置 `SO_NOSIGPIPE`（未定义该选项的平台为空操作，`send` 由非 Apple 分支的 `MSG_NOSIGNAL` 兜底）；TU 顶部安装进程级 `SIGPIPE` 忽略（静态 `SigpipeIgnorer` 兜底）；`Read` 遇 `ECONNRESET` 置 `eof_` 返回 0 视为 EOF（对齐 Win32）
 - **TcpSocket fd 竞态收敛**（[TcpSocket.hpp](../../src/transport/detail/net/TcpSocket.hpp)）：`fd_` 为 `std::atomic`（`int`/`SOCKET`）；`Close()` 经 `exchange(kInvalidFd)` 保证恰一次关闭，`Read`/`Write` 在 poll 唤醒后与每次系统调用前重读 fd 并复查 `closed_`——关闭与读写并发时不再向已关闭（或被系统重用的）fd 误操作
 - **Windows `min` 宏防御**：传输库统一以 `(std::min)` 括号形式调用（SseClientTransport、HttpClient、Sha1 等），避免未定义 `NOMINMAX` 时 Windows SDK 的 `min` 宏破坏编译

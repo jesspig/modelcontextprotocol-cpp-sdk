@@ -30,6 +30,7 @@ const en = {
     { text: 'Advanced', items: [
       { text: 'Protocol Versions', link: '/en/advanced/protocol-versions' },
       { text: 'MRTR', link: '/en/advanced/mrtr' },
+      { text: 'Logging', link: '/en/advanced/logging' },
     ]},
     { text: 'Examples', items: [
       { text: 'Echo Server', link: '/en/examples/echo-server' },
@@ -68,6 +69,7 @@ const zh = {
     { text: '进阶', items: [
       { text: '协议版本', link: '/zh/advanced/protocol-versions' },
       { text: 'MRTR 多轮往返', link: '/zh/advanced/mrtr' },
+      { text: '日志', link: '/zh/advanced/logging' },
     ]},
     { text: '示例', items: [
       { text: 'Echo 服务端', link: '/zh/examples/echo-server' },

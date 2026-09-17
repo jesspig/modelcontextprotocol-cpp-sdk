@@ -3,7 +3,7 @@ type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-16T19:38:35Z
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -23,7 +23,7 @@ resource: include/mcp/detail/ThreadUtils.hpp
 
 ## 响应回发机制（response_worker_）
 
-每请求**不再创建 OS 线程**（`SendResponseAsync`/`ReapCompletedResponses` 已删除）：handler 的 promise future 由单一 `response_worker_` 线程按队列串行消费（[McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp:184)）。
+每请求**不再创建 OS 线程**（`SendResponseAsync`/`ReapCompletedResponses` 已删除）：handler 的 promise future 由单一 `response_worker_` 线程按队列串行消费（[McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp:185)）。
 
 - `EnqueueResponse`：`response_queue_mutex_` 锁内检查 `closed_`（已关闭则**跳过投递直接丢弃**）
 - 队列任务：先 `wait_for(0)` 快检（同步 handler 零延迟），未就绪则 10ms 间隔轮询 future；等待中观察到 `closed_` 立即中止——**Close 永不阻塞在未被满足的 promise 上**

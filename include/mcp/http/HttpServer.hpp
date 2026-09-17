@@ -95,9 +95,6 @@ private:
     std::atomic<bool> running_{false};
     HttpServerOptions options_;
 
-    // DNS rebinding protection: validates Host (and Origin when configured).
-    bool IsRequestAllowed(const HttpRequest& req) const;
-
     // Handlers: (method, path) → handler
     std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;
 

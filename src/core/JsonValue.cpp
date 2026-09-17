@@ -18,10 +18,6 @@ namespace json {
 JsonValue ParseDocument(std::string_view json);
 }
 
-JsonValue ParseJsonString(std::string_view json) {
-    return json::ParseDocument(json);
-}
-
 // ── Hand-written JSON serializer ──
 
 namespace {
@@ -180,25 +176,43 @@ static void DumpValue(std::string& out, const JsonValue& jv, int indent, int dep
     }
 }
 
-std::string DumpJsonString(const JsonValue& jv, int indent) {
-    std::string out;
-    out.reserve(EstimateSize(jv, indent));
-    DumpValue(out, jv, indent, 0);
-    return out;
-}
-
 } // namespace mcp::detail
 
 // ── JsonValue public methods ──
 
 namespace mcp {
 
+namespace {
+
+const JsonValue& JsonValueLookupRequired(const JsonValue::Object& obj,
+                                          std::string_view key, const char* message) {
+    auto it = obj.find(key);
+    if (it == obj.end())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string(message) + std::string(key) + "'");
+    return it->second;
+}
+
+JsonValue& JsonValueLookupRequired(JsonValue::Object& obj,
+                                    std::string_view key, const char* message) {
+    auto it = obj.find(key);
+    if (it == obj.end())
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string(message) + std::string(key) + "'");
+    return it->second;
+}
+
+} // namespace
+
 JsonValue JsonValue::Parse(std::string_view json) {
-    return detail::ParseJsonString(json);
+    return detail::json::ParseDocument(json);
 }
 
 std::string JsonValue::Dump(int indent) const {
-    return detail::DumpJsonString(*this, indent);
+    std::string out;
+    out.reserve(detail::EstimateSize(*this, indent));
+    detail::DumpValue(out, *this, indent, 0);
+    return out;
 }
 
 // ── Accessors ──
@@ -291,12 +305,7 @@ JsonValue& JsonValue::operator[](std::string_view key) {
 }
 
 const JsonValue& JsonValue::operator[](std::string_view key) const {
-    auto& obj = GetObject();
-    auto it = obj.find(key);
-    if (it == obj.end())
-        throw McpError(McpErrorCode::DeserializeFailed,
-            std::string("JsonValue: key not found: '") + std::string(key) + "'");
-    return it->second;
+    return JsonValueLookupRequired(GetObject(), key, "JsonValue: key not found: '");
 }
 
 const JsonValue* JsonValue::Find(std::string_view key) const {
@@ -312,21 +321,11 @@ JsonValue* JsonValue::Find(std::string_view key) {
 }
 
 const JsonValue& JsonValue::At(std::string_view key) const {
-    auto& obj = GetObject();
-    auto it = obj.find(key);
-    if (it == obj.end())
-        throw McpError(McpErrorCode::DeserializeFailed,
-            std::string("JsonValue::At: key not found: '") + std::string(key) + "'");
-    return it->second;
+    return JsonValueLookupRequired(GetObject(), key, "JsonValue::At: key not found: '");
 }
 
 JsonValue& JsonValue::At(std::string_view key) {
-    auto& obj = GetObject();
-    auto it = obj.find(key);
-    if (it == obj.end())
-        throw McpError(McpErrorCode::DeserializeFailed,
-            std::string("JsonValue::At: key not found: '") + std::string(key) + "'");
-    return it->second;
+    return JsonValueLookupRequired(GetObject(), key, "JsonValue::At: key not found: '");
 }
 
 void JsonValue::PushBack(JsonValue val) {

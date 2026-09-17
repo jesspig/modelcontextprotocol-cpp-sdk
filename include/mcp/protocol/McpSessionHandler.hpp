@@ -2,7 +2,6 @@
 // McpSessionHandler.hpp
 // Internal JSON-RPC engine for message dispatch, request/response correlation, and filter pipelines
 #include <mcp/Export.hpp>
-#include <mcp/protocol/McpSession.hpp>
 #include <mcp/protocol/IncomingRequestMeta.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/protocol/WireCodec.hpp>
@@ -30,6 +29,8 @@ namespace mcp {
 // Forward declarations
 class ITransport;
 class MessageChannel;
+
+inline constexpr std::chrono::milliseconds kDefaultRequestTimeout{60000};
 
 // Handler type aliases
 using RequestHandler = std::function<void(const JsonRpcRequest&, std::promise<JsonValue>)>;
