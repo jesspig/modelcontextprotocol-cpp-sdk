@@ -14,12 +14,6 @@
 
 namespace mcp::detail {
 
-// ── Core JSON conversion (implemented in JsonValue.cpp) ──
-// JsonValue::Parse and JsonValue::Dump are the public interface.
-
-JsonValue ParseJsonString(std::string_view json);
-std::string DumpJsonString(const JsonValue& jv, int indent = -1);
-
 // ── Type name helper for error messages ──
 
 inline const char* JsonValueTypeName(const JsonValue& j) noexcept {

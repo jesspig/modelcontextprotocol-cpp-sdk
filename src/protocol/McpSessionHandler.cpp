@@ -4,6 +4,7 @@
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
+#include <mcp/Transport.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>

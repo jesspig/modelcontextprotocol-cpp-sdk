@@ -6,9 +6,9 @@
 #include <mcp/Content.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/McpVersion.hpp>
+#include <mcp/Transport.hpp>
 #include <mcp/Log.hpp>
 #include <detail/JsonFields.hpp>
-#include <detail/JsonSerialize_fwd.hpp>
 #include <detail/JsonSchemaValidator.hpp>
 
 #include <condition_variable>

@@ -6,6 +6,22 @@
 
 namespace mcp {
 
+namespace {
+
+JsonValue ExtensionsObjectFromMap(const std::map<std::string, JsonValue>& extensions) {
+    JsonValue obj(JsonValue::object_tag);
+    for (const auto& [k, val] : extensions) obj[k] = val;
+    return obj;
+}
+
+std::map<std::string, JsonValue> ExtensionsMapFromObject(const JsonValue& j) {
+    std::map<std::string, JsonValue> exts;
+    for (const auto& [k, val] : j.GetObject()) exts[k] = val;
+    return exts;
+}
+
+}
+
 // ── ToolsCapability ──
 
 JsonValue SerializeToolsCapability(const ToolsCapability& v) {
@@ -113,11 +129,7 @@ JsonValue SerializeServerCapabilities(const ServerCapabilities& v) {
     if (v.elicitation) obj[detail::kElicitation] = SerializeElicitationCapability(*v.elicitation);
     if (v.completions) obj["completions"] = SerializeEmptyCapability(*v.completions);
     if (v.subscriptions) obj["subscriptions"] = SerializeEmptyCapability(*v.subscriptions);
-    if (v.extensions) {
-        JsonValue ext(JsonValue::object_tag);
-        for (const auto& [k, val] : *v.extensions) ext[k] = val;
-        obj[detail::kExtensions] = std::move(ext);
-    }
+    if (v.extensions) obj[detail::kExtensions] = ExtensionsObjectFromMap(*v.extensions);
     detail::SerializeOptional(obj, detail::kExperimental, v.experimental);
     return obj;
 }
@@ -143,11 +155,7 @@ ServerCapabilities DeserializeServerCapabilities(const JsonValue& j) {
     auto* sub = j.Find("subscriptions");
     if (sub && sub->IsObject()) v.subscriptions = DeserializeEmptyCapability(*sub);
     auto* ext = j.Find(detail::kExtensions);
-    if (ext && ext->IsObject()) {
-        std::map<std::string, JsonValue> exts;
-        for (const auto& [k, val] : ext->GetObject()) exts[k] = val;
-        v.extensions = std::move(exts);
-    }
+    if (ext && ext->IsObject()) v.extensions = ExtensionsMapFromObject(*ext);
     detail::DeserializeOptional(j, detail::kExperimental, v.experimental);
     return v;
 }
@@ -159,11 +167,7 @@ JsonValue SerializeClientCapabilities(const ClientCapabilities& v) {
     if (v.roots) obj[detail::kRoots] = SerializeRootsCapability(*v.roots);
     if (v.sampling) obj[detail::kSampling] = SerializeSamplingCapability(*v.sampling);
     if (v.elicitation) obj[detail::kElicitation] = SerializeElicitationCapability(*v.elicitation);
-    if (v.extensions) {
-        JsonValue ext(JsonValue::object_tag);
-        for (const auto& [k, val] : *v.extensions) ext[k] = val;
-        obj[detail::kExtensions] = std::move(ext);
-    }
+    if (v.extensions) obj[detail::kExtensions] = ExtensionsObjectFromMap(*v.extensions);
     detail::SerializeOptional(obj, detail::kExperimental, v.experimental);
     return obj;
 }
@@ -177,11 +181,7 @@ ClientCapabilities DeserializeClientCapabilities(const JsonValue& j) {
     auto* e = j.Find(detail::kElicitation);
     if (e && e->IsObject()) v.elicitation = DeserializeElicitationCapability(*e);
     auto* ext = j.Find(detail::kExtensions);
-    if (ext && ext->IsObject()) {
-        std::map<std::string, JsonValue> exts;
-        for (const auto& [k, val] : ext->GetObject()) exts[k] = val;
-        v.extensions = std::move(exts);
-    }
+    if (ext && ext->IsObject()) v.extensions = ExtensionsMapFromObject(*ext);
     detail::DeserializeOptional(j, detail::kExperimental, v.experimental);
     return v;
 }
