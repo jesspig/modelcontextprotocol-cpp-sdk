@@ -3,13 +3,13 @@ type: Class
 title: HttpServer
 description: 自研 HTTP/1.1 PIMPL 服务端：SSE 广播、单响应流关闭、并发限制、Host/Origin 校验。
 tags: [http, sse, pimpl]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-16T19:38:35Z
 resource: include/mcp/http/HttpServer.hpp
 ---
 
 # HttpServer
 
-PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`，后者存 `shared_ptr<TcpSocket>`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:481](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id, true)` 移除。
+PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl.hpp](../../src/http/HttpServerImpl.hpp)）：`HttpServerImpl` 即自研实现 `mcp::detail::http_server_impl::Impl`，持有 `HttpServerOptions` 拷贝、监听 fd、accept 线程、连接线程表（`conn_threads_`/`conn_fds_`，后者存 `shared_ptr<TcpSocket>`）与 SSE 客户端表。`impl_` 用 `shared_ptr + atomic_load/store` 管理，`HttpServer::Stop` 的 stopper 线程持有保证存活；SSE 写回调捕获连接对象（`shared_ptr<TcpSocket>`，[HttpServerImpl.cpp:481](../../src/http/HttpServerImpl.cpp)），连接线程读循环结束后直接 `RemoveSseClient(id)` 移除。
 
 ## 关键行为
 
@@ -28,7 +28,7 @@ PIMPL 结构（[HttpServer.cpp](../../src/http/HttpServer.cpp) + [HttpServerImpl
 ## SSE 客户端管理
 
 - `on_connect`/`on_disconnect` 已接线：SSE 客户端注册/移除时触发（拷贝语义，勿 move 取走）
-- **`on_disconnect` 移除路径统一"恰好一次"**：连接读循环结束（`RemoveSseClient(id, true)`）、公共 `RemoveSseClient`、`BroadcastSse`/keepalive 写失败分支均以移除结果 `removed` 决定是否**锁外**调用回调（`sse_mutex` 内只移除与拷贝回调，锁外执行）
+- **`on_disconnect` 移除路径统一"恰好一次"**：连接读循环结束（`RemoveSseClient(id)`）、公共 `RemoveSseClient`、`BroadcastSse`/keepalive 写失败分支均以移除结果 `removed` 决定是否**锁外**调用回调（`sse_mutex` 内只移除与拷贝回调，锁外执行）
 - `BroadcastSse` 对已断开连接写失败会**自动移除**该客户端（锁外拷贝 entry 列表逐个发送，每个 entry 有独立 `write_mutex`，异常按 entry 自清理）
 - **SSE keepalive 线程**（`options_.sse_keep_alive_ms > 0` 时在 `Start()` 启动）：`wait_for` 谓词仅 `!running_`——每轮睡满 `sse_keep_alive_ms` 间隔后，有客户端则向 `sse_clients_` 广播注释帧 `: ping\r\n\r\n`（`kSsePingFrame`）、无客户端空转一轮；仅 `Stop()`（`running_` 置 false + `notify_all`）唤醒退出（有 SSE 客户端不再触发忙循环）；写失败按 entry 自清理；`Stop()` 在关闭连接 fd 后 join
 - `next_sse_id` 从 1 递增
