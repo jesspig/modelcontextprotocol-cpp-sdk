@@ -1,6 +1,7 @@
 // WebSocketClient.cpp — RFC 6455 WebSocket 客户端
 
 #include <transport/detail/net/WebSocketClient.hpp>
+#include <transport/detail/net/NetIoUtil.hpp>
 #include <transport/detail/net/Sha1.hpp>
 #include <transport/detail/net/TlsSocket.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
@@ -20,8 +21,6 @@ namespace mcp { namespace detail { namespace net {
 
 namespace {
 
-constexpr std::size_t kMaxLineBytes = 8 * 1024;
-constexpr std::size_t kMaxHeaderBytes = 64 * 1024;
 constexpr std::chrono::milliseconds kFrameIdleTimeout(24 * 60 * 60 * 1000);
 constexpr std::chrono::milliseconds kSendTimeout(30000);
 constexpr std::string_view kWebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -31,26 +30,6 @@ constexpr uint8_t kOpcodeBinary = 0x2;
 constexpr uint8_t kOpcodeClose = 0x8;
 constexpr uint8_t kOpcodePing = 0x9;
 constexpr uint8_t kOpcodePong = 0xA;
-
-std::chrono::milliseconds Remaining(const std::chrono::steady_clock::time_point& deadline) {
-    auto left = deadline - std::chrono::steady_clock::now();
-    if (left <= std::chrono::milliseconds(0)) return std::chrono::milliseconds(0);
-    return std::chrono::duration_cast<std::chrono::milliseconds>(left);
-}
-
-std::string ToLower(std::string_view text) {
-    std::string result(text);
-    for (char& c : result)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return result;
-}
-
-void TrimInPlace(std::string& text) {
-    std::size_t first = text.find_first_not_of(" \t");
-    std::size_t last = text.find_last_not_of(" \t");
-    if (first == std::string::npos) text.clear();
-    else text = text.substr(first, last - first + 1);
-}
 
 } // anonymous namespace
 

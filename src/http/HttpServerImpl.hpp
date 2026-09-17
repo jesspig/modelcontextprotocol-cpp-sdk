@@ -1,4 +1,4 @@
-// HttpServerImpl.hpp — 自研 HTTP/1.1 服务器实现（替换 libhv）
+// HttpServerImpl.hpp — 自研 HTTP/1.1 服务器实现
 
 #pragma once
 
@@ -47,7 +47,7 @@ public:
     void Stop();
 
     uint64_t AddSseClient(std::function<void(std::string_view)> send_fn);
-    bool RemoveSseClient(uint64_t id, bool call_on_disconnect);
+    bool RemoveSseClient(uint64_t id);
     void BroadcastSse(std::string_view event);
 
 private:
@@ -57,7 +57,7 @@ private:
     enum class RequestLineResult { Ok, Close, BadRequest };
     enum class HeaderResult { Ok, Close, BadRequest, PayloadTooLarge };
 
-    void AcceptLoop(uint16_t port, HandlerMap handlers);
+    void AcceptLoop(HandlerMap handlers);
     void HandleConnection(const std::shared_ptr<net::TcpSocket>& conn, HandlerMap handlers,
                           std::shared_ptr<std::atomic<bool>> done);
     void HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn, HandlerMap handlers);
@@ -67,7 +67,6 @@ private:
                         std::chrono::milliseconds timeout, std::size_t max_line_bytes);
     RequestLineResult ReadRequestLine(net::TcpSocket& conn, std::string& buffer,
                                       std::string& method, std::string& path,
-                                      std::string& version,
                                       std::chrono::milliseconds timeout);
     HeaderResult ReadHeaderBlock(net::TcpSocket& conn, std::string& buffer,
                                  std::unordered_map<std::string, std::string>& headers,
@@ -81,8 +80,7 @@ private:
     void WriteSseHeaders(net::TcpSocket& conn,
                          const std::unordered_map<std::string, std::string>& headers,
                          bool close_after_write);
-    void RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry,
-                              bool call_on_disconnect);
+    void RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry);
 
     static bool IsRequestAllowed(const HttpRequest& req, const HttpServerOptions& options);
     static bool IsLocalhostHost(const std::string& host_with_port);

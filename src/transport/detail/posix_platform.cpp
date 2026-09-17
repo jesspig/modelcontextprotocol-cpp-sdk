@@ -100,11 +100,6 @@ public:
             fd_ = -1;
         }
     }
-
-    uintptr_t native_handle() const override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return (uintptr_t)fd_;
-    }
 };
 
 class PosixProcess : public ProcessHandle {
@@ -115,8 +110,6 @@ public:
 
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
-    int WaitForExit(int timeout_ms) override;
-    uintptr_t native_handle() const override { return (uintptr_t)pid_; }
 };
 
 PosixProcess::~PosixProcess() {
@@ -154,31 +147,6 @@ bool PosixProcess::Terminate(int timeout_ms) {
     waitpid(pid_, nullptr, 0);
     pid_ = -1;
     return true;
-}
-
-int PosixProcess::WaitForExit(int timeout_ms) {
-    if (pid_ <= 0) return -1;
-
-    if (timeout_ms <= 0) {
-        int status = 0;
-        waitpid(pid_, &status, 0);
-        pid_ = -1;
-        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    }
-
-    // Poll with timeout
-    int elapsed = 0;
-    while (elapsed < timeout_ms) {
-        int status = 0;
-        pid_t result = waitpid(pid_, &status, WNOHANG);
-        if (result == pid_) {
-            pid_ = -1;
-            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        elapsed += 10;
-    }
-    return -1;
 }
 
 } // anonymous namespace
@@ -303,7 +271,6 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     result.process = std::make_unique<PosixProcess>(pid);
     result.stdin_pipe = std::make_unique<PosixPipe>(stdin_pipefd[1]);
     result.stdout_pipe = std::make_unique<PosixPipe>(stdout_pipefd[0]);
-    // stderr_pipe: left null (inherited from parent, same as Win32 semantics)
     return result;
 }
 
@@ -315,12 +282,6 @@ std::unique_ptr<PipeHandle> OpenStandardInput() {
 
 std::unique_ptr<PipeHandle> OpenStandardOutput() {
     int fd = dup(STDOUT_FILENO);
-    SetCloseOnExec(fd);
-    return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
-}
-
-std::unique_ptr<PipeHandle> OpenStandardError() {
-    int fd = dup(STDERR_FILENO);
     SetCloseOnExec(fd);
     return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
 }
