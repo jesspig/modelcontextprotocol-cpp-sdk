@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、progress 推送、requestState 签发、任务后台执行、URL elicitation 与回调四层接线。
 tags: [server, 门面, 注册, 回调, progress, tasks, elicitation]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T00:53:02+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -14,6 +14,7 @@ resource: include/mcp/server/McpServer.hpp
 ## 注册 API
 
 - `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`：每次注册后重跑 `WireHandlers()`（拆为 7 个 `Wire*Handlers` 方法）+ `DeriveCapabilities()`；**同名语义不同**——`RegisterTool` 按名覆盖（map，[McpServer.cpp:286](../../src/server/McpServer.cpp)），资源/模板/提示词为 vector **追加**（同名不覆盖，[McpServer.cpp:314](../../src/server/McpServer.cpp)）；`RegisterTool` 校验工具名 `^[A-Za-z0-9._-]{1,128}$`（`IsValidToolName`，违规抛 `McpError(InvalidParams)`，[McpServer.cpp:93](../../src/server/McpServer.cpp)），同时把 `cached_tools_json_` 置 `nullopt` 失效（[McpServer.cpp:287](../../src/server/McpServer.cpp)）
+- `RegisterResourceTemplate(name, uri_template, opts, handler)`：模板先经 `detail::UriTemplate::Parse`（[UriTemplate.hpp](../../src/detail/UriTemplate.hpp)）校验，**非法模板抛 `McpError(InvalidParams, "invalid resource template '<tmpl>': <reason>")`**（[McpServer.cpp:329](../../src/server/McpServer.cpp)）——此前不校验即写入；条目存 `uri_pattern` + `is_template=true` + `template_handler`（`(uri, variables)` 回调，[McpServer.hpp:171](../../include/mcp/server/McpServer.hpp)），资源/模板/提示词同为 vector 追加
 - 工具/资源/提示词条目内部结构见 [McpServer.hpp](../../include/mcp/server/McpServer.hpp)（ResourceEntry 含 uri_pattern/is_template 等；PromptEntry 含 `arguments`，经 `PromptOptions::Arguments()` 声明并随 `prompts/list` 输出）
 
 ## 回调接线（四层）
@@ -29,6 +30,7 @@ resource: include/mcp/server/McpServer.hpp
 
 - `tools/call`：异步执行（std::async），future 存 `pending_async_futures_`，`Close()` 先全部 wait；工具声明 `output_schema` 且返回 `structured_content` 时用 `ValidateJsonSchema` 校验
 - **任务化执行**：工具经 `ToolOptions::execution`（`ToolExecutionMode::Task`）声明且有 `task_store` 时，`tools/call` 立即返回 `CreateTaskResult`（wire `task.taskId/status/createdAt`，`resultType` 落 `"task"`，仅 2025 及更早时代）——后台执行 Working→Completed/Failed 经 `notifications/tasks/status` 通知；协作取消经 `RequestContext::IsCancellationRequested()`（`shared_ptr<const std::atomic<bool>>` 标志），`tasks/cancel` 置位标志、落 `Cancelled` 终态且终态不迁移
+- `resources/read`：先扫非模板资源做 `uri_pattern == uri` 精确匹配，再扫模板逐个 `detail::UriTemplate::Parse` + `Match` 后调 `template_handler(uri, variables)`（静态优先，变量值为 pct-decoded，[McpServer.cpp:1254](../../src/server/McpServer.cpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`
 - 分页：`kDefaultPageSize = 100`，cursor 为数字字符串；resources/templates/prompts 三处共用 `PaginateEntries` 模板（含 include 谓词）
 - 列表响应缓存提示：按方法名查 `options_.cache_hints`（6 个方法：tools/list、resources/list、resources/templates/list、resources/read、prompts/list、server/discover；`GetCacheHint` 用 `std::less<>` 透明比较器）
 - `tools/list` 序列化缓存：`cached_tools_json_` 在 `RegisterTool` 时失效，`HandleListTools` shared/unique 锁 double-check 重建（[McpServer.cpp:971](../../src/server/McpServer.cpp)）
@@ -44,6 +46,14 @@ resource: include/mcp/server/McpServer.hpp
 - `Elicit`：无 config 时超时 600s；结果 `code` 为负抛 McpError
 - `ElicitUrl(url, message, timeout=600s)`（URL elicitation，SEP-1034）：`elicitation/create` 携带 `mode="url"`/`url`/自增 `elicitationId`，登记 `pending_url_elicitations_`（`PendingUrlElicitation`：promise + completed 标志）；`notifications/elicitation/complete` 按 id 唤醒并以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`，连接关闭经 `AbandonPendingUrlElicitation` 以错误结算
 - `GetClientCapabilities()/GetClientInfo()` 返回 `shared_ptr<const T>`；`GetNegotiatedProtocolVersion()` 返回 `std::string`（转发自 handler）
+
+## URI 模板已知限制
+
+`detail::UriTemplate`（[UriTemplate.hpp](../../src/detail/UriTemplate.hpp)，RFC 6570 子集）在 `RegisterResourceTemplate` 校验与 `resources/read` 匹配路径上仍有以下限制：
+
+- **不支持前缀修饰符 `{var:N}`**（RFC 6570 Level 4）：`ParseExpression` 只接受 `varchar` 与 `.` 分隔的变量名，`:` 既非算子也非合法变量名字符，注册期即被 `Parse` 以 `invalid uri template variable name` 拒绝并抛 `InvalidParams`
+- **拒绝歧义模板**（设计选择）：两个相邻且无字面量分隔的变量（如 `{a}{b}`）报 `adjacent uri template variables without a literal separator`；两个多段变量（如 `{+a}{+b}`）报 `multiple multi-segment variables`；均在注册期抛 `InvalidParams`
+- **匹配不了「键名内联进字面量」表达式的部分变量缺失展开**：`BuildMatchParts` 把 `{?x,y}` / `{;x,y}` 每个变量的键名前缀固化进前一个 `MatchPart.literal`（`?x=`/`&y=`、`;x`/`;y`）；`Expand` 在 `x` 未定义时产出 `?y=2`（`;y=2`），而 `Match` 的字面量链仍要求 `?x=`（`;x`）前缀，故这类 URI 匹配失败
 
 ## 相关页面
 

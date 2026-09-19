@@ -121,7 +121,6 @@ target_sources(mcp-core PRIVATE
     src/core/McpTypesTools.cpp
     src/core/McpTypesResults.cpp
     src/core/McpTypesNotifications.cpp
-    src/core/McpTypesOptions.cpp
     src/core/McpTypesTasks.cpp
     src/core/McpTypesParams.cpp
     src/core/Content.cpp
@@ -258,7 +257,7 @@ if(MCP_BUILD_TESTS)
         mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
         mcp-event-store-tests mcp-streamable-http-tests mcp-websocket-tests
-        mcp-integration-tests mcp-conformance-tests)
+        mcp-integration-tests mcp-conformance-tests mcp-uri-template-tests)
         mcp_enable_werror(${_t})
     endforeach()
 endif()

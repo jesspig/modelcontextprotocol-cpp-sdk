@@ -26,13 +26,6 @@
 # 范围内，C++ server 亦无对应表面，不开 --suite all 前无需条目。
 
 server:
-    # --- resources-templates-read（生产缺陷）---
-    # McpServer::HandleReadResource 只匹配静态资源，显式跳过 is_template 条目；
-    # 全仓库无 URI 模板匹配实现，resources/read 对模板实例 URI
-    # （如 test://template/123/data）一律 -32602 resource not found。
-    # 实现模板匹配后删除本条目（届时 runner 会以过期条目报错）。
-    - resources-templates-read
-
     # --- server→client 消息流关联缺口（SEP-2260 请求-流关联）---
     # server 主动消息（progress notification / elicitation request）经
     # BroadcastSse 走 GET SSE 流广播，而 POST 响应流单写即关

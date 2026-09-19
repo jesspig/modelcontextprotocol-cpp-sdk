@@ -10,6 +10,7 @@
 #include <mcp/Log.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSchemaValidator.hpp>
+#include <detail/UriTemplate.hpp>
 
 #include <condition_variable>
 #include <thread>
@@ -325,6 +326,13 @@ void McpServer::RegisterResourceTemplate(
         const std::string&,
         const std::map<std::string, std::string>&)> handler)
 {
+    std::string error;
+    if (!detail::UriTemplate::Parse(uri_template, error)) {
+        throw McpError(McpErrorCode::InvalidParams,
+                       "invalid resource template '" + std::string(uri_template) +
+                           "': " + error);
+    }
+
     ResourceEntry entry;
     entry.name = std::string(name);
     entry.uri_pattern = std::string(uri_template);
@@ -1240,6 +1248,25 @@ void McpServer::HandleReadResource(
                 promise.set_exception(std::current_exception());
                 return;
             }
+        }
+    }
+
+    for (const auto& entry : resources_) {
+        if (!entry.is_template) continue;
+        std::string error;
+        auto tmpl = detail::UriTemplate::Parse(entry.uri_pattern, error);
+        if (!tmpl) continue;
+        auto variables = tmpl->Match(params.uri);
+        if (!variables) continue;
+        try {
+            auto result = entry.template_handler(params.uri, *variables);
+            auto hint = GetCacheHint(options_.cache_hints, "resources/read");
+            if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
+            promise.set_value(SerializeReadResourceResult(result));
+            return;
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+            return;
         }
     }
 

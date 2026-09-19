@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T00:38:40+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -13,7 +13,7 @@ resource: src/server/McpServer.cpp
 
 ## 注册 API
 
-- `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`——每次注册后重跑 `WireHandlers()` + `DeriveCapabilities()`
+- `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`——每次注册后重跑 `WireHandlers()` + `DeriveCapabilities()`；`RegisterResourceTemplate` 先经 `detail::UriTemplate::Parse` 校验模板，**非法模板抛 `McpError(InvalidParams, "invalid resource template '<tmpl>': <reason>")`**（行为变更：此前不校验即注册，[McpServer.cpp:329](../../src/server/McpServer.cpp)）
 - `PromptOptions::arguments`（`optional<vector<PromptArgument>>`，链式 `Arguments()`）：`prompts/list` 输出提示词参数声明，配合补全请求官方线格式 `{ref, argument:{name,value}}`（序列化修正见 [/modules/protocol.md](protocol.md)）
 - 任务不注册，由 `ServerOptions::task_store` 驱动
 - 能力推导（[McpServer.cpp](../../src/server/McpServer.cpp)）：有工具→`tools`（list_changed）、有资源→`resources`（subscribe + list_changed）、有提示词→`prompts`、`declare_logging`/`declare_completions` 显式声明 `logging`/`completions`（默认 false，不派生）、有 task_store→`extensions = {}`
@@ -23,7 +23,7 @@ resource: src/server/McpServer.cpp
 `WireHandlers()` 拆分为 7 个接线方法（[McpServer.cpp:554](../../src/server/McpServer.cpp)）：
 
 - **WireToolHandlers**：`tools/list`（有工具时）、`tools/call`（无条件，含任务化执行，见下）
-- **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时）、`resources/subscribe|unsubscribe`（有资源时，2025-era）
+- **WireResourceHandlers**：`resources/list`（有非模板资源时）、`resources/templates/list`（有模板时）、`resources/read`（有资源时，含 URI 模板实例路由）、`resources/subscribe|unsubscribe`（有资源时，2025-era）
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）、`notifications/elicitation/complete`（唤醒 URL elicitation 等待）
 - **WireExtensionHandlers**：`server/extensions/list`
@@ -56,6 +56,7 @@ resource: src/server/McpServer.cpp
 - 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`，任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`
 - `ElicitUrl(url, message, timeout=600s)`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
+- `resources/read` 两轮遍历（[McpServer.cpp:1228](../../src/server/McpServer.cpp)）：第一轮**静态资源优先**（跳过 `is_template`，`uri_pattern == uri` 精确匹配调 `handler(uri)`）；未命中再逐模板 `detail::UriTemplate::Parse` + `Match`，命中调 `template_handler(uri, variables)`（变量名→pct-decoded 值，[McpServer.hpp:171](../../include/mcp/server/McpServer.hpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`。命中分支同样回填 `resources/read` 的 cache hint
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）
 

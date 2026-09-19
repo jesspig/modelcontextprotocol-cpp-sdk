@@ -64,3 +64,7 @@ mcp_discover_tests(mcp-streamable-http-tests)
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
 target_link_libraries(mcp-websocket-tests PRIVATE mcp-transport mcp-test-main)
 mcp_discover_tests(mcp-websocket-tests)
+
+add_executable(mcp-uri-template-tests UriTemplateTests.cpp)
+target_link_libraries(mcp-uri-template-tests PRIVATE mcp-core mcp-test-main)
+mcp_discover_tests(mcp-uri-template-tests)
