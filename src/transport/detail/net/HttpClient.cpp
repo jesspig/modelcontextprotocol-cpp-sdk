@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstring>
 #include <string>
 
 namespace mcp { namespace detail { namespace net {
@@ -44,6 +45,8 @@ void HttpClient::Close() {
 
 void HttpClient::CloseConnection() {
     connected_ = false;
+    read_buffer_.clear();
+    read_offset_ = 0;
     if (tls_ != nullptr) tls_->Close();
     if (tcp_ != nullptr) tcp_->Close();
 }
@@ -204,16 +207,39 @@ void HttpClient::WriteAll(std::string_view data, const std::chrono::steady_clock
         tcp_->Write(data.data(), data.size(), remaining);
 }
 
-int HttpClient::ReadByte(const std::chrono::steady_clock::time_point& deadline) {
-    auto remaining = Remaining(deadline);
-    if (remaining.count() <= 0)
+std::size_t HttpClient::DrainReadBuffer(void* buf, std::size_t len) {
+    std::size_t available = read_buffer_.size() - read_offset_;
+    if (available == 0) return 0;
+    std::size_t taken = (std::min)(len, available);
+    std::memcpy(buf, read_buffer_.data() + read_offset_, taken);
+    read_offset_ += taken;
+    if (read_offset_ == read_buffer_.size()) {
+        read_buffer_.clear();
+        read_offset_ = 0;
+    }
+    return taken;
+}
+
+void HttpClient::FillReadBuffer(std::chrono::milliseconds timeout) {
+    if (timeout.count() <= 0)
         throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
-    char byte = 0;
-    std::size_t n = use_tls_ ? tls_->Read(&byte, 1, remaining) : tcp_->Read(&byte, 1, remaining);
-    if (n == 1) return static_cast<unsigned char>(byte);
-    if (IsEof())
-        throw McpError(McpErrorCode::ConnectionClosed, "connection closed while reading HTTP response");
-    throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
+    read_buffer_.resize(kReadChunk);
+    read_offset_ = 0;
+    std::size_t n = use_tls_ ? tls_->Read(read_buffer_.data(), read_buffer_.size(), timeout)
+                             : tcp_->Read(read_buffer_.data(), read_buffer_.size(), timeout);
+    if (n == 0) {
+        read_buffer_.clear();
+        if (IsEof())
+            throw McpError(McpErrorCode::ConnectionClosed, "connection closed while reading HTTP response");
+        throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
+    }
+    read_buffer_.resize(n);
+}
+
+int HttpClient::ReadByte(const std::chrono::steady_clock::time_point& deadline) {
+    if (read_offset_ >= read_buffer_.size())
+        FillReadBuffer(Remaining(deadline));
+    return static_cast<unsigned char>(read_buffer_[read_offset_++]);
 }
 
 std::string HttpClient::ReadLine(const std::chrono::steady_clock::time_point& deadline) {
@@ -236,6 +262,7 @@ std::string HttpClient::ReadLine(const std::chrono::steady_clock::time_point& de
 }
 
 std::size_t HttpClient::ReadRaw(void* buf, std::size_t len, const std::chrono::steady_clock::time_point& deadline) {
+    if (std::size_t buffered = DrainReadBuffer(buf, len); buffered > 0) return buffered;
     auto remaining = Remaining(deadline);
     if (remaining.count() <= 0)
         throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
@@ -303,11 +330,14 @@ void HttpClient::ReadChunkedBody(HttpResponseInfo& resp,
 void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_clock::time_point& deadline) {
     char buffer[kReadChunk];
     for (;;) {
-        auto remaining = Remaining(deadline);
-        if (remaining.count() <= 0)
-            throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
-        std::size_t n = use_tls_ ? tls_->Read(buffer, sizeof(buffer), remaining)
-                                 : tcp_->Read(buffer, sizeof(buffer), remaining);
+        std::size_t n = DrainReadBuffer(buffer, sizeof(buffer));
+        if (n == 0) {
+            auto remaining = Remaining(deadline);
+            if (remaining.count() <= 0)
+                throw McpError(McpErrorCode::RequestTimeout, "HTTP response read timed out");
+            n = use_tls_ ? tls_->Read(buffer, sizeof(buffer), remaining)
+                         : tcp_->Read(buffer, sizeof(buffer), remaining);
+        }
         if (n > 0) {
             if (resp.body.size() + n > kMaxBodyBytes)
                 throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
@@ -324,8 +354,11 @@ void HttpClient::StreamBody(const std::function<void(std::string_view)>& body_cb
     for (;;) {
         if (closed_)
             throw McpError(McpErrorCode::ConnectionClosed, "HTTP client closed during streaming read");
-        std::size_t n = use_tls_ ? tls_->Read(buffer, sizeof(buffer), idle_timeout)
-                                 : tcp_->Read(buffer, sizeof(buffer), idle_timeout);
+        std::size_t n = DrainReadBuffer(buffer, sizeof(buffer));
+        if (n == 0) {
+            n = use_tls_ ? tls_->Read(buffer, sizeof(buffer), idle_timeout)
+                         : tcp_->Read(buffer, sizeof(buffer), idle_timeout);
+        }
         if (n > 0) {
             body_cb(std::string_view(buffer, n));
             continue;
