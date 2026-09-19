@@ -118,7 +118,9 @@ Tool handlers can set `input_required` on the `CallToolResult` to start an MRTR 
 ```cpp
 CallToolResult result;
 InputRequiredResult ir;
-ir.input_requests.elicit = InputRequestElicit{"Please provide the API key"};
+ElicitRequestParams params;
+params.message = "Please provide the API key";
+ir.input_requests["api_key"] = MakeInputRequestForElicitation(params);
 result.input_required = std::move(ir);
 return result;  // the server auto-signs requestState (requires request_state_key)
 ```

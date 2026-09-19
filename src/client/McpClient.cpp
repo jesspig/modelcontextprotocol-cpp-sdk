@@ -811,11 +811,7 @@ static bool TryFulfillInputRequired(
     auto input_req = DeserializeInputRequiredResult(result_json);
     out_request_state = input_req.request_state;
 
-    bool has_requests = input_req.input_requests.confirm.has_value()
-        || input_req.input_requests.elicit.has_value()
-        || input_req.input_requests.sampling.has_value()
-        || input_req.input_requests.roots.has_value();
-    if (!has_requests) {
+    if (input_req.input_requests.empty()) {
         out_state_only = true;
         return true;
     }
@@ -823,46 +819,32 @@ static bool TryFulfillInputRequired(
 
     JsonValue responses(JsonValue::object_tag);
 
-    if (input_req.input_requests.elicit) {
-        if (!elicitation_handler) {
-            throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
+    for (const auto& [key, request] : input_req.input_requests) {
+        if (request.method == methods::kElicit) {
+            if (!elicitation_handler) {
+                throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
+            }
+            auto elicit_result = (*elicitation_handler)(
+                DeserializeElicitRequestParams(request.params));
+            responses[key] = MakeInputResponseFromElicitResult(elicit_result);
+        } else if (request.method == methods::kCreateMessage) {
+            if (!sampling_handler) {
+                throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
+            }
+            auto sampling_result = (*sampling_handler)(
+                DeserializeCreateMessageRequestParams(request.params));
+            responses[key] = MakeInputResponseFromCreateMessageResult(sampling_result);
+        } else if (request.method == methods::kListRoots) {
+            if (!roots_handler) {
+                throw McpError(McpErrorCode::MethodNotFound, "roots not supported");
+            }
+            auto roots_result = (*roots_handler)(
+                DeserializeListRootsRequestParams(request.params));
+            responses[key] = MakeInputResponseFromListRootsResult(roots_result);
+        } else {
+            throw McpError(McpErrorCode::MethodNotFound,
+                "unsupported input request method: " + request.method);
         }
-        auto& elicit_req = *input_req.input_requests.elicit;
-        ElicitRequestParams ep;
-        ep.message = elicit_req.message;
-        ep.requested_schema = elicit_req.requested_schema;
-        auto elicit_result = (*elicitation_handler)(ep);
-        if (elicit_result.content)
-            responses["elicit"] = *elicit_result.content;
-    }
-
-    if (input_req.input_requests.confirm) {
-        if (!elicitation_handler) {
-            throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
-        }
-        auto& confirm_req = *input_req.input_requests.confirm;
-        ElicitRequestParams ep;
-        ep.message = confirm_req.message;
-        ep.requested_schema = confirm_req.requested_schema;
-        auto confirm_result = (*elicitation_handler)(ep);
-        if (confirm_result.content)
-            responses["confirm"] = *confirm_result.content;
-    }
-
-    if (input_req.input_requests.sampling) {
-        if (!sampling_handler) {
-            throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
-        }
-        auto sampling_result = (*sampling_handler)(input_req.input_requests.sampling->params);
-        responses["sampling"] = SerializeCreateMessageResult(sampling_result);
-    }
-
-    if (input_req.input_requests.roots) {
-        if (!roots_handler) {
-            throw McpError(McpErrorCode::MethodNotFound, "roots not supported");
-        }
-        auto roots_result = (*roots_handler)(ListRootsRequestParams{});
-        responses["roots"] = SerializeListRootsResult(roots_result);
     }
 
     out_input_responses = std::move(responses);

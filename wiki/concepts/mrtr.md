@@ -1,25 +1,27 @@
 ---
 type: Concept
 title: MRTR 多轮请求-响应
-description: 服务端发起的 elicitation（form 与 URL 双模式）：InputRequiredResult 内嵌、requestState HMAC 签发/校验、客户端自动补全循环与超时预算。
+description: 服务端发起的输入请求（inputRequests 键→{method,params} 映射）：elicitation form/URL 双模式、requestState HMAC 签发/校验、客户端按 method 分派自动补全与超时预算。
 tags: [协议, mrtr, elicitation, 多轮, hmac]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-19T23:27:28+08:00
 resource: include/mcp/McpTypes.hpp
 ---
 
 # MRTR 多轮请求-响应
 
-（Multi-Round Request-Response）服务端发起的 elicitation 以 `InputRequiredResult` 内嵌（`resultType == "input_required"`），而非旧式的 `sampling/createMessage`。
+（Multi-Round Request-Response）服务端发起的输入请求以 `InputRequiredResult` 内嵌（`resultType == "input_required"`），取代旧式的服务端→客户端独立请求（standalone `sampling/createMessage`）模式。
 
 ## 数据模型
 
-- MRTR 三件套：`InputRequestElicit`（必填 `message` + 可选 `requested_schema`）、`InputRequests`（可选 `confirm`/`elicit`/`sampling`/`roots`）、`InputRequiredResult`（必填 `input_requests` + 可选 `request_state`）（[McpTypes.hpp:218-241](../../include/mcp/McpTypes.hpp)）
+- MRTR 三件套：`InputRequest`（`method` + `params` 两项）、`InputRequests`（`std::map<std::string, InputRequest, std::less<>>`，键由服务端自定义）、`InputRequiredResult`（必填 `input_requests` + 可选 `request_state`）（[McpTypes.hpp:219-228](../../include/mcp/McpTypes.hpp)）
+- `inputRequests` 的线上结构为「服务端键 → `{method, params}`」，序列化与反序列化均逐项校验 `method` 为非空字符串、`params` 为对象，畸形项直接抛 `InvalidParams`（[McpTypesResults.cpp:357](../../src/core/McpTypesResults.cpp)）
+- `inputResponses` 的值是**裸结果**：elicitation 为 `{action, content}`、sampling 为 `{role, content, model, stopReason}`、roots 为 `{roots}`，均不带 `resultType`/`meta` 信封（`MakeInputResponseFromElicitResult`/`MakeInputResponseFromCreateMessageResult`/`MakeInputResponseFromListRootsResult`，[McpTypesParams.cpp:282](../../src/core/McpTypesParams.cpp)）
 - `ElicitResultTyped<T>` 模板：`action` 默认 `"cancel"`，`is_accepted()` 判 `"accept"`
 - `ElicitRequestParams` 双模式：`mode` 默认 `"form"`（wire 不写新字段，向后兼容）；`mode=="url"`（SEP-1034）额外携带 `url` + `elicitationId`；`ElicitResult` wire 键 `action` + `content`（原 `values` 已修正，对齐规范与官方服务器）
 
 ## 客户端（[/classes/mcp-client.md](../classes/mcp-client.md)）
 
-- `SendRequestWithMrtr` 循环处理 `input_required`：显式配置 `input_required_config` 时 `auto_fulfill` 默认开（未配置则自动补全关闭），经 `elicitation_handler` 填 `inputResponses` / `requestState`；`input_requests` 三类型可选字段 `elicit`/`confirm`（elicitation）、`sampling`（[McpTypesResults.cpp:402](../../src/core/McpTypesResults.cpp)）、`roots` 各自分派到对应 handler（未注册 → `MethodNotFound`，分派逻辑见 [McpClient.cpp:792](../../src/client/McpClient.cpp)）
+- `SendRequestWithMrtr` 循环处理 `input_required`：显式配置 `input_required_config` 时 `auto_fulfill` 默认开（未配置则自动补全关闭），经 handler 填 `inputResponses` / `requestState`；遍历 `input_requests` 逐项按 `method` 分派（`elicitation/create` → `ElicitationHandler`、`sampling/createMessage` → `SamplingHandler`、`roots/list` → `RootsHandler`），回发 `inputResponses` 的键为服务端原键；对应 handler 未注册或 `method` 未知 → `MethodNotFound`（分派逻辑见 [McpClient.cpp:792](../../src/client/McpClient.cpp)）
 - 预算：`max_rounds`（默认 10）超限 → `InternalError`；`max_total_timeout`（默认 0 = 不设总预算，只按轮限时 `round_timeout` 默认 600s）超限 → `RequestTimeout`。注意与 `ClientOptions::max_total_timeout`（会话引擎**每请求**总量封顶，见 [/classes/mcp-session-handler.md](../classes/mcp-session-handler.md)）是两个独立预算——后者接线自构造期 `SetMaxTotalTimeout`，MRTR 轮内每轮 `SendRequest` 同受其约束
 - **state-only 退避**：`input_required` 无任何请求项（仅 `request_state`）时按 50ms 起每轮 ×2 增长、封顶 250ms 退避后重发（`kMrtrStateOnlyBackoffBase`/`kMrtrStateOnlyBackoffMax`，[McpClient.cpp:32](../../src/client/McpClient.cpp)，第 4 轮起不再增长），补全轮后计数清零
 - **URL elicitation 顺序保证**（[McpClient.cpp:545-557](../../src/client/McpClient.cpp)）：处理 `mode=="url"` 请求时**先发 `notifications/elicitation/complete`、再 `p.set_value` 提交 elicit 响应**；通知发送异常被捕获仅记 Error 日志，不阻断响应提交

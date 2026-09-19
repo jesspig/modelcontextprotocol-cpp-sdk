@@ -265,7 +265,7 @@ CallToolResult ElicitationSep1330Enums(const ToolContext& ctx)
 
 CallToolResult MissingCapability(const ToolContext& ctx)
 {
-    if (ctx.Params().input_responses && ctx.Params().input_responses->Contains("sampling")) {
+    if (ctx.Params().input_responses && ctx.Params().input_responses->Contains("message")) {
         return MakeTextResult("sampling round-trip complete");
     }
     SamplingMessage message;
@@ -273,12 +273,12 @@ CallToolResult MissingCapability(const ToolContext& ctx)
     TextContent content;
     content.text = "Reply with the single word: pong";
     message.content = std::move(content);
-    InputRequestSampling sampling;
-    sampling.params.messages.push_back(std::move(message));
-    sampling.params.max_tokens = 16;
+    CreateMessageRequestParams params;
+    params.messages.push_back(std::move(message));
+    params.max_tokens = 16;
     CallToolResult result;
     InputRequiredResult ir;
-    ir.input_requests.sampling = std::move(sampling);
+    ir.input_requests["message"] = MakeInputRequestForSampling(params);
     result.input_required = std::move(ir);
     return result;
 }
