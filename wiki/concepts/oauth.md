@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: OAuth 授权流程
-description: 客户端授权码 + PKCE（S256）、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728）。
-tags: [oauth, pkce, 安全, rfc9207, bearer]
-timestamp: 2026-09-15T15:49:10+08:00
+description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728）。
+tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer]
+timestamp: 2026-09-20T01:45:19+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -14,7 +14,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 ## 流程（`Authenticate()`）
 
 1. `DiscoverMetadata`：先 RFC 8414 `.well-known/oauth-authorization-server`；失败回退硬编码 `/authorize` + `/token` + issuer=server_url
-2. 无 client_id 且 metadata 有 registration_endpoint 时 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client"}`）
+2. `client_id` 已配置时先 `FetchClientMetadataDocument`（**CIMD**：`client_id` 为 URL 则 GET 该文档并解析客户端元数据，失败仅记 Warning 并回退已配置值）；仅当**无** `client_id` 且 metadata 有 registration_endpoint 时才 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client"}`）
 3. 缓存 token 未过期直接成功；过期但有 refresh_token → `RefreshTokens`；否则授权码流
 
 另提供 `AuthenticateClientCredentials()`（client_credentials grant）：要求 `client_id` + `client_secret`，POST `grant_type=client_credentials`，同样强制 `iss` 校验（[OAuthClientProvider.cpp:276](../../src/client/auth/OAuthClientProvider.cpp)）。
@@ -23,7 +23,12 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 - **PKCE S256**：`GenerateCodeVerifier` 32 随机字节 → Base64url（OpenSSL `RAND_bytes`；无 OpenSSL 时 Win32 走 `BCryptGenRandom`，仅 POSIX 回退 `random_device + mt19937`）；`ComputeCodeChallenge` 经内置 SHA-256（[sha256.hpp](../../include/mcp/detail/sha256.hpp)，FIPS 180-4 独立实现，不依赖 OpenSSL）
 - **CSRF 校验**（RFC 6749 §10.12）：回调返回的 state 必须等于发送的 state
+- **授权响应 iss 校验**（RFC 9207）：`AuthorizationCodeResult::iss` 有值且与 metadata issuer 不等即拒绝，位置在 state 校验之后、`ExchangeCodeForToken` 之前；未携带 `iss` 则不校验
 - `ValidateTokenIssuer`（**RFC 9207 强制**）：token/refresh 响应缺 `iss` 或与 metadata issuer 不匹配即拒绝
+
+## 资源指示符（RFC 8707）
+
+`ResolveResourceIndicator()` 取值优先级：显式 `OAuthClientOptions::resource` → 已发现 metadata 的 `resource` → `server_url`。解析结果非空时注入授权 URL（`&resource=`）与三个令牌请求表单（client_credentials、授权码交换、refresh_token），为空则**完全不发送**该参数。
 
 ## HandleAuthChallenge（RFC 9728）
 

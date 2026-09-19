@@ -75,6 +75,7 @@ Every tool handler receives a `RequestContext<CallToolRequestParams>` providing 
 | `GetRequest()` | `const JsonRpcRequest&` | The raw JSON-RPC request |
 | `LogLevel()` | `optional<LoggingLevel>` | Per-request log level from `_meta` (2026-era) |
 | `Log(level, data)` | `void` | Sends a logging notification, filtered by `LogLevel()` |
+| `IsCancellationRequested()` | `bool` | Whether `notifications/cancelled` has arrived for this request; handlers poll it for cooperative cancellation |
 
 The `Log()` method respects per-request log levels: messages below the request's `LogLevel()` are silently dropped.
 
@@ -113,6 +114,7 @@ The lambda-based `RegisterTool` overload works identically — it creates an `Mc
 |--------|-------------|
 | `SendToolListChanged()` | Notifies clients of tool list changes |
 | `SendResourceListChanged()` | Notifies clients of resource list changes |
+| `SendResourceUpdated(uri)` | Notifies clients that a specific resource changed (delivered only to subscribers of that uri) |
 | `SendPromptListChanged()` | Notifies clients of prompt list changes |
 | `SendLoggingMessage(level, data)` | Sends a logging message (respects client's `logging/setLevel`) |
 | `SendLoggingMessage(level, data, min_level)` | Overload with explicit minimum level override |

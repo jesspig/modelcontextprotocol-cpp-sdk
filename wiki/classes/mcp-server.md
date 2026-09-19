@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、progress 推送、requestState 签发、任务后台执行、URL elicitation 与回调四层接线。
 tags: [server, 门面, 注册, 回调, progress, tasks, elicitation]
-timestamp: 2026-09-20T00:53:02+08:00
+timestamp: 2026-09-20T01:45:19+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -29,7 +29,7 @@ resource: include/mcp/server/McpServer.hpp
 ## 分发细节
 
 - `tools/call`：异步执行（std::async），future 存 `pending_async_futures_`，`Close()` 先全部 wait；工具声明 `output_schema` 且返回 `structured_content` 时用 `ValidateJsonSchema` 校验
-- **任务化执行**：工具经 `ToolOptions::execution`（`ToolExecutionMode::Task`）声明且有 `task_store` 时，`tools/call` 立即返回 `CreateTaskResult`（wire `task.taskId/status/createdAt`，`resultType` 落 `"task"`，仅 2025 及更早时代）——后台执行 Working→Completed/Failed 经 `notifications/tasks/status` 通知；协作取消经 `RequestContext::IsCancellationRequested()`（`shared_ptr<const std::atomic<bool>>` 标志），`tasks/cancel` 置位标志、落 `Cancelled` 终态且终态不迁移
+- **任务化执行**：工具经 `ToolOptions::execution`（`ToolExecutionMode::Task`）声明且有 `task_store` 时，`tools/call` 立即返回 `CreateTaskResult`（wire `task.taskId/status/createdAt`，`resultType` 落 `"task"`，仅 2025 及更早时代）——后台执行 Working→Completed/Failed 经 `notifications/tasks/status` 通知；协作取消经 `RequestContext::IsCancellationRequested()`（`shared_ptr<const std::atomic<bool>>` 标志），`tasks/cancel` 置位标志、落 `Cancelled` 终态且终态不迁移；同一标志在派发前由 `handler_->GetIncomingCancellationFlag(req.id)` 注入（[McpServer.cpp:1038](../../src/server/McpServer.cpp)），故**普通（非任务）工具 handler 也能感知协议级 `notifications/cancelled`**
 - `resources/read`：先扫非模板资源做 `uri_pattern == uri` 精确匹配，再扫模板逐个 `detail::UriTemplate::Parse` + `Match` 后调 `template_handler(uri, variables)`（静态优先，变量值为 pct-decoded，[McpServer.cpp:1254](../../src/server/McpServer.cpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`
 - 分页：`kDefaultPageSize = 100`，cursor 为数字字符串；resources/templates/prompts 三处共用 `PaginateEntries` 模板（含 include 谓词）
 - 列表响应缓存提示：按方法名查 `options_.cache_hints`（6 个方法：tools/list、resources/list、resources/templates/list、resources/read、prompts/list、server/discover；`GetCacheHint` 用 `std::less<>` 透明比较器）
@@ -40,6 +40,7 @@ resource: include/mcp/server/McpServer.hpp
 - tasks 处理器守卫反转：仅 2025 及更早时代可用，`IsModernProtocolVersion` 时回 `MethodNotFound`（[McpServer.cpp:775](../../src/server/McpServer.cpp)）；任务化 `tools/call` 同受此 gate；任务 wire 状态为官方字符串 `TaskStatusToWireString`（working/input_required/completed/failed/cancelled，`Pending→working`，[McpServer.cpp:76](../../src/server/McpServer.cpp)）；`GetTaskResult` 填充提取为 `MakeGetTaskResultJson`（含 include_optional_fields 开关）；`tasks/update` 完成时发 `tasks/completed` 或 `tasks/working` 通知、`tasks/cancel` 发 `tasks/cancelled` 通知；公开方法 `SendTaskStatus(task_id, status)` 直接发送 `tasks/status` 通知（[McpServer.hpp:91](../../include/mcp/server/McpServer.hpp)）
 - `SendProgress(token, progress, total?, message?)`（[McpServer.cpp:413](../../src/server/McpServer.cpp)）：向客户端发 `notifications/progress`，token 原样透传不校验归属，`total`/`message` 可选；异步工具 handler 内经 `RequestContext::Server()` 调用——`RequestContext` 持有 `JsonRpcRequest` **值**（替代指针），异步场景 `GetRequest()` 安全
 - `subscriptions/listen`：仅现代版本，订阅 ID 单调分配（原子量从 1 起）；订阅后**同步回发 `subscriptions/acknowledged` 通知帧**（`SendSubscriptionsAcknowledged`，[McpServer.cpp:1465](../../src/server/McpServer.cpp)）——`honored` 回显 filter、meta 带 `protocolVersion` + `subscriptionId`（优先客户端 `_meta` 传入 ID，未设置回退服务端自增 ID）
+- **变更通知分发**：`SendToolListChanged()` / `SendResourceListChanged()` / `SendPromptListChanged()` 经 `SendListChangedNotification` **按时代分派**——现代版本走 `NotifySubscribers`（只发订阅了对应 filter 的订阅者），2025 及更早版本直接广播；`SendResourceUpdated(uri)`（[McpServer.hpp:88](../../include/mcp/server/McpServer.hpp)）发布 `notifications/resources/updated`，以 uri 作为订阅过滤键，只投递给订阅了该资源的订阅者
 - `SendLoggingMessage`：低于当前级别直接丢弃，logger 固定 `"mcp-server"`；wire `level` 为官方字符串（`SerializeLoggingLevel`）——原数字直写已修正
 - **requestState 签发**：`options_.request_state_key` 配置时（无显式 verifier）构造期接线内置 HMAC 校验器（`detail::VerifyRequestState`，`request_state_ttl` 控制 `iat` 过期，0 禁用）；`HandleCallTool` 异步段对 `input_required` 结果自动 `MintRequestState` 后返回；校验失败回 `InvalidParams` + `data.reason="invalid_request_state"`
 - `DeriveCapabilities`：`options_.declare_logging`/`declare_completions` 显式声明对应能力（默认 false，不派生）

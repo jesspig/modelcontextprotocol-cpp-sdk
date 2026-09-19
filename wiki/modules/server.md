@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-09-20T00:38:40+08:00
+timestamp: 2026-09-20T01:45:19+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -38,7 +38,7 @@ resource: src/server/McpServer.cpp
 - 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径仅 **2025 及更早时代**可用（modern era 回 `MethodNotFound`）
 - 立即返回：登记取消标志 → `CreateTask` + 置 `Working` → 发 `notifications/tasks/status` → 同步返回 `CreateTaskResult`（wire `task.taskId/task.status/createdAt`，`resultType` 落 `"task"`）
 - 后台执行：`std::async` 调用工具 handler，完成后结果写入 store 并发 `notifications/tasks/status`（Working→Completed/Failed；取消判定优先于 Failed，Cancelled 静默收尾不发通知）；失败任务把首个文本 content 作为 `error` 写入 store
-- 协作取消：`RequestContext::IsCancellationRequested()` 读共享取消标志（`shared_ptr<const std::atomic<bool>>`，handler 轮询自愿退出）；`tasks/cancel` 置位标志并落 `Cancelled` 终态，**终态不迁移**（已终态直接返回空结果）
+- 协作取消：`RequestContext::IsCancellationRequested()` 读共享取消标志（`shared_ptr<const std::atomic<bool>>`，handler 轮询自愿退出）；`tasks/cancel` 置位标志并落 `Cancelled` 终态，**终态不迁移**（已终态直接返回空结果）；**协议级 `notifications/cancelled` 与任务级取消共用同一标志**，标志在派发前由 `GetIncomingCancellationFlag(req.id)` 注入，故普通（非任务）工具 handler 同样能感知
 - future 进 `pending_async_futures_`（顺带清理已完成项），`Close()` 全部等待
 
 ## 失败语义
@@ -51,6 +51,7 @@ resource: src/server/McpServer.cpp
 ## 实现要点
 
 - `SendProgress(token, progress, total?, message?)`：服务端向客户端发 `notifications/progress`（[McpServer.cpp:413](../../src/server/McpServer.cpp)），token 原样透传、`total`/`message` 可选；异步工具 handler 内经 `RequestContext::Server()` 调用可向发起方回报进度
+- 变更通知：`SendToolListChanged()` / `SendResourceListChanged()` / `SendPromptListChanged()` 经 `SendListChangedNotification` **按时代分派**（现代走 `NotifySubscribers` 按 filter 过滤，2025 及更早直接广播）；新增 `SendResourceUpdated(uri)` 发布 `notifications/resources/updated`，以 uri 为过滤键，只投递给订阅了该资源的订阅者（[McpServer.hpp:88](../../include/mcp/server/McpServer.hpp)）
 - `SendLoggingMessage` 的 wire `level` 为**官方字符串**（`SerializeLoggingLevel`，如 `"debug"`/`"error"`）——原数字枚举直写为真 bug，已修正（官方 conformance 捕获）
 - `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全；构造多参 `cancellation_flag` 供任务化执行传入协作取消标志
 - 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`，任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`

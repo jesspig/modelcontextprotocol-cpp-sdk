@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-09-20T00:38:40+08:00
+timestamp: 2026-09-20T01:45:19+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -49,6 +49,14 @@ resource: src/core/JsonValue.cpp
 - `JsonSchemaValidator.hpp`：最小 JSON Schema 子集校验器（SEP-2106，draft-07 风格）
 - `UriTemplate.hpp`：RFC 6570 URI 模板匹配器（`Parse`/`Expand`/`Match`），服务端 `RegisterResourceTemplate` 校验与 `resources/read` 模板实例路由共用；上限 `kMaxUriTemplateLength`/`kMaxUriTemplateVariables`/`kMaxUriMatchLength`（见 [/classes/mcp-server.md](../classes/mcp-server.md)）
 - `ResponseCache.hpp`：客户端响应缓存（SEP-2549），键 = method + cursor/uri 上下文，TTL 钳制 24h，public/private 双分区，惰性过期清除（详见 [/classes/mcp-client.md](../classes/mcp-client.md)）
+
+## 公共 detail 头（include/mcp/detail）
+
+跨库共用的无状态工具头（`mcp::detail` 命名空间，header-only）：
+
+- `StringUtils.hpp`：`ToLower(string_view)` 返回新串，是全仓唯一的小写归一实现（`src/http` 与 `src/transport` 各处的就地归一/不敏感比较改为调用它）
+- `Base64Url.hpp`：RFC 4648 §5 无填充 base64url 的 `Base64UrlEncode` / `Base64UrlDecode`（`optional` 返回），服务端 requestState 签发校验与客户端 PKCE 共用单一实现
+- `SseEventParser.hpp`：SSE 事件块的行迭代与字段行解析层，供 streamable-http 客户端与 legacy SSE 客户端复用（两侧各自保留字段集与消息语义的差异）
 
 ## 相关页面
 
