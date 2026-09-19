@@ -19,7 +19,6 @@ The Streamable HTTP transport implements the MCP Streamable HTTP specification. 
 **Headers** (`StreamableHttpClientTransport`):
 - `MCP-Protocol-Version: 2026-07-28` — always sent
 - `Mcp-Method` — dynamic, derived from JSON-RPC body method field
-- `Mcp-Param-*` — primitive params extracted for middleware routing (strings, integers, booleans, doubles only)
 - `Accept: application/json, text/event-stream` — allows server to pick response mode
 
 ## Transport Interfaces

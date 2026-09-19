@@ -806,6 +806,67 @@ TEST(StreamableHttpTest, ClientSendsKnownSessionIdOnFirstRequest) {
     mock.Stop();
 }
 
+// ── Client: primitive params must not be mirrored into Mcp-Param-* request
+// headers (only x-mcp-header annotated params may be mirrored, and annotation
+// support does not exist yet); Mcp-Method/Mcp-Name stay as before ──
+TEST(StreamableHttpTest, ClientOmitsMcpParamHeaders) {
+    auto port = PickFreePort(kTestBasePort + 1250);
+    mcp::HttpServer mock(port);
+    std::mutex m;
+    std::condition_variable cv;
+    bool post_seen = false;
+    std::unordered_map<std::string, std::string> seen_headers;
+    mock.SetHandler("POST", "/mcp", [&](const MCP_Request& req, MCP_Response& resp) {
+        {
+            std::lock_guard<std::mutex> lock(m);
+            seen_headers = req.headers;
+            post_seen = true;
+            cv.notify_all();
+        }
+        resp.status_code = 200;
+        resp.headers["content-type"] = "application/json";
+        resp.body = R"({"jsonrpc":"2.0","id":1,"result":{"resultType":"complete"}})";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    mcp::StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    mcp::JsonValue params(mcp::JsonValue::object_tag);
+    params["name"] = mcp::JsonValue("echo");
+    params["text"] = mcp::JsonValue("hello");
+    params["count"] = mcp::JsonValue(int64_t(3));
+    params["ratio"] = mcp::JsonValue(0.5);
+    params["token"] = mcp::JsonValue("secret-token");
+
+    mcp::JsonRpcMessage req(mcp::JsonRpcRequest{});
+    auto& rr = std::get<mcp::JsonRpcRequest>(req);
+    rr.id = int64_t(1);
+    rr.method = "tools/call";
+    rr.params = std::move(params);
+    transport->SendMessageAsync(std::move(req));
+
+    std::unordered_map<std::string, std::string> received;
+    {
+        std::unique_lock<std::mutex> lock(m);
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5),
+                                [&] { return post_seen; }));
+        received = seen_headers;
+    }
+
+    EXPECT_EQ(received["mcp-method"], "tools/call");
+    EXPECT_EQ(received["mcp-name"], "echo");
+    for (const auto& entry : received)
+        EXPECT_EQ(entry.first.find("mcp-param-"), std::string::npos);
+
+    transport->Close();
+    mock.Stop();
+}
+
 // ── Client: a Mcp-Session-Id response header is captured and carried on
 // subsequent POSTs (stateful server interop) ──
 TEST(StreamableHttpTest, ClientCarriesCapturedSessionId) {

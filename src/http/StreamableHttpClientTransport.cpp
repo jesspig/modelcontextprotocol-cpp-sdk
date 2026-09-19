@@ -575,19 +575,7 @@ private:
                     hdrs += L"Mcp-Method: " + ToWideStr(method) + L"\r\n";
                 }
                 if (auto* p = body_jv2.Find("params"); p && p->IsObject()) {
-                    // iterate params manually to avoid Windows GetObject macro expansion
                     const auto& obj = p->GetObject();
-                    for (const auto& [k, v] : obj) {
-                        if (v.IsString()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetString()) + L"\r\n";
-                        } else if (v.IsInt()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetInt())) + L"\r\n";
-                        } else if (v.IsBool()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetBool() ? "true" : "false") + L"\r\n";
-                        } else if (v.IsDouble()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetDouble())) + L"\r\n";
-                        }
-                    }
                     if (auto n = obj.find("name"); n != obj.end() && n->second.IsString()) {
                         hdrs += L"Mcp-Name: " + ToWideStr(n->second.GetString()) + L"\r\n";
                     } else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString()) {
@@ -1180,17 +1168,6 @@ private:
                 }
                 if (auto* p = jv.Find("params"); p && p->IsObject()) {
                     const auto& obj = p->GetObject();
-                    for (const auto& [k, v] : obj) {
-                        if (v.IsString()) {
-                            headers["Mcp-Param-" + k] = v.GetString();
-                        } else if (v.IsInt()) {
-                            headers["Mcp-Param-" + k] = std::to_string(v.GetInt());
-                        } else if (v.IsBool()) {
-                            headers["Mcp-Param-" + k] = v.GetBool() ? "true" : "false";
-                        } else if (v.IsDouble()) {
-                            headers["Mcp-Param-" + k] = std::to_string(v.GetDouble());
-                        }
-                    }
                     if (auto n = obj.find("name"); n != obj.end() && n->second.IsString())
                         headers["Mcp-Name"] = n->second.GetString();
                     else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString())
