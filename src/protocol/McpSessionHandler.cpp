@@ -787,16 +787,6 @@ void McpSessionHandler::SetNotificationHandler(std::string_view method, Notifica
     notif_handlers_[std::string(method)] = std::move(handler);
 }
 
-void McpSessionHandler::RemoveRequestHandler(std::string_view method) {
-    std::unique_lock<std::shared_mutex> lock(handler_mutex_);
-    request_handlers_.erase(std::string(method));
-}
-
-void McpSessionHandler::RemoveNotificationHandler(std::string_view method) {
-    std::unique_lock<std::shared_mutex> lock(handler_mutex_);
-    notif_handlers_.erase(std::string(method));
-}
-
 void McpSessionHandler::SetRequestStateVerifier(std::function<bool(std::string_view)> verifier) {
     request_state_verifier_ = std::move(verifier);
 }

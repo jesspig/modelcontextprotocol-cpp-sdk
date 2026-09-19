@@ -38,8 +38,6 @@ server->Run();
 | `protocol_version` | `optional<string>` | 固定到特定协议版本 |
 | `server_instructions` | `optional<string>` | 发送给客户端的指令 |
 | `initialization_timeout` | `chrono::seconds` | 握手超时时间（默认 60s） |
-| `validate_tool_input` | `bool` | 启用 JSON Schema 输入验证 |
-| `validate_tool_output` | `bool` | 启用 JSON Schema 输出验证 |
 | `declare_logging` | `bool` | 显式声明 logging 能力（合并进推导能力，默认 `false`） |
 | `declare_completions` | `bool` | 显式声明 completions 能力（默认 `false`） |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | 任务持久化后端 |

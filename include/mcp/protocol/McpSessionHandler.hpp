@@ -83,8 +83,6 @@ public:
     // ── Handler registration ──
     void SetRequestHandler(std::string_view method, RequestHandler handler);
     void SetNotificationHandler(std::string_view method, NotificationHandler handler);
-    void RemoveRequestHandler(std::string_view method);
-    void RemoveNotificationHandler(std::string_view method);
 
     // ── Capability validation ──
     // SetClientCapabilities must be called before Start(); the message loop

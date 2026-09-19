@@ -119,7 +119,7 @@ Clients call `subscriptions/listen` with the filter; the server tracks entries v
 
 ### Semantic Helpers
 
-Both `McpSession` and `McpSessionHandler` provide:
+`McpSessionHandler` provides:
 
 ```cpp
 bool IsJuly2026OrLater() const;

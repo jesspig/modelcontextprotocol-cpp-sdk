@@ -60,10 +60,6 @@ struct MCP_API ServerOptions {
     };
     std::optional<InputRequiredConfig> input_required_config;
 
-    // JSON Schema validation
-    bool validate_tool_input{false};
-    bool validate_tool_output{false};
-
     // Explicit capability declaration (merged into derived capabilities)
     bool declare_logging{false};
     bool declare_completions{false};

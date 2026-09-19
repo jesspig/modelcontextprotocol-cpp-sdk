@@ -3,13 +3,13 @@ type: Concept
 title: 日志与可观测性
 description: 日志级别、全局钩子（SetLogHandler/SetLogLevel/LogRecord）、诊断增强与 bind_host 可配置。
 tags: [日志, 可观测性, 诊断, bind_host]
-timestamp: 2026-08-28T16:00:00+08:00
+timestamp: 2026-09-19T23:11:32+08:00
 resource: include/mcp/Log.hpp
 ---
 
 # 日志与可观测性
 
-全部内部日志经 `MCP_LOG` / `MCP_LOG_TAG` / `MCP_LOG_CTX` 宏，最终汇聚到 `LogWrite` / `LogMessage`（`include/mcp/Log.hpp`）。
+全部内部日志经 `MCP_LOG` / `MCP_LOG_CTX` 宏，最终汇聚到 `LogWrite` / `LogMessage`（`include/mcp/Log.hpp`）。
 
 ## 级别与默认行为
 

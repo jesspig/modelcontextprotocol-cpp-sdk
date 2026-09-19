@@ -8,11 +8,12 @@
 #include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
 
+#include <transport/detail/net/NetIoUtil.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
-#include <sstream>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -77,13 +78,6 @@ bool IsBearerAuthorization(const std::string& value) {
         }
     }
     return true;
-}
-
-std::string TrimWhitespace(const std::string& value) {
-    auto first = value.find_first_not_of(" \t");
-    if (first == std::string::npos) return {};
-    auto last = value.find_last_not_of(" \t");
-    return value.substr(first, last - first + 1);
 }
 
 std::string JoinWithSpaces(const std::vector<std::string>& items) {
@@ -247,7 +241,8 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
         RespondUnauthorized(resp, config.resource_metadata_url, false);
         return false;
     }
-    auto token = TrimWhitespace(authorization->substr(kBearerSchemeLength));
+    auto token = authorization->substr(kBearerSchemeLength);
+    detail::net::TrimInPlace(token);
 
     auto result = config.verify(token);
     if (!result.ok) {

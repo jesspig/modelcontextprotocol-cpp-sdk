@@ -38,8 +38,6 @@ server->Run();
 | `protocol_version` | `optional<string>` | Pin to a specific version |
 | `server_instructions` | `optional<string>` | Instructions sent to client |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
-| `validate_tool_input` | `bool` | Enable JSON Schema input validation |
-| `validate_tool_output` | `bool` | Enable JSON Schema output validation |
 | `declare_logging` | `bool` | Explicitly declare the `logging` capability (merged into derived capabilities; default `false`) |
 | `declare_completions` | `bool` | Explicitly declare the `completions` capability (default `false`) |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | Task persistence backend |

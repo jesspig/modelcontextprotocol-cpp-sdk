@@ -121,7 +121,7 @@ struct SubscriptionFilter {
 
 ### 语义辅助函数
 
-`McpSession` 和 `McpSessionHandler` 都提供：
+`McpSessionHandler` 提供：
 
 ```cpp
 bool IsJuly2026OrLater() const;
