@@ -12,6 +12,7 @@
 
 #include <mcp/test/McpTest.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -418,6 +419,44 @@ TEST(SessionHandlerTest, ConcurrentRequestsResolveCorrectly) {
     }
 }
 
+// A request whose handler never completes before a later request must not hold
+// back that later request's response: the response worker delivers every ready
+// entry on each pass instead of blocking on the first unsettled one.
+TEST(SessionHandlerTest, SlowHandlerDoesNotDelayReadyResponse) {
+    HandlerPair hp;
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            const int64_t id = std::get<int64_t>(req.id);
+            if (id == 1) {
+                held_promise = std::make_shared<std::promise<JsonValue>>(std::move(p));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            result["echo"] = JsonValue(id);
+            p.set_value(std::move(result));
+        });
+
+    auto slow = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(), std::chrono::milliseconds(5000));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    auto fast = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(), std::chrono::milliseconds(5000));
+
+    ASSERT_EQ(fast.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    auto fast_result = fast.get();
+    ASSERT_TRUE(fast_result.Contains("echo"));
+    EXPECT_EQ(fast_result["echo"].GetInt(), static_cast<int64_t>(2));
+    EXPECT_EQ(slow.wait_for(std::chrono::milliseconds(0)),
+              std::future_status::timeout);
+
+    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(slow.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+}
+
 // Close() must fail a request whose server handler never completes and must
 // join the response worker without blocking on the unsatisfied promise.
 TEST(SessionHandlerTest, CloseCompletesHeldRequestsAndJoinsWorker) {
@@ -760,4 +799,132 @@ TEST(SessionHandlerTest, MaxTotalTimeoutDoesNotAffectPlainIdleTimeout) {
     ASSERT_TRUE(result.Contains("code"));
     EXPECT_EQ(result["code"].GetInt(),
               static_cast<int64_t>(McpErrorCode::RequestTimeout));
+}
+
+// notifications/cancelled reaches the handler of an in-flight incoming request:
+// the flag published while the handler runs flips once the peer cancels.
+// The request has to still be pending when the peer cancels: its incoming-cancel
+// registration is erased as soon as the response is delivered, so the handler
+// moves the response promise out instead of letting the promise die with it.
+TEST(SessionHandlerTest, CancelledNotificationFlagsInFlightIncomingRequest) {
+    HandlerPair hp;
+
+    std::promise<JsonValue> id_promise;
+    auto id_future = id_promise.get_future();
+    std::shared_ptr<std::atomic<bool>> flag;
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [srv = hp.server.get(), &id_promise, &flag, &held_promise](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            flag = srv->GetIncomingCancellationFlag(req.id);
+            held_promise = std::make_shared<std::promise<JsonValue>>(std::move(p));
+            JsonValue id = std::holds_alternative<int64_t>(req.id)
+                ? JsonValue(std::get<int64_t>(req.id))
+                : JsonValue(std::get<std::string>(req.id));
+            id_promise.set_value(std::move(id));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(5000));
+
+    ASSERT_EQ(id_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_NE(flag, nullptr);
+    ASSERT_NE(held_promise, nullptr);
+    EXPECT_FALSE(flag->load());
+
+    JsonValue params(JsonValue::object_tag);
+    params["requestId"] = id_future.get();
+    hp.client->SendNotification(notifications::kCancelled, std::move(params));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!flag->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(flag->load());
+
+    // Releasing the promise settles the still-pending request cleanly.
+    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_FALSE(future.get().Contains("code"));
+}
+
+// A request whose _meta declares a version the peer does not implement is
+// rejected with UnsupportedProtocolVersion and the peer's supported list.
+TEST(SessionHandlerTest, RejectsUnsupportedDeclaredProtocolVersion) {
+    HandlerPair hp;
+
+    bool handled = false;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = "2099-01-01";
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta,
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
+    EXPECT_FALSE(handled);
+
+    auto* data = result.Find("data");
+    ASSERT_NE(data, nullptr);
+    ASSERT_TRUE(data->IsObject());
+    auto* supported = data->Find("supported");
+    ASSERT_NE(supported, nullptr);
+    ASSERT_TRUE(supported->IsArray());
+    bool lists_latest = false;
+    for (const auto& v : supported->GetArray()) {
+        if (v.IsString() && v.GetString() == std::string(kLatestProtocolVersion))
+            lists_latest = true;
+    }
+    EXPECT_TRUE(lists_latest);
+    auto* requested = data->Find("requested");
+    ASSERT_NE(requested, nullptr);
+    EXPECT_EQ(requested->GetString(), "2099-01-01");
+}
+
+// A malformed _meta subfield is a params error, not a silently dropped envelope.
+TEST(SessionHandlerTest, RejectsRequestWithMalformedMetaField) {
+    HandlerPair hp;
+
+    bool handled = false;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    std::promise<JsonRpcErrorResponse> error_promise;
+    auto error_future = error_promise.get_future();
+    hp.client->SetOnErrorCallback([&error_promise](const JsonRpcErrorResponse& e) {
+        error_promise.set_value(e);
+    });
+
+    JsonValue meta(JsonValue::object_tag);
+    meta["io.modelcontextprotocol/protocolVersion"] =
+        JsonValue(std::string(kLatestProtocolVersion));
+    meta["progressToken"] = JsonValue(true);
+
+    JsonRpcRequest req;
+    req.id = RequestId{int64_t(4242)};
+    req.method = std::string(methods::kCallTool);
+    req.params = JsonValue(JsonValue::object_tag);
+    req.meta = std::move(meta);
+    hp.client->SendMessage(JsonRpcMessage{std::move(req)});
+
+    ASSERT_EQ(error_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto err = error_future.get();
+    EXPECT_EQ(static_cast<int32_t>(err.error.code),
+              static_cast<int32_t>(McpErrorCode::InvalidParams));
+    EXPECT_FALSE(handled);
 }

@@ -4,6 +4,7 @@
 
 #include <mcp/Export.hpp>
 #include <mcp/JsonValue.hpp>
+#include <mcp/detail/McpParamAnnotations.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
@@ -48,6 +49,13 @@ public:
         RegisterTool(McpServerTool::Create(name, std::move(fn), options));
     }
 
+    // ── SEP-2243 x-mcp-header ──
+    // Returns the annotations declared by a registered tool's inputSchema so a
+    // StreamableHttpServerOptions::resolve_param_annotations hook can validate
+    // Mcp-Param-* request headers.
+    std::vector<detail::McpParamAnnotation> ResolveToolParamAnnotations(
+        const std::string& /*method*/, const std::string& name) const;
+
     // ── Resource registration ──
     void RegisterResource(
         std::string_view name,
@@ -85,6 +93,7 @@ public:
     // ── Notifications ──
     void SendToolListChanged();
     void SendResourceListChanged();
+    void SendResourceUpdated(const std::string& uri);
     void SendPromptListChanged();
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
@@ -118,6 +127,7 @@ private:
     void WireTaskHandlers();
     void WireSubscriptionHandlers();
     void DeriveCapabilities();
+    void SendListChangedNotification(std::string_view method);
 
     // ── Internal handler implementations ──
     JsonValue BuildToolsJson();

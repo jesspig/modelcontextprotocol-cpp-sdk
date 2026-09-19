@@ -230,6 +230,9 @@ McpServer::McpServer(
     if (options_.on_notification) {
         handler_->SetOnNotificationCallback(options_.on_notification);
     }
+    if (options_.span_handler) {
+        handler_->SetSpanHandler(std::move(options_.span_handler));
+    }
     if (options_.on_transport_close || options_.on_transport_error) {
         if (auto* tb = dynamic_cast<TransportBase*>(transport_.get())) {
             if (options_.on_transport_close)
@@ -379,18 +382,32 @@ void McpServer::RegisterPrompt(
 // Notifications
 // ====================================================================
 void McpServer::SendToolListChanged() {
-    handler_->SendNotification(
-        notifications::kToolListChanged, JsonValue(JsonValue::object_tag));
+    SendListChangedNotification(notifications::kToolListChanged);
 }
 
 void McpServer::SendResourceListChanged() {
-    handler_->SendNotification(
-        notifications::kResourceListChanged, JsonValue(JsonValue::object_tag));
+    SendListChangedNotification(notifications::kResourceListChanged);
+}
+
+void McpServer::SendResourceUpdated(const std::string& uri) {
+    JsonValue params(JsonValue::object_tag);
+    params[detail::kUri] = JsonValue(uri);
+    handler_->NotifySubscribers(notifications::kResourceUpdated, std::move(params), uri);
 }
 
 void McpServer::SendPromptListChanged() {
-    handler_->SendNotification(
-        notifications::kPromptListChanged, JsonValue(JsonValue::object_tag));
+    SendListChangedNotification(notifications::kPromptListChanged);
+}
+
+void McpServer::SendListChangedNotification(std::string_view method) {
+    // 2026-era subscriptions carry an explicit filter, so the notification only
+    // reaches listeners that asked for this type. Legacy clients have no filter
+    // to consult and keep receiving the broadcast.
+    if (handler_->IsJuly2026OrLater()) {
+        handler_->NotifySubscribers(method, JsonValue(JsonValue::object_tag));
+        return;
+    }
+    handler_->SendNotification(method, JsonValue(JsonValue::object_tag));
 }
 
 void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
@@ -621,8 +638,9 @@ void McpServer::WireResourceHandlers() {
                 if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
                 SubscribeRequestParams params;
                 if (req.params) params = DeserializeResourceRequestParams(*req.params);
-                Subscription sub{params.uri, {}};
-                handler_->AddSubscription(sub);
+                SubscriptionFilter filter;
+                filter.resource_subscriptions.push_back(params.uri);
+                handler_->AddSubscription(Subscription{params.uri, std::move(filter)});
                 EmptyResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
@@ -976,6 +994,17 @@ JsonValue McpServer::BuildToolsJson() {
     return SerializeListToolsResult(result);
 }
 
+std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
+    const std::string& /*method*/, const std::string& name) const
+{
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    auto it = tools_.find(name);
+    if (it == tools_.end()) return {};
+    auto parsed = detail::ParseToolParamAnnotations(it->second->ProtocolTool().input_schema);
+    if (!parsed.IsValid()) return {};
+    return std::move(parsed.annotations);
+}
+
 void McpServer::HandleListTools(
     const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
 {
@@ -1020,7 +1049,10 @@ void McpServer::HandleCallTool(
     auto log_fn = [this](LoggingLevel level, std::string_view data) {
         SendLoggingMessage(level, data);
     };
-    auto cancel_flag = std::make_shared<std::atomic<bool>>(false);
+    auto cancel_flag = handler_->GetIncomingCancellationFlag(req.id);
+    if (!cancel_flag) {
+        cancel_flag = std::make_shared<std::atomic<bool>>(false);
+    }
     auto ctx = RequestContext<CallToolRequestParams>(
         *this, req, std::move(params), std::move(log_fn), cancel_flag);
 

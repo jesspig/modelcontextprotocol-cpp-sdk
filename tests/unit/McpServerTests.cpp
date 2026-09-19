@@ -1794,3 +1794,84 @@ TEST(McpServerTest, MrtrForgedRequestStateRejectedWithReason) {
     server->Close();
     client->Close();
 }
+
+// ── resources/updated reaches a listener that subscribed to that URI (2026 era) ──
+TEST(McpServerTest, SendResourceUpdatedReachesSubscribedUri) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::promise<JsonRpcNotification> ack_received;
+    auto ack_future = ack_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_received](const JsonRpcNotification& n) {
+            ack_received.set_value(n);
+        });
+
+    std::promise<JsonRpcNotification> updated_received;
+    auto updated_future = updated_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceUpdated,
+        [&updated_received](const JsonRpcNotification& n) {
+            updated_received.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.resource_subscriptions = {"resource://send/1"};
+    auto subscribe = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(params),
+        MetaWithSubscriptionId("client-sub-upd"),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+
+    ctx.server->SendResourceUpdated("resource://send/1");
+
+    ASSERT_EQ(updated_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto notif = updated_future.get();
+    EXPECT_EQ(notif.method, std::string(notifications::kResourceUpdated));
+    ASSERT_TRUE(notif.params.has_value());
+    auto* uri = notif.params->Find("uri");
+    ASSERT_NE(uri, nullptr);
+    EXPECT_EQ(uri->GetString(), "resource://send/1");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+// ── A listener that did not subscribe to a URI is not notified (2026 era) ──
+TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::promise<JsonRpcNotification> ack_received;
+    auto ack_future = ack_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_received](const JsonRpcNotification& n) {
+            ack_received.set_value(n);
+        });
+
+    std::promise<JsonRpcNotification> updated_received;
+    auto updated_future = updated_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceUpdated,
+        [&updated_received](const JsonRpcNotification& n) {
+            updated_received.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.resource_subscriptions = {"resource://send/1"};
+    auto subscribe = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(params),
+        MetaWithSubscriptionId("client-sub-other"),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+
+    ctx.server->SendResourceUpdated("resource://other/9");
+
+    EXPECT_EQ(updated_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
