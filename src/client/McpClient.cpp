@@ -483,6 +483,9 @@ McpClient::McpClient(
     handler_ = std::make_shared<McpSessionHandler>(
         transport_, std::move(codec));
     handler_->SetMaxTotalTimeout(options_.max_total_timeout);
+    if (options_.span_handler) {
+        handler_->SetSpanHandler(std::move(options_.span_handler));
+    }
     handler_->Start();
     WireClientHandlers();
 }

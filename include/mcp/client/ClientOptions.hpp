@@ -8,6 +8,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpVersion.hpp>
+#include <mcp/SpanHooks.hpp>
 
 #include <chrono>
 #include <optional>
@@ -59,6 +60,10 @@ struct MCP_API ClientOptions {
 
     // 404 会话过期时自动重新初始化并重放失败请求恰一次。
     bool reinit_on_expired_session{true};
+
+    // Span observation hook: invoked on the transport send/receive boundaries.
+    // See mcp/SpanHooks.hpp.
+    SpanHandler span_handler;
 
 };
 

@@ -11,7 +11,8 @@ mcp_discover_tests(mcp-core-tests)
 
 add_executable(mcp-wire-codec-tests
     WireCodecTests.cpp
-    SessionHandlerTests.cpp)
+    SessionHandlerTests.cpp
+    SpanHookTests.cpp)
 target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol mcp-test-main)
 mcp_discover_tests(mcp-wire-codec-tests)
 
