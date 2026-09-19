@@ -1,5 +1,6 @@
 // SseClientTransport.cpp — SSE client transport implementation
 
+#include <mcp/detail/SseEventParser.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/detail/Url.hpp>
@@ -17,7 +18,6 @@
 #include <mutex>
 #include <optional>
 #include <queue>
-#include <sstream>
 #include <string>
 #include <thread>
 
@@ -64,50 +64,27 @@ SseEvent ParseSseEvent(const std::string& block) {
     SseEvent evt;
     evt.event_type = "message";
 
-    std::istringstream stream(block);
-    std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        if (line.empty())
-            continue;
+    detail::ForEachSseLine(block, [&evt](std::string_view line) {
+        detail::SseFieldLine field;
+        // 冒号后无负载的字段行（如裸 "data:"）在本侧历来被忽略。
+        if (!detail::ParseSseFieldLine(line, field) || !field.has_payload) return;
 
-        if (line.size() > 6 && line.compare(0, 6, "event:") == 0) {
-            auto val = line.substr(6);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            else val.clear();
-            evt.event_type = std::move(val);
-        }
-        else if (line.size() > 5 && line.compare(0, 5, "data:") == 0) {
-            auto val = line.substr(5);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            else val.clear();
-            if (!evt.data.empty()) evt.data += "\n";
-            evt.data += val;
-        }
-        else if (line.size() > 3 && line.compare(0, 3, "id:") == 0) {
-            auto val = line.substr(3);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            else val.clear();
-            evt.id = std::move(val);
-        }
-        else if (line.size() > 6 && line.compare(0, 6, "retry:") == 0) {
-            auto val = line.substr(6);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            else val.clear();
-            if (!val.empty() &&
-                val.find_first_not_of("0123456789") == std::string::npos) {
+        if (field.name == "event") {
+            evt.event_type = std::string(field.value);
+        } else if (field.name == "data") {
+            detail::AppendSseData(evt.data, field.value);
+        } else if (field.name == "id") {
+            evt.id = std::string(field.value);
+        } else if (field.name == "retry") {
+            if (!field.value.empty() &&
+                field.value.find_first_not_of("0123456789") == std::string_view::npos) {
                 try {
-                    evt.retry_ms = std::stoull(val);
+                    evt.retry_ms = std::stoull(std::string(field.value));
                 } catch (...) {
                 }
             }
         }
-    }
+    });
     return evt;
 }
 

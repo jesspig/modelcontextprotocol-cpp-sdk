@@ -20,6 +20,7 @@
 
 #include <http/HttpServerImpl.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/StringUtils.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <transport/detail/net/NetIoUtil.hpp>
@@ -596,8 +597,7 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
         if (colon == std::string::npos || colon == 0)
             return HeaderResult::BadRequest;
         std::string name(line, 0, colon);
-        for (auto& c : name)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        ToLowerInPlace(name);
         std::string value(line, colon + 1);
         auto first = value.find_first_not_of(" \t");
         auto last = value.find_last_not_of(" \t");
