@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-09-16T19:38:35Z
+timestamp: 2026-09-20T00:38:40+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -28,12 +28,12 @@ resource: src/core/JsonValue.cpp
 | 分组 | 数量 | 代表类型 |
 |------|------|----------|
 | 基础类型 | 13 | Tool、Resource、ResourceTemplate、Prompt、Pagination、Result 等 11 struct + ToolExecutionMode、ResultType 2 枚举 |
-| Params | 28 | 21 struct（Paginated/Resource/CallTool/GetPrompt/Complete/Discover/Initialize/SubscriptionsListen/Elicit/CreateMessage/ListRoots/SetLevel + tasks 3 + MRTR 三件套 + Root/SamplingMessage/SubscriptionFilter）+ 7 alias（ListTools/ListResources/ListResourceTemplates/ListPrompts/ReadResource/Subscribe/Unsubscribe） |
+| Params | 28 | 20 struct（Paginated/Resource/CallTool/GetPrompt/Complete/Discover/Initialize/SubscriptionsListen/Elicit/CreateMessage/ListRoots/SetLevel + tasks 3 + MRTR 2（`InputRequest`、`InputRequiredResult`）+ Root/SamplingMessage/SubscriptionFilter）+ 8 alias（ListTools/ListResources/ListResourceTemplates/ListPrompts/ReadResource/Subscribe/Unsubscribe + `InputRequests`） |
 | Results | 20 | 15 个继承 `Result` 的 struct（EmptyResult、CallToolResult、List\* 五件套、ReadResource/GetPrompt/Complete/Initialize/Discover/CreateTaskResult、ElicitResult、CreateMessageResult、ListRootsResult）+ `ElicitResultTyped\<T\>` 模板 + `GetTaskResult` + 3 alias（Ping/UpdateTask/CancelTask） |
 | Notifications | 5 | SubscriptionsAcknowledged、Progress/Cancelled/LoggingMessage/TaskStatus 参数 |
 | Options | 5 | RequestOptions、CacheableRequestOptions、ToolOptions、ResourceOptions、PromptOptions |
 
-所有类型都有成对 `SerializeXxx/DeserializeXxx` 自由函数（88 对：McpTypes.hpp 57 + Content.hpp 16 + Capabilities.hpp 9 + JsonRpc.cpp 6，另有 `SerializeTaskStatusNotificationParams` 单边无配套反序列化、JsonRpc 的 Request/Response/Message 提供 `&&` 移动重载；公共类型声明于 [McpTypes.hpp](../../include/mcp/McpTypes.hpp)，实现分布在各 `McpTypes*.cpp`）。多数 Result 带 `resultType` 键；**空结果（`EmptyResult`）不写**（官方 conformance 期望空对象），`CallToolResult` 仅 `input_required` 分支写 `resultType: "input_required"` 并附 `inputRequests`/`requestState`。`List*Result` 五件套收敛为模板辅助 `SerializeListItems / WriteListResultCommon / DeserializeListItems / ReadListResultCommon`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）；各 `McpTypes*.cpp` 不再放置前向声明，以公共头声明为准。`LoggingMessageNotificationParams.logger` 为 `std::optional<std::string>`（[McpTypes.hpp:330](../../include/mcp/McpTypes.hpp)）。反序列化类型校验：`ProgressNotificationParams.progress` 须 `IsNumber`（double/int 皆可）、`CreateMessageRequestParams.maxTokens` 须 `IsInt`（类型不符抛 `DeserializeFailed`）。
+所有协议类型都有 `SerializeXxx`/`DeserializeXxx` 自由函数（逐声明头实测：McpTypes.hpp 49 个 `Serialize*` + 45 个 `Deserialize*`（44 对成对）、Content.hpp 16 + 16、Capabilities.hpp 9 + 9，合计 144；**6 个单边函数**——`SerializeCreateMessageResult`/`SerializeDiscoverRequestParams`/`SerializeListRootsResult`/`SerializeRoot`/`SerializeTaskStatusNotificationParams` 无配套反序列化，`DeserializeGetPromptRequestParams` 无配套序列化；JsonRpc 侧另有 `SerializeMessage`/`DeserializeMessage` 等，Request/Response/Message 提供 `&&` 移动重载；公共类型声明于 [McpTypes.hpp](../../include/mcp/McpTypes.hpp)，实现分布在各 `McpTypes*.cpp`）。多数 Result 带 `resultType` 键；**空结果（`EmptyResult`）不写**（官方 conformance 期望空对象），`CallToolResult` 仅 `input_required` 分支写 `resultType: "input_required"` 并附 `inputRequests`/`requestState`。`List*Result` 五件套收敛为模板辅助 `SerializeListItems / WriteListResultCommon / DeserializeListItems / ReadListResultCommon`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）；各 `McpTypes*.cpp` 不再放置前向声明，以公共头声明为准。`LoggingMessageNotificationParams.logger` 为 `std::optional<std::string>`（[McpTypes.hpp:330](../../include/mcp/McpTypes.hpp)）。反序列化类型校验：`ProgressNotificationParams.progress` 须 `IsNumber`（double/int 皆可）、`CreateMessageRequestParams.maxTokens` 须 `IsInt`（类型不符抛 `DeserializeFailed`）。
 
 ## 常量集
 
@@ -47,6 +47,7 @@ resource: src/core/JsonValue.cpp
 - `JsonFields.hpp`：全部 JSON 字段名常量（92 个 `kXxx[]`，含 6 个 `_meta` 信封键与 2 个 ResultType 值字符串，另含 `kTTLMs/kCacheScope/kClientInfo/kRequestId/kRequiredCapabilities/kStatus` 等），协议键禁止硬编码
 - `JsonSerializer.hpp`：`DeserializeOptional` 未特化时 `static_assert` 编译失败（非静默）
 - `JsonSchemaValidator.hpp`：最小 JSON Schema 子集校验器（SEP-2106，draft-07 风格）
+- `UriTemplate.hpp`：RFC 6570 URI 模板匹配器（`Parse`/`Expand`/`Match`），服务端 `RegisterResourceTemplate` 校验与 `resources/read` 模板实例路由共用；上限 `kMaxUriTemplateLength`/`kMaxUriTemplateVariables`/`kMaxUriMatchLength`（见 [/classes/mcp-server.md](../classes/mcp-server.md)）
 - `ResponseCache.hpp`：客户端响应缓存（SEP-2549），键 = method + cursor/uri 上下文，TTL 钳制 24h，public/private 双分区，惰性过期清除（详见 [/classes/mcp-client.md](../classes/mcp-client.md)）
 
 ## 相关页面
