@@ -27,13 +27,34 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
 BIN_DIR="build/${BUILD_PRESET}/examples/conformance"
+# CMake 为每个 conformance 目标单独建同名目录，可执行文件位于
+# build/<preset>/examples/conformance/<target>/<target>[.exe]，与
+# .github/workflows/conformance.yml 中使用的路径一致。
+# 旧布局将可执行文件平铺在 examples/conformance/ 下，保留回退以兼容。
 # Windows 构建产物带 .exe 后缀，Linux/macOS 无后缀。
 resolve_binary() {
-    if [ -f "${BIN_DIR}/$1.exe" ]; then
-        echo "${BIN_DIR}/$1.exe"
-    else
-        echo "${BIN_DIR}/$1"
+    local name="$1"
+    local target_dir="${BIN_DIR}/${name}"
+    if [ -f "${target_dir}/${name}.exe" ]; then
+        echo "${target_dir}/${name}.exe"
+        return 0
     fi
+    if [ -f "${target_dir}/${name}" ]; then
+        echo "${target_dir}/${name}"
+        return 0
+    fi
+    # 回退路径的提示必须走 stderr：stdout 被调用方用于捕获路径。
+    if [ -f "${BIN_DIR}/${name}.exe" ]; then
+        echo "Warning: ${target_dir} not found; falling back to legacy layout ${BIN_DIR}" >&2
+        echo "${BIN_DIR}/${name}.exe"
+        return 0
+    fi
+    if [ -f "${BIN_DIR}/${name}" ]; then
+        echo "Warning: ${target_dir} not found; falling back to legacy layout ${BIN_DIR}" >&2
+        echo "${BIN_DIR}/${name}"
+        return 0
+    fi
+    echo "${target_dir}/${name}"
 }
 
 run_referee() {
