@@ -8,15 +8,18 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
+#include <http/McpParamHeaders.hpp>
 #include <transport/detail/net/HttpClient.hpp>
 
 #include <mcp/test/McpTest.hpp>
 #include "TestServerUtil.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <optional>
@@ -978,5 +981,304 @@ TEST(StreamableHttpTest, ClientSendsDeleteOnCloseWithSessionId) {
     }
     EXPECT_EQ(delete_session, "sess-456");
 
+    mock.Stop();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SEP-2243 x-mcp-header annotations (Streamable HTTP custom headers)
+// ══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+std::string HeaderLookup(const std::unordered_map<std::string, std::string>& headers,
+                         const std::string& name) {
+    for (const auto& [key, value] : headers) {
+        if (key.size() != name.size()) continue;
+        bool equal = true;
+        for (size_t i = 0; i < key.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(key[i])) !=
+                std::tolower(static_cast<unsigned char>(name[i]))) {
+                equal = false;
+                break;
+            }
+        }
+        if (equal) return value;
+    }
+    return {};
+}
+
+bool WaitForCondition(const std::function<bool()>& predicate, int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return predicate();
+}
+
+} // namespace
+
+TEST(StreamableHttpTest, McpParamAnnotationParsesNestedPropertyPaths) {
+    auto schema = mcp::JsonValue::Parse(R"({
+        "type": "object",
+        "properties": {
+            "region": {"type": "string", "x-mcp-header": "Region"},
+            "tenant": {
+                "type": "object",
+                "properties": {"id": {"type": "integer", "x-mcp-header": "Tenant-Id"}}
+            },
+            "query": {"type": "string"}
+        }
+    })");
+    auto parsed = mcp::http_detail::ParseToolParamAnnotations(schema);
+    ASSERT_TRUE(parsed.IsValid());
+    ASSERT_EQ(parsed.annotations.size(), 2u);
+
+    auto arguments = mcp::JsonValue::Parse(R"({"region":"us-west1","tenant":{"id":42}})");
+    for (const auto& annotation : parsed.annotations) {
+        auto value = mcp::http_detail::ValueAtPath(arguments, annotation.property_path);
+        ASSERT_TRUE(value.has_value());
+        auto encoded = mcp::http_detail::EncodeHeaderValue(*value);
+        ASSERT_TRUE(encoded.has_value());
+        if (annotation.header_name == "Region") EXPECT_EQ(*encoded, "us-west1");
+        else EXPECT_EQ(*encoded, "42");
+    }
+}
+
+TEST(StreamableHttpTest, McpParamAnnotationRejectsInvalidSchemas) {
+    // Each schema violates one of the x-mcp-header constraints.
+    const char* kInvalidSchemas[] = {
+        R"({"properties":{"a":{"type":"string","x-mcp-header":""}}})",
+        R"({"properties":{"a":{"type":"string","x-mcp-header":"Bad Name"}}})",
+        R"({"properties":{"a":{"type":"number","x-mcp-header":"Num"}}})",
+        R"({"properties":{"a":{"type":"string","x-mcp-header":"Dup"},"b":{"type":"string","x-mcp-header":"dup"}}})",
+        R"({"properties":{"a":{"type":"array","items":{"type":"string","x-mcp-header":"X"}}}})",
+        R"({"properties":{"a":{"oneOf":[{"type":"string","x-mcp-header":"Y"}]}}})",
+    };
+    for (const char* schema_json : kInvalidSchemas) {
+        auto parsed = mcp::http_detail::ParseToolParamAnnotations(
+            mcp::JsonValue::Parse(schema_json));
+        EXPECT_FALSE(parsed.IsValid());
+    }
+}
+
+TEST(StreamableHttpTest, McpParamValueEncodingMatchesSpecExamples) {
+    // Verbatim examples from the Streamable HTTP spec "Encoding examples" table.
+    struct Case { const char* json; const char* expected; };
+    const Case kCases[] = {
+        {"\"us-west1\"", "us-west1"},
+        {"\"Hello, \\u4e16\\u754c\"", "=?base64?SGVsbG8sIOS4lueVjA==?="},
+        {"\" padded \"", "=?base64?IHBhZGRlZCA=?="},
+        {"\"line1\\nline2\"", "=?base64?bGluZTEKbGluZTI=?="},
+        {"\"=?base64?literal?=\"", "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?="},
+        {"true", "true"},
+        {"42", "42"},
+    };
+    for (const auto& test_case : kCases) {
+        auto value = mcp::JsonValue::Parse(test_case.json);
+        auto encoded = mcp::http_detail::EncodeHeaderValue(value);
+        ASSERT_TRUE(encoded.has_value());
+        EXPECT_EQ(*encoded, test_case.expected);
+    }
+}
+
+TEST(StreamableHttpTest, McpNameHeaderDecodesBase64Sentinel) {
+    auto body = mcp::JsonValue::Parse(
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Hello, \u4e16\u754c"}})");
+    std::string error;
+    EXPECT_TRUE(mcp::StreamableHttpServerTransport::ValidateMcpHeaders(
+        "tools/call", "=?base64?SGVsbG8sIOS4lueVjA==?=", body, error));
+    EXPECT_TRUE(error.empty());
+
+    // A sentinel that decodes to a different name is still a mismatch.
+    EXPECT_FALSE(mcp::StreamableHttpServerTransport::ValidateMcpHeaders(
+        "tools/call", "=?base64?b3RoZXI=?=", body, error));
+}
+
+TEST(StreamableHttpTest, UnauthorizedChallengeCarriesScopes) {
+    auto port = PickFreePort(kTestBasePort + 1100);
+
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = true;
+    opts.enable_legacy_sse = false;
+    mcp::StreamableHttpServerOptions::BearerAuthConfig bearer;
+    bearer.verify = [](const std::string&) { return mcp::AuthResult{}; };
+    bearer.resource_metadata_url =
+        "https://example.com/.well-known/oauth-protected-resource";
+    bearer.scopes_supported = {"files:read", "files:write"};
+    bearer.serve_metadata_endpoint = false;
+    opts.bearer_auth = bearer;
+
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::unordered_map<std::string, std::string> hdrs;
+    hdrs["Content-Type"] = "application/json";
+    auto r = HttpPost("http://127.0.0.1:" + std::to_string(port) + "/mcp",
+                      R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})", hdrs);
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 401);
+    const auto challenge = HeaderLookup(r->headers, "www-authenticate");
+    EXPECT_NE(challenge.find("resource_metadata="), std::string::npos);
+    EXPECT_NE(challenge.find("scope=\"files:read files:write\""), std::string::npos);
+
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, ServerValidatesMcpParamHeadersAgainstBody) {
+    auto port = PickFreePort(kTestBasePort + 1120);
+
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = true;
+    opts.enable_legacy_sse = false;
+    opts.resolve_param_annotations =
+        [](const std::string& method, const std::string& name) {
+            std::vector<mcp::McpParamAnnotationInfo> resolved;
+            if (method == "tools/call" && name == "execute_sql") {
+                resolved.push_back({{"region"}, "Region"});
+            }
+            return resolved;
+        };
+
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            p.set_value(mcp::JsonValue(mcp::JsonValue::object_tag));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    const char* kBody =
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute_sql","arguments":{"region":"us-west1"}}})";
+
+    auto base_headers = [&] {
+        std::unordered_map<std::string, std::string> hdrs;
+        hdrs["Content-Type"] = "application/json";
+        hdrs["Mcp-Method"] = "tools/call";
+        hdrs["Mcp-Name"] = "execute_sql";
+        return hdrs;
+    };
+
+    // Matching header is accepted.
+    {
+        auto hdrs = base_headers();
+        hdrs["Mcp-Param-Region"] = "us-west1";
+        auto r = HttpPost(url, kBody, hdrs);
+        ASSERT_NE(r, std::nullopt);
+        EXPECT_NE(r->status_code, 400);
+    }
+
+    // Mismatching header is rejected with -32020.
+    {
+        auto hdrs = base_headers();
+        hdrs["Mcp-Param-Region"] = "us-east1";
+        auto r = HttpPost(url, kBody, hdrs);
+        ASSERT_NE(r, std::nullopt);
+        EXPECT_EQ(r->status_code, 400);
+        EXPECT_NE(r->body.find("-32020"), std::string::npos);
+    }
+
+    // Missing header while the body carries the value is rejected.
+    {
+        auto hdrs = base_headers();
+        auto r = HttpPost(url, kBody, hdrs);
+        ASSERT_NE(r, std::nullopt);
+        EXPECT_EQ(r->status_code, 400);
+    }
+
+    handler->Close();
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, ClientMirrorsAnnotatedToolArguments) {
+    auto port = PickFreePort(kTestBasePort + 1140);
+    mcp::HttpServer mock(port);
+
+    std::mutex m;
+    std::unordered_map<std::string, std::string> call_headers;
+    std::atomic<bool> saw_call{false};
+
+    mock.SetHandler("POST", "/mcp", [&](const MCP_Request& req, MCP_Response& resp) {
+        auto body = mcp::JsonValue::Parse(req.body);
+        std::string method;
+        if (auto* mth = body.Find("method"); mth && mth->IsString()) method = mth->GetString();
+        resp.headers["content-type"] = "application/json";
+
+        if (method == "tools/list") {
+            resp.body = R"({"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"execute_sql","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"query":{"type":"string"}}}}]}})";
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m);
+            call_headers = req.headers;
+        }
+        saw_call.store(true);
+        resp.body = R"({"jsonrpc":"2.0","id":2,"result":{"content":[]}})";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.transport_mode = mcp::HttpTransportMode::StreamableHttp;
+    opts.enable_listen_stream = false;
+    mcp::StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    std::atomic<bool> got_list_response{false};
+    std::thread reader([&] {
+        transport->GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, mcp::JsonRpcMessage) {
+                if (!ec) got_list_response.store(true);
+            });
+    });
+
+    mcp::JsonRpcRequest list_request;
+    list_request.id = int64_t(1);
+    list_request.method = "tools/list";
+    transport->SendMessageAsync(mcp::JsonRpcMessage(std::move(list_request)));
+
+    // The tools/list response populates the annotation cache before tools/call.
+    EXPECT_TRUE(WaitForCondition([&] { return got_list_response.load(); }, 5000));
+
+    mcp::JsonRpcRequest call_request;
+    call_request.id = int64_t(2);
+    call_request.method = "tools/call";
+    {
+        mcp::JsonValue params(mcp::JsonValue::object_tag);
+        params["name"] = mcp::JsonValue("execute_sql");
+        mcp::JsonValue arguments(mcp::JsonValue::object_tag);
+        arguments["region"] = mcp::JsonValue("us-west1");
+        arguments["query"] = mcp::JsonValue("SELECT 1");
+        params["arguments"] = std::move(arguments);
+        call_request.params = std::move(params);
+    }
+    transport->SendMessageAsync(mcp::JsonRpcMessage(std::move(call_request)));
+
+    EXPECT_TRUE(WaitForCondition([&] { return saw_call.load(); }, 5000));
+    std::unordered_map<std::string, std::string> headers;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        headers = call_headers;
+    }
+    EXPECT_EQ(HeaderLookup(headers, "Mcp-Method"), "tools/call");
+    EXPECT_EQ(HeaderLookup(headers, "Mcp-Name"), "execute_sql");
+    EXPECT_EQ(HeaderLookup(headers, "Mcp-Param-Region"), "us-west1");
+    // Non-annotated parameters must not be mirrored.
+    EXPECT_TRUE(HeaderLookup(headers, "Mcp-Param-Query").empty());
+
+    transport->Close();
+    if (reader.joinable()) reader.join();
     mock.Stop();
 }

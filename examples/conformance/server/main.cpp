@@ -133,6 +133,13 @@ int main(int argc, char** argv)
     transport_options.server_name = "mcp-conformance-test-server";
     transport_options.server_version = "1.0.0";
 
+    McpServer* server_ptr = nullptr;
+    transport_options.resolve_param_annotations =
+        [&server_ptr](const std::string& method, const std::string& name) {
+            if (!server_ptr) return std::vector<McpParamAnnotationInfo>{};
+            return server_ptr->ResolveToolParamAnnotations(method, name);
+        };
+
     auto transport = std::make_shared<StreamableHttpServerTransport>(transport_options);
 
     ServerOptions server_options;
@@ -143,6 +150,7 @@ int main(int argc, char** argv)
     server_options.request_state_key = GenerateRequestStateKey();
 
     auto server = McpServer::Create(transport, server_options);
+    server_ptr = server.get();
 
     RegisterContentTools(*server);
     RegisterInteractionTools(*server);
