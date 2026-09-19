@@ -3,13 +3,13 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer]
-timestamp: 2026-09-20T01:45:19+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
 # OAuth 授权流程
 
-`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——头文件注释仍声明整体单线程使用；`GetAccessToken` 内部用 `refresh_mutex_` 串行化"读 token → 判断过期 → 刷新 → 写回"整段（防多线程用同一 `refresh_token` 并发刷新）。无 token_cache 时默认 `InMemoryTokenCache`。
+`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——头文件注释仍声明整体单线程使用；`GetAccessToken` 内部用 `refresh_mutex_` 串行化“读 token → 判断过期 → 刷新 → 写回”整段。因此只有 token 获取/刷新路径受该锁保护，`Authenticate`、`Revoke`、`StepUpAuthorization` 以及 metadata/registration 状态不能据此视为整体线程安全。无 token_cache 时默认 `InMemoryTokenCache`。
 
 ## 流程（`Authenticate()`）
 
@@ -21,7 +21,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 ## 授权码流
 
-- **PKCE S256**：`GenerateCodeVerifier` 32 随机字节 → Base64url（OpenSSL `RAND_bytes`；无 OpenSSL 时 Win32 走 `BCryptGenRandom`，仅 POSIX 回退 `random_device + mt19937`）；`ComputeCodeChallenge` 经内置 SHA-256（[sha256.hpp](../../include/mcp/detail/sha256.hpp)，FIPS 180-4 独立实现，不依赖 OpenSSL）
+- **PKCE S256**：`GenerateCodeVerifier` 32 随机字节 → Base64url（OpenSSL `RAND_bytes`；无 OpenSSL 时 Win32 走 `BCryptGenRandom`，仅 POSIX 回退 `random_device + mt19937`，该回退不等同于操作系统 CSPRNG）；`ComputeCodeChallenge` 经内置 SHA-256（[sha256.hpp](../../include/mcp/detail/sha256.hpp)，FIPS 180-4 独立实现，不依赖 OpenSSL）
 - **CSRF 校验**（RFC 6749 §10.12）：回调返回的 state 必须等于发送的 state
 - **授权响应 iss 校验**（RFC 9207）：`AuthorizationCodeResult::iss` 有值且与 metadata issuer 不等即拒绝，位置在 state 校验之后、`ExchangeCodeForToken` 之前；未携带 `iss` 则不校验
 - `ValidateTokenIssuer`（**RFC 9207 强制**）：token/refresh 响应缺 `iss` 或与 metadata issuer 不匹配即拒绝

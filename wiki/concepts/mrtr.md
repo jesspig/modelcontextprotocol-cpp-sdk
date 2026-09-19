@@ -21,7 +21,7 @@ resource: include/mcp/McpTypes.hpp
 
 ## 客户端（[/classes/mcp-client.md](../classes/mcp-client.md)）
 
-- `SendRequestWithMrtr` 循环处理 `input_required`：显式配置 `input_required_config` 时 `auto_fulfill` 默认开（未配置则自动补全关闭），经 handler 填 `inputResponses` / `requestState`；遍历 `input_requests` 逐项按 `method` 分派（`elicitation/create` → `ElicitationHandler`、`sampling/createMessage` → `SamplingHandler`、`roots/list` → `RootsHandler`），回发 `inputResponses` 的键为服务端原键；对应 handler 未注册或 `method` 未知 → `MethodNotFound`（分派逻辑见 [McpClient.cpp:792](../../src/client/McpClient.cpp)）
+- `SendRequestWithMrtr` 循环处理 `input_required`：显式配置 `input_required_config` 时 `auto_fulfill` 默认开（未配置则自动补全关闭），经 handler 填 `inputResponses` / `requestState`；遍历 `input_requests` 逐项按 `method` 分派——`elicitation/create` 是当前 MRTR 主路径，`sampling/createMessage` 与 `roots/list` 仅保留 legacy/2025 兼容 handler（两 API 已因 SEP-2577 废弃，现代 2026 时代不应视为可用能力）；回发 `inputResponses` 的键为服务端原键；对应 handler 未注册或 `method` 未知 → `MethodNotFound`（分派逻辑见 [McpClient.cpp:792](../../src/client/McpClient.cpp)）
 - 预算：`max_rounds`（默认 10）超限 → `InternalError`；`max_total_timeout`（默认 0 = 不设总预算，只按轮限时 `round_timeout` 默认 600s）超限 → `RequestTimeout`。注意与 `ClientOptions::max_total_timeout`（会话引擎**每请求**总量封顶，见 [/classes/mcp-session-handler.md](../classes/mcp-session-handler.md)）是两个独立预算——后者接线自构造期 `SetMaxTotalTimeout`，MRTR 轮内每轮 `SendRequest` 同受其约束
 - **state-only 退避**：`input_required` 无任何请求项（仅 `request_state`）时按 50ms 起每轮 ×2 增长、封顶 250ms 退避后重发（`kMrtrStateOnlyBackoffBase`/`kMrtrStateOnlyBackoffMax`，[McpClient.cpp:32](../../src/client/McpClient.cpp)，第 4 轮起不再增长），补全轮后计数清零
 - **URL elicitation 顺序保证**（[McpClient.cpp:545-557](../../src/client/McpClient.cpp)）：处理 `mode=="url"` 请求时**先发 `notifications/elicitation/complete`、再 `p.set_value` 提交 elicit 响应**；通知发送异常被捕获仅记 Error 日志，不阻断响应提交

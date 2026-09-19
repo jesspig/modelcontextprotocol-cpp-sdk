@@ -809,9 +809,9 @@ TEST(StreamableHttpTest, ClientSendsKnownSessionIdOnFirstRequest) {
     mock.Stop();
 }
 
-// ── Client: primitive params must not be mirrored into Mcp-Param-* request
-// headers (only x-mcp-header annotated params may be mirrored, and annotation
-// support does not exist yet); Mcp-Method/Mcp-Name stay as before ──
+// ── Client: primitive params remain out of Mcp-Param-* headers unless the
+// corresponding inputSchema property carries an x-mcp-header annotation;
+// Mcp-Method/Mcp-Name stay as before ──
 TEST(StreamableHttpTest, ClientOmitsMcpParamHeaders) {
     auto port = PickFreePort(kTestBasePort + 1250);
     mcp::HttpServer mock(port);

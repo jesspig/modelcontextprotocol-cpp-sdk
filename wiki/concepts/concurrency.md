@@ -3,7 +3,7 @@ type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-09-16T19:38:35Z
+timestamp: 2026-09-20T03:14:18+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -34,6 +34,7 @@ resource: include/mcp/detail/ThreadUtils.hpp
 - **IO 线程回调内调用 `Close()` 会 self-join**：stdio/SSE/HTTP 传输的 IO 线程直接执行用户回调（`on_transport_close`/`on_transport_error`），回调里调 `Close()` 会 join 自身线程抛异常。所有 `Close()` 必须用 `detail::JoinThreadSafely`（[ThreadUtils.hpp](../../include/mcp/detail/ThreadUtils.hpp)）：self 时 detach，否则 join
 - **detach 后线程仍会访问 `this`**：`JoinThreadSafely` detach 自身线程后该线程继续执行直到退出——`StdioServerTransport::ReadLoop` 入口 `shared_from_this()` 自持有，保证 IO 线程回调内 Close（detach）后成员访问不 UAF（[StdioServerTransport.cpp:55](../../src/transport/StdioServerTransport.cpp)）；同理，Streamable HTTP 客户端的立即 POST 线程在 detach 前捕获 `shared_from_this()`，Close 后线程存活期间对象仍有效（[StreamableHttpClientTransport.cpp:998](../../src/http/StreamableHttpClientTransport.cpp)）
 - `Start()` 在 `closed_` 之后调用抛 `std::logic_error`（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:77)）
+- `Streamable HTTP` 的 detached immediate POST 线程只用于通知/响应：线程捕获 `shared_from_this()` 保活对象，HTTP 超时限制寿命；`Close()` 会收停 GET 监听和主发送线程，但不等待这些短命 POST 线程。它们的发送分流和异常语义见 [/transports/streamable-http.md](../transports/streamable-http.md)
 - `SendRequest`：注册 pending 后复查 `closed_`，已关闭则立即以 `ConnectionClosed` 满足 promise（锁内注册防竞态，[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp:536)）
 - `negotiated_version_` 为 `shared_ptr<const std::string>`：`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下与 codec 原子交换，`NegotiatedProtocolVersion()` 读锁下拷贝 shared_ptr、锁外解引用返回 `std::string`
 - 入站验证只构造轻量视图（method/_meta/initialize params），不完整序列化请求

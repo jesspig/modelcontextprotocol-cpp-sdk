@@ -3,13 +3,13 @@ type: Class
 title: FileTokenCache
 description: OAuth 令牌文件缓存：Windows DPAPI 加密、POSIX 明文 + chmod 0600。
 tags: [oauth, 缓存, dpapi, 安全]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: src/client/FileTokenCache.cpp
 ---
 
 # FileTokenCache
 
-实现 `ITokenCache` 接口（`StoreTokens / GetTokens / ClearTokens`，[TokenCache.hpp](../../include/mcp/client/auth/TokenCache.hpp)）。构造即 `Load()`，析构 `Save()`；三个公开方法持 `mutex_`。
+实现 `ITokenCache` 接口（`StoreTokens / GetTokens / ClearTokens`，[TokenCache.hpp](../../include/mcp/client/auth/TokenCache.hpp)）。类声明位于上述接口头，具体实现为 [FileTokenCache.cpp](../../src/client/FileTokenCache.cpp)。构造即 `Load()`，析构 `Save()`；三个公开方法持 `mutex_`。
 
 ## 存储语义（[FileTokenCache.cpp](../../src/client/FileTokenCache.cpp)）
 

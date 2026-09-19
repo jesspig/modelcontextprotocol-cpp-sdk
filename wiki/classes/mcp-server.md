@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、progress 推送、requestState 签发、任务后台执行、URL elicitation 与回调四层接线。
 tags: [server, 门面, 注册, 回调, progress, tasks, elicitation]
-timestamp: 2026-09-20T01:45:19+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -16,6 +16,7 @@ resource: include/mcp/server/McpServer.hpp
 - `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`：每次注册后重跑 `WireHandlers()`（拆为 7 个 `Wire*Handlers` 方法）+ `DeriveCapabilities()`；**同名语义不同**——`RegisterTool` 按名覆盖（map，[McpServer.cpp:286](../../src/server/McpServer.cpp)），资源/模板/提示词为 vector **追加**（同名不覆盖，[McpServer.cpp:314](../../src/server/McpServer.cpp)）；`RegisterTool` 校验工具名 `^[A-Za-z0-9._-]{1,128}$`（`IsValidToolName`，违规抛 `McpError(InvalidParams)`，[McpServer.cpp:93](../../src/server/McpServer.cpp)），同时把 `cached_tools_json_` 置 `nullopt` 失效（[McpServer.cpp:287](../../src/server/McpServer.cpp)）
 - `RegisterResourceTemplate(name, uri_template, opts, handler)`：模板先经 `detail::UriTemplate::Parse`（[UriTemplate.hpp](../../src/detail/UriTemplate.hpp)）校验，**非法模板抛 `McpError(InvalidParams, "invalid resource template '<tmpl>': <reason>")`**（[McpServer.cpp:329](../../src/server/McpServer.cpp)）——此前不校验即写入；条目存 `uri_pattern` + `is_template=true` + `template_handler`（`(uri, variables)` 回调，[McpServer.hpp:171](../../include/mcp/server/McpServer.hpp)），资源/模板/提示词同为 vector 追加
 - 工具/资源/提示词条目内部结构见 [McpServer.hpp](../../include/mcp/server/McpServer.hpp)（ResourceEntry 含 uri_pattern/is_template 等；PromptEntry 含 `arguments`，经 `PromptOptions::Arguments()` 声明并随 `prompts/list` 输出）
+- `RegisterTool` 持有工具 `inputSchema`；`ResolveToolParamAnnotations(method, name)` 解析其中合法的 `x-mcp-header` 属性路径，供 Streamable HTTP 的 `resolve_param_annotations` 校验 `Mcp-Param-*` 头与 `tools/call` body 一致（详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)）
 
 ## 回调接线（四层）
 
@@ -61,4 +62,5 @@ resource: include/mcp/server/McpServer.hpp
 - [/modules/server.md](../modules/server.md) — 所属库
 - [/classes/mcp-session-handler.md](mcp-session-handler.md) — 底层引擎
 - [/concepts/mrtr.md](../concepts/mrtr.md) — 服务端 elicitation
+- [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md) — 工具参数头校验
 - [/classes/file-task-store.md](file-task-store.md) — 任务存储集成

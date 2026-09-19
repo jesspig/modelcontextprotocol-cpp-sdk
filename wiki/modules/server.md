@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-server 服务端库
-description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、任务后台执行与 URL elicitation。
+description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-09-20T01:45:19+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -16,6 +16,7 @@ resource: src/server/McpServer.cpp
 - `RegisterTool(name, ToolOptions, fn)` / `RegisterResource / RegisterResourceTemplate / RegisterPrompt`——每次注册后重跑 `WireHandlers()` + `DeriveCapabilities()`；`RegisterResourceTemplate` 先经 `detail::UriTemplate::Parse` 校验模板，**非法模板抛 `McpError(InvalidParams, "invalid resource template '<tmpl>': <reason>")`**（行为变更：此前不校验即注册，[McpServer.cpp:329](../../src/server/McpServer.cpp)）
 - `PromptOptions::arguments`（`optional<vector<PromptArgument>>`，链式 `Arguments()`）：`prompts/list` 输出提示词参数声明，配合补全请求官方线格式 `{ref, argument:{name,value}}`（序列化修正见 [/modules/protocol.md](protocol.md)）
 - 任务不注册，由 `ServerOptions::task_store` 驱动
+- `RegisterTool` 保存工具 `inputSchema`；`ResolveToolParamAnnotations(method, name)` 解析合法 `x-mcp-header` 属性路径，供 Streamable HTTP 的 `resolve_param_annotations` 校验 `Mcp-Param-*` 头与 `tools/call` body 一致（详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)）
 - 能力推导（[McpServer.cpp](../../src/server/McpServer.cpp)）：有工具→`tools`（list_changed）、有资源→`resources`（subscribe + list_changed）、有提示词→`prompts`、`declare_logging`/`declare_completions` 显式声明 `logging`/`completions`（默认 false，不派生）、有 task_store→`extensions = {}`
 
 ## WireHandlers 方法清单

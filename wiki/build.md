@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL）。
 tags: [cmake, ninja, unity, lto, conformance]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: CMakePresets.json
 ---
 
@@ -12,10 +12,13 @@ resource: CMakePresets.json
 ```bash
 cmake --preset debug                 # 配置（Ninja，Debug）
 cmake --build --preset debug         # 构建
+cmake --build --preset debug --target mcp-transport-bench
 ctest --preset debug --output-on-failure
 ```
 
 仅 Ninja 生成器。`cmake_minimum_required(3.28...4.2)`，C++17 强制。
+
+- 非 ctest 基准目标：`mcp-transport-bench`（[TransportBench.cpp](../tests/bench/TransportBench.cpp)），覆盖自研 HTTP 响应头解析、吞吐、并发、延迟响应和连接复用；基准不计入测试目标/用例统计
 
 ## 预设与开关
 

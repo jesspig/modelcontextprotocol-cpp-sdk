@@ -3,7 +3,7 @@ type: Class
 title: McpSessionHandler
 description: JSON-RPC 引擎：消息分发、请求/响应关联、idle/总量双超时检查、取消、过滤器管线。
 tags: [protocol, jsonrpc, 超时, 并发, meta]
-timestamp: 2026-09-20T01:45:19+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -39,6 +39,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - `negotiated_version_` 为 `shared_ptr<const std::string>`；`NegotiatedProtocolVersion()` 读锁下仅拷贝 shared_ptr、锁外解引用；`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下写（替换 codec + 版本），消息循环运行中可调用
 - `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp:596](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
 - `SetRequestStateVerifier`（HMAC/AEAD）须在 `Start()` 前调用；校验失败回 `InvalidParams "invalid requestState"` + `data.reason="invalid_request_state"`
+- `SetSpanHandler` 必须在 `Start()` 前调用；设置后在消息循环、响应 worker 和发送路径发出成对的 server request/transport receive/transport send 事件，入站 `_meta` 的 trace context 会复制到 server request 事件；未设置时不创建事件对象（详见 [/concepts/span-hooks.md](../concepts/span-hooks.md)）
 - 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp:688](../../src/protocol/McpSessionHandler.cpp)）
 - 事件回调全部经 `InvokeSafely` 包异常（记 Error 日志）
 - 过滤器挂接：入站在消息循环分发前，出站在 `SendMessage` 中（`closed_` 时不再发送）
@@ -56,4 +57,5 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - [/classes/wire-codec.md](wire-codec.md) — 编解码协作
 - [/classes/message-channel.md](message-channel.md) — 消息载体
 - [/concepts/concurrency.md](../concepts/concurrency.md) — 线程与 self-join
+- [/concepts/span-hooks.md](../concepts/span-hooks.md) — 观测钩子
 - [/concepts/meta-and-filters.md](../concepts/meta-and-filters.md) — 过滤器管线

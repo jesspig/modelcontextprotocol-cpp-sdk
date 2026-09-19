@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-http HTTP 库
-description: HttpServer（自研实现）、EventStore（SSE 回放，可插拔接口 + FileEventStore）、SessionStore（外部会话接管）、Streamable HTTP 双端传输（Bearer 鉴权）与客户端发送侧独立 POST 与边读边分发。
+description: HttpServer（自研实现）、EventStore（SSE 回放，可插拔接口 + FileEventStore）、SessionStore（外部会话接管）、Streamable HTTP 双端传输（Bearer 鉴权、x-mcp-header 参数头）与客户端发送侧独立 POST 与边读边分发。
 tags: [http, sse, webserver, streamable, bearer, storage]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: src/http/HttpServer.cpp
 ---
 
@@ -27,10 +27,11 @@ resource: src/http/HttpServer.cpp
 - accept 线程 + 每连接一线程（上限 256，超出 503）；stateless 并发上限 8（超出 503 `"server busy"`），同步等待超时 30s 返回 **504**（非 500）
 - 传输层错误体为 JSON-RPC 格式：413（超限 body，兜底）`-32700`、400（解析失败）`-32700 Parse error`、400（头不匹配）`-32020 HeaderMismatch`、503 `-32000 server closed`、504 `-32000`；HTTP 服务层自身的 400/413/503（畸形请求、`Content-Length` 超限、连接数超限）为空体
 - SSE 广播在非 stateless 时带 `id:` 行；GET 支持 `Last-Event-ID` 断线回放（stateless 无 id、不回放）
-- `Mcp-Method` 头：客户端从 JSON-RPC body 的 method 字段动态生成（[StreamableHttpClientTransport.cpp:574](../../src/http/StreamableHttpClientTransport.cpp)，POSIX 分支 `:1178`）；服务端在响应中**回显** `mcp-method`/`mcp-name`/`mcp-protocol-version`（SEP-2243，[StreamableHttpServerTransport.cpp:425](../../src/http/StreamableHttpServerTransport.cpp)）；`mcp-param-*` 头往返镜像
+- `Mcp-Method` 头：客户端从 JSON-RPC body 的 method 字段动态生成（[StreamableHttpClientTransport.cpp:574](../../src/http/StreamableHttpClientTransport.cpp)，POSIX 分支 `:1178`）；服务端在响应中**回显** `mcp-method`/`mcp-name`/`mcp-protocol-version`（SEP-2243，[StreamableHttpServerTransport.cpp:425](../../src/http/StreamableHttpServerTransport.cpp)）；`Mcp-Param-*` 只镜像 `inputSchema` 中合法的 `x-mcp-header` 注解参数，不再无差别复制顶层标量，详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)
 - Streamable HTTP 客户端 **GET SSE 接收流**：`enable_listen_stream`（默认 true），发送 `notifications/initialized` 后自动开 GET 长流接收服务端通知，消息经 MessageChannel 并入会话引擎；405 视为服务器不支持（静默放弃）；断线退避重连（1s 起倍增封顶 30s、最多 5 次）携带 `Last-Event-ID`；详见 [/transports/streamable-http.md](../transports/streamable-http.md)
 - **发送侧分流**（解开 server→client 请求互等死锁）：Request 保持 `send_thread_` 串行队列；**Notification/Response 经 `LaunchImmediatePost` 独立即时 POST**（短命 detached 线程 `mcp-post`，`shared_from_this` 保活），不再排在在途 Request 之后——否则 elicitation 完成通知会被挂起的 tools/call POST 阻塞，server→client 请求互等死锁
 - **接收侧边读边分发**：POST 响应 SSE 流在 `DoPost` 分块回调内即时按 `\n\n` 分块分发（`DispatchSseBlock`），server→client 请求在流打开期间即可达（原"读完整个流再处理"会饿死并发请求）；Win32 `WinHttpReadData` 填满缓冲语义改为 `WinHttpQueryDataAvailable` 增量读（DoPost SSE 与 DoListenGet 同修）
+- **网络响应头缓冲**：自研 `HttpClient` 以 8KB `read_buffer_` 批量填充，再由 `ReadByte`/`ReadRaw`/body 流消费；缓冲在连接关闭时清空，并继续用 `IsEof()` 区分真 EOF 与读超时
 - **404 类型化**（会话过期自愈入口）：4xx body 无法解析为 JSON-RPC error 且状态码 404 时，构造 `SessionExpired(-32009)` 错误响应交付 channel（`MakeSessionExpiredError`），客户端据此重协商并重放（见 [/modules/client.md](client.md)）
 - **`MCP-Protocol-Version` 头自学习**：initialize 请求不带该头，从 initialize 响应 `result.protocolVersion` 学习，后续请求与 GET 流按协商版本携带（无学习值兜底 `2026-07-28`）；**initialize 请求同样不带 `Mcp-Session-Id` 头**（`SessionIdHeaderFor` 豁免）
 - **服务端 Bearer 鉴权**（RFC 6750/9728）：`StreamableHttpServerOptions::bearer_auth` 配置后 POST/GET 入口先过 401/403 挑战（`invalid_token`/`insufficient_scope`），`GET /.well-known/oauth-protected-resource` 匿名元数据端点；详见 [/transports/streamable-http.md](../transports/streamable-http.md)
@@ -47,4 +48,5 @@ resource: src/http/HttpServer.cpp
 - [/classes/file-event-store.md](../classes/file-event-store.md) — EventStore 文件实现
 - [/transports/streamable-http.md](../transports/streamable-http.md)
 - [/transports/sse.md](../transports/sse.md) — SSE 客户端
+- [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md) — `x-mcp-header` 参数头
 - [/modules/transport.md](transport.md) — 依赖的下层
