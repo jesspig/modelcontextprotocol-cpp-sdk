@@ -11,7 +11,8 @@ mcp_discover_tests(mcp-core-tests)
 
 add_executable(mcp-wire-codec-tests
     WireCodecTests.cpp
-    SessionHandlerTests.cpp)
+    SessionHandlerTests.cpp
+    SpanHookTests.cpp)
 target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol mcp-test-main)
 mcp_discover_tests(mcp-wire-codec-tests)
 
@@ -64,3 +65,7 @@ mcp_discover_tests(mcp-streamable-http-tests)
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
 target_link_libraries(mcp-websocket-tests PRIVATE mcp-transport mcp-test-main)
 mcp_discover_tests(mcp-websocket-tests)
+
+add_executable(mcp-uri-template-tests UriTemplateTests.cpp)
+target_link_libraries(mcp-uri-template-tests PRIVATE mcp-core mcp-test-main)
+mcp_discover_tests(mcp-uri-template-tests)

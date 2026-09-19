@@ -5,9 +5,10 @@
 ## 流程
 
 1. **授权码 + PKCE**，使用 S256 代码质询
-2. **动态客户端注册**（DCR），用于首次使用的客户端（HTTP POST 到注册端点）
-3. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
-4. **令牌撤销**，通过手动调用 `Revoke()`（best-effort 调用 RFC 7009 撤销端点，失败不影响本地令牌清除）
+2. **客户端标识**：`client_id` 为 URL 时按 CIMD（Client ID Metadata Document）拉取并解析该文档；只有未配置 `client_id` 时才走**动态客户端注册**（DCR，HTTP POST 到注册端点）
+3. **资源指示符**：授权请求与全部令牌请求按 RFC 8707 携带 `resource` 参数
+4. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
+5. **令牌撤销**，通过手动调用 `Revoke()`（best-effort 调用 RFC 7009 撤销端点，失败不影响本地令牌清除）
 
 ## OAuthClientOptions
 
@@ -19,8 +20,9 @@
 | `client_secret` | `optional<string>` | 客户端密钥（可选） |
 | `scopes` | `vector<string>` | 请求的 OAuth 作用域 |
 | `token_cache` | `shared_ptr<ITokenCache>` | 令牌持久化（默认：`InMemoryTokenCache`） |
+| `resource` | `optional<string>` | RFC 8707 资源指示符，随授权请求与令牌请求发送；缺省时回退到已发现元数据的 `resource`，再回退到 `server_url`；解析结果为空则完全不发送该参数 |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
-| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码及服务器回显的 `state`（`AuthorizationCodeResult{code, state}`），失败时返回 `nullopt` |
+| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码、授权服务器回显的 `state` 与可选的 `iss`（`AuthorizationCodeResult{code, state, iss}`），失败时返回 `nullopt` |
 
 ## 设置
 
@@ -36,8 +38,9 @@ oauth_opts.authorization_redirect_handler =
     };
 oauth_opts.authorization_code_callback =
     []() -> std::optional<AuthorizationCodeResult> {
-        // 返回授权码及授权服务器回显的 `state`（CSRF 防护）
-        return AuthorizationCodeResult{"auth-code", "state"};
+        // 返回授权码、授权服务器回显的 `state`（CSRF 防护）
+        // 以及授权响应携带的 `iss`（RFC 9207，未携带时留空）
+        return AuthorizationCodeResult{"auth-code", "state", std::nullopt};
     };
 
 auto auth = std::make_shared<OAuthClientProvider>(oauth_opts);
@@ -61,6 +64,12 @@ auto token = auth->GetAccessToken();
 | `AuthenticateClientCredentials()` | 客户端凭据授权（RFC 6749 §4.4），用于无需用户交互的服务到服务场景（返回 `bool`） |
 | `HandleAuthChallenge(www_authenticate)` | 按 RFC 9728 解析 401/403 挑战头中的 `resource_metadata` URL，发现授权服务器并重新走授权流程（返回 `bool`） |
 | `Revoke()` | best-effort 调用 RFC 7009 撤销端点（配置了 `revocation_endpoint` 时），无论成败都清除本地令牌 |
+
+## 资源指示符与发行者校验
+
+- **RFC 8707 `resource`**：取值优先级为「显式 `options.resource` → 已发现元数据的 `resource` → `server_url`」，解析结果非空时注入授权 URL 以及三个令牌请求（`client_credentials`、授权码交换、`refresh_token`）。
+- **RFC 9207 `iss`**：令牌与刷新响应中的 `iss` 必须存在且与已发现元数据的 issuer 一致，否则拒绝；授权响应侧在 `state` 校验通过之后、换取令牌之前做同样比对——`AuthorizationCodeResult::iss` 有值且与 issuer 不一致即拒绝，未携带则不校验。
+- **CIMD（Client ID Metadata Document）**：`client_id` 为 URL 时按该 URL 拉取并解析客户端元数据，失败属 best-effort 回退（记录警告并使用已配置的值），不会中断授权流程。
 
 ## 与服务端 Bearer 鉴权集成
 

@@ -3,7 +3,7 @@ type: Module
 title: mcp-protocol 协议库
 description: JSON-RPC 引擎（McpSessionHandler，含 idle/总量双超时）与双时代线协议编解码（WireCodec）。
 tags: [protocol, jsonrpc, codec, 双时代, meta, 超时]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: src/protocol/McpSessionHandler.cpp
 ---
 
@@ -20,6 +20,7 @@ resource: src/protocol/McpSessionHandler.cpp
 | MessageChannel | 有界异步队列（替代 asio channel） | [/classes/message-channel.md](../classes/message-channel.md) |
 | MessageFilter / FilterPipeline | 入站/出站过滤器管线 | [/concepts/meta-and-filters.md](../concepts/meta-and-filters.md) |
 | IncomingRequestMeta | 请求侧 meta 解析结果 | [/concepts/meta-and-filters.md](../concepts/meta-and-filters.md) |
+| SpanHooks | 无第三方依赖的服务端请求/传输边界观测钩子 | [/concepts/span-hooks.md](../concepts/span-hooks.md) |
 
 ## 通知处理器
 
@@ -36,10 +37,15 @@ WireCodec 编解码器集合共 **17 种**通知：公共 7 + 2025 独有 9（in
 - `CompleteRequestParams` 线格式修正为官方 `{ref, argument: {name, value}}`（原扁平 `argumentName`/`argumentValue` 为真 bug，官方 conformance 捕获）；反序列化优先官方形状，容缺回退旧扁平形状
 - 空结果不再写 `resultType`：`SerializeEmptyResult` 仅剩可选 meta（官方 conformance 期望空对象）；`CallToolResult` 仅在 `input_required` 分支写 `resultType: "input_required"` + `inputRequests`/`requestState`
 - `requestState` 校验失败的错误响应带 `data.reason="invalid_request_state"`（handler 前拒绝）
+- **服务端字段校验**：派发前验证 `_meta.protocolVersion`、`progressToken`、`clientInfo`、`clientCapabilities`、`logLevel`、trace context 等字段类型；不符合时回 `InvalidParams`，未知字段放行
+- **版本声明拒绝**：非 `initialize` 请求的 `_meta.protocolVersion` 不在支持表时回 `UnsupportedProtocolVersion (-32022)`，错误数据包含 `requested` 与 `supported`
+- **协议级取消**：`notifications/cancelled` 置位在途请求的共享取消标志并以 `RequestCancelled` 结算；服务端工具派发前把同一标志注入 `RequestContext`
+- **观测钩子**：`SetSpanHandler` 在 `Start()` 前设置，生成成对的 server request、transport receive/send 事件；未设置时不创建事件对象（详见 [/concepts/span-hooks.md](../concepts/span-hooks.md)）
 
 ## 相关页面
 
 - [/classes/mcp-session-handler.md](../classes/mcp-session-handler.md)
 - [/classes/wire-codec.md](../classes/wire-codec.md)
 - [/concepts/version-negotiation.md](../concepts/version-negotiation.md) — codec 时代切换
+- [/concepts/span-hooks.md](../concepts/span-hooks.md) — 观测钩子
 - [/modules/server.md](server.md) 与 [/modules/client.md](client.md) — 上下层消费方

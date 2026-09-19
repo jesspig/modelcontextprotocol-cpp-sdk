@@ -119,7 +119,9 @@ server->RegisterTool("get_weather",
 ```cpp
 CallToolResult result;
 InputRequiredResult ir;
-ir.input_requests.elicit = InputRequestElicit{"请提供 API 密钥"};
+ElicitRequestParams params;
+params.message = "请提供 API 密钥";
+ir.input_requests["api_key"] = MakeInputRequestForElicitation(params);
 result.input_required = std::move(ir);
 return result;  // 服务端自动签名 requestState（需配置 request_state_key）
 ```

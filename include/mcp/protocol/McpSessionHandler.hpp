@@ -10,6 +10,7 @@
 #include <mcp/Methods.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/ProtocolVersion.hpp>
+#include <mcp/SpanHooks.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -83,8 +84,6 @@ public:
     // ── Handler registration ──
     void SetRequestHandler(std::string_view method, RequestHandler handler);
     void SetNotificationHandler(std::string_view method, NotificationHandler handler);
-    void RemoveRequestHandler(std::string_view method);
-    void RemoveNotificationHandler(std::string_view method);
 
     // ── Capability validation ──
     // SetClientCapabilities must be called before Start(); the message loop
@@ -111,6 +110,10 @@ public:
     // ── Cancel ──
     void HandleCancelled(const JsonRpcNotification& notif);
 
+    // Cancellation flag of an in-flight incoming request, or nullptr when the
+    // request is not tracked (already answered, or never dispatched).
+    std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(const RequestId& id) const;
+
     // ── Progress tracking ──
     void ResetTimeoutByProgressToken(const std::string& pt_key);
 
@@ -121,6 +124,13 @@ public:
     // deadline and never push a request past the absolute deadline recorded
     // per request at SendRequest time.
     void SetMaxTotalTimeout(std::chrono::seconds total);
+
+    // ── Span observation ──
+    // SetSpanHandler must be called before Start(); the request paths and the
+    // message loop read span_handler_ without synchronization. With no handler
+    // installed the hooks add no construction, allocation or indirection to
+    // those paths.
+    void SetSpanHandler(SpanHandler handler);
 
     // ── Event callbacks ──
     void SetOnRequestCallback(std::function<void(std::string_view method, const JsonRpcRequest&)> cb);
@@ -161,6 +171,13 @@ private:
     void EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future);
 
     // ── Response worker ──
+    struct PendingResponse {
+        JsonRpcRequest req;
+        std::future<JsonValue> future;
+        std::string cancel_key;
+    };
+
+    void DeliverResponse(PendingResponse item);
     void ResponseWorkerLoop();
 
     // ── Request/response correlation ──
@@ -170,6 +187,7 @@ private:
     // ── Internal ──
     void CheckTimeouts();
     void EraseProgressTokens(const std::string& request_id);
+    void EraseIncomingCancellationFlag(const std::string& request_id_key);
 
     // ── Members ──
     std::shared_ptr<ITransport> transport_;
@@ -196,15 +214,20 @@ private:
     // Progress token → request_id mapping (for timeout reset)
     std::unordered_map<std::string, std::string> progress_token_map_;
 
+    // Cancellation flags of in-flight incoming requests, keyed by JSON-RPC id
+    std::unordered_map<std::string, std::shared_ptr<std::atomic<bool>>> incoming_cancel_flags_;
+    mutable std::mutex incoming_cancel_mutex_;
+
     // Total-timeout cap: per-request absolute deadline (request_id keyed) and
     // the session-level budget. Both guarded by pending_mutex_; the deadline
     // map holds entries only while the cap is enabled.
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> absolute_deadlines_;
     std::chrono::seconds max_total_timeout_{0};
 
-    // Response worker queue: a single worker thread drains tasks that wait on
-    // handler futures and send the reply, replacing one thread per request.
-    std::deque<std::function<void()>> response_queue_;
+    // Response worker queue: entries whose handler future is not yet ready stay
+    // here, and every pass delivers all ready entries, so one slow handler
+    // cannot delay responses that are already complete.
+    std::deque<PendingResponse> response_queue_;
     std::mutex response_queue_mutex_;
     std::condition_variable response_cv_;
 
@@ -215,6 +238,9 @@ private:
     // Filter pipelines
     std::shared_ptr<FilterPipeline> incoming_filters_;
     std::shared_ptr<FilterPipeline> outgoing_filters_;
+
+    // Span observation hook (not synchronized; set before Start())
+    SpanHandler span_handler_;
 
     // Event callbacks
     std::function<void(std::string_view, const JsonRpcRequest&)> on_request_cb_;

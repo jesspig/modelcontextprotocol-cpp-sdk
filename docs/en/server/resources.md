@@ -39,3 +39,20 @@ server->RegisterResourceTemplate(
 ::: note
 `ResourceOptions` fields (`description`, `title`, `mime_type`, `icons`) are propagated to the protocol-level `Resource` and `ResourceTemplate` structs returned via `resources/list` and `resources/templates/list`.
 :::
+
+## Change Notifications
+
+The server notifies clients when a resource's contents or the resource list changes:
+
+```cpp
+// A single resource changed — delivered only to subscribers of that uri
+server->SendResourceUpdated("file:///app/config.json");
+
+// The resource list itself changed (resources added or removed)
+server->SendResourceListChanged();
+```
+
+`SendResourceUpdated(uri)` publishes `notifications/resources/updated`, while `SendResourceListChanged()` publishes `notifications/resources/list_changed`. Delivery adapts to the negotiated protocol era:
+
+- **2026-07-28 and later**: subscriptions made through `subscriptions/listen` carry an explicit filter, so a notification reaches only the subscribers whose filter matches.
+- **2025 and earlier**: `resources/subscribe` has no filter to consult, so the notification is broadcast to the connection.

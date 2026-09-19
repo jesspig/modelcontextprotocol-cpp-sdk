@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-09-12T06:05:00+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -31,7 +31,8 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 - 每会话一个 JSONL 文件（`<dir>/sess-<净化id>.jsonl`，行 `{"id":N,"data":"..."}`）+ 一个 `.lock` 锁文件
 - **跨进程文件锁**：每操作独立句柄阻塞排他锁（Win32 `LockFileEx` / POSIX `flock`），同进程多线程与其他进程在同一会话上串行
-- 超过 1024 事件经 `WriteAtomic` 全量重写裁剪；崩溃残留的半行（torn tail）读取时跳过、追加时先补换行
+- 读取边界：缺失或不可读 JSONL 文件视为空存储；坏行或缺少字段的尾行跳过，读取不会因为单条损坏记录抛出
+- 写入边界：目录创建、文件锁、追加、裁剪重写或 `Clear` 失败会抛异常；超过 1024 事件经 `WriteAtomic` 全量重写裁剪
 
 ## SessionStore 会话记录抽象
 
@@ -53,10 +54,12 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 - `UpdateTask/CancelTask/SetTaskStatus` 返回 `false` **仅表示任务不存在**（不是持久化失败——持久化失败抛异常）；`CreateTask` 不返回 bool（返回 `TaskState`，重复创建直接抛 `runtime_error`）
 - token 刷新失败不回退旧 token
+- `FileTokenCache` 的写入、删除、chmod、DPAPI 加解密失败采用 Error 日志和忽略/继续认证的 best-effort 语义，不向 `StoreTokens`/`ClearTokens` 调用方传播持久化异常
 
 ## 相关页面
 
 - [/modules/server.md](../modules/server.md) — 服务端存储集成
 - [/classes/file-event-store.md](../classes/file-event-store.md) — 事件存储实现
+- [/classes/file-token-cache.md](../classes/file-token-cache.md) — 令牌缓存失败语义
 - [/concepts/oauth.md](oauth.md) — 令牌生命周期
 - [/tests.md](../tests.md) — 损坏处理测试

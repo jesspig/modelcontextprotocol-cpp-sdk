@@ -91,22 +91,6 @@ ProgressNotificationParams DeserializeProgressNotificationParams(const JsonValue
     return v;
 }
 
-// ── CancelledNotificationParams ──
-
-JsonValue SerializeCancelledNotificationParams(const CancelledNotificationParams& v) {
-    JsonValue obj(JsonValue::object_tag);
-    obj["requestId"] = RequestIdToJson(v.request_id);
-    detail::SerializeOptional(obj, detail::kReason, v.reason);
-    return obj;
-}
-
-CancelledNotificationParams DeserializeCancelledNotificationParams(const JsonValue& j) {
-    CancelledNotificationParams v;
-    v.request_id = RequestIdFromJson(j["requestId"]);
-    detail::DeserializeOptional(j, detail::kReason, v.reason);
-    return v;
-}
-
 // ── LoggingMessageNotificationParams ──
 
 JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotificationParams& v) {

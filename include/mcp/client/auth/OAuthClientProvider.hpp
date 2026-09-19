@@ -18,6 +18,9 @@ namespace mcp {
 struct AuthorizationCodeResult {
     std::string code;
     std::string state;
+    // RFC 9207: the authorization server's issuer identifier. Present only
+    // when the authorization response carried an `iss` parameter.
+    std::optional<std::string> iss;
 };
 
 // ── OAuthClientOptions (对应 C# ClientOAuthOptions) ──
@@ -30,6 +33,9 @@ struct OAuthClientOptions {
     std::optional<std::string> client_secret;
     std::vector<std::string> scopes;
     std::shared_ptr<ITokenCache> token_cache;
+    // RFC 8707 resource indicator sent with authorization and token requests.
+    // Falls back to the discovered metadata `resource`, then to server_url.
+    std::optional<std::string> resource;
 
     // Callbacks
     std::function<void(std::string_view url)> authorization_redirect_handler;
@@ -104,6 +110,14 @@ private:
 
     // RFC 9207: validate issuer parameter in token response
     bool ValidateTokenIssuer(const JsonValue& response) const;
+
+    // RFC 8707: resource indicator for authorization and token requests
+    // (explicit option → discovered metadata → server_url).
+    std::string ResolveResourceIndicator() const;
+
+    // CIMD: fetch and parse the client metadata document when client_id is a
+    // URL. Best-effort; failures fall back to the configured values.
+    bool FetchClientMetadataDocument();
 
     // HTTP POST helper (minimal, for OAuth endpoints only)
     JsonValue HttpPost(

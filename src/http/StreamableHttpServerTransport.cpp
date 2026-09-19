@@ -1,5 +1,6 @@
 // StreamableHttpServerTransport.cpp - Streamable HTTP server transport implementation
 
+#include <mcp/detail/StringUtils.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/ErrorCodes.hpp>
@@ -8,11 +9,14 @@
 #include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
 
+#include <transport/detail/net/NetIoUtil.hpp>
+
+#include "McpParamHeaders.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
-#include <sstream>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -79,13 +83,6 @@ bool IsBearerAuthorization(const std::string& value) {
     return true;
 }
 
-std::string TrimWhitespace(const std::string& value) {
-    auto first = value.find_first_not_of(" \t");
-    if (first == std::string::npos) return {};
-    auto last = value.find_last_not_of(" \t");
-    return value.substr(first, last - first + 1);
-}
-
 std::string JoinWithSpaces(const std::vector<std::string>& items) {
     std::string out;
     for (const auto& item : items) {
@@ -121,10 +118,12 @@ std::string ResourceUrlFromMetadataUrl(const std::string& metadata_url) {
 }
 
 void RespondUnauthorized(HttpResponse& resp, const std::string& metadata_url,
-                         bool invalid_token) {
+                         bool invalid_token,
+                         const std::vector<std::string>& scopes) {
     std::string challenge =
         "Bearer resource_metadata=\"" + metadata_url + "\"";
     if (invalid_token) challenge += ", error=\"invalid_token\"";
+    if (!scopes.empty()) challenge += ", scope=\"" + JoinWithSpaces(scopes) + "\"";
     resp.status_code = 401;
     resp.status_text = "Unauthorized";
     resp.headers["www-authenticate"] = std::move(challenge);
@@ -143,6 +142,28 @@ void RespondInsufficientScope(HttpResponse& resp,
     resp.body =
         R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"insufficient_scope"}})";
     resp.headers["content-type"] = "application/json";
+}
+
+// Header-body validation failure (SEP-2243): HTTP 400 with JSON-RPC -32020.
+void RespondHeaderMismatch(HttpResponse& resp, const std::string& message) {
+    resp.status_code = 400;
+    resp.status_text = "Bad Request";
+    JsonValue::Object err_obj;
+    err_obj["jsonrpc"] = JsonValue("2.0");
+    {
+        JsonValue::Object err_err;
+        err_err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::HeaderMismatch));
+        err_err["message"] = JsonValue(message);
+        err_obj["error"] = JsonValue(std::move(err_err));
+    }
+    resp.body = JsonValue(std::move(err_obj)).Dump();
+    resp.headers["content-type"] = "application/json";
+}
+
+// Mcp-Name is required for requests that target a named primitive or resource.
+bool RequiresMcpNameHeader(std::string_view method) {
+    return method == methods::kCallTool || method == methods::kReadResource ||
+           method == methods::kGetPrompt;
 }
 } // namespace
 
@@ -244,14 +265,17 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
 
     auto authorization = GetMcpHeader(req, "authorization");
     if (!authorization || !IsBearerAuthorization(*authorization)) {
-        RespondUnauthorized(resp, config.resource_metadata_url, false);
+        RespondUnauthorized(resp, config.resource_metadata_url, false,
+                            config.scopes_supported);
         return false;
     }
-    auto token = TrimWhitespace(authorization->substr(kBearerSchemeLength));
+    auto token = authorization->substr(kBearerSchemeLength);
+    detail::net::TrimInPlace(token);
 
     auto result = config.verify(token);
     if (!result.ok) {
-        RespondUnauthorized(resp, config.resource_metadata_url, true);
+        RespondUnauthorized(resp, config.resource_metadata_url, true,
+                            config.scopes_supported);
         return false;
     }
     for (const auto& required : config.required_scopes) {
@@ -339,6 +363,11 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
     }
 
     if (!name_header.empty()) {
+        std::string effective_name = name_header;
+        if (auto decoded = http_detail::DecodeHeaderValue(name_header);
+            decoded.has_value() && decoded->IsString()) {
+            effective_name = decoded->GetString();
+        }
         auto* params = body.Find("params");
         std::string body_name;
         if (params && params->IsObject()) {
@@ -346,13 +375,75 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
             if (body_name.empty())
                 if (auto* u = params->Find("uri"); u && u->IsString()) body_name = u->GetString();
         }
-        if (!body_name.empty() && name_header != body_name) {
-            error_out = "Mcp-Name header '" + name_header +
+        if (!body_name.empty() && effective_name != body_name) {
+            error_out = "Mcp-Name header '" + effective_name +
                         "' does not match body params name '" + body_name + "'";
             return false;
         }
     }
 
+    return true;
+}
+
+// ── ValidateParamHeaders (SEP-2243) ──
+bool StreamableHttpServerTransport::ValidateParamHeaders(
+    const HttpRequest& req, const JsonRpcRequest& request, std::string& error_out)
+{
+    if (!options_.resolve_param_annotations) return true;
+    if (request.method != methods::kCallTool) return true;
+    if (!request.params || !request.params->IsObject()) return true;
+    const JsonValue* tool_name = request.params->Find("name");
+    if (!tool_name || !tool_name->IsString()) return true;
+
+    const auto annotations =
+        options_.resolve_param_annotations(request.method, tool_name->GetString());
+    if (annotations.empty()) return true;
+
+    const JsonValue* arguments = request.params->Find("arguments");
+
+    for (const auto& annotation : annotations) {
+        const std::string expected_key =
+            std::string(kMcpParamHeaderPrefix) + detail::ToLower(annotation.header_name);
+        const std::string* raw_value = nullptr;
+        for (const auto& [key, value] : req.headers) {
+            if (detail::ToLower(key) == expected_key) {
+                raw_value = &value;
+                break;
+            }
+        }
+
+        std::optional<JsonValue> body_value;
+        if (arguments && arguments->IsObject()) {
+            body_value = http_detail::ValueAtPath(*arguments, annotation.property_path);
+        }
+        const bool has_body_value = body_value.has_value() && !body_value->IsNull();
+
+        if (!has_body_value) {
+            if (raw_value) {
+                error_out = "Mcp-Param-" + annotation.header_name +
+                            " header present but the parameter is absent from arguments";
+                return false;
+            }
+            continue;
+        }
+
+        if (!raw_value) {
+            error_out = "missing Mcp-Param-" + annotation.header_name +
+                        " header for tools/call argument";
+            return false;
+        }
+
+        auto decoded = http_detail::DecodeHeaderValue(*raw_value);
+        if (!decoded.has_value()) {
+            error_out = "Mcp-Param-" + annotation.header_name + " header value is malformed";
+            return false;
+        }
+        if (!http_detail::HeaderValueMatchesBody(*decoded, *body_value)) {
+            error_out = "Mcp-Param-" + annotation.header_name +
+                        " header value does not match the request body";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -402,21 +493,27 @@ void StreamableHttpServerTransport::HandlePost(
         body_jv = JsonValue(std::move(body_obj));
     }
 
+    // Required standard headers are a validation failure when missing
+    // (streamable-http.md Server Validation). Enforced only for requests that
+    // declare a modern protocol version: earlier revisions did not define
+    // these headers.
+    if (proto_ver.has_value() && IsModernProtocolVersion(*proto_ver)) {
+        std::string body_method;
+        if (auto* m = body_jv.Find("method"); m && m->IsString()) body_method = m->GetString();
+        if (!mcp_method.has_value()) {
+            RespondHeaderMismatch(resp, "missing required Mcp-Method header");
+            return;
+        }
+        if (RequiresMcpNameHeader(body_method) && !mcp_name.has_value()) {
+            RespondHeaderMismatch(resp, "missing required Mcp-Name header");
+            return;
+        }
+    }
+
     // Validate MCP headers match body
     std::string header_error;
     if (!ValidateMcpHeaders(mcp_method.value_or(""), mcp_name.value_or(""), body_jv, header_error)) {
-        resp.status_code = 400;
-        resp.status_text = "Bad Request";
-        JsonValue::Object err_obj;
-        err_obj["jsonrpc"] = JsonValue("2.0");
-        {
-            JsonValue::Object err_err;
-            err_err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::HeaderMismatch));
-            err_err["message"] = JsonValue(header_error);
-            err_obj["error"] = JsonValue(std::move(err_err));
-        }
-        resp.body = JsonValue(std::move(err_obj)).Dump();
-        resp.headers["content-type"] = "application/json";
+        RespondHeaderMismatch(resp, header_error);
         return;
     }
 
@@ -437,8 +534,7 @@ void StreamableHttpServerTransport::HandlePost(
     if (auto* req_ptr = std::get_if<JsonRpcRequest>(&msg)) {
         JsonValue::Object meta_headers_obj;
         for (const auto& [key, val] : req.headers) {
-            std::string key_lower = key;
-            for (auto& c : key_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            const std::string key_lower = detail::ToLower(key);
             const std::string prefix = kMcpParamHeaderPrefix;
             if (key_lower.substr(0, prefix.size()) == prefix) {
                 auto param_name = key.substr(prefix.size());
@@ -448,6 +544,12 @@ void StreamableHttpServerTransport::HandlePost(
         if (!meta_headers_obj.empty()) {
             if (!req_ptr->meta) req_ptr->meta = JsonValue(JsonValue::object_tag);
             (*req_ptr->meta)["x-mcp-headers"] = JsonValue(std::move(meta_headers_obj));
+        }
+
+        std::string param_error;
+        if (!ValidateParamHeaders(req, *req_ptr, param_error)) {
+            RespondHeaderMismatch(resp, param_error);
+            return;
         }
     }
 
@@ -670,8 +772,7 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
 std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(
     const HttpRequest& req, std::string_view header_name) const
 {
-    auto key = std::string(header_name);
-    for (auto& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto key = detail::ToLower(header_name);
     auto it = req.headers.find(key);
     if (it != req.headers.end()) return std::optional<std::string>(it->second);
     return std::nullopt;

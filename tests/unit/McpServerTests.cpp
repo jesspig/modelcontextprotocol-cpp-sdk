@@ -109,6 +109,222 @@ TEST(McpServerTest, RegisterResourceTemplate) {
     server->Close();
 }
 
+// ── resources/read resolves a registered URI template instance ──
+TEST(McpServerTest, ReadResourceMatchesRegisteredTemplate) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterResourceTemplate("template-resource",
+        "test://template/{id}/data",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>& vars) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "id=" + vars.at("id");
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    ResourceRequestParams params;
+    params.uri = "test://template/123/data";
+    auto future = client->SendRequest(methods::kReadResource,
+        SerializeResourceRequestParams(params), {}, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* contents = resp.Find("contents");
+    ASSERT_NE(contents, nullptr);
+    ASSERT_TRUE(contents->IsArray());
+    ASSERT_EQ(contents->Size(), 1u);
+    auto* text = (*contents)[0].Find("text");
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->GetString(), "id=123");
+
+    server->Close();
+    client->Close();
+}
+
+// ── URI template variable values are pct-decoded before reaching the handler ──
+TEST(McpServerTest, ReadResourceTemplateValueIsPctDecoded) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterResourceTemplate("template-resource",
+        "test://template/{id}/data",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>& vars) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "id=" + vars.at("id");
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    ResourceRequestParams params;
+    params.uri = "test://template/a%20b/data";
+    auto future = client->SendRequest(methods::kReadResource,
+        SerializeResourceRequestParams(params), {}, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* contents = resp.Find("contents");
+    ASSERT_NE(contents, nullptr);
+    ASSERT_TRUE(contents->IsArray());
+    ASSERT_EQ(contents->Size(), 1u);
+    auto* text = (*contents)[0].Find("text");
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->GetString(), "id=a b");
+
+    server->Close();
+    client->Close();
+}
+
+// ── Unmatched URI still reports resource not found ──
+TEST(McpServerTest, ReadResourceUnknownUriStillNotFound) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterResourceTemplate("template-resource",
+        "test://template/{id}/data",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>& vars) -> ReadResourceResult {
+            (void)vars;
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "unused";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    ResourceRequestParams params;
+    params.uri = "test://unknown";
+    auto future = client->SendRequest(methods::kReadResource,
+        SerializeResourceRequestParams(params), {}, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    server->Close();
+    client->Close();
+}
+
+// ── A static resource that also matches a template wins over the template ──
+TEST(McpServerTest, ReadResourcePrefersStaticOverTemplate) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterResourceTemplate("catch-all-template",
+        "test://{id}",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>& vars) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "template:" + vars.at("id");
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    server->RegisterResource("static-resource", "test://x",
+        ResourceOptions{},
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "static";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    ResourceRequestParams params;
+    params.uri = "test://x";
+    auto future = client->SendRequest(methods::kReadResource,
+        SerializeResourceRequestParams(params), {}, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* contents = resp.Find("contents");
+    ASSERT_NE(contents, nullptr);
+    ASSERT_TRUE(contents->IsArray());
+    ASSERT_EQ(contents->Size(), 1u);
+    auto* text = (*contents)[0].Find("text");
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->GetString(), "static");
+
+    server->Close();
+    client->Close();
+}
+
+// ── RegisterResourceTemplate rejects malformed templates ──
+TEST(McpServerTest, RegisterResourceTemplateRejectsInvalidTemplate) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    auto handler = [](const std::string&,
+                      const std::map<std::string, std::string>&) -> ReadResourceResult {
+        return ReadResourceResult{};
+    };
+
+    auto register_unbalanced = [&] {
+        server->RegisterResourceTemplate("bad-unbalanced",
+            "test://{unclosed", ResourceOptions{}, handler);
+    };
+    auto register_bad_var = [&] {
+        server->RegisterResourceTemplate("bad-varname",
+            "bad://{a..b}", ResourceOptions{}, handler);
+    };
+
+    EXPECT_THROW(register_unbalanced(), mcp::McpError);
+    EXPECT_THROW(register_bad_var(), mcp::McpError);
+
+    try {
+        register_unbalanced();
+        EXPECT_TRUE(false);
+    } catch (const mcp::McpError& e) {
+        EXPECT_EQ(e.Code(), mcp::McpErrorCode::InvalidParams);
+    }
+
+    EXPECT_FALSE(server->GetCapabilities().resources.has_value());
+    server->Close();
+}
+
 // ── Register prompt ──
 TEST(McpServerTest, RegisterPrompt) {
     auto pair = InMemoryTransport::CreatePair();
@@ -1425,21 +1641,20 @@ TEST(McpServerTest, MrtrToolInputRequiredElicitationRoundTrip) {
         std::function<CallToolResult(const Ctx&)>(
             [](const Ctx& ctx) -> CallToolResult {
                 if (ctx.Params().input_responses) {
-                    auto* elicit = ctx.Params().input_responses->Find("elicit");
-                    if (elicit) {
-                        auto* name = elicit->Find("user_name");
-                        if (name && name->IsString()) {
-                            CallToolResult done;
-                            done.content.push_back(
-                                TextContent{"text", "Hello, " + name->GetString() + "!"});
-                            return done;
-                        }
+                    auto* elicit = ctx.Params().input_responses->Find("name");
+                    auto* content = elicit ? elicit->Find("content") : nullptr;
+                    auto* name = content ? content->Find("user_name") : nullptr;
+                    if (name && name->IsString()) {
+                        CallToolResult done;
+                        done.content.push_back(
+                            TextContent{"text", "Hello, " + name->GetString() + "!"});
+                        return done;
                     }
                 }
                 CallToolResult result;
                 InputRequiredResult ir;
-                InputRequestElicit elicit_request;
-                elicit_request.message = "What is your name?";
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "What is your name?";
                 JsonValue schema(JsonValue::object_tag);
                 schema["type"] = JsonValue("object");
                 JsonValue properties(JsonValue::object_tag);
@@ -1447,8 +1662,8 @@ TEST(McpServerTest, MrtrToolInputRequiredElicitationRoundTrip) {
                 field["type"] = JsonValue("string");
                 properties["user_name"] = std::move(field);
                 schema["properties"] = std::move(properties);
-                elicit_request.requested_schema = std::move(schema);
-                ir.input_requests.elicit = std::move(elicit_request);
+                elicit_params.requested_schema = std::move(schema);
+                ir.input_requests["name"] = MakeInputRequestForElicitation(elicit_params);
                 result.input_required = std::move(ir);
                 return result;
             }),
@@ -1509,9 +1724,9 @@ TEST(McpServerTest, MrtrMintedRequestStateRoundTrip) {
                 }
                 CallToolResult result;
                 InputRequiredResult ir;
-                InputRequestElicit elicit_request;
-                elicit_request.message = "ack round";
-                ir.input_requests.elicit = std::move(elicit_request);
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "ack round";
+                ir.input_requests["ack"] = MakeInputRequestForElicitation(elicit_params);
                 JsonValue payload(JsonValue::object_tag);
                 payload["round"] = JsonValue(static_cast<int64_t>(round + 1));
                 ir.request_state = payload.Dump();
@@ -1578,4 +1793,85 @@ TEST(McpServerTest, MrtrForgedRequestStateRejectedWithReason) {
 
     server->Close();
     client->Close();
+}
+
+// ── resources/updated reaches a listener that subscribed to that URI (2026 era) ──
+TEST(McpServerTest, SendResourceUpdatedReachesSubscribedUri) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::promise<JsonRpcNotification> ack_received;
+    auto ack_future = ack_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_received](const JsonRpcNotification& n) {
+            ack_received.set_value(n);
+        });
+
+    std::promise<JsonRpcNotification> updated_received;
+    auto updated_future = updated_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceUpdated,
+        [&updated_received](const JsonRpcNotification& n) {
+            updated_received.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.resource_subscriptions = {"resource://send/1"};
+    auto subscribe = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(params),
+        MetaWithSubscriptionId("client-sub-upd"),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+
+    ctx.server->SendResourceUpdated("resource://send/1");
+
+    ASSERT_EQ(updated_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto notif = updated_future.get();
+    EXPECT_EQ(notif.method, std::string(notifications::kResourceUpdated));
+    ASSERT_TRUE(notif.params.has_value());
+    auto* uri = notif.params->Find("uri");
+    ASSERT_NE(uri, nullptr);
+    EXPECT_EQ(uri->GetString(), "resource://send/1");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+// ── A listener that did not subscribe to a URI is not notified (2026 era) ──
+TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::promise<JsonRpcNotification> ack_received;
+    auto ack_future = ack_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_received](const JsonRpcNotification& n) {
+            ack_received.set_value(n);
+        });
+
+    std::promise<JsonRpcNotification> updated_received;
+    auto updated_future = updated_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceUpdated,
+        [&updated_received](const JsonRpcNotification& n) {
+            updated_received.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.resource_subscriptions = {"resource://send/1"};
+    auto subscribe = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(params),
+        MetaWithSubscriptionId("client-sub-other"),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+
+    ctx.server->SendResourceUpdated("resource://other/9");
+
+    EXPECT_EQ(updated_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    ctx.server->Close();
+    ctx.client->Close();
 }

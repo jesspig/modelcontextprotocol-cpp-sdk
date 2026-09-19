@@ -675,21 +675,52 @@ TEST(Conformance, ElicitMethodConstant) {
 TEST(Conformance, MakeInputRequestForElicitation) {
     ElicitRequestParams params;
     params.message = "confirm?";
-    auto jv = MakeInputRequestForElicitation(params);
+    auto request = MakeInputRequestForElicitation(params);
 
-    EXPECT_EQ(jv["method"].GetString(), "elicitation/create");
-    EXPECT_EQ(jv["params"]["message"].GetString(), "confirm?");
+    EXPECT_EQ(request.method, "elicitation/create");
+    EXPECT_EQ(request.params["message"].GetString(), "confirm?");
+}
+
+TEST(Conformance, MakeInputRequestForSampling) {
+    SamplingMessage message;
+    message.role = "user";
+    TextContent content;
+    content.text = "What is the capital of France?";
+    message.content = std::move(content);
+    CreateMessageRequestParams params;
+    params.messages.push_back(std::move(message));
+    params.max_tokens = 100;
+
+    auto request = MakeInputRequestForSampling(params);
+    EXPECT_EQ(request.method, "sampling/createMessage");
+    EXPECT_EQ(request.params["maxTokens"].GetInt(), 100);
+    ASSERT_EQ(request.params["messages"].GetArray().size(), 1u);
+}
+
+TEST(Conformance, MakeInputRequestForRoots) {
+    auto request = MakeInputRequestForRoots(ListRootsRequestParams{});
+    EXPECT_EQ(request.method, "roots/list");
+    EXPECT_TRUE(request.params.IsObject());
+    EXPECT_TRUE(request.params.Empty());
 }
 
 TEST(Conformance, MakeInputResponseFromElicitResult) {
     ElicitResult result;
+    result.action = "accept";
     result.content = JsonValue(JsonValue::object_tag);
     (*result.content)["ok"] = true;
     result.result_type = ResultType::Complete;
 
     auto jv = MakeInputResponseFromElicitResult(result);
+    EXPECT_EQ(jv["action"].GetString(), "accept");
     EXPECT_EQ(jv["content"]["ok"].GetBool(), true);
-    EXPECT_EQ(jv["resultType"].GetString(), "complete");
+    EXPECT_FALSE(jv.Contains("resultType"));
+    EXPECT_FALSE(jv.Contains("result_type"));
+    EXPECT_FALSE(jv.Contains("meta"));
+
+    ElicitResult empty_action;
+    auto cancelled = MakeInputResponseFromElicitResult(empty_action);
+    EXPECT_EQ(cancelled["action"].GetString(), "cancel");
 }
 
 TEST(Conformance, ElicitRequestParamsEmptyMessage) {
@@ -719,62 +750,82 @@ TEST(Conformance, ElicitResultTypedJsonValue) {
 // ====================================================================
 TEST(Conformance, InputRequiredResultRoundTrip) {
     InputRequiredResult ir;
-    ir.input_requests.elicit = InputRequestElicit{"provide value"};
+    ElicitRequestParams params;
+    params.message = "provide value";
+    ir.input_requests["name"] = MakeInputRequestForElicitation(params);
     ir.request_state = "state-abc";
 
     auto jv = SerializeInputRequiredResult(ir);
     EXPECT_EQ(jv["resultType"].GetString(), "input_required");
-    EXPECT_EQ(jv["inputRequests"]["elicit"]["message"].GetString(), "provide value");
+    EXPECT_EQ(jv["inputRequests"]["name"]["method"].GetString(), "elicitation/create");
+    EXPECT_EQ(jv["inputRequests"]["name"]["params"]["message"].GetString(), "provide value");
     EXPECT_EQ(jv["requestState"].GetString(), "state-abc");
 
     auto recovered = DeserializeInputRequiredResult(jv);
-    EXPECT_TRUE(recovered.input_requests.elicit.has_value());
-    EXPECT_EQ(recovered.input_requests.elicit->message, "provide value");
-    EXPECT_TRUE(recovered.request_state.has_value());
+    ASSERT_EQ(recovered.input_requests.size(), 1u);
+    EXPECT_EQ(recovered.input_requests.at("name").method, "elicitation/create");
+    EXPECT_EQ(recovered.input_requests.at("name").params["message"].GetString(),
+        "provide value");
+    ASSERT_TRUE(recovered.request_state.has_value());
     EXPECT_EQ(*recovered.request_state, "state-abc");
 }
 
-TEST(Conformance, InputRequiredResultWithConfirm) {
+TEST(Conformance, InputRequiredResultWithConfirmKey) {
     InputRequiredResult ir;
-    ir.input_requests.confirm = InputRequestElicit{"Are you sure?"};
+    ElicitRequestParams params;
+    params.message = "Are you sure?";
+    ir.input_requests["confirm"] = MakeInputRequestForElicitation(params);
 
     auto jv = SerializeInputRequiredResult(ir);
-    EXPECT_EQ(jv["inputRequests"]["confirm"]["message"].GetString(), "Are you sure?");
+    EXPECT_EQ(jv["inputRequests"]["confirm"]["params"]["message"].GetString(),
+        "Are you sure?");
 
     auto recovered = DeserializeInputRequiredResult(jv);
-    EXPECT_TRUE(recovered.input_requests.confirm.has_value());
-    EXPECT_EQ(recovered.input_requests.confirm->message, "Are you sure?");
+    ASSERT_EQ(recovered.input_requests.size(), 1u);
+    EXPECT_EQ(recovered.input_requests.count("confirm"), 1u);
+    EXPECT_EQ(recovered.input_requests.at("confirm").method, "elicitation/create");
 }
 
-TEST(Conformance, InputRequiredResultBothRequests) {
+TEST(Conformance, InputRequiredResultWithTwoKeys) {
     InputRequiredResult ir;
-    ir.input_requests.confirm = InputRequestElicit{"Confirm?"};
-    ir.input_requests.elicit = InputRequestElicit{"Provide details"};
+    ElicitRequestParams confirm_params;
+    confirm_params.message = "Confirm?";
+    ElicitRequestParams details_params;
+    details_params.message = "Provide details";
+    ir.input_requests["confirm"] = MakeInputRequestForElicitation(confirm_params);
+    ir.input_requests["details"] = MakeInputRequestForElicitation(details_params);
 
     auto jv = SerializeInputRequiredResult(ir);
     EXPECT_TRUE(jv["inputRequests"].Contains("confirm"));
-    EXPECT_TRUE(jv["inputRequests"].Contains("elicit"));
+    EXPECT_TRUE(jv["inputRequests"].Contains("details"));
+    EXPECT_FALSE(jv["inputRequests"].Contains("elicit"));
 
     auto recovered = DeserializeInputRequiredResult(jv);
-    EXPECT_TRUE(recovered.input_requests.confirm.has_value());
-    EXPECT_TRUE(recovered.input_requests.elicit.has_value());
+    ASSERT_EQ(recovered.input_requests.size(), 2u);
+    EXPECT_EQ(recovered.input_requests.at("confirm").params["message"].GetString(),
+        "Confirm?");
+    EXPECT_EQ(recovered.input_requests.at("details").params["message"].GetString(),
+        "Provide details");
 }
 
-TEST(Conformance, InputRequestElicitWithSchema) {
-    InputRequestElicit elicit;
-    elicit.message = "pick one";
-    elicit.requested_schema = JsonValue(JsonValue::object_tag);
-    (*elicit.requested_schema)["enum"] = JsonValue(JsonValue::array_tag);
-    (*elicit.requested_schema)["enum"].PushBack("a");
-    (*elicit.requested_schema)["enum"].PushBack("b");
-    (*elicit.requested_schema)["enum"].PushBack("c");
+TEST(Conformance, InputRequestWithSchema) {
+    ElicitRequestParams params;
+    params.message = "pick one";
+    JsonValue schema(JsonValue::object_tag);
+    schema["enum"] = JsonValue(JsonValue::array_tag);
+    schema["enum"].PushBack("a");
+    schema["enum"].PushBack("b");
+    schema["enum"].PushBack("c");
+    params.requested_schema = std::move(schema);
 
-    auto jv = SerializeInputRequestElicit(elicit);
-    EXPECT_EQ(jv["message"].GetString(), "pick one");
-    EXPECT_EQ(jv["requestedSchema"]["enum"][0].GetString(), "a");
+    auto request = MakeInputRequestForElicitation(params);
+    EXPECT_EQ(request.method, "elicitation/create");
+    EXPECT_EQ(request.params["message"].GetString(), "pick one");
+    EXPECT_EQ(request.params["requestedSchema"]["enum"][0].GetString(), "a");
 
-    auto recovered = DeserializeInputRequestElicit(jv);
-    EXPECT_TRUE(recovered.requested_schema.has_value());
+    auto recovered = DeserializeInputRequest(SerializeInputRequest(request));
+    EXPECT_EQ(recovered.method, "elicitation/create");
+    EXPECT_EQ(recovered.params["requestedSchema"]["enum"][1].GetString(), "b");
 }
 
 TEST(Conformance, IsInputRequiredResultTrue) {
@@ -799,12 +850,15 @@ TEST(Conformance, IsInputRequiredResultMissingKey) {
 TEST(Conformance, ExtractInputRequestsFound) {
     JsonValue jv(JsonValue::object_tag);
     jv["inputRequests"] = JsonValue(JsonValue::object_tag);
-    jv["inputRequests"]["elicit"] = JsonValue(JsonValue::object_tag);
-    jv["inputRequests"]["elicit"]["message"] = "enter value";
+    jv["inputRequests"]["name"] = JsonValue(JsonValue::object_tag);
+    jv["inputRequests"]["name"]["method"] = "elicitation/create";
+    jv["inputRequests"]["name"]["params"] = JsonValue(JsonValue::object_tag);
+    jv["inputRequests"]["name"]["params"]["message"] = "enter value";
     auto extracted = ExtractInputRequests(jv);
     ASSERT_TRUE(extracted.has_value());
-    ASSERT_TRUE(extracted->elicit.has_value());
-    EXPECT_EQ(extracted->elicit->message, "enter value");
+    ASSERT_EQ(extracted->size(), 1u);
+    EXPECT_EQ(extracted->at("name").method, "elicitation/create");
+    EXPECT_EQ(extracted->at("name").params["message"].GetString(), "enter value");
 }
 
 TEST(Conformance, ExtractInputRequestsNotFound) {
@@ -820,8 +874,145 @@ TEST(Conformance, InputRequestsEmpty) {
     EXPECT_TRUE(jv.Empty());
 
     auto recovered = DeserializeInputRequests(jv);
-    EXPECT_FALSE(recovered.confirm.has_value());
-    EXPECT_FALSE(recovered.elicit.has_value());
+    EXPECT_TRUE(recovered.empty());
+}
+
+// ── Official 2026-07-28 inputRequests sample: server-assigned keys map to
+// {method, params} request objects. The round trip must be field-for-field
+// equivalent to the specification example.
+TEST(Conformance, InputRequestsSpecSampleRoundTrip) {
+    const char* sample_json = R"({
+        "github_login": {
+            "method": "elicitation/create",
+            "params": {
+                "mode": "form",
+                "message": "Please provide your GitHub username",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } },
+                    "required": ["name"]
+                }
+            }
+        },
+        "capital_of_france": {
+            "method": "sampling/createMessage",
+            "params": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": { "type": "text", "text": "What is the capital of France?" }
+                    }
+                ],
+                "systemPrompt": "You are a helpful assistant.",
+                "maxTokens": 100
+            }
+        }
+    })";
+
+    JsonValue sample = JsonValue::Parse(sample_json);
+    auto requests = DeserializeInputRequests(sample);
+
+    ASSERT_EQ(requests.size(), 2u);
+    EXPECT_EQ(requests.count("github_login"), 1u);
+    EXPECT_EQ(requests.count("capital_of_france"), 1u);
+
+    EXPECT_EQ(requests.at("github_login").method, "elicitation/create");
+    EXPECT_EQ(requests.at("github_login").params["mode"].GetString(), "form");
+    EXPECT_EQ(requests.at("github_login").params["message"].GetString(),
+        "Please provide your GitHub username");
+    EXPECT_EQ(requests.at("github_login")
+            .params["requestedSchema"]["properties"]["name"]["type"].GetString(),
+        "string");
+
+    EXPECT_EQ(requests.at("capital_of_france").method, "sampling/createMessage");
+    ASSERT_EQ(requests.at("capital_of_france").params["messages"].GetArray().size(), 1u);
+    EXPECT_EQ(requests.at("capital_of_france")
+            .params["messages"][0]["content"]["text"].GetString(),
+        "What is the capital of France?");
+    EXPECT_EQ(requests.at("capital_of_france").params["maxTokens"].GetInt(), 100);
+
+    auto round_tripped = SerializeInputRequests(requests);
+    EXPECT_TRUE(round_tripped == sample);
+}
+
+// ── Official 2026-07-28 inputResponses sample: the values are bare results,
+// with neither a resultType envelope nor meta.
+TEST(Conformance, InputResponseValuesAreBareResults) {
+    ElicitResult accepted;
+    accepted.action = "accept";
+    JsonValue content(JsonValue::object_tag);
+    content["name"] = JsonValue("octocat");
+    accepted.content = std::move(content);
+
+    JsonValue elicitation_response = MakeInputResponseFromElicitResult(accepted);
+    EXPECT_EQ(elicitation_response["action"].GetString(), "accept");
+    EXPECT_EQ(elicitation_response["content"]["name"].GetString(), "octocat");
+    EXPECT_FALSE(elicitation_response.Contains("resultType"));
+    EXPECT_FALSE(elicitation_response.Contains("result_type"));
+    EXPECT_FALSE(elicitation_response.Contains("meta"));
+
+    CreateMessageResult sampled;
+    sampled.role = "assistant";
+    TextContent text;
+    text.text = "The capital of France is Paris.";
+    sampled.content = std::move(text);
+    sampled.model = "claude-3-sonnet-20240307";
+    sampled.stop_reason = "endTurn";
+
+    JsonValue sampling_response = MakeInputResponseFromCreateMessageResult(sampled);
+    EXPECT_EQ(sampling_response["role"].GetString(), "assistant");
+    EXPECT_EQ(sampling_response["model"].GetString(), "claude-3-sonnet-20240307");
+    EXPECT_EQ(sampling_response["stopReason"].GetString(), "endTurn");
+    EXPECT_FALSE(sampling_response.Contains("resultType"));
+
+    ListRootsResult roots;
+    roots.roots.push_back(Root{"file:///tmp", "tmp"});
+    JsonValue roots_response = MakeInputResponseFromListRootsResult(roots);
+    ASSERT_EQ(roots_response["roots"].GetArray().size(), 1u);
+    EXPECT_EQ(roots_response["roots"][0]["uri"].GetString(), "file:///tmp");
+    EXPECT_FALSE(roots_response.Contains("resultType"));
+}
+
+// ── Malformed entries are rejected instead of being silently accepted.
+TEST(Conformance, InputRequestsRejectsEntryWithoutMethod) {
+    JsonValue jv(JsonValue::object_tag);
+    jv["broken"] = JsonValue(JsonValue::object_tag);
+    jv["broken"]["params"] = JsonValue(JsonValue::object_tag);
+
+    EXPECT_THROW_MSG(DeserializeInputRequests(jv), McpError, "method");
+}
+
+// ── The specification's roots/list input request carries no `params` key, so a
+// missing params is accepted as an empty object; a present non-object params is
+// still rejected. ──
+TEST(Conformance, InputRequestsAcceptsEntryWithoutParamsObject) {
+    JsonValue jv(JsonValue::object_tag);
+    jv["roots"] = JsonValue(JsonValue::object_tag);
+    jv["roots"]["method"] = "roots/list";
+
+    auto requests = DeserializeInputRequests(jv);
+    ASSERT_EQ(requests.size(), 1u);
+    EXPECT_EQ(requests.at("roots").method, "roots/list");
+    EXPECT_TRUE(requests.at("roots").params.IsObject());
+    EXPECT_TRUE(requests.at("roots").params.Empty());
+
+    auto round_tripped = SerializeInputRequests(requests);
+    EXPECT_TRUE(round_tripped == jv);
+    EXPECT_FALSE(round_tripped["roots"].Contains("params"));
+}
+
+TEST(Conformance, InputRequestsRejectsEntryWithNonObjectParams) {
+    JsonValue with_string(JsonValue::object_tag);
+    with_string["broken"] = JsonValue(JsonValue::object_tag);
+    with_string["broken"]["method"] = "roots/list";
+    with_string["broken"]["params"] = "x";
+    EXPECT_THROW_MSG(DeserializeInputRequests(with_string), McpError, "params");
+
+    JsonValue with_number(JsonValue::object_tag);
+    with_number["broken"] = JsonValue(JsonValue::object_tag);
+    with_number["broken"]["method"] = "roots/list";
+    with_number["broken"]["params"] = 1;
+    EXPECT_THROW_MSG(DeserializeInputRequests(with_number), McpError, "params");
 }
 
 TEST(Conformance, CallToolRequestWithInputResponses) {

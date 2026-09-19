@@ -2,7 +2,8 @@
 
 // NetIoUtil.hpp — net 层共享的字符串/超时工具与解析上限常量
 
-#include <cctype>
+#include <mcp/detail/StringUtils.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <string>
@@ -14,10 +15,7 @@ inline constexpr std::size_t kMaxLineBytes = 8 * 1024;
 inline constexpr std::size_t kMaxHeaderBytes = 64 * 1024;
 
 inline std::string ToLower(std::string_view text) {
-    std::string result(text);
-    for (char& c : result)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return result;
+    return mcp::detail::ToLower(text);
 }
 
 inline void TrimInPlace(std::string& text) {

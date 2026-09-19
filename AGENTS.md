@@ -15,7 +15,7 @@ ctest --preset debug --output-on-failure
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`。
 - `-DMCP_WERROR=ON` 才开警告即错误（CI 自动加，本地默认关）。
 - configure 无第三方拉取；唯一可选系统依赖是 OpenSSL（未找到则禁用 TLS；PKCE 随机源回退 `BCryptGenRandom`/`random_device`，SHA-256 恒为内置实现）。
-- 验证全量：`ctest -N` 看实际用例数（17 目标 / 578 用例）。
+- 验证全量：`ctest -N` 看实际用例数（18 目标 / 632 用例；本轮静态断言统计 2154，详见 [wiki/tests.md](wiki/tests.md)）。
 - 自研测试框架（`tests/framework/`）：套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*/ASSERT_*`，链接 `mcp-test-main`；`--gtest_filter` 参数名兼容。
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删。
 - 集成测试超时护栏：`MCP_RUN_WITH_TIMEOUT`（`tests/framework/include/mcp/test/McpTimeout.hpp`，默认 10s）——超时记为用例失败并 `MarkAbandoned()`（跳过 TearDown、runner 继续后续用例），勿改回永久阻塞。
@@ -48,9 +48,9 @@ ctest --preset debug --output-on-failure
 - **绝对禁止**用 shell/脚本（PowerShell/批处理/Python 等）批量写入、替换或修改文件内容——曾因批量替换造成 BOM 污染与 timestamp 全量误改。所有文件编辑必须用 `edit` / `write` 工具逐个进行，包括 wiki。
 - 子代理同样禁止用 shell/脚本编辑文件；大批量更新时启动多个子代理，各自对负责的文件集逐个 `edit`/`write`。
 
-## wiki 知识库维护
+## 项目知识库
 
-源码知识库在 `wiki/`（面向源码理解，与 `docs/zh`、`docs/en` 在线文档分离），入口 [wiki/index.md](wiki/index.md)。改动落地后及时更新对应页面并记 changelog，不推迟到提交前统一处理。
+源码知识库在 `wiki/`（面向源码理解，与 `docs/zh`、`docs/en` 在线文档分离），入口 [wiki/index.md](wiki/index.md)。当前基线为 18 个测试目标、632 个 ctest 用例、2154 个源码断言 token。改动落地后及时更新对应页面并记 changelog，不推迟到提交前统一处理。
 
 - **核查**：更新前 `git status` 与 `git diff HEAD` 对照全部实际变更（含用户手动修改），禁止凭对话记忆；无法核实处标 `> [!todo] 待补充`。彻底清除过时描述，不留废弃标记。
 - **frontmatter**：概念页（modules/classes/transports/concepts）必须含 YAML frontmatter——`type` 必填（同类一致），推荐 `title`/`description`/`tags`/`timestamp`（ISO 8601 真实时间，`Get-Date` 获取，仅内容实际变更时更新）；对应源码资产加 `resource`。`index.md` 与 `log.md` 为保留文件，无 frontmatter。

@@ -19,7 +19,6 @@ Streamable HTTP 传输实现了 MCP Streamable HTTP 规范。每个会话使用�
 **请求头**（`StreamableHttpClientTransport`）：
 - `MCP-Protocol-Version: 2026-07-28` — 始终发送
 - `Mcp-Method` — 动态生成，从 JSON-RPC 消息体的 method 字段提取
-- `Mcp-Param-*` — 提取原始参数用于中间件路由（仅支持字符串、整数、布尔值、浮点数）
 - `Accept: application/json, text/event-stream` — 允许服务端选择响应模式
 
 ## 传输层接口

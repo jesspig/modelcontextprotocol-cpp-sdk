@@ -3,7 +3,7 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-09-16T19:38:35Z
+timestamp: 2026-09-20T03:14:18+08:00
 resource: include/mcp/Transport.hpp
 ---
 
@@ -44,7 +44,8 @@ resource: include/mcp/Transport.hpp
 
 ## 网络栈加固（detail/net）
 
-- **共享工具单一来源**（[NetIoUtil.hpp](../../src/transport/detail/net/NetIoUtil.hpp)）：`kMaxLineBytes = 8KB`/`kMaxHeaderBytes = 64KB` 解析上限与 `ToLower`/`TrimInPlace`/`Remaining`，HttpClient/WebSocketClient/HttpServerImpl 共用
+- **共享工具单一来源**（[NetIoUtil.hpp](../../src/transport/detail/net/NetIoUtil.hpp)）：`kMaxLineBytes = 8KB`/`kMaxHeaderBytes = 64KB` 解析上限与 `TrimInPlace`/`Remaining`；大小写归一使用公共 [StringUtils.hpp](../../include/mcp/detail/StringUtils.hpp)，HttpClient/WebSocketClient/HttpServerImpl 共用
+- **HttpClient 读缓冲**：响应头和 body 读取通过 8KB 批量缓冲消费，连接关闭时清空，仍区分 `IsEof()` 与超时；[tests/bench/TransportBench.cpp](../../tests/bench/TransportBench.cpp) 提供头解析、吞吐、并发、延迟和连接复用基准
 - **SIGPIPE**（[TcpSocketPosix.cpp](../../src/transport/detail/net/TcpSocketPosix.cpp)）：`FromFd`/`Connect` 统一经 `EnableNoSigpipe` 设置 `SO_NOSIGPIPE`（未定义该选项的平台为空操作，`send` 由非 Apple 分支的 `MSG_NOSIGNAL` 兜底）；TU 顶部安装进程级 `SIGPIPE` 忽略（静态 `SigpipeIgnorer` 兜底）；`Read` 遇 `ECONNRESET` 置 `eof_` 返回 0 视为 EOF（对齐 Win32）
 - **TcpSocket fd 竞态收敛**（[TcpSocket.hpp](../../src/transport/detail/net/TcpSocket.hpp)）：`fd_` 为 `std::atomic`（`int`/`SOCKET`）；`Close()` 经 `exchange(kInvalidFd)` 保证恰一次关闭，`Read`/`Write` 在 poll 唤醒后与每次系统调用前重读 fd 并复查 `closed_`——关闭与读写并发时不再向已关闭（或被系统重用的）fd 误操作
 - **Windows `min` 宏防御**：传输库统一以 `(std::min)` 括号形式调用（SseClientTransport、HttpClient、Sha1 等），避免未定义 `NOMINMAX` 时 Windows SDK 的 `min` 宏破坏编译
@@ -59,4 +60,5 @@ resource: include/mcp/Transport.hpp
 - [/transports/stdio.md](../transports/stdio.md) 等 5 个传输页
 - [/classes/message-channel.md](../classes/message-channel.md) — 通道实现
 - [/concepts/concurrency.md](../concepts/concurrency.md) — 线程与生命周期
+- [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md) — Streamable HTTP 参数头
 - [/modules/protocol.md](protocol.md) — 上层依赖方

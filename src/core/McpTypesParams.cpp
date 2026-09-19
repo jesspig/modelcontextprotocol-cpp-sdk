@@ -66,14 +66,6 @@ CallToolRequestParams DeserializeCallToolRequestParams(const JsonValue& j) {
 
 // ── GetPromptRequestParams ──
 
-JsonValue SerializeGetPromptRequestParams(const GetPromptRequestParams& v) {
-    JsonValue obj(JsonValue::object_tag);
-    obj[detail::kName] = JsonValue(v.name);
-    detail::SerializeOptional(obj, detail::kArguments, v.arguments);
-    if (v.meta) obj[detail::kMeta] = SerializeRequestMeta(*v.meta);
-    return obj;
-}
-
 GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j) {
     GetPromptRequestParams v;
     v.name = j[detail::kName].GetString();
@@ -115,10 +107,6 @@ CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j) {
 
 JsonValue SerializeDiscoverRequestParams(const DiscoverRequestParams&) {
     return JsonValue(JsonValue::object_tag);
-}
-
-DiscoverRequestParams DeserializeDiscoverRequestParams(const JsonValue&) {
-    return DiscoverRequestParams{};
 }
 
 // ── InitializeRequestParams ──
@@ -223,13 +211,6 @@ JsonValue SerializeRoot(const Root& v) {
     return obj;
 }
 
-Root DeserializeRoot(const JsonValue& j) {
-    Root v;
-    v.uri = j[detail::kUri].GetString();
-    detail::DeserializeOptional(j, detail::kName, v.name);
-    return v;
-}
-
 // ── ListRootsRequestParams ──
 
 JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams&) {
@@ -258,15 +239,49 @@ SetLevelRequestParams DeserializeSetLevelRequestParams(const JsonValue& j) {
 // Free functions for elicitation helpers
 // ====================================================================
 
-JsonValue MakeInputRequestForElicitation(const ElicitRequestParams& params) {
-    JsonValue obj(JsonValue::object_tag);
-    obj[detail::kMethod] = JsonValue(std::string(methods::kElicit));
-    obj[detail::kParams] = SerializeElicitRequestParams(params);
-    return obj;
+InputRequest MakeInputRequestForElicitation(const ElicitRequestParams& params) {
+    InputRequest request;
+    request.method = std::string(methods::kElicit);
+    request.params = SerializeElicitRequestParams(params);
+    return request;
+}
+
+InputRequest MakeInputRequestForSampling(const CreateMessageRequestParams& params) {
+    InputRequest request;
+    request.method = std::string(methods::kCreateMessage);
+    request.params = SerializeCreateMessageRequestParams(params);
+    return request;
+}
+
+InputRequest MakeInputRequestForRoots(const ListRootsRequestParams& params) {
+    InputRequest request;
+    request.method = std::string(methods::kListRoots);
+    request.params = SerializeListRootsRequestParams(params);
+    return request;
 }
 
 JsonValue MakeInputResponseFromElicitResult(const ElicitResult& result) {
-    return SerializeElicitResult(result);
+    JsonValue obj(JsonValue::object_tag);
+    obj["action"] = JsonValue(result.action.empty() ? std::string("cancel") : result.action);
+    detail::SerializeOptional(obj, "content", result.content);
+    return obj;
+}
+
+JsonValue MakeInputResponseFromCreateMessageResult(const CreateMessageResult& result) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kRole] = JsonValue(result.role);
+    obj[detail::kContent] = SerializeContentVariant(result.content);
+    obj["model"] = JsonValue(result.model);
+    detail::SerializeOptional(obj, detail::kStopReason, result.stop_reason);
+    return obj;
+}
+
+JsonValue MakeInputResponseFromListRootsResult(const ListRootsResult& result) {
+    JsonValue obj(JsonValue::object_tag);
+    JsonValue::Array arr;
+    for (const auto& root : result.roots) arr.push_back(SerializeRoot(root));
+    obj[detail::kRoots] = JsonValue(std::move(arr));
+    return obj;
 }
 
 bool IsInputRequiredResult(const JsonValue& j) {

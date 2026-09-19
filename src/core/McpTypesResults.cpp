@@ -352,68 +352,59 @@ DiscoverResult DeserializeDiscoverResult(const JsonValue& j) {
     return v;
 }
 
-// ── InputRequestElicit ──
+// ── InputRequest ──
 
-JsonValue SerializeInputRequestElicit(const InputRequestElicit& v) {
+JsonValue SerializeInputRequest(const InputRequest& v) {
     JsonValue obj(JsonValue::object_tag);
-    obj[detail::kMessage] = JsonValue(v.message);
-    detail::SerializeOptional(obj, detail::kRequestedSchema, v.requested_schema);
+    obj[detail::kMethod] = JsonValue(v.method);
+    if (!v.params.IsObject() || !v.params.Empty()) {
+        obj[detail::kParams] = v.params;
+    }
     return obj;
 }
 
-InputRequestElicit DeserializeInputRequestElicit(const JsonValue& j) {
-    InputRequestElicit v;
-    v.message = j[detail::kMessage].GetString();
-    detail::DeserializeOptional(j, detail::kRequestedSchema, v.requested_schema);
+InputRequest DeserializeInputRequest(const JsonValue& j) {
+    if (!j.IsObject()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "DeserializeInputRequest: input request must be an object");
+    }
+    auto* method = j.Find(detail::kMethod);
+    if (!method || !method->IsString() || method->GetString().empty()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "DeserializeInputRequest: missing non-empty string 'method'");
+    }
+    InputRequest v;
+    v.method = method->GetString();
+    auto* params = j.Find(detail::kParams);
+    if (params) {
+        if (!params->IsObject()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "DeserializeInputRequest: method '" + method->GetString() +
+                "' has a non-object 'params'");
+        }
+        v.params = *params;
+    } else {
+        v.params = JsonValue(JsonValue::object_tag);
+    }
     return v;
-}
-
-// ── InputRequestSampling ──
-
-JsonValue SerializeInputRequestSampling(const InputRequestSampling& v) {
-    return SerializeCreateMessageRequestParams(v.params);
-}
-
-InputRequestSampling DeserializeInputRequestSampling(const JsonValue& j) {
-    InputRequestSampling v;
-    if (auto* params = j.Find(detail::kParams); params)
-        v.params = DeserializeCreateMessageRequestParams(*params);
-    else
-        v.params = DeserializeCreateMessageRequestParams(j);
-    return v;
-}
-
-// ── InputRequestRoots ──
-
-JsonValue SerializeInputRequestRoots(const InputRequestRoots&) {
-    return SerializeListRootsRequestParams(ListRootsRequestParams{});
-}
-
-InputRequestRoots DeserializeInputRequestRoots(const JsonValue&) {
-    return InputRequestRoots{};
 }
 
 // ── InputRequests ──
 
 JsonValue SerializeInputRequests(const InputRequests& v) {
     JsonValue obj(JsonValue::object_tag);
-    if (v.confirm) obj["confirm"] = SerializeInputRequestElicit(*v.confirm);
-    if (v.elicit) obj["elicit"] = SerializeInputRequestElicit(*v.elicit);
-    if (v.sampling) obj["sampling"] = SerializeInputRequestSampling(*v.sampling);
-    if (v.roots) obj["roots"] = SerializeInputRequestRoots(*v.roots);
+    for (const auto& [key, request] : v) obj[key] = SerializeInputRequest(request);
     return obj;
 }
 
 InputRequests DeserializeInputRequests(const JsonValue& j) {
+    if (!j.IsObject()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "DeserializeInputRequests: inputRequests must be an object");
+    }
     InputRequests v;
-    auto* confirm = j.Find("confirm");
-    if (confirm) v.confirm = DeserializeInputRequestElicit(*confirm);
-    auto* elicit = j.Find("elicit");
-    if (elicit) v.elicit = DeserializeInputRequestElicit(*elicit);
-    auto* sampling = j.Find("sampling");
-    if (sampling) v.sampling = DeserializeInputRequestSampling(*sampling);
-    auto* roots = j.Find("roots");
-    if (roots) v.roots = DeserializeInputRequestRoots(*roots);
+    for (const auto& [key, request] : j.GetObject())
+        v[key] = DeserializeInputRequest(request);
     return v;
 }
 
@@ -470,18 +461,6 @@ JsonValue SerializeCreateMessageResult(const CreateMessageResult& v) {
     return obj;
 }
 
-CreateMessageResult DeserializeCreateMessageResult(const JsonValue& j) {
-    CreateMessageResult v;
-    v.role = j[detail::kRole].GetString();
-    v.content = DeserializeContentVariant(j[detail::kContent]);
-    v.model = j["model"].GetString();
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
-    detail::DeserializeOptional(j, detail::kStopReason, v.stop_reason);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    return v;
-}
-
 // ── ListRootsResult ──
 
 JsonValue SerializeListRootsResult(const ListRootsResult& v) {
@@ -494,20 +473,6 @@ JsonValue SerializeListRootsResult(const ListRootsResult& v) {
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
-}
-
-ListRootsResult DeserializeListRootsResult(const JsonValue& j) {
-    ListRootsResult v;
-    auto* roots = j.Find(detail::kRoots);
-    if (roots && roots->IsArray()) {
-        std::vector<Root> vec;
-        for (const auto& rv : roots->GetArray()) vec.push_back(DeserializeRoot(rv));
-        v.roots = std::move(vec);
-    }
-    auto* rt = j.Find(detail::kResultType);
-    if (rt) v.result_type = DeserializeResultType(*rt);
-    detail::DeserializeOptional(j, detail::kMeta, v.meta);
-    return v;
 }
 
 } // namespace mcp

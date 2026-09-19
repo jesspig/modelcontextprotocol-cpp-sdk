@@ -11,6 +11,7 @@
 #include <mcp/JsonValue.hpp>
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -215,25 +216,12 @@ struct CreateMessageRequestParams {
 
 struct ListRootsRequestParams {};
 
-struct InputRequestElicit {
-    std::string message;
-    std::optional<JsonValue> requested_schema = std::nullopt;
+struct InputRequest {
+    std::string method;
+    JsonValue params;
 };
 
-struct InputRequestSampling {
-    CreateMessageRequestParams params;
-};
-
-struct InputRequestRoots {
-    ListRootsRequestParams params;
-};
-
-struct InputRequests {
-    std::optional<InputRequestElicit> confirm;
-    std::optional<InputRequestElicit> elicit;
-    std::optional<InputRequestSampling> sampling;
-    std::optional<InputRequestRoots> roots;
-};
+using InputRequests = std::map<std::string, InputRequest, std::less<>>;
 
 struct InputRequiredResult {
     InputRequests input_requests;
@@ -357,7 +345,9 @@ struct ElicitResultTyped {
     bool is_accepted() const { return action == "accept"; }
 };
 
-JsonValue MakeInputRequestForElicitation(const ElicitRequestParams& params);
+InputRequest MakeInputRequestForElicitation(const ElicitRequestParams& params);
+InputRequest MakeInputRequestForSampling(const CreateMessageRequestParams& params);
+InputRequest MakeInputRequestForRoots(const ListRootsRequestParams& params);
 JsonValue MakeInputResponseFromElicitResult(const ElicitResult& result);
 bool IsInputRequiredResult(const JsonValue& j);
 std::optional<InputRequests> ExtractInputRequests(const JsonValue& result);
@@ -383,6 +373,9 @@ struct Root {
 struct ListRootsResult : Result {
     std::vector<Root> roots;
 };
+
+JsonValue MakeInputResponseFromCreateMessageResult(const CreateMessageResult& result);
+JsonValue MakeInputResponseFromListRootsResult(const ListRootsResult& result);
 
 // ====================================================================
 // RequestOptions / CacheableRequestOptions
@@ -524,12 +517,10 @@ JsonValue SerializeResourceRequestParams(const ResourceRequestParams& v);
 ResourceRequestParams DeserializeResourceRequestParams(const JsonValue& j);
 JsonValue SerializeCallToolRequestParams(const CallToolRequestParams& v);
 CallToolRequestParams DeserializeCallToolRequestParams(const JsonValue& j);
-JsonValue SerializeGetPromptRequestParams(const GetPromptRequestParams& v);
 GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j);
 JsonValue SerializeCompleteRequestParams(const CompleteRequestParams& v);
 CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j);
 JsonValue SerializeDiscoverRequestParams(const DiscoverRequestParams& v);
-DiscoverRequestParams DeserializeDiscoverRequestParams(const JsonValue& j);
 JsonValue SerializeInitializeRequestParams(const InitializeRequestParams& v);
 InitializeRequestParams DeserializeInitializeRequestParams(const JsonValue& j);
 
@@ -561,12 +552,8 @@ InitializeResult DeserializeInitializeResult(const JsonValue& j);
 JsonValue SerializeDiscoverResult(const DiscoverResult& v);
 DiscoverResult DeserializeDiscoverResult(const JsonValue& j);
 
-JsonValue SerializeInputRequestElicit(const InputRequestElicit& v);
-InputRequestElicit DeserializeInputRequestElicit(const JsonValue& j);
-JsonValue SerializeInputRequestSampling(const InputRequestSampling& v);
-InputRequestSampling DeserializeInputRequestSampling(const JsonValue& j);
-JsonValue SerializeInputRequestRoots(const InputRequestRoots& v);
-InputRequestRoots DeserializeInputRequestRoots(const JsonValue& j);
+JsonValue SerializeInputRequest(const InputRequest& v);
+InputRequest DeserializeInputRequest(const JsonValue& j);
 JsonValue SerializeInputRequests(const InputRequests& v);
 InputRequests DeserializeInputRequests(const JsonValue& j);
 JsonValue SerializeInputRequiredResult(const InputRequiredResult& v);
@@ -574,8 +561,6 @@ InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j);
 
 JsonValue SerializeProgressNotificationParams(const ProgressNotificationParams& v);
 ProgressNotificationParams DeserializeProgressNotificationParams(const JsonValue& j);
-JsonValue SerializeCancelledNotificationParams(const CancelledNotificationParams& v);
-CancelledNotificationParams DeserializeCancelledNotificationParams(const JsonValue& j);
 JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotificationParams& v);
 LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(const JsonValue& j);
 
@@ -589,14 +574,11 @@ SamplingMessage DeserializeSamplingMessage(const JsonValue& j);
 JsonValue SerializeCreateMessageRequestParams(const CreateMessageRequestParams& v);
 CreateMessageRequestParams DeserializeCreateMessageRequestParams(const JsonValue& j);
 JsonValue SerializeCreateMessageResult(const CreateMessageResult& v);
-CreateMessageResult DeserializeCreateMessageResult(const JsonValue& j);
 
 JsonValue SerializeRoot(const Root& v);
-Root DeserializeRoot(const JsonValue& j);
 JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams& v);
 ListRootsRequestParams DeserializeListRootsRequestParams(const JsonValue& j);
 JsonValue SerializeListRootsResult(const ListRootsResult& v);
-ListRootsResult DeserializeListRootsResult(const JsonValue& j);
 
 JsonValue SerializeSetLevelRequestParams(const SetLevelRequestParams& v);
 SetLevelRequestParams DeserializeSetLevelRequestParams(const JsonValue& j);
@@ -612,16 +594,5 @@ UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j);
 JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v);
 CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j);
 JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v);
-
-JsonValue SerializeRequestOptions(const RequestOptions& v);
-RequestOptions DeserializeRequestOptions(const JsonValue& j);
-JsonValue SerializeCacheableRequestOptions(const CacheableRequestOptions& v);
-CacheableRequestOptions DeserializeCacheableRequestOptions(const JsonValue& j);
-JsonValue SerializeToolOptions(const ToolOptions& v);
-ToolOptions DeserializeToolOptions(const JsonValue& j);
-JsonValue SerializeResourceOptions(const ResourceOptions& v);
-ResourceOptions DeserializeResourceOptions(const JsonValue& j);
-JsonValue SerializePromptOptions(const PromptOptions& v);
-PromptOptions DeserializePromptOptions(const JsonValue& j);
 
 } // namespace mcp

@@ -3,7 +3,6 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
-#include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 
 #include <queue>
