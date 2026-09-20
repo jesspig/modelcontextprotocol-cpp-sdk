@@ -7,12 +7,12 @@ add_executable(mcp-core-tests
     LogTests.cpp)
 
 target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-test-main)
-target_include_directories(mcp-core-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-core-tests)
 
 add_executable(mcp-wire-codec-tests
     WireCodecTests.cpp
-    SessionHandlerTests.cpp)
+    SessionHandlerTests.cpp
+    SpanHookTests.cpp)
 target_link_libraries(mcp-wire-codec-tests PRIVATE mcp-protocol mcp-test-main)
 mcp_discover_tests(mcp-wire-codec-tests)
 
@@ -26,7 +26,6 @@ mcp_discover_tests(mcp-client-tests)
 
 add_executable(mcp-oauth-tests OAuthTests.cpp)
 target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http mcp-test-main)
-target_include_directories(mcp-oauth-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-oauth-tests)
 
 add_executable(mcp-transport-tests TransportTests.cpp MessageChannelTests.cpp)
@@ -37,12 +36,10 @@ add_executable(mcp-net-tests
     NetStackTests.cpp
     WebSocketClientTests.cpp)
 target_link_libraries(mcp-net-tests PRIVATE mcp-transport mcp-test-main)
-target_include_directories(mcp-net-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-net-tests)
 
 add_executable(mcp-http-tests HttpServerTests.cpp)
 target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol mcp-test-main)
-target_include_directories(mcp-http-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-http-tests)
 
 add_executable(mcp-message-filter-tests MessageFilterTests.cpp)
@@ -63,9 +60,12 @@ mcp_discover_tests(mcp-event-store-tests)
 
 add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp SessionStoreTests.cpp)
 target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http mcp-test-main)
-target_include_directories(mcp-streamable-http-tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 mcp_discover_tests(mcp-streamable-http-tests)
 
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
 target_link_libraries(mcp-websocket-tests PRIVATE mcp-transport mcp-test-main)
 mcp_discover_tests(mcp-websocket-tests)
+
+add_executable(mcp-uri-template-tests UriTemplateTests.cpp)
+target_link_libraries(mcp-uri-template-tests PRIVATE mcp-core mcp-test-main)
+mcp_discover_tests(mcp-uri-template-tests)

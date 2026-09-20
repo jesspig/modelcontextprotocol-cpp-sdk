@@ -8,6 +8,7 @@
 
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpVersion.hpp>
+#include <mcp/detail/McpParamAnnotations.hpp>
 
 #include <atomic>
 #include <functional>
@@ -29,6 +30,11 @@ struct AuthResult {
     bool ok{false};
     std::vector<std::string> scopes;
 };
+
+// ── SEP-2243 x-mcp-header annotation ──
+// Path of an annotated property inside tools/call arguments plus the name
+// suffix used to build the Mcp-Param-{name} request header.
+using McpParamAnnotationInfo = detail::McpParamAnnotation;
 
 // ── Options for StreamableHttpServerTransport ──
 struct StreamableHttpServerOptions {
@@ -75,6 +81,14 @@ struct StreamableHttpServerOptions {
         bool serve_metadata_endpoint{true};
     };
     std::optional<BearerAuthConfig> bearer_auth;
+
+    // Resolves the x-mcp-header annotations of the tool targeted by a
+    // tools/call request so Mcp-Param-* request headers can be validated
+    // against the message body (SEP-2243). Leaving this unset disables
+    // per-parameter header validation.
+    std::function<std::vector<McpParamAnnotationInfo>(const std::string& method,
+                                                      const std::string& name)>
+        resolve_param_annotations;
 };
 
 // ── StreamableHttpServerTransport ──
@@ -117,6 +131,15 @@ private:
 
     // Session adoption via external SessionStore (stateful mode only);
     // returns false when the response has been filled with a 404
+    // Validate MCP headers match body
+    bool ValidateMcpHeaders(const HttpRequest& req, const JsonRpcRequest& request,
+                            std::string& error_out);
+
+    // SEP-2243: validate Mcp-Param-* request headers against tools/call
+    // arguments. Returns true when validation passes or is not applicable.
+    bool ValidateParamHeaders(const HttpRequest& req, const JsonRpcRequest& request,
+                              std::string& error_out);
+
     bool EnsureSession(const HttpRequest& req, HttpResponse& resp);
     std::string ActiveSessionId() const;
     void AdoptSession(const std::string& session_id);

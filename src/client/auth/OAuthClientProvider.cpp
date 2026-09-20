@@ -5,6 +5,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/detail/Base64Url.hpp>
 #include <mcp/detail/sha256.hpp>
 
 #include <transport/detail/net/HttpClient.hpp>
@@ -20,7 +21,6 @@
 #include <algorithm>
 #include <optional>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -136,6 +136,13 @@ void VerifyResourceMatch(const std::string& requested_url,
         "OAuth resource_metadata resource does not match the request URL");
 }
 
+// CIMD: a client_id that is itself a URL points at a client metadata
+// document hosted by the client.
+bool IsClientIdMetadataDocumentUrl(std::string_view client_id) {
+    auto scheme_end = client_id.find("://");
+    return scheme_end != std::string_view::npos && scheme_end > 0;
+}
+
 } // anonymous namespace
 
 // ====================================================================
@@ -144,23 +151,7 @@ void VerifyResourceMatch(const std::string& requested_url,
 namespace pkce {
 
 std::string Base64UrlEncode(std::string_view input) {
-    static const char* b64_chars =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    std::string result;
-    result.reserve(((input.size() + 2) / 3) * 4);
-
-    for (size_t i = 0; i < input.size(); i += 3) {
-        size_t remaining = input.size() - i;
-        uint32_t octet_a = (unsigned char)input[i];
-        uint32_t octet_b = remaining > 1 ? (unsigned char)input[i + 1] : 0;
-        uint32_t octet_c = remaining > 2 ? (unsigned char)input[i + 2] : 0;
-        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-        result.push_back(b64_chars[(triple >> 18) & 0x3F]);
-        result.push_back(b64_chars[(triple >> 12) & 0x3F]);
-        if (remaining > 1) result.push_back(b64_chars[(triple >> 6) & 0x3F]);
-        if (remaining > 2) result.push_back(b64_chars[triple & 0x3F]);
-    }
-    return result;
+    return detail::Base64UrlEncode(input);
 }
 
 std::string GenerateCodeVerifier() {
@@ -262,7 +253,11 @@ OAuthClientProvider::~OAuthClientProvider() = default;
 bool OAuthClientProvider::Authenticate() {
     if (!DiscoverMetadata()) return false;
 
-    if (!options_.client_id && metadata_->registration_endpoint) {
+    if (options_.client_id && IsClientIdMetadataDocumentUrl(*options_.client_id)) {
+        // CIMD: the authorization server fetches the document itself; the
+        // local fetch is best-effort and must not block authentication.
+        FetchClientMetadataDocument();
+    } else if (!options_.client_id && metadata_->registration_endpoint) {
         if (!RegisterClient()) return false;
     }
 
@@ -290,6 +285,8 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
         if (!form["scope"].empty()) form["scope"] += " ";
         form["scope"] += s;
     }
+    if (auto resource = ResolveResourceIndicator(); !resource.empty())
+        form[detail::kResource] = std::move(resource);
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;
@@ -332,6 +329,49 @@ bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     return true;
 }
 
+std::string OAuthClientProvider::ResolveResourceIndicator() const {
+    if (options_.resource && !options_.resource->empty()) return *options_.resource;
+    if (metadata_ && metadata_->resource && !metadata_->resource->empty())
+        return *metadata_->resource;
+    return options_.server_url;
+}
+
+bool OAuthClientProvider::FetchClientMetadataDocument() {
+    if (!options_.client_id) return false;
+
+    auto resp = HttpGetUrl(*options_.client_id);
+    if (!resp || resp->status_code < 200 || resp->status_code >= 300) {
+        MCP_LOG(Warning, "CIMD: client metadata document unavailable; using configured client_id");
+        return false;
+    }
+    auto json = JsonValue::Parse(resp->body);
+    if (!json.IsObject()) return false;
+
+    if (auto* v = json.Find("client_id")) {
+        if (v->IsString() && v->GetString() != *options_.client_id) {
+            MCP_LOG(Error, "CIMD: document client_id does not match the requested URL");
+            return false;
+        }
+    }
+
+    ClientRegistrationInfo info;
+    info.client_id = *options_.client_id;
+    if (auto* v = json.Find("grant_types")) {
+        if (v->IsArray()) {
+            for (const auto& item : v->GetArray())
+                if (item.IsString()) info.grant_types.push_back(item.GetString());
+        }
+    }
+    if (auto* v = json.Find("redirect_uris")) {
+        if (v->IsArray()) {
+            for (const auto& item : v->GetArray())
+                if (item.IsString()) info.redirect_uris.push_back(item.GetString());
+        }
+    }
+    registration_ = std::move(info);
+    return true;
+}
+
 bool OAuthClientProvider::RegisterClient() {
     if (!metadata_->registration_endpoint) return false;
     auto info = ClientRegistrationInfo::Register(
@@ -363,6 +403,8 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
         }
         auth_url += "&scope=" + UrlEncode(scope_str);
     }
+    if (auto resource = ResolveResourceIndicator(); !resource.empty())
+        auth_url += "&resource=" + UrlEncode(resource);
 
     if (options_.authorization_redirect_handler)
         options_.authorization_redirect_handler(auth_url);
@@ -371,6 +413,12 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
     if (!callback_result) return false;
     // CSRF check: the state echoed back must match what we sent (RFC 6749 §10.12)
     if (callback_result->state != state_) return false;
+    // RFC 9207: when the authorization response carries `iss`, it must name
+    // the authorization server this client discovered.
+    if (callback_result->iss && *callback_result->iss != metadata_->issuer) {
+        MCP_LOG(Error, "OAuth authorization response issuer mismatch");
+        return false;
+    }
 
     return ExchangeCodeForToken(callback_result->code, code_verifier_);
 }
@@ -385,6 +433,8 @@ bool OAuthClientProvider::ExchangeCodeForToken(
     form["client_id"] = options_.client_id.value_or(
         registration_ ? registration_->client_id : "");
     form["code_verifier"] = std::string(code_verifier);
+    if (auto resource = ResolveResourceIndicator(); !resource.empty())
+        form[detail::kResource] = std::move(resource);
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;
@@ -417,6 +467,8 @@ bool OAuthClientProvider::RefreshTokens() {
     form["refresh_token"] = cached->refresh_token;
     form["client_id"] = options_.client_id.value_or(
         registration_ ? registration_->client_id : "");
+    if (auto resource = ResolveResourceIndicator(); !resource.empty())
+        form[detail::kResource] = std::move(resource);
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;

@@ -82,6 +82,15 @@ auto codec = MakeWireCodec("2026-07-28");
 
 出站请求的 `_meta` 由 `McpSessionHandler::SendRequest` 通过 `SerializeRequestMeta` 写入，序列化 `protocolVersion`、`clientInfo` 和 `clientCapabilities`（`WireCodec::StampOutgoingRequest` 同样只 stamp 这三个字段，且无调用点）。追踪字段（`traceparent`、`tracestate`、`baggage`）仅在请求元数据中显式设置时才会被序列化。
 
+### 每请求 `_meta` 的服务端校验
+
+服务端在派发前对入站 `_meta` 信封做两级校验：
+
+1. **字段类型**：`protocolVersion` 须为字符串；`progressToken` 须为字符串或整数；`clientInfo`、`clientCapabilities` 须为对象；`logLevel`、`traceparent`、`tracestate`、`baggage` 须为字符串。任一不符即拒绝，错误为 `InvalidParams`（`-32602`），消息为 `invalid _meta field: <键名>`。未识别的键不做校验，原样放行。
+2. **版本受支持性**：除 `initialize` 外的请求若 `_meta.protocolVersion` 不在支持表（`IsSupportedProtocolVersion`）内，返回 `UnsupportedProtocolVersion`（`-32022`），`data` 携带客户端请求的版本与服务端支持列表。
+
+`initialize` 不参与上述 `_meta` 版本校验——它的版本声明位于 `params.protocolVersion`。
+
 ### 按时代划分的方法
 
 编解码器定义了每个时代的方法集合：
@@ -121,7 +130,7 @@ struct SubscriptionFilter {
 
 ### 语义辅助函数
 
-`McpSession` 和 `McpSessionHandler` 都提供：
+`McpSessionHandler` 提供：
 
 ```cpp
 bool IsJuly2026OrLater() const;

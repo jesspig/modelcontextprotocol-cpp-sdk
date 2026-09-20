@@ -10,6 +10,12 @@
 #include <variant>
 #include <vector>
 
+#ifdef GetObject
+#pragma push_macro("GetObject")
+#undef GetObject
+#define MCP_POP_GETOBJECT_MACRO 1
+#endif
+
 namespace mcp {
 
 class JsonValue {
@@ -42,8 +48,6 @@ public:
 
     // Static factories
     static JsonValue Parse(std::string_view json);
-    static JsonValue FromObject(Object v) { return JsonValue(std::move(v)); }
-    static JsonValue FromArray(Array v)   { return JsonValue(std::move(v)); }
 
     // Serialize to JSON string
     std::string Dump(int indent = -1) const;
@@ -104,3 +108,8 @@ public:
 };
 
 } // namespace mcp
+
+#ifdef MCP_POP_GETOBJECT_MACRO
+#pragma pop_macro("GetObject")
+#undef MCP_POP_GETOBJECT_MACRO
+#endif

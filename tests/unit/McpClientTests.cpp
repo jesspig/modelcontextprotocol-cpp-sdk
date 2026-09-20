@@ -512,7 +512,7 @@ TEST(McpClientTest, MrtrFulfillsSamplingEmbeddedRequest) {
                 params.messages.push_back(std::move(msg));
                 params.max_tokens = 64;
                 InputRequiredResult ir;
-                ir.input_requests.sampling = InputRequestSampling{std::move(params)};
+                ir.input_requests["message"] = MakeInputRequestForSampling(params);
                 ir.request_state = "st-1";
                 p.set_value(SerializeInputRequiredResult(ir));
                 return;
@@ -520,7 +520,7 @@ TEST(McpClientTest, MrtrFulfillsSamplingEmbeddedRequest) {
             round.store(2);
             auto* ir_resp = req.params ? req.params->Find("inputResponses") : nullptr;
             ASSERT_NE(ir_resp, nullptr);
-            auto* sampling = ir_resp->Find("sampling");
+            auto* sampling = ir_resp->Find("message");
             ASSERT_NE(sampling, nullptr);
             EXPECT_EQ((*sampling)["role"].GetString(), "assistant");
             JsonValue result(JsonValue::object_tag);
@@ -581,7 +581,7 @@ TEST(McpClientTest, MrtrFulfillsRootsEmbeddedRequest) {
             if (round.load() == 0) {
                 round.store(1);
                 InputRequiredResult ir;
-                ir.input_requests.roots = InputRequestRoots{};
+                ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
                 ir.request_state = "st-roots";
                 p.set_value(SerializeInputRequiredResult(ir));
                 return;
@@ -589,7 +589,7 @@ TEST(McpClientTest, MrtrFulfillsRootsEmbeddedRequest) {
             round.store(2);
             auto* ir_resp = req.params ? req.params->Find("inputResponses") : nullptr;
             ASSERT_NE(ir_resp, nullptr);
-            auto* roots = ir_resp->Find("roots");
+            auto* roots = ir_resp->Find("paths");
             ASSERT_NE(roots, nullptr);
             auto* list = roots->Find("roots");
             ASSERT_NE(list, nullptr);
@@ -634,6 +634,123 @@ TEST(McpClientTest, MrtrFulfillsRootsEmbeddedRequest) {
     client->CallTool("echo", JsonValue(JsonValue::object_tag));
     EXPECT_TRUE(listed);
     EXPECT_EQ(round.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── MRTR: inputRequests 按 method 分派，inputResponses 键回显服务端原键 ──
+TEST(McpClientTest, MrtrEchoesServerAssignedInputRequestKeys) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> round{0};
+    std::atomic<bool> keys_match{false};
+    std::atomic<bool> elicitation_named{false};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&round, &keys_match](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (round.load() == 0) {
+                round.store(1);
+                InputRequiredResult ir;
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "What is your name?";
+                ir.input_requests["name"] = MakeInputRequestForElicitation(elicit_params);
+                ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
+                p.set_value(SerializeInputRequiredResult(ir));
+                return;
+            }
+            round.store(2);
+            auto* responses = req.params ? req.params->Find("inputResponses") : nullptr;
+            keys_match.store(responses != nullptr && responses->IsObject()
+                && responses->GetObject().size() == 2u
+                && responses->Contains("name") && responses->Contains("paths")
+                && !responses->Contains("elicit") && !responses->Contains("roots"));
+            JsonValue result(JsonValue::object_tag);
+            result["structuredContent"] = JsonValue(JsonValue::object_tag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([&elicitation_named](const ElicitRequestParams& params) {
+        elicitation_named.store(params.message == "What is your name?");
+        ElicitResult r;
+        r.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["user_name"] = JsonValue("Alice");
+        r.content = std::move(content);
+        return r;
+    });
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    client->SetRootsHandler([](const ListRootsRequestParams&) {
+        ListRootsResult r;
+        Root root;
+        root.uri = "file:///tmp";
+        r.roots.push_back(std::move(root));
+        return r;
+    });
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#else
+#pragma GCC diagnostic pop
+#endif
+
+    client->CallTool("echo", JsonValue(JsonValue::object_tag));
+    EXPECT_TRUE(keys_match.load());
+    EXPECT_TRUE(elicitation_named.load());
+    EXPECT_EQ(round.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
+
+// ── MRTR: 未知 input request method 抛类型化错误（不静默忽略）──
+TEST(McpClientTest, MrtrUnknownInputRequestMethodThrows) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            JsonValue request(JsonValue::object_tag);
+            request["method"] = JsonValue("tools/call");
+            request["params"] = JsonValue(JsonValue::object_tag);
+            JsonValue ir(JsonValue::object_tag);
+            ir["resultType"] = JsonValue("input_required");
+            ir["inputRequests"] = JsonValue(JsonValue::object_tag);
+            ir["inputRequests"]["nested"] = std::move(request);
+            p.set_value(std::move(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    try {
+        client->CallTool("echo", JsonValue(JsonValue::object_tag));
+        FAIL();
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::MethodNotFound);
+        EXPECT_NE(std::string(e.what()).find("unsupported input request method"),
+            std::string::npos);
+    }
+    EXPECT_EQ(calls.load(), 1);
 
     client->Close();
     server_handler->Close();
@@ -717,7 +834,9 @@ TEST(McpClientTest, MrtrBackoffGrowsAndResetsAfterFulfilledRound) {
             case 2:
                 {
                     InputRequiredResult ir;
-                    ir.input_requests.elicit = InputRequestElicit{"more"};
+                    ElicitRequestParams params;
+                    params.message = "more";
+                    ir.input_requests["more"] = MakeInputRequestForElicitation(params);
                     p.set_value(SerializeInputRequiredResult(ir));
                 }
                 break;
@@ -776,7 +895,9 @@ TEST(McpClientTest, MrtrMaxRoundsDefaultTen) {
         [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
             calls.fetch_add(1);
             InputRequiredResult ir;
-            ir.input_requests.elicit = InputRequestElicit{"more input"};
+            ElicitRequestParams params;
+            params.message = "more input";
+            ir.input_requests["more"] = MakeInputRequestForElicitation(params);
             p.set_value(SerializeInputRequiredResult(ir));
         });
     server_handler->Start();

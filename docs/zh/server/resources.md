@@ -39,3 +39,20 @@ server->RegisterResourceTemplate(
 ::: note
 `ResourceOptions` 中的字段（`description`、`title`、`mime_type`、`icons`）会传播到通过 `resources/list` 和 `resources/templates/list` 返回的协议级 `Resource` 和 `ResourceTemplate` 结构中。
 :::
+
+## 资源变更通知
+
+资源内容或资源列表发生变化时，由服务端主动通知客户端：
+
+```cpp
+// 某个资源的内容变化——只投递给订阅了该 uri 的订阅者
+server->SendResourceUpdated("file:///app/config.json");
+
+// 资源列表本身变化（新增/删除资源）
+server->SendResourceListChanged();
+```
+
+`SendResourceUpdated(uri)` 发布 `notifications/resources/updated`，`SendResourceListChanged()` 发布 `notifications/resources/list_changed`。分发方式随协商的协议时代自适应：
+
+- **2026-07-28 及以后**：订阅经 `subscriptions/listen` 携带显式过滤器，通知只投递给过滤器匹配的订阅者。
+- **2025 及更早**：`resources/subscribe` 没有过滤器可参照，通知按广播语义投递。

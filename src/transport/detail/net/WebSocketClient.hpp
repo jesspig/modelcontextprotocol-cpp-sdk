@@ -44,8 +44,6 @@ public:
     // 触发 on_close（若尚未触发）。
     void Close();
 
-    bool IsRunning() const;   // IO 线程存活且未请求关闭
-
 private:
     void IoLoop(std::string url, std::chrono::milliseconds timeout, bool verify_tls);
     bool ReadFrame(std::string& payload, int& opcode);   // 读一帧（阻塞），失败返回 false

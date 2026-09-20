@@ -73,7 +73,7 @@ int main() {
     for (const auto& tool : tools.tools)
         std::cout << tool.name << "\n";
 
-    JsonValue args(JsonValue::FromObject({{"text", "Hello, MCP!"}}));
+    JsonValue args(JsonValue::Object{{"text", "Hello, MCP!"}});
     auto result = client->CallTool("echo", args);
     return 0;
 }

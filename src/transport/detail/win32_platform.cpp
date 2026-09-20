@@ -141,7 +141,6 @@ public:
     size_t Write(const char* data, size_t size) override;
     void Close() override;
     bool IsEof() const override { return closed_.load() || eof_; }
-    uintptr_t native_handle() const override { return (uintptr_t)handle_; }
 };
 
 class Win32Process : public ProcessHandle {
@@ -151,8 +150,6 @@ public:
     ~Win32Process() override;
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
-    int WaitForExit(int timeout_ms) override;
-    uintptr_t native_handle() const override { return (uintptr_t)pi_.hProcess; }
 };
 } // anonymous namespace
 
@@ -379,16 +376,6 @@ bool Win32Process::Terminate(int timeout_ms) {
     return WaitForSingleObject(pi_.hProcess, timeout_ms) == WAIT_OBJECT_0;
 }
 
-int Win32Process::WaitForExit(int timeout_ms) {
-    DWORD result = WaitForSingleObject(pi_.hProcess, timeout_ms);
-    if (result == WAIT_OBJECT_0) {
-        DWORD exit_code = 0;
-        GetExitCodeProcess(pi_.hProcess, &exit_code);
-        return exit_code;
-    }
-    return -1;
-}
-
 // Factory implementation
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     std::string cmd_line = ArgvToCommandLine(info.command, info.arguments);
@@ -506,11 +493,6 @@ std::unique_ptr<PipeHandle> OpenStandardOutput() {
             return std::make_unique<Win32Pipe>(dup, false);
     }
     return std::make_unique<Win32Pipe>(INVALID_HANDLE_VALUE, false);
-}
-
-std::unique_ptr<PipeHandle> OpenStandardError() {
-    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
-    return std::make_unique<Win32Pipe>(h, false);
 }
 
 void SetThreadName(const char* name) {

@@ -8,30 +8,6 @@
 #include <stdexcept>
 #include <thread>
 
-namespace {
-
-// Strip an optional ":port" suffix and validate a localhost host literal.
-bool IsLocalhostHost(const std::string& host_with_port) {
-    std::string h = host_with_port;
-    auto colon = h.rfind(':');
-    if (colon != std::string::npos) {
-        if (h.front() == '[' && h.back() == ']') {
-            // bare IPv6 literal
-            h = h.substr(1, h.size() - 2);
-        } else if (h.front() == '[') {
-            // [::1]:port
-            auto close = h.find(']');
-            if (close != std::string::npos) h = h.substr(1, close - 1);
-        } else {
-            // host:port
-            h = h.substr(0, colon);
-        }
-    }
-    return h == "localhost" || h == "127.0.0.1" || h == "::1";
-}
-
-} // namespace
-
 namespace mcp {
 
 // HttpServer.hpp 前向声明的 PIMPL：即自研实现（公共 API 零改动）
@@ -77,28 +53,6 @@ void HttpServer::Stop() {
     std::atomic_store(&impl_, std::shared_ptr<HttpServerImpl>());
 }
 
-bool HttpServer::IsRequestAllowed(const HttpRequest& req) const {
-    auto host_it = req.headers.find("host");
-    if (host_it == req.headers.end()) return false;
-    bool host_ok = false;
-    if (!options_.allowed_hosts.empty()) {
-        for (const auto& allowed : options_.allowed_hosts) {
-            if (host_it->second == allowed) { host_ok = true; break; }
-        }
-    } else {
-        host_ok = IsLocalhostHost(host_it->second);
-    }
-    if (!host_ok) return false;
-
-    auto origin_it = req.headers.find("origin");
-    if (origin_it == req.headers.end() || options_.allowed_origins.empty())
-        return true;
-    for (const auto& allowed : options_.allowed_origins) {
-        if (origin_it->second == allowed) return true;
-    }
-    return false;
-}
-
 void HttpServer::SetHandler(std::string_view method, std::string_view path,
                             HttpHandler handler)
 {
@@ -118,12 +72,17 @@ HttpServer::SseClientId HttpServer::AddSseClient(
 
 void HttpServer::RemoveSseClient(SseClientId id) {
     auto impl = std::atomic_load(&impl_);
-    if (impl) impl->RemoveSseClient(id, true);
+    if (impl) impl->RemoveSseClient(id);
 }
 
 void HttpServer::BroadcastSse(std::string_view event) {
     auto impl = std::atomic_load(&impl_);
     if (impl) impl->BroadcastSse(event);
+}
+
+std::size_t HttpServer::SseClientCount() const {
+    auto impl = std::atomic_load(&impl_);
+    return impl ? impl->SseClientCount() : 0;
 }
 
 } // namespace mcp

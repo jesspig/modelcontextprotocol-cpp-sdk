@@ -121,7 +121,6 @@ target_sources(mcp-core PRIVATE
     src/core/McpTypesTools.cpp
     src/core/McpTypesResults.cpp
     src/core/McpTypesNotifications.cpp
-    src/core/McpTypesOptions.cpp
     src/core/McpTypesTasks.cpp
     src/core/McpTypesParams.cpp
     src/core/Content.cpp
@@ -162,6 +161,7 @@ if(WIN32)
     target_link_libraries(mcp-transport PUBLIC ws2_32)
 endif()
 target_include_directories(mcp-transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# transport 各 .cpp 存在匿名 namespace 与同名静态符号，unity 合并后重复定义
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 # ====================================================================
@@ -210,6 +210,7 @@ if(OpenSSL_FOUND)
 endif()
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
+# 仅 client 需要：unity 开启且 TU 间存在同名符号，UNIQUE_ID 防合并后冲突
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
 
 # ====================================================================
@@ -255,8 +256,8 @@ if(MCP_BUILD_TESTS)
         mcp-core-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
         mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
-        mcp-streamable-http-tests mcp-websocket-tests
-        mcp-integration-tests mcp-conformance-tests)
+        mcp-event-store-tests mcp-streamable-http-tests mcp-websocket-tests
+        mcp-integration-tests mcp-conformance-tests mcp-uri-template-tests)
         mcp_enable_werror(${_t})
     endforeach()
 endif()

@@ -7,6 +7,7 @@
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/McpTypes.hpp>
+#include <mcp/SpanHooks.hpp>
 
 #include <mcp/server/McpTaskStore.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
@@ -60,10 +61,6 @@ struct MCP_API ServerOptions {
     };
     std::optional<InputRequiredConfig> input_required_config;
 
-    // JSON Schema validation
-    bool validate_tool_input{false};
-    bool validate_tool_output{false};
-
     // Explicit capability declaration (merged into derived capabilities)
     bool declare_logging{false};
     bool declare_completions{false};
@@ -79,6 +76,10 @@ struct MCP_API ServerOptions {
     std::function<void(const JsonRpcResponse&)> on_response;
     std::function<void(const JsonRpcErrorResponse&)> on_error;
     std::function<void(const JsonRpcNotification&)> on_notification;
+
+    // Span observation hook: invoked on the server request boundary and on the
+    // transport send/receive boundaries. See mcp/SpanHooks.hpp.
+    SpanHandler span_handler;
 
     // Message filter pipelines for interception (auth, audit, rate-limiting, etc.)
     std::shared_ptr<FilterPipeline> incoming_filters;

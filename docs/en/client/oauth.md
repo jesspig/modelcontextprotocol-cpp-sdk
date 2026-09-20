@@ -5,9 +5,10 @@ The client supports the MCP OAuth authorization flow for servers that require au
 ## Flow
 
 1. **Authorization Code + PKCE** with S256 code challenge
-2. **Dynamic Client Registration** (DCR) for first-time clients (HTTP POST to registration endpoint)
-3. **Token refresh** via preemptive expiry check (not 401-driven)
-4. **Token revocation** via manual `Revoke()` call (best-effort call to the RFC 7009 revocation endpoint; failure does not affect local token clearing)
+2. **Client identity**: when `client_id` is a URL, the Client ID Metadata Document (CIMD) is fetched and parsed; **Dynamic Client Registration** (DCR, HTTP POST to the registration endpoint) runs only when no `client_id` is configured
+3. **Resource indicator**: the authorization request and all token requests carry a `resource` parameter per RFC 8707
+4. **Token refresh** via preemptive expiry check (not 401-driven)
+5. **Token revocation** via manual `Revoke()` call (best-effort call to the RFC 7009 revocation endpoint; failure does not affect local token clearing)
 
 ## OAuthClientOptions
 
@@ -19,8 +20,9 @@ The client supports the MCP OAuth authorization flow for servers that require au
 | `client_secret` | `optional<string>` | Client secret (optional) |
 | `scopes` | `vector<string>` | Requested OAuth scopes |
 | `token_cache` | `shared_ptr<ITokenCache>` | Token persistence (default: `InMemoryTokenCache`) |
+| `resource` | `optional<string>` | RFC 8707 resource indicator sent with the authorization request and token requests; falls back to the discovered metadata `resource`, then to `server_url`; when the resolved value is empty the parameter is omitted entirely |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | Callback to open the authorization URL |
-| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | Callback returning the authorization code plus the echoed `state` (`AuthorizationCodeResult{code, state}`), `nullopt` on failure |
+| `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | Callback returning the authorization code, the echoed `state`, and the optional `iss` (`AuthorizationCodeResult{code, state, iss}`), `nullopt` on failure |
 
 ## Setup
 
@@ -36,9 +38,10 @@ oauth_opts.authorization_redirect_handler =
     };
 oauth_opts.authorization_code_callback =
     []() -> std::optional<AuthorizationCodeResult> {
-        // Return the authorization code plus the `state` echoed back
-        // by the authorization server (CSRF protection)
-        return AuthorizationCodeResult{"auth-code", "state"};
+        // Return the authorization code, the `state` echoed back
+        // by the authorization server (CSRF protection), and the `iss`
+        // carried by the authorization response (RFC 9207; nullopt when absent)
+        return AuthorizationCodeResult{"auth-code", "state", std::nullopt};
     };
 
 auto auth = std::make_shared<OAuthClientProvider>(oauth_opts);
@@ -62,6 +65,12 @@ auto token = auth->GetAccessToken();
 | `AuthenticateClientCredentials()` | Client credentials grant (RFC 6749 §4.4) for service-to-service scenarios without user interaction |
 | `HandleAuthChallenge(www_authenticate)` | Handles a 401/403 authentication challenge header (RFC 9728); retries the original request on success |
 | `Revoke()` | Best-effort call to the RFC 7009 revocation endpoint (when `revocation_endpoint` is configured); clears local tokens regardless of outcome |
+
+## Resource Indicator and Issuer Validation
+
+- **RFC 8707 `resource`**: resolved as "explicit `options.resource` → discovered metadata `resource` → `server_url`". When the resolved value is non-empty it is injected into the authorization URL and all three token requests (`client_credentials`, authorization-code exchange, `refresh_token`).
+- **RFC 9207 `iss`**: the `iss` in token and refresh responses must be present and match the discovered metadata issuer, otherwise the response is rejected. On the authorization-response side the same comparison runs after the `state` check and before the code is exchanged: a non-empty `AuthorizationCodeResult::iss` that differs from the issuer is rejected, while an absent `iss` is not validated.
+- **CIMD (Client ID Metadata Document)**: when `client_id` is a URL, the client metadata document at that URL is fetched and parsed. Failures are best-effort (a warning is logged and the configured values are used) and do not abort the authorization flow.
 
 ## Integration with Server-Side Bearer Auth
 

@@ -89,14 +89,12 @@ public:
     SseClientId AddSseClient(std::function<void(std::string_view)> send_fn);
     void RemoveSseClient(SseClientId id);
     void BroadcastSse(std::string_view event);
+    std::size_t SseClientCount() const;
 
 private:
     uint16_t port_;
     std::atomic<bool> running_{false};
     HttpServerOptions options_;
-
-    // DNS rebinding protection: validates Host (and Origin when configured).
-    bool IsRequestAllowed(const HttpRequest& req) const;
 
     // Handlers: (method, path) → handler
     std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;

@@ -16,7 +16,10 @@ Client                    Server
   │      resultType:        │
   │        "input_required",│
   │      inputRequests: {   │
-  │        elicit: {...}    │
+  │        "name": {        │
+  │          method: ...,   │
+  │          params: {...}  │
+  │        }                │
   │      },                 │
   │      requestState: "..."│
   │    }                    │
@@ -30,14 +33,14 @@ Client                    Server
   │◄── result: {...}        │
 ```
 
-The `InputRequests` struct can contain either or both of:
+`InputRequests` maps a server-assigned key to a request object (`std::map<std::string, InputRequest, std::less<>>`). Each `InputRequest` carries a `method` and its `params`:
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `confirm` | `InputRequestElicit` | Simple yes/no confirmation |
-| `elicit` | `InputRequestElicit` | Free-form input request |
+| `method` | `std::string` | Request method: `elicitation/create`, `sampling/createMessage`, `roots/list` |
+| `params` | `JsonValue` | The params object of that method |
 
-Each `InputRequestElicit` has a `message` string and optional `requestedSchema` (JSON Schema).
+Keys are server-chosen semantic names (e.g. `"name"`, `"confirm"`, `"paths"`); the client echoes the **same keys** in `inputResponses`, each holding a bare result.
 
 ## Server Side
 
@@ -74,12 +77,17 @@ The client handles MRTR via `SetElicitationHandler`:
 client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         ElicitResult result;
+        result.action = "accept";
         JsonValue obj(JsonValue::object_tag);
         obj["confirmed"] = JsonValue(true);
         result.content = std::move(obj);
         return result;
     });
 ```
+
+The client dispatches on each input request's `method`: `elicitation/create` → `ElicitationHandler`, `sampling/createMessage` → `SamplingHandler`, `roots/list` → `RootsHandler`. An unregistered handler or an unknown method raises `McpError` (`MethodNotFound`).
+
+`inputResponses` values are **bare results** (elicitation: `{action, content}`, sampling: `{role, content, model, stopReason}`, roots: `{roots}`) with no `resultType` / `meta` envelope.
 
 ## InputRequired Result
 
@@ -88,7 +96,9 @@ The server can also return an `InputRequiredResult` directly by setting `input_r
 ```cpp
 CallToolResult result;
 InputRequiredResult ir;
-ir.input_requests.elicit = InputRequestElicit{"Provide value"};
+ElicitRequestParams params;
+params.message = "Provide value";
+ir.input_requests["name"] = MakeInputRequestForElicitation(params);
 result.input_required = std::move(ir);
 return result;
 ```
@@ -100,16 +110,18 @@ The underlying mint/verify helpers live in `include/mcp/server/RequestState.hpp`
 ## Helper Functions
 
 ```cpp
-// Build an input request payload for elicitation
-JsonValue req = MakeInputRequestForElicitation(params);
-// req == {"method": "elicitation/create", "params": {...}}
+// Build an elicitation input request (a {method, params} request object)
+InputRequest request = MakeInputRequestForElicitation(params);
+// request.method == "elicitation/create"
+// Siblings: MakeInputRequestForSampling / MakeInputRequestForRoots
 
-// Convert an elicited result to an input response
+// Convert an elicited result to a bare input response (no resultType / meta)
 JsonValue resp = MakeInputResponseFromElicitResult(result);
+// Siblings: MakeInputResponseFromCreateMessageResult / MakeInputResponseFromListRootsResult
 
 // Check if a JSON result indicates input_required
 if (IsInputRequiredResult(raw_result)) {
-    auto input_requests = ExtractInputRequests(raw_result);
+    std::optional<InputRequests> input_requests = ExtractInputRequests(raw_result);
 }
 ```
 

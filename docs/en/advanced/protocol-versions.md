@@ -80,6 +80,15 @@ The `IncomingRequestMeta` struct extracts these fields from the 2026-era `_meta`
 
 Outgoing request `_meta` is written by `McpSessionHandler::SendRequest` via `SerializeRequestMeta`, which serializes `protocolVersion`, `clientInfo`, and `clientCapabilities` (`WireCodec::StampOutgoingRequest` likewise stamps only these three fields, and has no call sites). Trace/distributed tracing fields (`traceparent`, `tracestate`, `baggage`) are serialized only when explicitly set on the request meta.
 
+### Server-Side Validation of Per-Request `_meta`
+
+Before dispatching, the server validates the inbound `_meta` envelope at two levels:
+
+1. **Field types**: `protocolVersion` must be a string; `progressToken` must be a string or an integer; `clientInfo` and `clientCapabilities` must be objects; `logLevel`, `traceparent`, `tracestate`, and `baggage` must be strings. Any mismatch is rejected with `InvalidParams` (`-32602`) and the message `invalid _meta field: <key>`. Unrecognised keys are not validated and pass through untouched.
+2. **Version support**: for any request other than `initialize`, a `_meta.protocolVersion` absent from the supported table (`IsSupportedProtocolVersion`) returns `UnsupportedProtocolVersion` (`-32022`), with `data` carrying both the requested version and the server's supported list.
+
+`initialize` is exempt from this `_meta` version check — it declares its version in `params.protocolVersion`.
+
 ### Era-Gated Methods
 
 The codec defines per-era method sets:
@@ -119,7 +128,7 @@ Clients call `subscriptions/listen` with the filter; the server tracks entries v
 
 ### Semantic Helpers
 
-Both `McpSession` and `McpSessionHandler` provide:
+`McpSessionHandler` provides:
 
 ```cpp
 bool IsJuly2026OrLater() const;

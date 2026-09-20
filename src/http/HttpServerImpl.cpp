@@ -1,4 +1,4 @@
-// HttpServerImpl.cpp — 自研 HTTP/1.1 服务器（替换 libhv）
+// HttpServerImpl.cpp — 自研 HTTP/1.1 服务器实现
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -8,8 +8,11 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 // Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
+#ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
+#define MCP_CPP_POP_GETOBJECT_HTTPSERVER 1
+#endif
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -20,8 +23,10 @@
 
 #include <http/HttpServerImpl.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/StringUtils.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/detail/Limits.hpp>
+#include <transport/detail/net/NetIoUtil.hpp>
 #include <transport/detail/net/TcpSocket.hpp>
 
 #include <algorithm>
@@ -35,7 +40,7 @@
 namespace mcp { namespace detail { namespace http_server_impl {
 
 inline constexpr std::size_t kMaxRequestLine = 8 * 1024;
-inline constexpr std::size_t kMaxHeaderBytes = 64 * 1024;
+using net::kMaxHeaderBytes;
 inline constexpr std::size_t kMaxHeaderCount = 100;
 inline constexpr std::size_t kMaxBodyBytes = mcp::detail::kMaxHttpBodyBytes;
 inline constexpr std::size_t kMaxConnections = 256;
@@ -192,8 +197,8 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
     listen_fd_ = fd;
     try {
         accept_thread_ = std::thread(
-            [this, port, handlers]() mutable {
-                AcceptLoop(port, std::move(handlers));
+            [this, handlers]() mutable {
+                AcceptLoop(std::move(handlers));
             });
         if (options_.sse_keep_alive_ms > 0) {
             keepalive_thread_ = std::thread([this] { KeepAliveLoop(); });
@@ -245,8 +250,7 @@ void Impl::Stop() {
     }
 }
 
-void Impl::AcceptLoop(uint16_t port, HandlerMap handlers) {
-    (void)port;
+void Impl::AcceptLoop(HandlerMap handlers) {
     int listen_fd = listen_fd_;
     for (;;) {
         if (!running_.load())
@@ -370,8 +374,8 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
         auto read_timeout = first_request ? kIoTimeout : kKeepAliveIdleTimeout;
         first_request = false;
 
-        std::string method, path, version;
-        auto rl = ReadRequestLine(*conn, buffer, method, path, version, read_timeout);
+        std::string method, path;
+        auto rl = ReadRequestLine(*conn, buffer, method, path, read_timeout);
         if (rl == RequestLineResult::Close)
             return;
         if (rl == RequestLineResult::BadRequest) {
@@ -497,7 +501,7 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
                     break;
                 }
             }
-            RemoveSseClient(id, true);
+            RemoveSseClient(id);
             return;
         }
 
@@ -544,9 +548,10 @@ Impl::LineResult Impl::ReadLine(net::TcpSocket& conn, std::string& buffer,
 
 Impl::RequestLineResult Impl::ReadRequestLine(
     net::TcpSocket& conn, std::string& buffer,
-    std::string& method, std::string& path, std::string& version,
+    std::string& method, std::string& path,
     std::chrono::milliseconds timeout) {
     std::string line;
+    std::string version;
     auto r = ReadLine(conn, buffer, line, timeout, kMaxRequestLine);
     if (r == LineResult::TooLong)
         return RequestLineResult::BadRequest;
@@ -595,8 +600,7 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
         if (colon == std::string::npos || colon == 0)
             return HeaderResult::BadRequest;
         std::string name(line, 0, colon);
-        for (auto& c : name)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        ToLowerInPlace(name);
         std::string value(line, colon + 1);
         auto first = value.find_first_not_of(" \t");
         auto last = value.find_last_not_of(" \t");
@@ -772,7 +776,7 @@ uint64_t Impl::AddSseClient(std::function<void(std::string_view)> send_fn) {
     return id;
 }
 
-bool Impl::RemoveSseClient(uint64_t id, bool call_on_disconnect) {
+bool Impl::RemoveSseClient(uint64_t id) {
     HttpDisconnectCallback on_disconnect;
     bool removed = false;
     {
@@ -780,7 +784,7 @@ bool Impl::RemoveSseClient(uint64_t id, bool call_on_disconnect) {
         removed = sse_clients_.erase(id) != 0;
         on_disconnect = options_.on_disconnect;
     }
-    if (removed && call_on_disconnect && on_disconnect) {
+    if (removed && on_disconnect) {
         try {
             on_disconnect();
         } catch (const std::exception& e) {
@@ -790,8 +794,7 @@ bool Impl::RemoveSseClient(uint64_t id, bool call_on_disconnect) {
     return removed;
 }
 
-void Impl::RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry,
-                                bool call_on_disconnect) {
+void Impl::RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry) {
     HttpDisconnectCallback on_disconnect;
     bool removed = false;
     {
@@ -805,7 +808,7 @@ void Impl::RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry,
         }
         on_disconnect = options_.on_disconnect;
     }
-    if (removed && call_on_disconnect && on_disconnect) {
+    if (removed && on_disconnect) {
         try {
             on_disconnect();
         } catch (const std::exception& e) {
@@ -828,9 +831,14 @@ void Impl::BroadcastSse(std::string_view event) {
             entry->send_fn(event);
         } catch (const std::exception& e) {
             MCP_LOG(Warning, std::string("SSE send failed: ") + e.what());
-            RemoveSseClientEntry(entry, true);
+            RemoveSseClientEntry(entry);
         }
     }
+}
+
+std::size_t Impl::SseClientCount() const {
+    std::lock_guard<std::mutex> lock(sse_mutex_);
+    return sse_clients_.size();
 }
 
 void Impl::KeepAliveLoop() {
@@ -855,10 +863,15 @@ void Impl::KeepAliveLoop() {
                 entry->send_fn(kSsePingFrame);
             } catch (const std::exception& e) {
                 MCP_LOG(Warning, std::string("SSE keepalive send failed: ") + e.what());
-                RemoveSseClientEntry(entry, true);
+                RemoveSseClientEntry(entry);
             }
         }
     }
 }
 
 }}} // namespace mcp::detail::http_server_impl
+
+#ifdef MCP_CPP_POP_GETOBJECT_HTTPSERVER
+#pragma pop_macro("GetObject")
+#undef MCP_CPP_POP_GETOBJECT_HTTPSERVER
+#endif

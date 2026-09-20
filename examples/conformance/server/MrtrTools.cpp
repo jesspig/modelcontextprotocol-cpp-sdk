@@ -42,9 +42,8 @@ JsonValue MakeConfirmOkSchema()
 }
 
 // TS acceptedContent equivalent for elicitation responses: returns the
-// response's content when the entry is an accepted ElicitResult. Also accepts
-// the flattened shape produced by the in-repo C++ client (content stored
-// directly under the response key).
+// response's content when the entry is an accepted ElicitResult. Entries that
+// carry the content object directly (no action field) count as accepted too.
 const JsonValue* AcceptedElicitContent(
     const std::optional<JsonValue>& responses, const char* key)
 {
@@ -89,25 +88,33 @@ const JsonValue* RootsResponseArray(const JsonValue& entry)
     return nullptr;
 }
 
-InputRequestElicit MakeNameElicitRequest()
+InputRequest MakeNameElicitRequest()
 {
-    InputRequestElicit request;
-    request.message = "What is your name?";
-    request.requested_schema = MakeFormSchema("name", "string");
-    return request;
+    ElicitRequestParams params;
+    params.message = "What is your name?";
+    params.requested_schema = MakeFormSchema("name", "string");
+    return MakeInputRequestForElicitation(params);
 }
 
-InputRequestSampling MakeGreetingSamplingRequest(const char* instruction, int64_t max_tokens)
+InputRequest MakeGreetingSamplingRequest(const char* instruction, int64_t max_tokens)
 {
     SamplingMessage message;
     message.role = "user";
     TextContent content;
     content.text = instruction;
     message.content = std::move(content);
-    InputRequestSampling sampling;
-    sampling.params.messages.push_back(std::move(message));
-    sampling.params.max_tokens = max_tokens;
-    return sampling;
+    CreateMessageRequestParams params;
+    params.messages.push_back(std::move(message));
+    params.max_tokens = max_tokens;
+    return MakeInputRequestForSampling(params);
+}
+
+InputRequest MakeConfirmRequest()
+{
+    ElicitRequestParams params;
+    params.message = "Please confirm";
+    params.requested_schema = MakeConfirmOkSchema();
+    return MakeInputRequestForElicitation(params);
 }
 
 CallToolResult MakeInputRequired(InputRequiredResult ir)
@@ -117,13 +124,11 @@ CallToolResult MakeInputRequired(InputRequiredResult ir)
     return result;
 }
 
-// Re-requests "user_name" via an in-band elicitation input request until the
-// retry carries it in inputResponses, then answers "Hello, <name>!". Reads
-// both the full ElicitResult shape ({action, content}) the TS conformance
-// client returns and the flattened content shape of the in-repo C++ client.
+// Re-requests the caller name via an in-band elicitation input request until
+// the retry carries it in inputResponses, then answers "Hello, <name>!".
 CallToolResult Elicitation(const ToolContext& ctx)
 {
-    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "elicit");
+    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "name");
     if (content) {
         auto* name = content->Find("user_name");
         if (name && name->IsString())
@@ -132,28 +137,21 @@ CallToolResult Elicitation(const ToolContext& ctx)
 
     CallToolResult result;
     InputRequiredResult ir;
-    InputRequestElicit elicit_request;
-    elicit_request.message = "What is your name?";
-    elicit_request.requested_schema = MakeFormSchema("user_name", "string");
-    ir.input_requests.elicit = std::move(elicit_request);
+    ElicitRequestParams params;
+    params.message = "What is your name?";
+    params.requested_schema = MakeFormSchema("user_name", "string");
+    ir.input_requests["name"] = MakeInputRequestForElicitation(params);
     result.input_required = std::move(ir);
     return result;
 }
 
 CallToolResult Sampling(const ToolContext& ctx)
 {
-    auto* entry = ResponseEntry(ctx.Params().input_responses, "sampling");
+    auto* entry = ResponseEntry(ctx.Params().input_responses, "message");
     if (!entry) {
-        SamplingMessage message;
-        message.role = "user";
-        TextContent content;
-        content.text = "What is the capital of France?";
-        message.content = std::move(content);
-        InputRequestSampling sampling;
-        sampling.params.messages.push_back(std::move(message));
-        sampling.params.max_tokens = 100;
         InputRequiredResult ir;
-        ir.input_requests.sampling = std::move(sampling);
+        ir.input_requests["message"] =
+            MakeGreetingSamplingRequest("What is the capital of France?", 100);
         return MakeInputRequired(std::move(ir));
     }
     std::string text;
@@ -165,7 +163,7 @@ CallToolResult Sampling(const ToolContext& ctx)
 
 CallToolResult ListRoots(const ToolContext& ctx)
 {
-    auto* entry = ResponseEntry(ctx.Params().input_responses, "roots");
+    auto* entry = ResponseEntry(ctx.Params().input_responses, "paths");
     auto* roots = entry ? RootsResponseArray(*entry) : nullptr;
     if (roots) {
         std::string uris;
@@ -181,7 +179,7 @@ CallToolResult ListRoots(const ToolContext& ctx)
             + " root(s): " + uris);
     }
     InputRequiredResult ir;
-    ir.input_requests.roots = InputRequestRoots{};
+    ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
     return MakeInputRequired(std::move(ir));
 }
 
@@ -189,13 +187,10 @@ CallToolResult RequestState(const ToolContext& ctx)
 {
     auto* confirmation = AcceptedElicitContent(ctx.Params().input_responses, "confirm");
     if (!confirmation) {
-        InputRequestElicit elicit_request;
-        elicit_request.message = "Please confirm";
-        elicit_request.requested_schema = MakeConfirmOkSchema();
         JsonValue payload(JsonValue::object_tag);
         payload["tool"] = JsonValue("request_state");
         InputRequiredResult ir;
-        ir.input_requests.confirm = std::move(elicit_request);
+        ir.input_requests["confirm"] = MakeConfirmRequest();
         ir.request_state = payload.Dump();
         return MakeInputRequired(std::move(ir));
     }
@@ -209,20 +204,20 @@ CallToolResult RequestState(const ToolContext& ctx)
 CallToolResult MultipleInputs(const ToolContext& ctx)
 {
     const auto& responses = ctx.Params().input_responses;
-    auto* name_content = AcceptedElicitContent(responses, "elicit");
+    auto* name_content = AcceptedElicitContent(responses, "name");
     auto* name = name_content ? name_content->Find("user_name") : nullptr;
     std::string greeting;
     bool has_greeting = false;
-    if (auto* entry = ResponseEntry(responses, "sampling"); entry && entry->IsObject()) {
+    if (auto* entry = ResponseEntry(responses, "message"); entry && entry->IsObject()) {
         has_greeting = TrySamplingText(*entry, greeting) != nullptr;
     }
-    auto* roots_entry = ResponseEntry(responses, "roots");
+    auto* roots_entry = ResponseEntry(responses, "paths");
     auto* roots = roots_entry ? RootsResponseArray(*roots_entry) : nullptr;
     if (!name || !name->IsString() || !has_greeting || !roots) {
         InputRequiredResult ir;
-        ir.input_requests.elicit = MakeNameElicitRequest();
-        ir.input_requests.sampling = MakeGreetingSamplingRequest("Generate a greeting", 50);
-        ir.input_requests.roots = InputRequestRoots{};
+        ir.input_requests["name"] = MakeNameElicitRequest();
+        ir.input_requests["message"] = MakeGreetingSamplingRequest("Generate a greeting", 50);
+        ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
         JsonValue payload(JsonValue::object_tag);
         payload["tool"] = JsonValue("multiple_inputs");
         ir.request_state = payload.Dump();
@@ -256,39 +251,39 @@ CallToolResult MultiRound(const ToolContext& ctx)
     }
 
     if (round == 0) {
-        InputRequestElicit elicit_request;
-        elicit_request.message = "Step 1: What is your name?";
-        elicit_request.requested_schema = MakeFormSchema("name", "string");
+        ElicitRequestParams params;
+        params.message = "Step 1: What is your name?";
+        params.requested_schema = MakeFormSchema("name", "string");
         JsonValue payload(JsonValue::object_tag);
         payload["tool"] = JsonValue("multi_round");
         payload["round"] = JsonValue(static_cast<int64_t>(1));
         InputRequiredResult ir;
-        ir.input_requests.elicit = std::move(elicit_request);
+        ir.input_requests["name"] = MakeInputRequestForElicitation(params);
         ir.request_state = payload.Dump();
         return MakeInputRequired(std::move(ir));
     }
     if (round == 1) {
         std::string name = "unknown";
-        auto* content = AcceptedElicitContent(ctx.Params().input_responses, "elicit");
+        auto* content = AcceptedElicitContent(ctx.Params().input_responses, "name");
         if (content) {
             auto* value = content->Find("name");
             if (value && value->IsString()) name = value->GetString();
         }
-        InputRequestElicit elicit_request;
-        elicit_request.message = "Step 2: What is your favorite color?";
-        elicit_request.requested_schema = MakeFormSchema("color", "string");
+        ElicitRequestParams params;
+        params.message = "Step 2: What is your favorite color?";
+        params.requested_schema = MakeFormSchema("color", "string");
         JsonValue payload(JsonValue::object_tag);
         payload["tool"] = JsonValue("multi_round");
         payload["round"] = JsonValue(static_cast<int64_t>(2));
         payload["name"] = JsonValue(name);
         InputRequiredResult ir;
-        ir.input_requests.elicit = std::move(elicit_request);
+        ir.input_requests["color"] = MakeInputRequestForElicitation(params);
         ir.request_state = payload.Dump();
         return MakeInputRequired(std::move(ir));
     }
 
     std::string color = "unknown";
-    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "elicit");
+    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "color");
     if (content) {
         auto* value = content->Find("color");
         if (value && value->IsString()) color = value->GetString();
@@ -302,13 +297,10 @@ CallToolResult TamperedState(const ToolContext& ctx)
     if (ctx.Params().request_state && confirmation) {
         return MakeTextResult("integrity-ok: requestState verified");
     }
-    InputRequestElicit elicit_request;
-    elicit_request.message = "Please confirm";
-    elicit_request.requested_schema = MakeConfirmOkSchema();
+    InputRequiredResult ir;
+    ir.input_requests["confirm"] = MakeConfirmRequest();
     JsonValue payload(JsonValue::object_tag);
     payload["tool"] = JsonValue("tampered_state");
-    InputRequiredResult ir;
-    ir.input_requests.confirm = std::move(elicit_request);
     ir.request_state = payload.Dump();
     return MakeInputRequired(std::move(ir));
 }
@@ -326,15 +318,16 @@ CallToolResult Capabilities(const ToolContext& ctx)
     }
     InputRequiredResult ir;
     if (declared && declared->elicitation) {
-        ir.input_requests.elicit = MakeNameElicitRequest();
+        ir.input_requests["name"] = MakeNameElicitRequest();
     }
     if (declared && declared->sampling) {
-        ir.input_requests.sampling = MakeGreetingSamplingRequest("Generate a short greeting", 50);
+        ir.input_requests["message"] =
+            MakeGreetingSamplingRequest("Generate a short greeting", 50);
     }
     if (declared && declared->roots) {
-        ir.input_requests.roots = InputRequestRoots{};
+        ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
     }
-    if (!ir.input_requests.elicit && !ir.input_requests.sampling && !ir.input_requests.roots) {
+    if (ir.input_requests.empty()) {
         return MakeTextResult("No declared client capability supports an in-band input request");
     }
     return MakeInputRequired(std::move(ir));

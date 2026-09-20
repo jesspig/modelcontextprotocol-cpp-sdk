@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL）。
 tags: [cmake, ninja, unity, lto, conformance]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T17:13:14+08:00
 resource: CMakePresets.json
 ---
 
@@ -12,10 +12,13 @@ resource: CMakePresets.json
 ```bash
 cmake --preset debug                 # 配置（Ninja，Debug）
 cmake --build --preset debug         # 构建
+cmake --build --preset debug --target mcp-transport-bench
 ctest --preset debug --output-on-failure
 ```
 
 仅 Ninja 生成器。`cmake_minimum_required(3.28...4.2)`，C++17 强制。
+
+- 非 ctest 基准目标：`mcp-transport-bench`（[TransportBench.cpp](../tests/bench/TransportBench.cpp)），覆盖自研 HTTP 响应头解析、吞吐、并发、延迟响应和连接复用；基准不计入测试目标/用例统计
 
 ## 预设与开关
 
@@ -35,7 +38,7 @@ ctest --preset debug --output-on-failure
 - **LTO 仅 Release**：clang-cl/MSVC 走 LTCG，Clang 走 ThinLTO，GCC 走 IPO
 - **缓存**：sccache > ccache（ccache 跳过 MSVC）
 - **`-march=native` 仅本地且非 Apple**（`MCP_IS_CI` 与 `APPLE` 门控），本地构建的二进制不可跨机分发
-- MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4100 /wd4324 /wd4244 /wd4267 /EHsc` + 宏 `_CRT_SECURE_NO_WARNINGS`、`_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS`、`_WIN32_WINNT=0x0A00`、**`NOMINMAX`**（clang-cl 与 MSVC 两分支同加；配合全仓 `(std::min)`/`(std::max)` 括号防御）
+- MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4100 /wd4324 /wd4244 /wd4267 /EHsc` + 宏 `_CRT_SECURE_NO_WARNINGS`、`_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS`、`_WIN32_WINNT=0x0A00`、**`NOMINMAX` + `NOGDI`**（clang-cl 与 MSVC 两分支同加；`NOGDI` 排除 `wingdi.h` 的 GDI 定义（含与 `JsonValue::GetObject` 冲突的 `GetObject` 宏），`NOMINMAX` 排除 `min`/`max` 宏；配合全仓 `(std::min)`/`(std::max)` 括号防御纵深）
 - Clang/GCC：`-Wall -Wextra -Wpedantic -Wno-unused-parameter`
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
 - 配置期生成 `build_config.txt` 摘要

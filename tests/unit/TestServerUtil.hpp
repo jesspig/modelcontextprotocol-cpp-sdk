@@ -1,6 +1,6 @@
 #pragma once
 // TestServerUtil.hpp — shared HTTP test helpers: free-port probing and
-// readiness polling (used by HttpServerTests / OAuthTests).
+// readiness polling, shared by multiple test suites.
 
 #include <chrono>
 #include <string>

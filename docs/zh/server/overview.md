@@ -38,8 +38,6 @@ server->Run();
 | `protocol_version` | `optional<string>` | 固定到特定协议版本 |
 | `server_instructions` | `optional<string>` | 发送给客户端的指令 |
 | `initialization_timeout` | `chrono::seconds` | 握手超时时间（默认 60s） |
-| `validate_tool_input` | `bool` | 启用 JSON Schema 输入验证 |
-| `validate_tool_output` | `bool` | 启用 JSON Schema 输出验证 |
 | `declare_logging` | `bool` | 显式声明 logging 能力（合并进推导能力，默认 `false`） |
 | `declare_completions` | `bool` | 显式声明 completions 能力（默认 `false`） |
 | `task_store` | `shared_ptr<IMcpTaskStore>` | 任务持久化后端 |
@@ -77,6 +75,7 @@ server->Run();
 | `GetRequest()` | `const JsonRpcRequest&` | 原始 JSON-RPC 请求 |
 | `LogLevel()` | `optional<LoggingLevel>` | 来自 `_meta` 的每请求日志级别（2026 时代） |
 | `Log(level, data)` | `void` | 发送日志通知，受 `LogLevel()` 过滤 |
+| `IsCancellationRequested()` | `bool` | 本请求是否已收到 `notifications/cancelled`；handler 轮询该标志实现协作取消 |
 
 `Log()` 方法遵循每请求日志级别：低于请求 `LogLevel()` 的消息会被静默丢弃。
 
@@ -115,6 +114,7 @@ server->RegisterTool(tool);
 |--------|------|
 | `SendToolListChanged()` | 通知客户端工具列表已变更 |
 | `SendResourceListChanged()` | 通知客户端资源列表已变更 |
+| `SendResourceUpdated(uri)` | 通知客户端某个资源的内容已变更（只投递给订阅了该 uri 的订阅者） |
 | `SendPromptListChanged()` | 通知客户端提示列表已变更 |
 | `SendLoggingMessage(level, data)` | 发送日志消息（遵循客户端的 `logging/setLevel`） |
 | `SendLoggingMessage(level, data, min_level)` | 重载，带有显式最低级别覆盖 |

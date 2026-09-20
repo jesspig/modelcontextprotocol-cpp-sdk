@@ -3,7 +3,7 @@ type: Class
 title: McpSessionHandler
 description: JSON-RPC 引擎：消息分发、请求/响应关联、idle/总量双超时检查、取消、过滤器管线。
 tags: [protocol, jsonrpc, 超时, 并发, meta]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-09-20T03:14:18+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -19,7 +19,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 
 ## 超时机制
 
-- 默认 `kDefaultRequestTimeout = 60000ms`（[McpSession.hpp](../../include/mcp/protocol/McpSession.hpp)），`SendRequest` 可覆盖
+- 默认 `kDefaultRequestTimeout = 60000ms`（[McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp)），`SendRequest` 可覆盖
 - 超时回调 `ErrorData{RequestTimeout, "request timed out"}`，回调在锁外执行
 - `ResetTimeoutByProgressToken`：经 `progress_token_map_ → request_id` 定位 pending，仅当剩余时间 < 30s 时把 deadline 顺延 30s
 - **总量超时封顶**：`SetMaxTotalTimeout(total)`（pending 锁保护，会话运行中可调；0 = 默认禁用）——`SendRequest` 时为每请求记录**绝对截止**（`absolute_deadlines_`，仅封顶启用时有条目），`CheckTimeouts` 同步检查；progress 续命只顺延 idle deadline、**不可越过绝对截止**（来源 `ClientOptions::max_total_timeout`）
@@ -39,9 +39,17 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - `negotiated_version_` 为 `shared_ptr<const std::string>`；`NegotiatedProtocolVersion()` 读锁下仅拷贝 shared_ptr、锁外解引用；`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下写（替换 codec + 版本），消息循环运行中可调用
 - `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp:596](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
 - `SetRequestStateVerifier`（HMAC/AEAD）须在 `Start()` 前调用；校验失败回 `InvalidParams "invalid requestState"` + `data.reason="invalid_request_state"`
+- `SetSpanHandler` 必须在 `Start()` 前调用；设置后在消息循环、响应 worker 和发送路径发出成对的 server request/transport receive/transport send 事件，入站 `_meta` 的 trace context 会复制到 server request 事件；未设置时不创建事件对象（详见 [/concepts/span-hooks.md](../concepts/span-hooks.md)）
 - 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp:688](../../src/protocol/McpSessionHandler.cpp)）
 - 事件回调全部经 `InvokeSafely` 包异常（记 Error 日志）
 - 过滤器挂接：入站在消息循环分发前，出站在 `SendMessage` 中（`closed_` 时不再发送）
+
+## 取消语义
+
+- 两条取消路径共享同一组取消标志：**协议级** `notifications/cancelled`（适用于任意在途请求）与**任务级** `tasks/cancel`（任务化执行，由 McpServer 层处置）
+- `GetIncomingCancellationFlag(id)` 返回该在途请求的 `shared_ptr<std::atomic<bool>>`（未登记时 nullptr）；`EraseIncomingCancellationFlag(key)` 清理条目；标志表 `incoming_cancel_flags_`（`incoming_cancel_mutex_` 保护）按 JSON-RPC id 键控
+- `HandleCancelled`（[McpSessionHandler.cpp:801](../../src/protocol/McpSessionHandler.cpp)）：从 `params.requestId`（整数或字符串）定位标志并 `store(true)`，同时清掉同 id 的 pending 请求（以 `RequestCancelled` 结算，带 `reason`）与 progressToken 映射；`reason` 非字符串时忽略
+- 服务端在 `tools/call` 派发前把该标志注入 `RequestContext`（[McpServer.cpp:1038](../../src/server/McpServer.cpp)），handler 内 `IsCancellationRequested()` 因此能真实反映协议级取消；未登记时注入一个不共享的 false 标志
 
 ## 相关页面
 
@@ -49,4 +57,5 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - [/classes/wire-codec.md](wire-codec.md) — 编解码协作
 - [/classes/message-channel.md](message-channel.md) — 消息载体
 - [/concepts/concurrency.md](../concepts/concurrency.md) — 线程与 self-join
+- [/concepts/span-hooks.md](../concepts/span-hooks.md) — 观测钩子
 - [/concepts/meta-and-filters.md](../concepts/meta-and-filters.md) — 过滤器管线

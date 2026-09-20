@@ -50,6 +50,8 @@ private:
     int ReadByte(const std::chrono::steady_clock::time_point& deadline);
     std::string ReadLine(const std::chrono::steady_clock::time_point& deadline);
     std::size_t ReadRaw(void* buf, std::size_t len, const std::chrono::steady_clock::time_point& deadline);
+    std::size_t DrainReadBuffer(void* buf, std::size_t len);
+    void FillReadBuffer(std::chrono::milliseconds timeout);
     void ReadFixedBody(HttpResponseInfo& resp, std::size_t length,
                        const std::function<void(std::string_view)>& body_cb,
                        const std::chrono::steady_clock::time_point& deadline);
@@ -62,6 +64,8 @@ private:
 
     std::unique_ptr<TcpSocket> tcp_;
     std::unique_ptr<TlsSocket> tls_;
+    std::string read_buffer_;
+    std::size_t read_offset_ = 0;
     bool use_tls_ = false;
     std::string host_;
     uint16_t port_ = 0;

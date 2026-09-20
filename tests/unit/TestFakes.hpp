@@ -33,7 +33,6 @@ public:
     void Start() override { started_ = true; }
 
     const std::vector<SentCall>& Sent() const { return sent_; }
-    std::size_t SendCount() const { return sent_.size(); }
 
     const std::string& LastSent() const {
         static const std::string kEmpty;
@@ -49,7 +48,6 @@ public:
 
     void SetConnectResult(bool ok) { connect_result_ = ok; }
     bool ConnectResult() const { return connect_result_; }
-    void SetStateless(bool is_stateless) { is_stateless_ = is_stateless; }
     void SetSessionId(std::string session_id) { session_id_ = std::move(session_id); }
     bool Closed() const { return closed_; }
     bool Started() const { return started_; }

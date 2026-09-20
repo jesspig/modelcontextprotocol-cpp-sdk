@@ -167,7 +167,7 @@ for (const auto& tool : tools.tools) {
 }
 
 auto result = client->CallTool("echo",
-    JsonValue::FromObject({{"text", "Hello, MCP!"}}));
+    JsonValue::Object{{"text", "Hello, MCP!"}});
 ```
 
 ## OAuth 支持

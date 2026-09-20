@@ -1,27 +1,37 @@
 // StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX self-hosted)
 
+#include <mcp/detail/SseEventParser.hpp>
+#include <mcp/detail/StringUtils.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/Methods.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>
 
+#include <transport/detail/net/HttpClient.hpp>
+
+#include "McpParamHeaders.hpp"
+
 #ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
 // Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
+#ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
+#define MCP_CPP_POP_GETOBJECT_CLIENT 1
+#endif
 #endif
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cctype>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -32,10 +42,6 @@
 
 #ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
-#endif
-
-#ifndef _WIN32
-#include <transport/detail/net/HttpClient.hpp>
 #endif
 
 namespace mcp {
@@ -101,23 +107,15 @@ struct SseBlockParseResult {
 
 SseBlockParseResult ParseSseBlock(const std::string& block) {
     SseBlockParseResult result;
-    std::istringstream ss(block);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.compare(0, 5, "data:") == 0) {
-            auto val = line.substr(5);
-            auto n = val.find_first_not_of(" \t");
-            val = (n == std::string::npos) ? std::string() : val.substr(n);
-            if (!result.data.empty()) result.data += "\n";
-            result.data += val;
-        } else if (line.compare(0, 3, "id:") == 0) {
-            auto val = line.substr(3);
-            auto n = val.find_first_not_of(" \t");
-            if (n != std::string::npos) val = val.substr(n);
-            result.event_id = val;
+    detail::ForEachSseLine(block, [&result](std::string_view line) {
+        detail::SseFieldLine field;
+        if (!detail::ParseSseFieldLine(line, field)) return;
+        if (field.name == "data") {
+            detail::AppendSseData(result.data, field.value);
+        } else if (field.name == "id") {
+            result.event_id = std::string(field.value);
         }
-    }
+    });
     if (!result.data.empty()) {
         try {
             result.message = DeserializeMessage(result.data);
@@ -145,6 +143,66 @@ inline void SleepInterruptibly(const std::atomic<bool>& running,
     auto deadline = std::chrono::steady_clock::now() + duration;
     while (running.load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+inline constexpr std::chrono::milliseconds kParamRefreshTimeout{30000};
+
+// SEP-2243 HeaderMismatch: the server rejected Mcp-Param-* validation.
+inline bool IsHeaderMismatchBody(const std::string& body) {
+    if (body.empty()) return false;
+    try {
+        auto parsed = JsonValue::Parse(body);
+        const JsonValue* error = parsed.Find("error");
+        if (!error || !error->IsObject()) return false;
+        const JsonValue* code = error->Find("code");
+        return code && code->IsInt() &&
+               code->GetInt() == static_cast<int64_t>(McpErrorCode::HeaderMismatch);
+    } catch (...) {
+        return false;
+    }
+}
+
+// Re-reads the tool inputSchema cache after a HeaderMismatch rejection so the
+// retried request carries headers matching the server's current schema.
+inline bool RefreshToolAnnotations(const std::string& endpoint,
+                                   const std::string& session_id,
+                                   const std::string& protocol_version,
+                                   const std::string& auth_value,
+                                   const std::map<std::string, std::string>& additional_headers,
+                                   http_detail::ToolAnnotationCache& cache) {
+    detail::net::HttpRequestSpec req;
+    req.method = "POST";
+    req.url = endpoint;
+    req.timeout = kParamRefreshTimeout;
+    req.headers["Content-Type"] = "application/json";
+    req.headers["Accept"] = "application/json, text/event-stream";
+    req.headers["Mcp-Method"] = std::string(methods::kListTools);
+    if (!session_id.empty()) req.headers["Mcp-Session-Id"] = session_id;
+    if (!protocol_version.empty()) req.headers["MCP-Protocol-Version"] = protocol_version;
+    for (const auto& [header_name, header_value] : additional_headers) {
+        req.headers[header_name] = header_value;
+    }
+    if (!auth_value.empty()) req.headers["Authorization"] = auth_value;
+    req.body = R"({"jsonrpc":"2.0","id":0,"method":"tools/list"})";
+    try {
+        detail::net::HttpClient client;
+        auto resp = client.Request(req);
+        if (resp.status_code != 200 || resp.body.empty()) return false;
+        JsonRpcMessage message;
+        if (resp.body.front() == '{') {
+            message = DeserializeMessage(resp.body);
+        } else {
+            auto block = ParseSseBlock(resp.body);
+            if (!block.message) return false;
+            message = std::move(*block.message);
+        }
+        auto* response = std::get_if<JsonRpcResponse>(&message);
+        if (!response) return false;
+        cache.ObserveToolsListResult(response->result);
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 
@@ -575,24 +633,17 @@ private:
                     hdrs += L"Mcp-Method: " + ToWideStr(method) + L"\r\n";
                 }
                 if (auto* p = body_jv2.Find("params"); p && p->IsObject()) {
-                    // iterate params manually to avoid Windows GetObject macro expansion
                     const auto& obj = p->GetObject();
-                    for (const auto& [k, v] : obj) {
-                        if (v.IsString()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetString()) + L"\r\n";
-                        } else if (v.IsInt()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetInt())) + L"\r\n";
-                        } else if (v.IsBool()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(v.GetBool() ? "true" : "false") + L"\r\n";
-                        } else if (v.IsDouble()) {
-                            hdrs += L"Mcp-Param-" + ToWideStr(k) + L": " + ToWideStr(std::to_string(v.GetDouble())) + L"\r\n";
-                        }
-                    }
                     if (auto n = obj.find("name"); n != obj.end() && n->second.IsString()) {
-                        hdrs += L"Mcp-Name: " + ToWideStr(n->second.GetString()) + L"\r\n";
+                        hdrs += L"Mcp-Name: " + ToWideStr(McpHeaderValue(n->second)) + L"\r\n";
                     } else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString()) {
-                        hdrs += L"Mcp-Name: " + ToWideStr(u->second.GetString()) + L"\r\n";
+                        hdrs += L"Mcp-Name: " + ToWideStr(McpHeaderValue(u->second)) + L"\r\n";
                     }
+                }
+                if (method == "tools/list") {
+                    NoteToolsListRequest(body_jv2);
+                } else if (method == "tools/call") {
+                    AppendParamHeaders(hdrs, body_jv2, method);
                 }
             } catch (...) {
                 MCP_LOG(Warning, "HTTP header parse failed");
@@ -688,11 +739,23 @@ private:
                     err_body.append(ebuf, eread);
                     eread = 0;
                 }
+                if (status_code == 400 && attempt == 0 &&
+                    streamable_http_client_impl::IsHeaderMismatchBody(err_body)) {
+                    if (streamable_http_client_impl::RefreshToolAnnotations(
+                            options_.endpoint, CurrentSessionId(),
+                            NegotiatedVersion(), auth_value,
+                            options_.additional_headers, tool_annotations_)) {
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        continue;
+                    }
+                }
                 bool delivered = false;
                 if (!err_body.empty() && err_body.size() <= detail::kMaxMessageSize) {
                     try {
                         JsonRpcMessage msg = DeserializeMessage(err_body);
-                        if (channel_) channel_->Send(std::move(msg));
+                        DeliverIncoming(std::move(msg));
                         delivered = true;
                     } catch (...) {
                     }
@@ -817,7 +880,7 @@ private:
                     }
                     try {
                         JsonRpcMessage msg = DeserializeMessage(resp_body);
-                        if (channel_) channel_->Send(std::move(msg));
+                        DeliverIncoming(std::move(msg));
                     } catch (...) { MCP_LOG(Error, "HTTP response parse failed"); }
                 }
                 WinHttpCloseHandle(hRequest);
@@ -844,7 +907,7 @@ private:
             }
         }
         if (parsed.message) {
-            if (channel_) channel_->Send(std::move(*parsed.message));
+            DeliverIncoming(std::move(*parsed.message));
         } else {
             MCP_LOG(Error, "HTTP SSE block parse failed");
         }
@@ -868,6 +931,42 @@ private:
     void StoreNegotiatedVersion(std::string version) {
         std::lock_guard<std::mutex> lk(version_mutex_);
         if (negotiated_version_.empty()) negotiated_version_ = std::move(version);
+    }
+
+    bool DeliverIncoming(JsonRpcMessage message) {
+        ObserveToolsListResult(message);
+        return channel_ && channel_->Send(std::move(message));
+    }
+
+    void ObserveToolsListResult(JsonRpcMessage& message) {
+        auto* response = std::get_if<JsonRpcResponse>(&message);
+        if (!response) return;
+        const std::string key = http_detail::KeyFromId(response->id);
+        if (!tool_annotations_.ConsumeToolsListRequest(key)) return;
+        auto rejected = tool_annotations_.ObserveToolsListResult(response->result);
+        for (const auto& name : rejected) {
+            MCP_LOG(Warning, "rejecting tool with invalid x-mcp-header: " + name);
+        }
+    }
+
+    static std::string McpHeaderValue(const JsonValue& value) {
+        return http_detail::EncodeHeaderValue(value).value_or(std::string());
+    }
+
+    void NoteToolsListRequest(const JsonValue& body) {
+        const JsonValue* id = body.Find("id");
+        if (!id) return;
+        if (id->IsInt()) tool_annotations_.NoteToolsListRequest(std::to_string(id->GetInt()));
+        else if (id->IsString()) tool_annotations_.NoteToolsListRequest(id->GetString());
+    }
+
+    void AppendParamHeaders(std::wstring& hdrs, const JsonValue& body,
+                            const std::string& method) {
+        const JsonValue* params = body.Find("params");
+        if (!params || !params->IsObject()) return;
+        for (const auto& [name, value] : tool_annotations_.BuildParamHeaders(method, *params)) {
+            hdrs += ToWideStr(name) + L": " + ToWideStr(value) + L"\r\n";
+        }
     }
 
     HttpClientTransportOptions options_;
@@ -894,6 +993,8 @@ private:
     // Handle of the in-flight listen GET request; Close() shortens its
     // receive timeout to interrupt the read (same pattern as sse_request_).
     std::atomic<HINTERNET> listen_request_{nullptr};
+
+    http_detail::ToolAnnotationCache tool_annotations_;
 };
 
 } // namespace
@@ -908,10 +1009,7 @@ namespace httpclient_posix_impl {
 std::string GetHeader(const detail::net::HttpResponseInfo& resp,
                       std::string_view name)
 {
-    std::string lower;
-    lower.reserve(name.size());
-    for (char c : name)
-        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string lower = detail::ToLower(name);
     auto it = resp.headers.find(lower);
     return it == resp.headers.end() ? std::string{} : it->second;
 }
@@ -1180,21 +1278,15 @@ private:
                 }
                 if (auto* p = jv.Find("params"); p && p->IsObject()) {
                     const auto& obj = p->GetObject();
-                    for (const auto& [k, v] : obj) {
-                        if (v.IsString()) {
-                            headers["Mcp-Param-" + k] = v.GetString();
-                        } else if (v.IsInt()) {
-                            headers["Mcp-Param-" + k] = std::to_string(v.GetInt());
-                        } else if (v.IsBool()) {
-                            headers["Mcp-Param-" + k] = v.GetBool() ? "true" : "false";
-                        } else if (v.IsDouble()) {
-                            headers["Mcp-Param-" + k] = std::to_string(v.GetDouble());
-                        }
-                    }
                     if (auto n = obj.find("name"); n != obj.end() && n->second.IsString())
-                        headers["Mcp-Name"] = n->second.GetString();
+                        headers["Mcp-Name"] = McpHeaderValue(n->second);
                     else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString())
-                        headers["Mcp-Name"] = u->second.GetString();
+                        headers["Mcp-Name"] = McpHeaderValue(u->second);
+                }
+                if (method == "tools/list") {
+                    NoteToolsListRequest(jv);
+                } else if (method == "tools/call") {
+                    AppendParamHeaders(headers, jv, method);
                 }
             } catch (...) {
                 headers["Mcp-Method"] = "unknown";
@@ -1272,11 +1364,20 @@ private:
                 // A 4xx body may carry a JSON-RPC error response (e.g. -32601
                 // mapped to HTTP 404); deliver it to the channel instead of
                 // failing the connection.
+                if (resp.status_code == 400 && attempt == 0 &&
+                    streamable_http_client_impl::IsHeaderMismatchBody(full_body)) {
+                    if (streamable_http_client_impl::RefreshToolAnnotations(
+                            options_.endpoint, CurrentSessionId(),
+                            NegotiatedVersion(), auth_value,
+                            options_.additional_headers, tool_annotations_)) {
+                        continue;
+                    }
+                }
                 bool delivered = false;
                 if (!full_body.empty() && full_body.size() <= detail::kMaxMessageSize) {
                     try {
                         JsonRpcMessage msg = DeserializeMessage(full_body);
-                        if (channel_) channel_->Send(std::move(msg));
+                        DeliverIncoming(std::move(msg));
                         delivered = true;
                     } catch (const std::exception&) {
                     }
@@ -1336,7 +1437,7 @@ private:
                 }
                 try {
                     JsonRpcMessage msg = DeserializeMessage(full_body);
-                    if (channel_) channel_->Send(std::move(msg));
+                    DeliverIncoming(std::move(msg));
                 } catch (const std::exception& e) {
                     MCP_LOG(Error, std::string("HTTP response parse failed: ") + e.what());
                 }
@@ -1361,7 +1462,7 @@ private:
             }
         }
         if (parsed.message) {
-            if (channel_) channel_->Send(std::move(*parsed.message));
+            DeliverIncoming(std::move(*parsed.message));
         } else {
             MCP_LOG(Error, "HTTP SSE block parse failed");
         }
@@ -1408,6 +1509,44 @@ private:
     // In-flight listen GET's HttpClient, owned by the listen thread; Close()
     // calls Close() on it (never deletes it) to wake a blocked socket read.
     detail::net::HttpClient* listen_client_ = nullptr;
+
+    http_detail::ToolAnnotationCache tool_annotations_;
+
+    bool DeliverIncoming(JsonRpcMessage message) {
+        ObserveToolsListResult(message);
+        return channel_ && channel_->Send(std::move(message));
+    }
+
+    void ObserveToolsListResult(JsonRpcMessage& message) {
+        auto* response = std::get_if<JsonRpcResponse>(&message);
+        if (!response) return;
+        const std::string key = http_detail::KeyFromId(response->id);
+        if (!tool_annotations_.ConsumeToolsListRequest(key)) return;
+        auto rejected = tool_annotations_.ObserveToolsListResult(response->result);
+        for (const auto& name : rejected) {
+            MCP_LOG(Warning, "rejecting tool with invalid x-mcp-header: " + name);
+        }
+    }
+
+    static std::string McpHeaderValue(const JsonValue& value) {
+        return http_detail::EncodeHeaderValue(value).value_or(std::string());
+    }
+
+    void NoteToolsListRequest(const JsonValue& body) {
+        const JsonValue* id = body.Find("id");
+        if (!id) return;
+        if (id->IsInt()) tool_annotations_.NoteToolsListRequest(std::to_string(id->GetInt()));
+        else if (id->IsString()) tool_annotations_.NoteToolsListRequest(id->GetString());
+    }
+
+    void AppendParamHeaders(std::unordered_map<std::string, std::string>& headers,
+                            const JsonValue& body, const std::string& method) {
+        const JsonValue* params = body.Find("params");
+        if (!params || !params->IsObject()) return;
+        for (const auto& [name, value] : tool_annotations_.BuildParamHeaders(method, *params)) {
+            headers[name] = value;
+        }
+    }
 };
 
 } // namespace
@@ -1434,3 +1573,8 @@ std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
 }
 
 } // namespace mcp
+
+#ifdef MCP_CPP_POP_GETOBJECT_CLIENT
+#pragma pop_macro("GetObject")
+#undef MCP_CPP_POP_GETOBJECT_CLIENT
+#endif

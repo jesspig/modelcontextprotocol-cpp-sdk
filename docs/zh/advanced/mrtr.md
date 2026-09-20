@@ -16,7 +16,10 @@ MRTR（SEP-2322）允许服务器处理程序在工具执行期间向客户端�
   │      resultType:        │
   │        "input_required",│
   │      inputRequests: {   │
-  │        elicit: {...}    │
+  │        "name": {        │
+  │          method: ...,   │
+  │          params: {...}  │
+  │        }                │
   │      },                 │
   │      requestState: "..."│
   │    }                    │
@@ -31,14 +34,14 @@ MRTR（SEP-2322）允许服务器处理程序在工具执行期间向客户端�
   │◄── 结果：{...}           │
 ```
 
-`InputRequests` 结构体可以包含以下任一或两者：
+`InputRequests` 是「服务端分配的键 → 请求对象」的映射（`std::map<std::string, InputRequest, std::less<>>`）。每个 `InputRequest` 由 `method` 与 `params` 组成：
 
 | 字段 | 类型 | 用途 |
 |-------|------|---------|
-| `confirm` | `InputRequestElicit` | 简单的是/否确认 |
-| `elicit` | `InputRequestElicit` | 自由格式的输入请求 |
+| `method` | `std::string` | 请求方法：`elicitation/create`、`sampling/createMessage`、`roots/list` |
+| `params` | `JsonValue` | 该方法的请求参数对象 |
 
-每个 `InputRequestElicit` 包含一个 `message` 字符串和可选的 `requestedSchema`（JSON Schema）。
+键由服务端自行取语义名（如 `"name"`、`"confirm"`、`"paths"`）；客户端在 `inputResponses` 中以**相同的键**回填对应的裸结果。
 
 ## 服务端
 
@@ -75,12 +78,17 @@ typed.content = std::move(obj);
 client->SetElicitationHandler(
     [](const ElicitRequestParams& params) -> ElicitResult {
         ElicitResult result;
+        result.action = "accept";
         JsonValue obj(JsonValue::object_tag);
         obj["confirmed"] = JsonValue(true);
         result.content = std::move(obj);
         return result;
     });
 ```
+
+客户端按每个输入请求的 `method` 分派：`elicitation/create` → `ElicitationHandler`，`sampling/createMessage` → `SamplingHandler`，`roots/list` → `RootsHandler`。对应 handler 未注册或方法未知时抛 `McpError`（`MethodNotFound`）。
+
+`inputResponses` 的值是**裸结果**（elicitation 为 `{action, content}`，sampling 为 `{role, content, model, stopReason}`，roots 为 `{roots}`），不带 `resultType` / `meta` 信封。
 
 ## InputRequired 结果
 
@@ -89,7 +97,9 @@ client->SetElicitationHandler(
 ```cpp
 CallToolResult result;
 InputRequiredResult ir;
-ir.input_requests.elicit = InputRequestElicit{"提供值"};
+ElicitRequestParams params;
+params.message = "提供值";
+ir.input_requests["name"] = MakeInputRequestForElicitation(params);
 result.input_required = std::move(ir);
 return result;
 ```
@@ -101,16 +111,18 @@ return result;
 ## 辅助函数
 
 ```cpp
-// 构建用于 elicitation 的输入请求负载
-JsonValue req = MakeInputRequestForElicitation(params);
-// req == {"method": "elicitation/create", "params": {...}}
+// 构建 elicitation 输入请求（返回 {method, params} 请求对象）
+InputRequest request = MakeInputRequestForElicitation(params);
+// request.method == "elicitation/create"
+// 同系列：MakeInputRequestForSampling / MakeInputRequestForRoots
 
-// 将 elicit 结果转换为输入响应
+// 将 elicit 结果转换为裸输入响应（不含 resultType / meta）
 JsonValue resp = MakeInputResponseFromElicitResult(result);
+// 同系列：MakeInputResponseFromCreateMessageResult / MakeInputResponseFromListRootsResult
 
 // 检查 JSON 结果是否表示 input_required
 if (IsInputRequiredResult(raw_result)) {
-    auto input_requests = ExtractInputRequests(raw_result);
+    std::optional<InputRequests> input_requests = ExtractInputRequests(raw_result);
 }
 ```
 

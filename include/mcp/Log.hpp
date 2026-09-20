@@ -182,13 +182,6 @@ inline void LogMessage(LogLevel level, const char* file, int line, const LogCont
             ::mcp::LogWrite(_mcp_lvl_, {}, msg); \
     } while(0)
 
-#define MCP_LOG_TAG(LEVEL, tag, msg) \
-    do { \
-        constexpr auto _mcp_lvl_ = ::mcp::LogLevel::LEVEL; \
-        if (static_cast<int>(_mcp_lvl_) <= static_cast<int>(::mcp::GetLogLevel())) \
-            ::mcp::LogWrite(_mcp_lvl_, tag, msg); \
-    } while(0)
-
 #define MCP_LOG_CTX(LEVEL, ctx, ...) \
     do { \
         if (::mcp::LogLevel::LEVEL <= ::mcp::GetLogLevel()) { \

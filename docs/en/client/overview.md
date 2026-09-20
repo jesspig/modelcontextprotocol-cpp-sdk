@@ -19,7 +19,7 @@ auto client = McpClient::Create(transport, opts);
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.3.4"}`) |
+| `client_info` | `Implementation` | Client identity (default `{"mcp-cpp-client", "0.3.5"}`) |
 | `capabilities` | `optional<ClientCapabilities>` | Declared capabilities |
 | `connect_mode` | `ConnectMode` | `Auto` (discover → initialize), `Legacy`, `Pin` |
 | `initialization_timeout` | `chrono::seconds` | Handshake timeout (default 60s) |
@@ -89,16 +89,6 @@ client->SetElicitationHandler(
         return result;
     });
 
-client->SetSamplingHandler(
-    [](const CreateMessageRequestParams& params) -> CreateMessageResult {
-        // Deprecated: use Elicitation instead
-    });
-
-client->SetRootsHandler(
-    [](const ListRootsRequestParams& params) -> ListRootsResult {
-        // Deprecated: provide root directories
-    });
-
 client->SetNotificationHandler("custom/notification",
     [](const JsonRpcNotification& notif) {
         // Handle server-sent notifications
@@ -109,6 +99,8 @@ client->SetLoggingHandler(
         // Handle logging messages from server
     });
 ```
+
+Deprecated (SEP-2577): `SetSamplingHandler` and `SetRootsHandler` are no longer available (`sampling/createMessage` and `roots/list` only exist in the 2025 era); use `SetElicitationHandler` instead.
 
 ## Subscriptions
 
