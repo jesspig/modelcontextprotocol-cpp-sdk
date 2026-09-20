@@ -36,7 +36,7 @@ ctest --preset debug --output-on-failure
 ## 代码与提交约定
 
 - 命名：类/接口 PascalCase（接口加 `I` 前缀，如 `ITransport`）；方法 PascalCase；成员 `snake_case_` 尾下划线；常量 `k` 前缀；`enum class` 值 PascalCase。
-- **不写代码注释**（意图靠命名与结构表达）；仅在项目已有注释惯例处补必要注释。
+- **零代码注释**：禁止一切代码注释，意图靠命名与结构表达，一切说明由 `wiki/` 维护，禁止在代码中重复说明。仅保留两类例外：`// namespace xxx` 结尾注释（格式化工具会重建，删除无意义）与有功能效应的工具指令行（`NOLINT`、`clang-format`、`IWYU pragma` 等）；`/* 参数名 */` 占位、`TODO`、解释性 `//`、`/* */`、`#` 一律删除。新增代码不得引入新注释。
 - `McpClient/McpServer::Create` 返回 `unique_ptr`；`IClientTransport::Connect()` 返回 `shared_ptr`；`JsonValue` 按值传递，可选字段用 `std::optional`。
 - 错误处理：抛 `McpError(McpErrorCode, message)`（继承 `std::runtime_error`）；用户 handler 异常被包装为 `HandlerError`。
 - 提交：带 scope 的 Conventional Commits，scope 与描述均为中文（如 `refactor(网络栈):`、`docs(文档):`）。
