@@ -22,9 +22,10 @@
 #ifdef _WIN32
 // Windows.h defines a GetObject macro that clashes with JsonValue::GetObject
 // when translation units are merged (Unity build).
-#pragma push_macro("GetObject")
 #ifdef GetObject
+#pragma push_macro("GetObject")
 #undef GetObject
+#define MCP_CPP_POP_GETOBJECT_SERVER 1
 #endif
 #endif
 
@@ -779,3 +780,8 @@ std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(
 }
 
 } // namespace mcp
+
+#ifdef MCP_CPP_POP_GETOBJECT_SERVER
+#pragma pop_macro("GetObject")
+#undef MCP_CPP_POP_GETOBJECT_SERVER
+#endif

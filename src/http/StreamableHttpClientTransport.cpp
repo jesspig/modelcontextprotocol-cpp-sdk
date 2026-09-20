@@ -20,8 +20,11 @@
 #include <windows.h>
 #include <winhttp.h>
 // Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
+#ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
+#define MCP_CPP_POP_GETOBJECT_CLIENT 1
+#endif
 #endif
 
 #include <algorithm>
@@ -1570,3 +1573,8 @@ std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
 }
 
 } // namespace mcp
+
+#ifdef MCP_CPP_POP_GETOBJECT_CLIENT
+#pragma pop_macro("GetObject")
+#undef MCP_CPP_POP_GETOBJECT_CLIENT
+#endif

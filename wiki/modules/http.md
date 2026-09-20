@@ -3,7 +3,7 @@ type: Module
 title: mcp-http HTTP 库
 description: HttpServer（自研实现）、EventStore（SSE 回放，可插拔接口 + FileEventStore）、SessionStore（外部会话接管）、Streamable HTTP 双端传输（Bearer 鉴权、x-mcp-header 参数头）与客户端发送侧独立 POST 与边读边分发。
 tags: [http, sse, webserver, streamable, bearer, storage]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-09-20T17:13:14+08:00
 resource: src/http/HttpServer.cpp
 ---
 
@@ -41,6 +41,7 @@ resource: src/http/HttpServer.cpp
 - `running_` 为 `std::atomic<bool>`：`Start` 用 `exchange(true)`、`Stop` 用 `exchange(false)`、`SetHandler` 用 `load()` 检查
 - `HttpServerOptions::bind_host`：可配置监听地址（IPv4/IPv6 字面量，空 = `INADDR_ANY`），`HttpServerImpl::Start` 自动选族（`inet_pton` 先 `AF_INET6` 后 `AF_INET`）；详见 [/classes/http-server.md](/classes/http-server.md)
 - `on_disconnect` 移除路径（连接读循环结束 / `RemoveSseClient` / `BroadcastSse` 与 keepalive 写失败）统一"恰好一次"：`removed` 标志保证回调只在真正移除时触发一次，且回调在锁外执行
+- **Windows `GetObject` 宏条件隔离**：`HttpServerImpl.cpp`、`StreamableHttpClientTransport.cpp`、`StreamableHttpServerTransport.cpp` 三处 `_WIN32` 分支均改为 `#ifdef GetObject` 内 `push_macro` + `undef`（各记 `MCP_CPP_POP_GETOBJECT_{HTTPSERVER,CLIENT,SERVER}`），文件尾部按标记条件 `pop_macro` 恢复——宏未定义（含 `NOGDI` 生效）时不再执行无意义的 `push_macro`，且宏定义恢复到包含前状态；与 `JsonValue.hpp` / `McpParamAnnotations.hpp` 的头侧隔离对应（见 [/classes/json-value.md](../classes/json-value.md)）
 
 ## 相关页面
 

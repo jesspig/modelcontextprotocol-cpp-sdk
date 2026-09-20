@@ -6,6 +6,12 @@
 
 #include <mcp/JsonValue.hpp>
 
+#ifdef GetObject
+#pragma push_macro("GetObject")
+#undef GetObject
+#define MCP_POP_GETOBJECT_MACRO_ANNOT 1
+#endif
+
 #include <cctype>
 #include <string>
 #include <string_view>
@@ -157,3 +163,8 @@ inline ToolParamAnnotations ParseToolParamAnnotations(const JsonValue& input_sch
 }
 
 }} // namespace mcp::detail
+
+#ifdef MCP_POP_GETOBJECT_MACRO_ANNOT
+#pragma pop_macro("GetObject")
+#undef MCP_POP_GETOBJECT_MACRO_ANNOT
+#endif

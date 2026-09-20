@@ -3,7 +3,7 @@ type: Concept
 title: x-mcp-header 参数头注解
 description: Streamable HTTP 按工具 inputSchema 的 x-mcp-header 注解镜像并校验 Mcp-Param-* 请求头与 tools/call 参数。
 tags: [http, streamable, sep2243, headers, tools]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-09-20T17:13:14+08:00
 resource: include/mcp/detail/McpParamAnnotations.hpp
 ---
 
@@ -24,6 +24,10 @@ Streamable HTTP 的参数头功能由 `McpParamAnnotations.hpp` 与 `McpParamHea
 首尾空白、不可见或非 ASCII 可打印字符，以及本身会形成 `=?base64?...?=` 哨兵的字符串，使用带 padding 的 RFC 4648 标准 Base64 包装；该编码不同于 PKCE/requestState 使用的无 padding base64url。未注解参数不会进入请求头。
 
 服务端返回的结果 `_meta.x-mcp-header` 对象会被镜像为 `Mcp-Param-*` 响应头。
+
+## Windows `GetObject` 宏隔离
+
+`McpParamAnnotations.hpp` 头部 `#ifdef GetObject` 内 `push_macro` + `undef`（标记 `MCP_POP_GETOBJECT_MACRO_ANNOT`），尾部条件 `pop_macro` 恢复——与 `JsonValue.hpp` 的同类隔离对应，`windows.h` 的 `GetObject` 宏不再破坏注解解析对 `JsonValue::GetObject` 的调用。
 
 ## 服务端校验
 

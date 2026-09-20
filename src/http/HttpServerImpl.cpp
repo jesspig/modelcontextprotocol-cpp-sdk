@@ -8,8 +8,11 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 // Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
+#ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
+#define MCP_CPP_POP_GETOBJECT_HTTPSERVER 1
+#endif
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -862,3 +865,8 @@ void Impl::KeepAliveLoop() {
 }
 
 }}} // namespace mcp::detail::http_server_impl
+
+#ifdef MCP_CPP_POP_GETOBJECT_HTTPSERVER
+#pragma pop_macro("GetObject")
+#undef MCP_CPP_POP_GETOBJECT_HTTPSERVER
+#endif

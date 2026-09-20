@@ -10,6 +10,12 @@
 #include <variant>
 #include <vector>
 
+#ifdef GetObject
+#pragma push_macro("GetObject")
+#undef GetObject
+#define MCP_POP_GETOBJECT_MACRO 1
+#endif
+
 namespace mcp {
 
 class JsonValue {
@@ -102,3 +108,8 @@ public:
 };
 
 } // namespace mcp
+
+#ifdef MCP_POP_GETOBJECT_MACRO
+#pragma pop_macro("GetObject")
+#undef MCP_POP_GETOBJECT_MACRO
+#endif
