@@ -55,7 +55,7 @@ ctest --preset debug --output-on-failure
 - **核查**：更新前 `git status` 与 `git diff HEAD` 对照全部实际变更（含用户手动修改），禁止凭对话记忆；无法核实处标 `> [!todo] 待补充`。彻底清除过时描述，不留废弃标记。
 - **frontmatter**：概念页（modules/classes/transports/concepts）必须含 YAML frontmatter——`type` 必填（同类一致），推荐 `title`/`description`/`tags`/`timestamp`（ISO 8601 真实时间，`Get-Date` 获取，仅内容实际变更时更新）；对应源码资产加 `resource`。`index.md` 与 `log.md` 为保留文件，无 frontmatter。
 - **changelog/**：按天分文件 `<YYYY-MM-DD>-log.md`，每条时间戳 `<YYYY-MM-DD-HH>`（精确到小时）。`log.md` 仅保留最近 7 条。
-- **链接**：内部链接以 `/` 开头指向知识库根；正文禁止大段粘贴源码。
+- **链接**：内部链接以 `/` 开头指向知识库根或使用相对链接（两者均可解析，行号写进链接文本如 `[Foo.cpp:12](path/Foo.cpp)`，禁止把 `:行号` 写进 URL 路径）；正文禁止大段粘贴源码。
 
 ## 文档导航
 
