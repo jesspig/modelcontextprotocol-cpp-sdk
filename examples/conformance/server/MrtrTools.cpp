@@ -1,5 +1,3 @@
-// MrtrTools.cpp — multi-round-trip (SEP-2322) input_required_result tools
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/server/RequestState.hpp>
@@ -41,9 +39,6 @@ JsonValue MakeConfirmOkSchema()
     return schema;
 }
 
-// TS acceptedContent equivalent for elicitation responses: returns the
-// response's content when the entry is an accepted ElicitResult. Entries that
-// carry the content object directly (no action field) count as accepted too.
 const JsonValue* AcceptedElicitContent(
     const std::optional<JsonValue>& responses, const char* key)
 {
@@ -124,8 +119,6 @@ CallToolResult MakeInputRequired(InputRequiredResult ir)
     return result;
 }
 
-// Re-requests the caller name via an in-band elicitation input request until
-// the retry carries it in inputResponses, then answers "Hello, <name>!".
 CallToolResult Elicitation(const ToolContext& ctx)
 {
     auto* content = AcceptedElicitContent(ctx.Params().input_responses, "name");
@@ -227,11 +220,6 @@ CallToolResult MultipleInputs(const ToolContext& ctx)
         + std::to_string(roots->GetArray().size()) + " root(s) visible");
 }
 
-// Two elicitation rounds ("Step 1: name" / "Step 2: favorite color"); the
-// round counter and the collected name live in requestState (HMAC-minted by
-// the server when request_state_key is configured, bare JSON otherwise).
-// Mirrors the TS fixture's round gating: the round only counts when the state
-// payload carries tool == "multi_round" and a numeric round.
 CallToolResult MultiRound(const ToolContext& ctx)
 {
     int round = 0;

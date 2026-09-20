@@ -1,6 +1,3 @@
-// InteractionTools.cpp — reconnection, list-changed triggers, sampling and
-// elicitation conformance tools
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/McpError.hpp>
@@ -15,9 +12,6 @@ namespace {
 
 constexpr auto kSamplingMethod = "sampling/createMessage";
 
-// Transport capability gap: no per-request SSE stream close API on the
-// Streamable HTTP server transport, so the mid-call stream close of the TS
-// fixture is not performed; the tool only paces and reports success.
 CallToolResult Reconnection(const ToolContext&)
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

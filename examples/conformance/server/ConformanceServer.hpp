@@ -1,6 +1,3 @@
-// ConformanceServer.hpp — MCP conformance test server fixture registration API
-// Mirrors typescript-sdk test/conformance/src/everythingServer.ts (legacy 2025-11-25 leg)
-
 #pragma once
 
 #include <mcp/McpTypes.hpp>
@@ -10,11 +7,9 @@
 
 namespace mcp::conformance {
 
-// Sample base64 encoded 1x1 red PNG pixel for testing
 inline constexpr const char* kTestImageBase64 =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
-// Sample base64 encoded minimal WAV file for testing
 inline constexpr const char* kTestAudioBase64 =
     "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQIAAAA=";
 

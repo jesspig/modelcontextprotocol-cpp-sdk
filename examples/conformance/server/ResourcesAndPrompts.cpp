@@ -1,5 +1,3 @@
-// ResourcesAndPrompts.cpp — conformance resources, resource template and prompts
-
 #include "ConformanceServer.hpp"
 
 #include <functional>
@@ -115,8 +113,6 @@ GetPromptResult PromptWithEmbeddedResource(const std::string&,
     return result;
 }
 
-// V7 placeholder: MRTR prompt re-requesting "user_context" via an in-band
-// elicitation input request, then rendering "Use the following context: <ctx>".
 GetPromptResult InputRequiredResultPrompt(const std::string&,
     const std::optional<JsonValue>&)
 {
