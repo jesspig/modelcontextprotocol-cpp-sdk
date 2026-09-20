@@ -1,4 +1,3 @@
-# McpDiscoverTests.cmake — 逐用例 CTest 注册（自研测试框架）
 function(mcp_discover_tests target)
     set(tests_file "${CMAKE_CURRENT_BINARY_DIR}/${target}[1]_tests.cmake")
     set(include_file "${CMAKE_CURRENT_BINARY_DIR}/${target}[1]_include.cmake")

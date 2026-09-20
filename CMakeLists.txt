@@ -1,10 +1,5 @@
 cmake_minimum_required(VERSION 3.28...4.2)
 
-# ── 编译器自动探测 (project 之前) ──
-# 全平台统一: Clang > 系统默认
-#   Win:   clang-cl (VS or standalone LLVM) > 系统默认
-#   Linux: clang++-N + clang-N (匹配版本) > clang++ + clang > 系统默认
-#   macOS: clang++ (Apple Clang, 系统自带) > 系统默认
 if(NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
     if(WIN32)
         find_program(MCP_CLANG_CL NAMES clang-cl
@@ -19,12 +14,10 @@ if(NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
             message(STATUS "[mcp] No explicit compiler set, using system default")
         endif()
     else()
-        # Linux/macOS: 优先 clang++-N + 匹配版本 clang-N
         find_program(MCP_CLANGXX NAMES clang++-19 clang++-18 clang++-17 clang++-16 clang++)
         if(MCP_CLANGXX)
             set(CMAKE_CXX_COMPILER "${MCP_CLANGXX}")
             get_filename_component(_cxx_name "${MCP_CLANGXX}" NAME)
-            # 提取版本后缀 (e.g. clang++-18 → 18, clang++ → 空)
             if(_cxx_name MATCHES "^clang\\+\\+-(.+)$")
                 set(_ver "${CMAKE_MATCH_1}")
                 find_program(MCP_CLANG NAMES "clang-${_ver}" "clang")
@@ -43,7 +36,6 @@ if(NOT DEFINED CACHE{CMAKE_CXX_COMPILER})
     endif()
 endif()
 
-# ── SDK 版本单一来源 (include/mcp/McpVersion.hpp) ──
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/mcp/McpVersion.hpp" _mcp_version_hpp)
 if(_mcp_version_hpp MATCHES "kSdkVersion[ \t]*=[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\"")
     set(MCP_SDK_VERSION "${CMAKE_MATCH_1}")
@@ -57,15 +49,10 @@ project(mcp-cpp-sdk VERSION ${MCP_SDK_VERSION} LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ── 构建选项 ──
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
 option(MCP_BUILD_CONFORMANCE "Build conformance server fixture (examples/conformance/server)" OFF)
 
-# ====================================================================
-# mcp_enable_werror — MCP_WERROR=ON 时对目标附加 /WX (MSVC) 或 -Werror。
-# 守护全部 mcp-* 库目标与测试目标（含不链接 mcp-core 的 mcp-test/mcp-test-main）。
-# ====================================================================
 function(mcp_enable_werror target)
     if(NOT MCP_WERROR)
         return()
@@ -78,11 +65,8 @@ function(mcp_enable_werror target)
     message(STATUS "[mcp] Werror: ${target}")
 endfunction()
 
-# ── 模块包含 ──
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-# ── 1. Ninja 探测
-#     如果 Ninja 可用但当前生成器不是 Ninja，警告用户
 find_program(MCP_NINJA NAMES ninja)
 if(MCP_NINJA AND CMAKE_GENERATOR MATCHES "Ninja")
     message(STATUS "[mcp] Ninja: ${MCP_NINJA}")
@@ -93,15 +77,13 @@ else()
     message(STATUS "[mcp] Ninja: not found (using ${CMAKE_GENERATOR})")
 endif()
 
-include(Platform)              # 平台/架构/CI 检测
-include(BuildOptimization)     # Unity batch + Ninja pools (CPU+memory aware)
-include(CompilerOptions)       # 编译器特定标志
-include(Cache)                 # sccache / ccache 自动检测
-include(FetchDependencies)     # FetchContent 依赖
-include(Lto)                   # ThinLTO / LTCG / IPO (Release)
+include(Platform)
+include(BuildOptimization)
+include(CompilerOptions)
+include(Cache)
+include(FetchDependencies)
+include(Lto)
 
-# ── lld-link 自动检测 (MSVC cl.exe + Ninja 时加速链接) ──
-# clang-cl 已经自带 lld，不需额外配置
 if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHES "Ninja")
     find_program(_lld_link NAMES lld-link)
     if(_lld_link)
@@ -110,9 +92,6 @@ if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHE
     endif()
 endif()
 
-# ====================================================================
-# mcp-core — STATIC
-# ====================================================================
 add_library(mcp-core STATIC)
 target_sources(mcp-core PRIVATE
     src/core/JsonValue.cpp
@@ -134,9 +113,6 @@ target_link_libraries(mcp-core PUBLIC Threads::Threads)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
-# ====================================================================
-# mcp-transport — STATIC
-# ====================================================================
 add_library(mcp-transport STATIC)
 target_sources(mcp-transport PRIVATE
     src/transport/StdioServerTransport.cpp
@@ -161,25 +137,16 @@ if(WIN32)
     target_link_libraries(mcp-transport PUBLIC ws2_32)
 endif()
 target_include_directories(mcp-transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# transport 各 .cpp 存在匿名 namespace 与同名静态符号，unity 合并后重复定义
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
-# ====================================================================
-# mcp-protocol — STATIC
-# ====================================================================
 add_library(mcp-protocol STATIC)
 target_sources(mcp-protocol PRIVATE
     src/protocol/WireCodec.cpp
     src/protocol/McpSessionHandler.cpp)
 target_link_libraries(mcp-protocol PUBLIC mcp-transport)
 target_include_directories(mcp-protocol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# McpSessionHandler.cpp and WireCodec.cpp share anonymous namespace helpers
-# Unity builds merge them causing duplicate symbol errors
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD OFF)
 
-# ====================================================================
-# mcp-server — STATIC
-# ====================================================================
 add_library(mcp-server STATIC)
 target_sources(mcp-server PRIVATE
     src/server/McpServer.cpp
@@ -189,9 +156,6 @@ target_include_directories(mcp-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
-# ====================================================================
-# mcp-client — STATIC
-# ====================================================================
 add_library(mcp-client STATIC)
 target_sources(mcp-client PRIVATE
     src/client/McpClient.cpp
@@ -210,12 +174,8 @@ if(OpenSSL_FOUND)
 endif()
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
-# 仅 client 需要：unity 开启且 TU 间存在同名符号，UNIQUE_ID 防合并后冲突
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
 
-# ====================================================================
-# mcp-http — STATIC
-# ====================================================================
 add_library(mcp-http STATIC)
 target_sources(mcp-http PRIVATE
     src/http/HttpServer.cpp
@@ -223,7 +183,6 @@ target_sources(mcp-http PRIVATE
     src/http/EventStore.cpp
     src/http/StreamableHttpServerTransport.cpp)
 target_sources(mcp-http PRIVATE src/http/StreamableHttpClientTransport.cpp)
-# FileEventStore.cpp 须保持在 unity TU 末尾：其 windows.h 依赖前面文件先行引入的 winsock 顺序
 target_sources(mcp-http PRIVATE src/http/FileEventStore.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
@@ -236,21 +195,14 @@ target_include_directories(mcp-http PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
-# ====================================================================
-# Werror 守护 — 全部 mcp-* 库目标
-# ====================================================================
 foreach(_t mcp-core mcp-transport mcp-protocol mcp-server mcp-client mcp-http)
     mcp_enable_werror(${_t})
 endforeach()
 
-# ====================================================================
-# 子目录
-# ====================================================================
 if(MCP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/framework)
     add_subdirectory(tests)
-    # 测试框架 (mcp-test/mcp-test-main 不链接 mcp-core) + 全部测试/基准目标
     foreach(_t
         mcp-test mcp-test-main mcp-framework-self-tests
         mcp-core-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
@@ -270,9 +222,6 @@ if(MCP_BUILD_CONFORMANCE)
     add_subdirectory(examples/conformance/server)
 endif()
 
-# ====================================================================
-# 构建配置摘要
-# ====================================================================
 file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "version=${PROJECT_VERSION}\n"
     "build_type=${CMAKE_BUILD_TYPE}\n"
