@@ -1,5 +1,4 @@
 #pragma once
-// TestFakes.hpp — 手写调用记录型测试替身（不依赖 gmock），供单元测试注入并检查传输行为
 
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>

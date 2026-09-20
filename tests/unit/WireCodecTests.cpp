@@ -1,5 +1,3 @@
-// WireCodecTests — unit tests for WireCodec factory, era-gating, and _meta handling
-
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/McpCore.hpp>
 
@@ -7,7 +5,6 @@
 
 using namespace mcp;
 
-// ── WireCodec factory ──
 TEST(WireCodecTest, FactoryReturns2025ForLegacy) {
     auto codec = MakeWireCodec("2025-11-25");
     ASSERT_NE(codec, nullptr);
@@ -20,7 +17,6 @@ TEST(WireCodecTest, FactoryReturns2026ForModern) {
     EXPECT_EQ(codec->Era(), "2026-07-28");
 }
 
-// ── Factory version comparison boundaries ──
 TEST(WireCodecTest, FactoryBoundaryJustBeforeLatest) {
     auto codec = MakeWireCodec("2026-07-27");
     ASSERT_NE(codec, nullptr);
@@ -39,7 +35,6 @@ TEST(WireCodecTest, FactoryBoundaryExactLatest) {
     EXPECT_EQ(codec->Era(), "2026-07-28");
 }
 
-// ── 2025-era codec ──
 TEST(WireCodecTest, Rev2025HasRequestMethod) {
     auto codec = MakeWireCodec("2025-11-25");
     EXPECT_TRUE(codec->HasRequestMethod("tools/list"));
@@ -56,7 +51,6 @@ TEST(WireCodecTest, Rev2025HasNotificationMethod) {
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/progress"));
 }
 
-// ── 2025-era initialize request validation ──
 TEST(WireCodecTest, Rev2025ValidateInitializeRequest) {
     auto codec = MakeWireCodec("2025-11-25");
 
@@ -89,7 +83,6 @@ TEST(WireCodecTest, Rev2025ValidateInitializeRequestMissingProtocolVersion) {
     EXPECT_EQ(codec->ValidateRequest("initialize", raw), WireValidation::Invalid);
 }
 
-// ── 2026-era codec ──
 TEST(WireCodecTest, Rev2026StampAddsMetaInsideParams) {
     auto codec = MakeWireCodec("2026-07-28");
     JsonValue body(JsonValue::object_tag);
@@ -114,7 +107,6 @@ TEST(WireCodecTest, Rev2026StampAddsMetaInsideParams) {
             "io.modelcontextprotocol/clientCapabilities"));
 }
 
-// ── 2026-era request validation requires _meta inside params ──
 TEST(WireCodecTest, Rev2026ValidateRequestRequiresMetaInsideParams) {
     auto codec = MakeWireCodec("2026-07-28");
 
@@ -161,7 +153,6 @@ TEST(WireCodecTest, Rev2026EncodeResult) {
     EXPECT_TRUE(encoded.Contains("content"));
 }
 
-// ── 2026 flattens nested cacheHint onto the result top level ──
 TEST(WireCodecTest, Rev2026EncodeResultFlattensCacheHint) {
     auto codec = MakeWireCodec("2026-07-28");
     JsonValue result(JsonValue::object_tag);
@@ -178,7 +169,6 @@ TEST(WireCodecTest, Rev2026EncodeResultFlattensCacheHint) {
     EXPECT_TRUE(encoded.Contains("content"));
 }
 
-// ── 2025 keeps the nested cacheHint shape untouched ──
 TEST(WireCodecTest, Rev2025EncodeResultKeepsCacheHintNested) {
     auto codec = MakeWireCodec("2025-11-25");
     JsonValue result(JsonValue::object_tag);
@@ -191,7 +181,6 @@ TEST(WireCodecTest, Rev2025EncodeResultKeepsCacheHintNested) {
     EXPECT_EQ(encoded["cacheHint"]["ttlMs"], JsonValue(int64_t(60000)));
 }
 
-// ── 2026 notification method membership ──
 TEST(WireCodecTest, Rev2026HasMessageAndSubscriptionNotificationsNoTasks) {
     auto codec = MakeWireCodec("2026-07-28");
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/message"));
@@ -205,7 +194,6 @@ TEST(WireCodecTest, Rev2026HasMessageAndSubscriptionNotificationsNoTasks) {
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/initialized"));
 }
 
-// ── 2025-era notification method membership ──
 TEST(WireCodecTest, Rev2025HasTaskStatusNotification) {
     auto codec = MakeWireCodec("2025-11-25");
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/status"));
@@ -213,7 +201,6 @@ TEST(WireCodecTest, Rev2025HasTaskStatusNotification) {
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/subscriptions/acknowledged"));
 }
 
-// ── 2026 response validation ──
 TEST(WireCodecTest, Rev2026ValidateResponse) {
     auto codec = MakeWireCodec("2026-07-28");
 
@@ -236,7 +223,6 @@ TEST(WireCodecTest, Rev2026ValidateResponse) {
               WireValidation::Ok);
 }
 
-// ── 2026 notification validation ──
 TEST(WireCodecTest, Rev2026ValidateNotification) {
     auto codec = MakeWireCodec("2026-07-28");
 
@@ -256,7 +242,6 @@ TEST(WireCodecTest, Rev2026ValidateNotification) {
               WireValidation::Invalid);
 }
 
-// ── JsonRpcRequest with _meta ──
 TEST(WireCodecTest, JsonRpcRequestWithMetaRoundTrip) {
     JsonRpcRequest req;
     req.id = RequestId{int64_t(1)};
@@ -285,7 +270,6 @@ TEST(WireCodecTest, JsonRpcRequestWithMetaRoundTrip) {
     EXPECT_EQ((*req2.params)["name"], "echo");
 }
 
-// A request without params gets params synthesized to carry _meta on the wire.
 TEST(WireCodecTest, JsonRpcRequestWithoutParamsSynthesizesParamsForMeta) {
     JsonRpcRequest req;
     req.id = RequestId{int64_t(1)};
@@ -307,7 +291,6 @@ TEST(WireCodecTest, JsonRpcRequestWithoutParamsSynthesizesParamsForMeta) {
     EXPECT_TRUE(req2.params->GetObject().empty());
 }
 
-// A notification's _meta travels inside params on the wire.
 TEST(WireCodecTest, JsonRpcNotificationWithMetaRoundTrip) {
     JsonRpcNotification notif;
     notif.method = "notifications/message";

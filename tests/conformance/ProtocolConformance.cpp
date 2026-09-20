@@ -1,7 +1,3 @@
-// ProtocolConformance — MCP protocol specification compliance tests
-// Covers JSON-RPC, WireCodec era-gating, version negotiation, type serialization,
-// elicitation, MRTR/InputRequired, subscriptions, tasks, logging, and extensions
-
 #include <mcp/McpCore.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 
@@ -12,9 +8,6 @@
 
 using namespace mcp;
 
-// ====================================================================
-// JSON-RPC message round-trip serialization
-// ====================================================================
 TEST(Conformance, JsonRpcRequestRoundTrip) {
     JsonRpcRequest req;
     req.id = RequestId{int64_t(1)};
@@ -78,9 +71,6 @@ TEST(Conformance, JsonRpcMessageVariantDispatch) {
     EXPECT_TRUE(IsNotification(JsonRpcMessage(notif)));
 }
 
-// ====================================================================
-// WireCodec era-gating (2025 vs 2026)
-// ====================================================================
 TEST(Conformance, WireCodec2025Methods) {
     auto codec = MakeWireCodec("2025-11-25");
     EXPECT_TRUE(codec->HasRequestMethod("tools/list"));
@@ -123,9 +113,6 @@ TEST(Conformance, WireCodecUnknownVersionFallsBack) {
     EXPECT_EQ(codec->Era(), "2025-11-25");
 }
 
-// ====================================================================
-// Version negotiation (discover vs initialize)
-// ====================================================================
 TEST(Conformance, DiscoverResultRoundTrip) {
     DiscoverResult r;
     r.supported_versions = {"2025-11-25", "2026-07-28"};
@@ -173,9 +160,6 @@ TEST(Conformance, InitializeRequestSerialization) {
     EXPECT_EQ(jv["clientInfo"]["name"].GetString(), "client");
 }
 
-// ====================================================================
-// Error code mappings
-// ====================================================================
 TEST(Conformance, StandardErrorCodes) {
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ParseError), -32700);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::InvalidRequest), -32600);
@@ -253,9 +237,6 @@ TEST(Conformance, WireCodec2025ErrorRemappingIsIdentity) {
     EXPECT_EQ(codec->EncodeErrorCode(-32022), -32022);
 }
 
-// ====================================================================
-// Tool / Resource / Prompt type serialization
-// ====================================================================
 TEST(Conformance, ToolSerialization) {
     Tool t;
     t.name = "echo";
@@ -368,9 +349,6 @@ TEST(Conformance, PromptMessageSerialization) {
     EXPECT_TRUE(std::holds_alternative<TextContent>(recovered.content));
 }
 
-// ====================================================================
-// Content variant serialization
-// ====================================================================
 TEST(Conformance, ContentVariantText) {
     ContentVariant cv = TextContent{"text", "hello"};
     auto jv = SerializeContentVariant(cv);
@@ -403,9 +381,6 @@ TEST(Conformance, ContentVariantEmbeddedResource) {
     EXPECT_EQ(jv["resource"]["text"].GetString(), "embedded");
 }
 
-// ====================================================================
-// Implementation / ServerInfo
-// ====================================================================
 TEST(Conformance, ImplementationRoundTrip) {
     Implementation impl;
     impl.name = "test-server";
@@ -417,9 +392,6 @@ TEST(Conformance, ImplementationRoundTrip) {
     EXPECT_EQ(recovered.version, "1.0.0");
 }
 
-// ====================================================================
-// ProtocolVersion helpers
-// ====================================================================
 TEST(Conformance, IsModernProtocolVersion) {
     EXPECT_FALSE(IsModernProtocolVersion("2025-11-25"));
     EXPECT_TRUE(IsModernProtocolVersion("2026-07-28"));
@@ -454,9 +426,6 @@ TEST(Conformance, JsonRpcVersionConstant) {
     EXPECT_EQ(kJsonRpcVersion, "2.0");
 }
 
-// ====================================================================
-// List results with pagination
-// ====================================================================
 TEST(Conformance, ListToolsResultWithCursor) {
     ListToolsResult r;
     r.tools = {Tool{}};
@@ -493,9 +462,6 @@ TEST(Conformance, ListPromptsResultRoundTrip) {
     EXPECT_EQ(recovered.prompts[0].name, "test-prompt");
 }
 
-// ====================================================================
-// Capabilities serialization
-// ====================================================================
 TEST(Conformance, ServerCapabilitiesRoundTrip) {
     ServerCapabilities caps;
     caps.tools = ToolsCapability{true};
@@ -528,9 +494,6 @@ TEST(Conformance, ClientCapabilitiesRoundTrip) {
     EXPECT_TRUE(recovered.elicitation.has_value());
 }
 
-// ====================================================================
-// CallToolResult with structured content
-// ====================================================================
 TEST(Conformance, CallToolResultWithStructuredContent) {
     CallToolResult r;
     r.content = {TextContent{"text", "result"}};
@@ -547,9 +510,6 @@ TEST(Conformance, CallToolResultWithStructuredContent) {
     EXPECT_EQ((*recovered.structured_content)["key"].GetString(), "value");
 }
 
-// ====================================================================
-// RequestMeta with full fields
-// ====================================================================
 TEST(Conformance, RequestMetaFullRoundTrip) {
     RequestMeta m;
     m.protocol_version = "2026-07-28";
@@ -567,9 +527,6 @@ TEST(Conformance, RequestMetaFullRoundTrip) {
     EXPECT_TRUE(recovered.client_capabilities.has_value());
 }
 
-// ====================================================================
-// Group 1: Elicitation serialization (10-15 tests)
-// ====================================================================
 TEST(Conformance, ElicitRequestParamsFormRoundTrip) {
     ElicitRequestParams p;
     p.message = "What is your name?";
@@ -745,9 +702,6 @@ TEST(Conformance, ElicitResultTypedJsonValue) {
     EXPECT_EQ((*typed.content)["nested"]["value"], JsonValue(42));
 }
 
-// ====================================================================
-// Group 2: MRTR / InputRequired (10-15 tests)
-// ====================================================================
 TEST(Conformance, InputRequiredResultRoundTrip) {
     InputRequiredResult ir;
     ElicitRequestParams params;
@@ -877,9 +831,6 @@ TEST(Conformance, InputRequestsEmpty) {
     EXPECT_TRUE(recovered.empty());
 }
 
-// ── Official 2026-07-28 inputRequests sample: server-assigned keys map to
-// {method, params} request objects. The round trip must be field-for-field
-// equivalent to the specification example.
 TEST(Conformance, InputRequestsSpecSampleRoundTrip) {
     const char* sample_json = R"({
         "github_login": {
@@ -935,8 +886,6 @@ TEST(Conformance, InputRequestsSpecSampleRoundTrip) {
     EXPECT_TRUE(round_tripped == sample);
 }
 
-// ── Official 2026-07-28 inputResponses sample: the values are bare results,
-// with neither a resultType envelope nor meta.
 TEST(Conformance, InputResponseValuesAreBareResults) {
     ElicitResult accepted;
     accepted.action = "accept";
@@ -973,7 +922,6 @@ TEST(Conformance, InputResponseValuesAreBareResults) {
     EXPECT_FALSE(roots_response.Contains("resultType"));
 }
 
-// ── Malformed entries are rejected instead of being silently accepted.
 TEST(Conformance, InputRequestsRejectsEntryWithoutMethod) {
     JsonValue jv(JsonValue::object_tag);
     jv["broken"] = JsonValue(JsonValue::object_tag);
@@ -982,9 +930,6 @@ TEST(Conformance, InputRequestsRejectsEntryWithoutMethod) {
     EXPECT_THROW_MSG(DeserializeInputRequests(jv), McpError, "method");
 }
 
-// ── The specification's roots/list input request carries no `params` key, so a
-// missing params is accepted as an empty object; a present non-object params is
-// still rejected. ──
 TEST(Conformance, InputRequestsAcceptsEntryWithoutParamsObject) {
     JsonValue jv(JsonValue::object_tag);
     jv["roots"] = JsonValue(JsonValue::object_tag);
@@ -1033,9 +978,6 @@ TEST(Conformance, CallToolRequestWithInputResponses) {
     EXPECT_EQ(*recovered.request_state, "state-xyz");
 }
 
-// ====================================================================
-// Group 3: Elicitation Schema types as JSON (8-10 tests)
-// ====================================================================
 TEST(Conformance, SchemaStringTypeRoundTrip) {
     JsonValue schema(JsonValue::object_tag);
     schema["type"] = "string";
@@ -1205,9 +1147,6 @@ TEST(Conformance, SchemaMultiSelectTitled) {
     EXPECT_EQ(jv["requestedSchema"]["title"].GetString(), "Pick multiple");
 }
 
-// ====================================================================
-// Group 4: Extensions Capability (5-8 tests)
-// ====================================================================
 TEST(Conformance, ExtensionsCapabilityServerRoundTrip) {
     ServerCapabilities caps;
     caps.extensions = std::map<std::string, JsonValue>{};
@@ -1260,9 +1199,6 @@ TEST(Conformance, ExtensionsCapabilityWithOtherCaps) {
     EXPECT_TRUE(jv.Contains("tools"));
 }
 
-// ====================================================================
-// Group 6: ResultType enum (8-10 tests)
-// ====================================================================
 TEST(Conformance, CallToolResultHasResultType) {
     CallToolResult r;
     r.content = {TextContent{"text", "hello"}};
@@ -1367,9 +1303,6 @@ TEST(Conformance, ResultTypeDefaultWhenMissing) {
     EXPECT_EQ(recovered.result_type, ResultType::Complete);
 }
 
-// ====================================================================
-// Group 7: SubscriptionFilter (5-8 tests)
-// ====================================================================
 TEST(Conformance, SubscriptionFilterRoundTrip) {
     SubscriptionFilter f;
     f.tools_list_changed = true;
@@ -1444,9 +1377,6 @@ TEST(Conformance, SubscriptionFilterPartialFlags) {
     EXPECT_TRUE(recovered.resources_list_changed.has_value());
 }
 
-// ====================================================================
-// Group 8: Tasks (8-10 tests)
-// ====================================================================
 TEST(Conformance, GetTaskResultWorking) {
     GetTaskResult r;
     r.task_id = "task-1";
@@ -1574,9 +1504,6 @@ TEST(Conformance, CancelTaskRequestParamsRoundTrip) {
     EXPECT_EQ(*recovered.reason, "no longer needed");
 }
 
-// ====================================================================
-// Group 9: Logging (5-8 tests)
-// ====================================================================
 TEST(Conformance, LoggingLevelDebug) {
     LoggingMessageNotificationParams p;
     p.level = LoggingLevel::Debug;

@@ -15,8 +15,6 @@
 
 using namespace mcp;
 
-// ── src/http/StreamableHttpClientTransport.cpp 内部实现（定义于 mcp-http 库，
-//    经外部链接符号引用；类型声明须与实现保持逐字一致）──
 namespace mcp {
 namespace streamable_http_client_impl {
 
@@ -167,7 +165,6 @@ TEST(StreamableHttpTransportTest, ListenStateForStatusCode) {
     EXPECT_TRUE(ListenStateForStatusCode(404) == ListenState::Connecting);
 }
 
-// ── 回环：GET SSE 流推送的通知经 listen 流注入 channel ──
 TEST(StreamableHttpTransportTest, ListenStreamDeliversNotification) {
     auto port = PickFreePort(kTestBasePort + 1300);
     HttpServer mock(port);
@@ -219,7 +216,6 @@ TEST(StreamableHttpTransportTest, ListenStreamDeliversNotification) {
     mock.Stop();
 }
 
-// ── 回环：GET 流被 405 拒绝后置 Unsupported，本会话不再重试 ──
 TEST(StreamableHttpTransportTest, ListenStreamStopsAfter405) {
     auto port = PickFreePort(kTestBasePort + 1350);
     HttpServer mock(port);
@@ -258,7 +254,6 @@ TEST(StreamableHttpTransportTest, ListenStreamStopsAfter405) {
     mock.Stop();
 }
 
-// ── SEP-2243：initialize 请求不带 MCP-Protocol-Version 头 ──
 TEST(StreamableHttpTransportTest, ProtocolVersionHeaderOmittedForInitialize) {
     using mcp::streamable_http_client_impl::ProtocolVersionHeaderFor;
     EXPECT_FALSE(ProtocolVersionHeaderFor("initialize", "").has_value());
@@ -292,7 +287,6 @@ TEST(StreamableHttpTransportTest, NegotiatedVersionExtractedFromInitializeResult
     EXPECT_FALSE(NegotiatedVersionFromResponse("not-json").has_value());
 }
 
-// ── 回环：initialize 请求无协议头，响应学习后后续请求携带协商版本 ──
 TEST(StreamableHttpTransportTest, ClientProtocolVersionHeaderNegotiationFlow) {
     auto port = PickFreePort(kTestBasePort + 1400);
     HttpServer mock(port);
@@ -361,7 +355,6 @@ TEST(StreamableHttpTransportTest, ClientProtocolVersionHeaderNegotiationFlow) {
     mock.Stop();
 }
 
-// ── U8：initialize 请求不带 Mcp-Session-Id 头 ──
 TEST(StreamableHttpTransportTest, SessionIdHeaderOmittedForInitialize) {
     using mcp::streamable_http_client_impl::SessionIdHeaderFor;
     EXPECT_FALSE(SessionIdHeaderFor("initialize", "stale-session").has_value());
@@ -372,8 +365,6 @@ TEST(StreamableHttpTransportTest, SessionIdHeaderOmittedForInitialize) {
     EXPECT_EQ(*sid, "stale-session");
 }
 
-// ── U8 回环：404 交付 SessionExpired 类型化错误；initialize 无 session id 头、
-//    响应学习新 id 后后续请求携带新 id ──
 TEST(StreamableHttpTransportTest, Post404DeliversSessionExpiredError) {
     auto port = PickFreePort(kTestBasePort + 1450);
     HttpServer mock(port);
@@ -455,9 +446,6 @@ TEST(StreamableHttpTransportTest, Post404DeliversSessionExpiredError) {
     mock.Stop();
 }
 
-// ── 死锁回归：首笔 Request 的 POST 被 mock 挂起时，后续 Notification 必须经
-//    即时通道立即发出并释放首笔响应。修复前通知排队等待 send 线程，与挂起的
-//    server→client 请求（如 elicitation complete）互等死锁，本用例失败。──
 TEST(StreamableHttpTransportTest, ImmediatePostWhileRequestInFlight) {
     auto port = PickFreePort(kTestBasePort + 1500);
     HttpServer mock(port);
@@ -526,9 +514,6 @@ TEST(StreamableHttpTransportTest, ImmediatePostWhileRequestInFlight) {
     mock.Stop();
 }
 
-// ── 死锁回归：POST 的 SSE 响应在流打开期间先达的 server→client 请求帧
-//    （如 elicitation/create）必须立即分发进 channel；修复前读取循环只累积
-//    不切分，帧滞留至流关闭，与等应答的服务端互等死锁，本用例超时失败。──
 TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
     auto port = PickFreePort(kTestBasePort + 1550);
     HttpServer mock(port);
@@ -635,7 +620,6 @@ TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
     transport->Close();
 }
 
-// ── Bearer 鉴权（RFC 6750/9728）：五路径 + metadata + 零回归 + 客户端闭环 ──
 namespace streamable_http_bearer_test_impl {
 
 std::string HeaderOf(const mcp::detail::net::HttpResponseInfo& resp,

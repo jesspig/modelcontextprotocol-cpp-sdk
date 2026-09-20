@@ -1,6 +1,4 @@
 #pragma once
-// McpTest.hpp — 自研测试框架：注册、用例基类与运行入口
-
 #include "McpApi.hpp"
 #include "McpAssert.hpp"
 #include "McpTrace.hpp"
@@ -13,7 +11,6 @@
 #include <string>
 #include <vector>
 
-// ── TEST / TEST_F 注册宏（唯一类名拼接，对齐 gtest 模式）──
 #define TEST(suite, name) \
     class mcp_test_##suite##_##name##_test : public ::mcp::test::TestCase { \
     public: \

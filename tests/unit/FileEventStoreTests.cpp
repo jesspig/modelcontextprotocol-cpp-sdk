@@ -1,5 +1,3 @@
-// FileEventStoreTests - unit tests for FileEventStore
-
 #include <mcp/storage/FileEventStore.hpp>
 
 #include <mcp/test/McpTest.hpp>
@@ -116,8 +114,6 @@ TEST_F(FileEventStoreTest, PersistsAcrossInstances) {
     EXPECT_EQ(next_id, all[2].first + 1);
 }
 
-// Two instances on the same directory emulate two processes: events
-// appended by one are immediately visible to the other and ids stay unique.
 TEST_F(FileEventStoreTest, TwoInstancesShareDirectory) {
     FileEventStore store_a(store_dir);
     FileEventStore store_b(store_dir);

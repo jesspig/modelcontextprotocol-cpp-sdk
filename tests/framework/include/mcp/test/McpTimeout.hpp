@@ -1,6 +1,4 @@
 #pragma once
-// McpTimeout.hpp — 用例体超时护栏（超时记为失败并放弃当前用例）
-
 #include "McpApi.hpp"
 
 #include <atomic>

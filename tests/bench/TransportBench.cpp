@@ -1,5 +1,3 @@
-// TransportBench.cpp — transport-layer performance baseline measurements
-
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -93,8 +91,6 @@ bool ReadRequestHead(int fd, std::string& head) {
     }
 }
 
-// HttpClient.cpp rejects a response once its header count exceeds kMaxHeaderCount = 100, and
-// BuildResponse always emits Content-Type plus Content-Length on top of the X-Pad lines.
 constexpr std::size_t kProductMaxResponseHeaders = 100;
 constexpr std::size_t kFixedResponseHeaders = 2;
 

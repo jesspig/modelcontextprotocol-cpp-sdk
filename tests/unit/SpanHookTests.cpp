@@ -1,7 +1,3 @@
-// SpanHookTests — behavior tests for the span observation hooks: an
-// uninstrumented session is left untouched, and an injected handler observes
-// the server request and transport boundaries with the caller's trace context.
-
 #include <mcp/SpanHooks.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/WireCodec.hpp>
@@ -46,8 +42,6 @@ struct SessionPair {
     }
 };
 
-// Hooks fire on the message loop and response worker threads, so the sink
-// synchronizes.
 struct SpanRecorder {
     std::mutex mutex;
     std::vector<SpanEvent> events;
@@ -100,8 +94,6 @@ JsonValue CallServer(const SessionPair& sp, const RequestMeta& meta) {
 
 } // namespace
 
-// Regression guard: with no handler injected the session answers exactly as
-// before, so the hooks leave the uninstrumented path untouched.
 TEST(SpanHookTest, UninstrumentedSessionAnswersRequests) {
     MCP_RUN_WITH_TIMEOUT([&] {
         SessionPair sp;
@@ -112,8 +104,6 @@ TEST(SpanHookTest, UninstrumentedSessionAnswersRequests) {
     });
 }
 
-// An injected handler observes the server request boundary: Begin when the
-// request is dispatched, End once the response has been produced.
 TEST(SpanHookTest, InjectedHandlerObservesServerRequestBoundary) {
     MCP_RUN_WITH_TIMEOUT([&] {
         SpanRecorder recorder;
@@ -139,8 +129,6 @@ TEST(SpanHookTest, InjectedHandlerObservesServerRequestBoundary) {
     });
 }
 
-// The transport send/receive boundaries are observable too, and every Begin is
-// paired with an End.
 TEST(SpanHookTest, InjectedHandlerObservesTransportBoundaries) {
     MCP_RUN_WITH_TIMEOUT([&] {
         SpanRecorder recorder;
@@ -159,7 +147,6 @@ TEST(SpanHookTest, InjectedHandlerObservesTransportBoundaries) {
     });
 }
 
-// The server request span carries the caller's trace context from _meta.
 TEST(SpanHookTest, ServerRequestSpanCarriesTraceContext) {
     MCP_RUN_WITH_TIMEOUT([&] {
         SpanRecorder recorder;
@@ -181,8 +168,6 @@ TEST(SpanHookTest, ServerRequestSpanCarriesTraceContext) {
     });
 }
 
-// A rejected request closes its span flagged as failed instead of leaking an
-// unterminated Begin.
 TEST(SpanHookTest, RejectedRequestClosesFailedSpan) {
     MCP_RUN_WITH_TIMEOUT([&] {
         SpanRecorder recorder;

@@ -1,5 +1,3 @@
-// HttpServerTests — unit tests for HttpServer, EventStore, and StreamableHttp transports
-
 #include <mcp/Methods.hpp>
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
@@ -38,7 +36,6 @@
 #include <unistd.h>
 #endif
 
-// Avoid `using namespace mcp;` — HttpRequest/HttpResponse clash between hv and mcp
 using MCP_Request = mcp::HttpRequest;
 using MCP_Response = mcp::HttpResponse;
 
@@ -95,9 +92,6 @@ std::optional<NetResp> HttpDelete(const std::string& url) {
 
 } // namespace
 
-// ============================================================
-// HttpServer
-// ============================================================
 TEST(HttpServerTest, GetPing) {
     auto port = PickFreePort(kTestBasePort);
     mcp::HttpServer server(port);
@@ -197,7 +191,7 @@ TEST(HttpServerTest, BindHostInvalidThrows) {
 
 TEST(HttpServerTest, BindHostDefaultRegression) {
     auto port = PickFreePort(kTestBasePort);
-    mcp::HttpServer server(port); // 默认 bind_host 空
+    mcp::HttpServer server(port);
     server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
         resp.body = "pong";
     });
@@ -209,10 +203,9 @@ TEST(HttpServerTest, BindHostDefaultRegression) {
     server.Stop();
 }
 
-// 无 Host 头的原始 HTTP 请求应被拒绝为 403，且不得因 headers 查找抛异常而崩溃。
 TEST(HttpServerTest, HostHeaderMissingRejectedNoCrash) {
     auto port = PickFreePort(kTestBasePort + 980);
-    mcp::HttpServer server(port); // 默认 bind_host 空
+    mcp::HttpServer server(port);
     server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
         resp.body = "pong";
     });
@@ -252,7 +245,6 @@ TEST(HttpServerTest, HostHeaderMissingRejectedNoCrash) {
 #else
     close(sock);
 #endif
-    // 无 Host 头必须被拒绝（403 Forbidden）；读不到响应也允许，只要不崩溃即可。
     if (!first_line.empty()) {
         EXPECT_NE(first_line.find("403"), std::string::npos);
     }
@@ -260,7 +252,6 @@ TEST(HttpServerTest, HostHeaderMissingRejectedNoCrash) {
 }
 
 TEST(HttpServerTest, BindHostIpv6LoopbackAccepts) {
-    // 探测本机是否支持 IPv6，不支持则跳过（避免无 IPv6 的 CI 误红）
 #ifdef _WIN32
     {
         WSADATA wsa;
@@ -285,7 +276,6 @@ TEST(HttpServerTest, BindHostIpv6LoopbackAccepts) {
         resp.body = "pong";
     });
     server.Start();
-    // 服务器仅绑 ::1（IPv6），不能用 IPv4 的 WaitUntilReady，自行用 IPv6 探测就绪
     bool ipv6_ready = false;
     for (int i = 0; i < 50 && !ipv6_ready; ++i) {
 #ifdef _WIN32
@@ -309,7 +299,6 @@ TEST(HttpServerTest, BindHostIpv6LoopbackAccepts) {
     }
     ASSERT_TRUE(ipv6_ready);
 
-    // 用原始 socket 连 ::1（避免依赖 HttpClient 对 [::1] 的解析）
     std::string first_line;
 #ifdef _WIN32
     WSADATA wsa; ASSERT_EQ(WSAStartup(MAKEWORD(2, 2), &wsa), 0);
@@ -349,9 +338,6 @@ TEST(HttpServerTest, BindHostInvalidIpv6Throws) {
     EXPECT_THROW(server.Start(), std::exception);
 }
 
-// ============================================================
-// EventStore
-// ============================================================
 TEST(EventStoreTest, AppendAndRetrieve) {
     mcp::EventStore store;
     auto id1 = store.Append("sess1", "event1");
@@ -376,9 +362,6 @@ TEST(EventStoreTest, MaxCapacity) {
     EXPECT_LE(events.size(), mcp::EventStore::kMaxEventsPerSession);
 }
 
-// ============================================================
-// StreamableHttpServerTransport + StreamableHttpClientTransport
-// ============================================================
 TEST(StreamableHttpTest, McpHeadersValidation) {
     std::string error;
     auto body = mcp::JsonValue::Parse(R"({"jsonrpc":"2.0","method":"tools/list","id":1})");
@@ -390,8 +373,6 @@ TEST(StreamableHttpTest, McpHeadersValidation) {
     EXPECT_FALSE(error.empty());
 }
 
-// SEP-2243: a result meta "x-mcp-header" annotation is mirrored into
-// Mcp-Param-* response headers in stateless mode.
 TEST(StreamableHttpTest, StatelessResponseMirrorsMcpParamHeaders) {
     auto port = PickFreePort(kTestBasePort + 500);
 
@@ -434,7 +415,6 @@ TEST(StreamableHttpTest, StatelessResponseMirrorsMcpParamHeaders) {
     transport->Close();
 }
 
-// ── DNS rebinding protection: foreign Host headers are rejected ──
 TEST(HttpServerTest, HostValidationRejectsForeignHost) {
     auto port = PickFreePort(kTestBasePort + 900);
     mcp::HttpServer server(port);
@@ -481,7 +461,6 @@ TEST(HttpServerTest, HostValidationAllowsConfiguredHosts) {
     server.Stop();
 }
 
-// ── SSE keepalive: comment frames are broadcast at the configured interval ──
 TEST(StreamableHttpTest, SseKeepAliveFrames) {
     auto port = PickFreePort(kTestBasePort + 700);
     mcp::StreamableHttpServerOptions opts;
@@ -531,7 +510,6 @@ TEST(StreamableHttpTest, SseKeepAliveFrames) {
     transport->Close();
 }
 
-// ── DELETE terminates a sessionful transport (405 in stateless mode) ──
 TEST(StreamableHttpTest, DeleteTerminatesSession) {
     auto port = PickFreePort(kTestBasePort + 1000);
     mcp::StreamableHttpServerOptions opts;
@@ -554,8 +532,6 @@ TEST(StreamableHttpTest, DeleteTerminatesSession) {
     transport->Close();
 }
 
-// ── Stateful mode: a request response is delivered synchronously on the
-// POST SSE stream (200 + text/event-stream), not via 202 + GET stream. ──
 TEST(StreamableHttpTest, StatefulRequestResponseViaSseStream) {
     auto port = PickFreePort(kTestBasePort + 600);
     mcp::StreamableHttpServerOptions opts;
@@ -594,7 +570,6 @@ TEST(StreamableHttpTest, StatefulRequestResponseViaSseStream) {
     transport->Close();
 }
 
-// ── Stateful mode: a notification is acknowledged with 202 + {} ──
 TEST(StreamableHttpTest, StatefulNotificationReturns202) {
     auto port = PickFreePort(kTestBasePort + 650);
     mcp::StreamableHttpServerOptions opts;
@@ -622,8 +597,6 @@ TEST(StreamableHttpTest, StatefulNotificationReturns202) {
     transport->Close();
 }
 
-// ── Stateful mode: a request whose response never arrives times out with
-// 504 (kStatelessTimeout). The client timeout must exceed the server's. ──
 TEST(StreamableHttpTest, StatefulRequestTimeoutReturns504) {
     auto port = PickFreePort(kTestBasePort + 720);
     mcp::StreamableHttpServerOptions opts;
@@ -659,7 +632,6 @@ TEST(StreamableHttpTest, StatefulRequestTimeoutReturns504) {
     transport->Close();
 }
 
-// ── Protocol errors map to conventional HTTP status codes: -32601 → 404 ──
 TEST(StreamableHttpTest, UnknownMethodMapsTo404) {
     auto port = PickFreePort(kTestBasePort + 750);
     mcp::StreamableHttpServerOptions opts;
@@ -687,7 +659,6 @@ TEST(StreamableHttpTest, UnknownMethodMapsTo404) {
     transport->Close();
 }
 
-// ── Client: a 200 + text/event-stream POST response delivers its events ──
 TEST(StreamableHttpTest, ClientReceivesSseStreamResponse) {
     auto port = PickFreePort(kTestBasePort + 800);
     mcp::HttpServer mock(port);
@@ -734,7 +705,6 @@ TEST(StreamableHttpTest, ClientReceivesSseStreamResponse) {
     mock.Stop();
 }
 
-// ── Client: 202 acknowledges a notification; the connection stays up ──
 TEST(StreamableHttpTest, ClientIgnores202ForNotification) {
     auto port = PickFreePort(kTestBasePort + 850);
     mcp::HttpServer mock(port);
@@ -764,7 +734,6 @@ TEST(StreamableHttpTest, ClientIgnores202ForNotification) {
     mock.Stop();
 }
 
-// ── Client: a known session id is carried on every POST from the start ──
 TEST(StreamableHttpTest, ClientSendsKnownSessionIdOnFirstRequest) {
     auto port = PickFreePort(kTestBasePort + 1100);
     mcp::HttpServer mock(port);
@@ -809,9 +778,6 @@ TEST(StreamableHttpTest, ClientSendsKnownSessionIdOnFirstRequest) {
     mock.Stop();
 }
 
-// ── Client: primitive params remain out of Mcp-Param-* headers unless the
-// corresponding inputSchema property carries an x-mcp-header annotation;
-// Mcp-Method/Mcp-Name stay as before ──
 TEST(StreamableHttpTest, ClientOmitsMcpParamHeaders) {
     auto port = PickFreePort(kTestBasePort + 1250);
     mcp::HttpServer mock(port);
@@ -870,8 +836,6 @@ TEST(StreamableHttpTest, ClientOmitsMcpParamHeaders) {
     mock.Stop();
 }
 
-// ── Client: a Mcp-Session-Id response header is captured and carried on
-// subsequent POSTs (stateful server interop) ──
 TEST(StreamableHttpTest, ClientCarriesCapturedSessionId) {
     auto port = PickFreePort(kTestBasePort + 1150);
     mcp::HttpServer mock(port);
@@ -928,8 +892,6 @@ TEST(StreamableHttpTest, ClientCarriesCapturedSessionId) {
     mock.Stop();
 }
 
-// ── Client: Close() sends a DELETE carrying the session id when the server
-// issued one (stateful session termination); stateless servers never see it ──
 TEST(StreamableHttpTest, ClientSendsDeleteOnCloseWithSessionId) {
     auto port = PickFreePort(kTestBasePort + 1200);
     mcp::HttpServer mock(port);
@@ -983,10 +945,6 @@ TEST(StreamableHttpTest, ClientSendsDeleteOnCloseWithSessionId) {
 
     mock.Stop();
 }
-
-// ══════════════════════════════════════════════════════════════════════
-// SEP-2243 x-mcp-header annotations (Streamable HTTP custom headers)
-// ══════════════════════════════════════════════════════════════════════
 
 namespace {
 
@@ -1047,7 +1005,6 @@ TEST(StreamableHttpTest, McpParamAnnotationParsesNestedPropertyPaths) {
 }
 
 TEST(StreamableHttpTest, McpParamAnnotationRejectsInvalidSchemas) {
-    // Each schema violates one of the x-mcp-header constraints.
     const char* kInvalidSchemas[] = {
         R"({"properties":{"a":{"type":"string","x-mcp-header":""}}})",
         R"({"properties":{"a":{"type":"string","x-mcp-header":"Bad Name"}}})",
@@ -1064,7 +1021,6 @@ TEST(StreamableHttpTest, McpParamAnnotationRejectsInvalidSchemas) {
 }
 
 TEST(StreamableHttpTest, McpParamValueEncodingMatchesSpecExamples) {
-    // Verbatim examples from the Streamable HTTP spec "Encoding examples" table.
     struct Case { const char* json; const char* expected; };
     const Case kCases[] = {
         {"\"us-west1\"", "us-west1"},
@@ -1091,7 +1047,6 @@ TEST(StreamableHttpTest, McpNameHeaderDecodesBase64Sentinel) {
         "tools/call", "=?base64?SGVsbG8sIOS4lueVjA==?=", body, error));
     EXPECT_TRUE(error.empty());
 
-    // A sentinel that decodes to a different name is still a mismatch.
     EXPECT_FALSE(mcp::StreamableHttpServerTransport::ValidateMcpHeaders(
         "tools/call", "=?base64?b3RoZXI=?=", body, error));
 }
@@ -1169,7 +1124,6 @@ TEST(StreamableHttpTest, ServerValidatesMcpParamHeadersAgainstBody) {
         return hdrs;
     };
 
-    // Matching header is accepted.
     {
         auto hdrs = base_headers();
         hdrs["Mcp-Param-Region"] = "us-west1";
@@ -1178,7 +1132,6 @@ TEST(StreamableHttpTest, ServerValidatesMcpParamHeadersAgainstBody) {
         EXPECT_NE(r->status_code, 400);
     }
 
-    // Mismatching header is rejected with -32020.
     {
         auto hdrs = base_headers();
         hdrs["Mcp-Param-Region"] = "us-east1";
@@ -1188,7 +1141,6 @@ TEST(StreamableHttpTest, ServerValidatesMcpParamHeadersAgainstBody) {
         EXPECT_NE(r->body.find("-32020"), std::string::npos);
     }
 
-    // Missing header while the body carries the value is rejected.
     {
         auto hdrs = base_headers();
         auto r = HttpPost(url, kBody, hdrs);
@@ -1249,7 +1201,6 @@ TEST(StreamableHttpTest, ClientMirrorsAnnotatedToolArguments) {
     list_request.method = "tools/list";
     transport->SendMessageAsync(mcp::JsonRpcMessage(std::move(list_request)));
 
-    // The tools/list response populates the annotation cache before tools/call.
     EXPECT_TRUE(WaitForCondition([&] { return got_list_response.load(); }, 5000));
 
     mcp::JsonRpcRequest call_request;
@@ -1275,7 +1226,6 @@ TEST(StreamableHttpTest, ClientMirrorsAnnotatedToolArguments) {
     EXPECT_EQ(HeaderLookup(headers, "Mcp-Method"), "tools/call");
     EXPECT_EQ(HeaderLookup(headers, "Mcp-Name"), "execute_sql");
     EXPECT_EQ(HeaderLookup(headers, "Mcp-Param-Region"), "us-west1");
-    // Non-annotated parameters must not be mirrored.
     EXPECT_TRUE(HeaderLookup(headers, "Mcp-Param-Query").empty());
 
     transport->Close();

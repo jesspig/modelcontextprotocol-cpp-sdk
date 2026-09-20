@@ -1,5 +1,3 @@
-// TransportTests — unit tests for InMemoryTransport creation, move, and state machine
-
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -9,7 +7,6 @@
 
 using namespace mcp;
 
-// InMemoryTransport creation and basic functionality
 TEST(TransportTest, InMemoryCreate) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -66,8 +63,6 @@ TEST(TransportTest, TransportBaseErrorPropagation) {
     EXPECT_EQ(tb->GetState(), TransportState::Disconnected);
 }
 
-// InMemoryTransport delivers synchronously on SendMessageAsync: the peer
-// receives the message from its MessageChannel without an external event loop.
 TEST(TransportTest, InMemoryMessageSendNoCrash) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -94,8 +89,6 @@ TEST(TransportTest, InMemoryMessageSendNoCrash) {
     pair.server->Close();
 }
 
-// After Close the channels are shut down: sending must not throw or crash,
-// and the message is dropped instead of delivered.
 TEST(TransportTest, CloseThenSendDoesNotThrow) {
     auto pair = InMemoryTransport::CreatePair();
     pair.client->Close();
@@ -108,8 +101,6 @@ TEST(TransportTest, CloseThenSendDoesNotThrow) {
     EXPECT_NO_THROW(pair.server->SendMessageAsync(JsonRpcMessage{req}));
 }
 
-// FakeTransport is a hand-written double that records outgoing messages and
-// injects incoming ones, so protocol logic can be tested without real IO.
 TEST(TransportTest, FakeTransportRecordsSends) {
     FakeTransport fake;
     fake.SetConnectResult(true);
