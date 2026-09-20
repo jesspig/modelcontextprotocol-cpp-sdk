@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、任务化工具调用、404 会话自愈、progress 回调、MRTR、响应缓存与翻页聚合。
 tags: [client, 门面, 协商, mrt, progress, tasks]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-09-20T19:09:31+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -40,7 +40,7 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:296](../../src/client/M
 - 总量超时：构造时 `SetMaxTotalTimeout(options_.max_total_timeout)` 接线至会话引擎（默认 0 禁用），progress 续命不可越过每请求绝对截止（见 [/classes/mcp-session-handler.md](mcp-session-handler.md)）；MRTR 循环自身的总预算仍取 `input_required_config->max_total_timeout`
 - URL elicitation：`SetUrlElicitationHandler` 注册 url 模式处理器——收到 `mode=="url"` 的 `elicitation/create` 时调用（缺 `elicitationId` 直接回 `InvalidParams`），返回后 SDK 自动回 `action="accept"` 并发送 `notifications/elicitation/complete`；处理器抛异常则异常回传服务端
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）
-- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.4"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`span_handler` 为空
+- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.5"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`span_handler` 为空
 
 ## progress 接收
 
