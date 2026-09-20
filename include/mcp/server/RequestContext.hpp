@@ -1,5 +1,3 @@
-// RequestContext.hpp - Request context with params, logging, and per-request log level
-
 #pragma once
 
 #include <mcp/Export.hpp>
@@ -19,7 +17,6 @@ namespace mcp {
 
 class McpServer;
 
-// ── RequestContext (对应 C# RequestContext<TParams>) ──
 template <typename TParams>
 class MCP_API RequestContext {
 public:

@@ -1,5 +1,4 @@
 #pragma once
-// StdioServerTransport.hpp — stdio-based server transport
 
 #include <mcp/Export.hpp>
 

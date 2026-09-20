@@ -1,7 +1,5 @@
 #pragma once
 
-// HttpClient.hpp — blocking HTTP/1.1 client over TcpSocket/TlsSocket
-
 #include <transport/detail/net/TcpSocket.hpp>
 
 #include <chrono>

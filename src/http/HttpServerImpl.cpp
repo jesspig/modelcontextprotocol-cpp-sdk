@@ -1,5 +1,3 @@
-// HttpServerImpl.cpp — 自研 HTTP/1.1 服务器实现
-
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -7,7 +5,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-// Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
 #ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
@@ -237,8 +234,6 @@ void Impl::Stop() {
     }
     for (auto& conn : conns)
         conn->Close();
-    // Join the keepalive thread after connection shutdown so a blocked SSE
-    // write is aborted by the closed socket instead of stalling Stop().
     detail::JoinThreadSafely(keepalive_thread_);
     detail::JoinThreadSafely(accept_thread_);
     for (auto& e : conn_threads_)

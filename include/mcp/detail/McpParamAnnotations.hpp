@@ -1,7 +1,3 @@
-// McpParamAnnotations.hpp - SEP-2243 x-mcp-header annotation parsing
-// Shared by the HTTP transport (client mirroring, server validation) and by
-// McpServer, which resolves a tool's annotations from its inputSchema.
-
 #pragma once
 
 #include <mcp/JsonValue.hpp>
@@ -52,9 +48,6 @@ struct ToolParamAnnotations {
     bool IsValid() const { return invalid_reason.empty(); }
 };
 
-// Property schemas that carry an x-mcp-header annotation must be statically
-// reachable from the schema root through `properties` keys only, and must
-// declare a primitive type. `number` is explicitly not permitted.
 inline ToolParamAnnotations ParseToolParamAnnotations(const JsonValue& input_schema) {
     ToolParamAnnotations result;
     if (!input_schema.IsObject()) return result;

@@ -1,7 +1,5 @@
 #pragma once
 
-// Meta.hpp — Request metadata, logging levels, progress tokens, cache hints
-
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -20,9 +18,6 @@ enum class LoggingLevel {
     Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency
 };
 
-// ═══════════════════════════════════════════════════════════════════════
-// RequestMeta
-// ═══════════════════════════════════════════════════════════════════════
 struct RequestMeta {
     std::optional<ProgressToken> progress_token;
     std::string protocol_version{std::string(kLatestProtocolVersion)};
@@ -35,9 +30,6 @@ struct RequestMeta {
     std::optional<std::string> baggage;
 };
 
-// ═══════════════════════════════════════════════════════════════════════
-// CacheHint
-// ═══════════════════════════════════════════════════════════════════════
 struct CacheHint {
     std::optional<int64_t> ttl_ms;
     std::optional<std::string> cache_scope;

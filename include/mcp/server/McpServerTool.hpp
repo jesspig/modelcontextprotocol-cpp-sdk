@@ -1,5 +1,3 @@
-// McpServerTool.hpp - Tool abstraction for MCP server
-
 #pragma once
 
 #include <mcp/Export.hpp>

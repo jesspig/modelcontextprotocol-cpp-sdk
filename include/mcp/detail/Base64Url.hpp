@@ -1,5 +1,4 @@
 #pragma once
-// Base64Url.hpp - RFC 4648 §5 unpadded base64url encode/decode
 
 #include <cstdint>
 #include <optional>
@@ -8,9 +7,6 @@
 
 namespace mcp { namespace detail {
 
-// Base64url (RFC 4648 §5, unpadded). Decode returns nullopt on any character
-// outside the url-safe alphabet; trailing bits that do not complete a byte
-// are dropped silently.
 inline std::string Base64UrlEncode(std::string_view raw) {
     static constexpr char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";

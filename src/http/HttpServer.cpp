@@ -1,5 +1,3 @@
-// HttpServer.cpp — HTTP server implementation (self-hosted)
-
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 
@@ -10,7 +8,6 @@
 
 namespace mcp {
 
-// HttpServer.hpp 前向声明的 PIMPL：即自研实现（公共 API 零改动）
 struct HttpServerImpl : detail::http_server_impl::Impl {
     using detail::http_server_impl::Impl::Impl;
 };
@@ -43,8 +40,6 @@ void HttpServer::Stop() {
     if (!running_.exchange(false)) return;
     auto impl = std::atomic_load(&impl_);
     if (impl) {
-        // Stopper thread so Stop() may be called from a connection/callback
-        // thread without self-joining.
         std::thread stopper([impl]() {
             impl->Stop();
         });
@@ -62,7 +57,6 @@ void HttpServer::SetHandler(std::string_view method, std::string_view path,
     handlers_[{std::string(method), std::string(path)}] = std::move(handler);
 }
 
-// ── SSE client management ──
 HttpServer::SseClientId HttpServer::AddSseClient(
     std::function<void(std::string_view)> send_fn)
 {

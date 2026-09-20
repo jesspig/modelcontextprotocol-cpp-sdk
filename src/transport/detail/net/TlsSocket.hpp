@@ -1,7 +1,5 @@
 #pragma once
 
-// TlsSocket.hpp — TLS socket wrapping TcpSocket
-
 #include <transport/detail/net/TcpSocket.hpp>
 
 #include <chrono>
@@ -10,8 +8,6 @@
 #include <mutex>
 #include <string_view>
 
-// Forward declarations of OpenSSL types so this header stays free of
-// OpenSSL dependencies (real definitions come from OpenSSL headers).
 typedef struct ssl_st SSL;
 typedef struct ssl_ctx_st SSL_CTX;
 

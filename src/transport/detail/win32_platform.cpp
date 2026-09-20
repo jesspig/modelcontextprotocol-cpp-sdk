@@ -1,5 +1,3 @@
-// win32_platform.cpp — Win32 process and pipe implementations
-
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/Log.hpp>
 #include <windows.h>
@@ -153,7 +151,6 @@ public:
 };
 } // anonymous namespace
 
-// Pipe implementations
 size_t Win32Pipe::Read(char* buffer, size_t size) {
     HANDLE h;
     {
@@ -351,7 +348,6 @@ void Win32Pipe::Close() {
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 }
 
-// Process implementations
 Win32Process::~Win32Process() {
     if (pi_.hProcess) {
         CloseHandle(pi_.hProcess);
@@ -376,7 +372,6 @@ bool Win32Process::Terminate(int timeout_ms) {
     return WaitForSingleObject(pi_.hProcess, timeout_ms) == WAIT_OBJECT_0;
 }
 
-// Factory implementation
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     std::string cmd_line = ArgvToCommandLine(info.command, info.arguments);
 

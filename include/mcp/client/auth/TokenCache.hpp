@@ -1,6 +1,4 @@
 #pragma once
-// TokenCache.hpp
-// OAuth token storage interfaces and metadata structures
 #include <mcp/McpTypes.hpp>
 
 #include <memory>
@@ -10,19 +8,17 @@
 
 namespace mcp {
 
-// ── TokenContainer — access + refresh tokens ──
 struct TokenContainer {
     std::string access_token;
     std::string refresh_token;
     std::vector<std::string> scopes;
-    int64_t expires_at{0};  // unix timestamp ms
+    int64_t expires_at{0};
     std::string token_type{"Bearer"};
 
     bool IsExpired() const;
     bool WillExpireSoon(int64_t margin_ms = 60000) const;
 };
 
-// ── ITokenCache (对应 C# ITokenCache) ──
 class ITokenCache {
 public:
     virtual ~ITokenCache() = default;
@@ -31,7 +27,6 @@ public:
     virtual void ClearTokens() = 0;
 };
 
-// ── InMemoryTokenCache (对应 C# InMemoryTokenCache) ──
 class InMemoryTokenCache : public ITokenCache {
 public:
     void StoreTokens(const TokenContainer& tokens) override;
@@ -42,7 +37,6 @@ private:
     std::mutex mutex_;
 };
 
-// ── OAuthMetadata — authorization server metadata ──
 struct OAuthMetadata {
     std::string issuer;
     std::string authorization_endpoint;
@@ -59,7 +53,6 @@ struct OAuthMetadata {
     static std::optional<OAuthMetadata> Discover(std::string_view server_url);
 };
 
-// ── OAuthTokenResponse — token endpoint response ──
 struct OAuthTokenResponse {
     std::string access_token;
     std::optional<std::string> refresh_token;
@@ -68,7 +61,6 @@ struct OAuthTokenResponse {
     std::optional<std::string> scope;
 };
 
-// ── ClientRegistrationInfo — DCR response ──
 struct ClientRegistrationInfo {
     std::string client_id;
     std::optional<std::string> client_secret;

@@ -1,5 +1,3 @@
-// FileTokenCache.cpp
-// File-based OAuth token cache with DPAPI encryption (Windows) or plaintext storage (POSIX)
 #include <mcp/JsonValue.hpp>
 #include <mcp/storage/FileTokenCache.hpp>
 #include <mcp/Log.hpp>

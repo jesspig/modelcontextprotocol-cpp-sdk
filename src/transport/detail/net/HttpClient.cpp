@@ -1,5 +1,3 @@
-// HttpClient.cpp — blocking HTTP/1.1 client implementation
-
 #include <transport/detail/net/HttpClient.hpp>
 #include <transport/detail/net/NetIoUtil.hpp>
 #include <transport/detail/net/TlsSocket.hpp>

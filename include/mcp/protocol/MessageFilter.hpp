@@ -1,6 +1,4 @@
 #pragma once
-// MessageFilter.hpp
-// Filter pipeline for intercepting incoming and outgoing JSON-RPC messages
 #include <mcp/JsonRpc.hpp>
 #include <memory>
 #include <functional>
@@ -8,14 +6,6 @@
 
 namespace mcp {
 
-// ═══════════════════════════════════════════════════════════════════════
-// MessageFilter pipeline — similar to C# McpSessionHandler filters
-// ═══════════════════════════════════════════════════════════════════════
-
-// Filter function; next must be invoked synchronously before the filter
-// function returns. Storing next for later invocation is unsupported: the
-// FilterPipeline's chain (and final handler) may be destroyed once Execute
-// returns, leaving a dangling reference.
 using MessageFilterFunc = std::function<void(
     const JsonRpcMessage&,
     std::function<void(const JsonRpcMessage&)>)>;
@@ -28,7 +18,6 @@ public:
     virtual void Filter(const JsonRpcMessage& message, MessageFilterNext next) = 0;
 };
 
-// Concrete filter wrapping a MessageFilterFunc (for ease of use)
 class MessageFilterFuncAdapter : public MessageFilter {
 public:
     explicit MessageFilterFuncAdapter(MessageFilterFunc func) : func_(std::move(func)) {}
@@ -39,7 +28,6 @@ private:
     MessageFilterFunc func_;
 };
 
-// Filter pipeline — chains multiple filters together
 class FilterPipeline {
 public:
     void AddFilter(std::shared_ptr<MessageFilter> filter) {

@@ -1,5 +1,3 @@
-// TlsSocket.cpp — TLS socket implementation over TcpSocket using OpenSSL
-
 #include <transport/detail/net/TlsSocket.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
@@ -24,8 +22,6 @@ namespace {
 constexpr std::chrono::milliseconds kTlsCloseNotifyWait(500);
 
 SSL_CTX* GetSharedCtx() {
-    // Process-wide singleton, intentionally never freed; OpenSSL cleans up
-    // all its global state at process exit.
     static SSL_CTX* ctx = [] {
         OPENSSL_init_ssl(0, nullptr);
         SSL_CTX* created = SSL_CTX_new(TLS_client_method());
@@ -229,7 +225,7 @@ bool TlsSocket::IsConnected() const {
     return ssl_ != nullptr && tcp_.IsConnected() && !eof_;
 }
 
-#else // !MCP_HAVE_OPENSSL
+#else
 
 TlsSocket::TlsSocket(bool) {}
 
@@ -261,6 +257,6 @@ bool TlsSocket::IsConnected() const {
     return false;
 }
 
-#endif // MCP_HAVE_OPENSSL
+#endif
 
 }}} // namespace mcp::detail::net

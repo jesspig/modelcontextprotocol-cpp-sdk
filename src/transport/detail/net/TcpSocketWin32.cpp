@@ -1,5 +1,3 @@
-// TcpSocketWin32.cpp — Windows TCP socket implementation
-
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -25,8 +23,6 @@ namespace mcp { namespace detail { namespace net {
 namespace {
 
 bool EnsureWinsock() {
-    // WSACleanup is intentionally never called: Winsock resources are
-    // reclaimed by the OS at process exit.
     static std::once_flag once;
     static bool ok = false;
     std::call_once(once, [] {

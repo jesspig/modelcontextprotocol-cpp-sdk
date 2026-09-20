@@ -1,7 +1,5 @@
 #pragma once
 
-// McpError.hpp — MCP exception type wrapping McpErrorCode
-
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/JsonRpc.hpp>
 
@@ -11,7 +9,6 @@
 
 namespace mcp {
 
-// ── McpError ──
 class McpError : public std::runtime_error {
 public:
     explicit McpError(McpErrorCode code, std::string message)

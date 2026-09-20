@@ -1,13 +1,10 @@
 #pragma once
 
-// Methods.hpp — MCP method and notification name constants
-
 #include <string_view>
 
 namespace mcp {
 namespace methods {
 
-// ── Request methods ──
 inline constexpr std::string_view kInitialize = "initialize";
 inline constexpr std::string_view kPing = "ping";
 

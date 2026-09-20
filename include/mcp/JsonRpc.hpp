@@ -1,7 +1,5 @@
 #pragma once
 
-// JsonRpc.hpp — JSON-RPC 2.0 message types and serialization
-
 #include <mcp/ProtocolVersion.hpp>
 #include <mcp/ErrorCodes.hpp>
 
@@ -14,60 +12,51 @@
 
 namespace mcp {
 
-// ── RequestId = variant<int64_t, string> ──
 using RequestId = std::variant<int64_t, std::string>;
 
-// ── ErrorData ──
 struct ErrorData {
     McpErrorCode code{McpErrorCode::InternalError};
     std::string message;
     std::optional<JsonValue> data = std::nullopt;
 };
 
-// ── JsonRpcRequest ──
 struct JsonRpcRequest {
     std::string jsonrpc = "2.0";
     RequestId id;
     std::string method;
     std::optional<JsonValue> params;
-    std::optional<JsonValue> meta;   // _meta carried inside params (per-request envelope)
+    std::optional<JsonValue> meta;
 };
 
-// ── JsonRpcNotification ──
 struct JsonRpcNotification {
     std::string jsonrpc = "2.0";
     std::string method;
     std::optional<JsonValue> params;
-    std::optional<JsonValue> meta;   // _meta carried inside params (per-request envelope)
+    std::optional<JsonValue> meta;
 };
 
-// ── JsonRpcResponse ──
 struct JsonRpcResponse {
     std::string jsonrpc = "2.0";
     RequestId id;
     JsonValue result;
 };
 
-// ── JsonRpcErrorResponse ──
 struct JsonRpcErrorResponse {
     std::string jsonrpc = "2.0";
     std::optional<RequestId> id;
     ErrorData error;
 };
 
-// ── JsonRpcMessage variant ──
 using JsonRpcMessage = std::variant<
     JsonRpcRequest,
     JsonRpcNotification,
     JsonRpcResponse,
     JsonRpcErrorResponse>;
 
-// ── Serialization functions (implemented in JsonRpc.cpp) ──
 std::string SerializeMessage(const JsonRpcMessage& msg);
 std::string SerializeMessage(JsonRpcMessage&& msg);
 JsonRpcMessage DeserializeMessage(std::string_view json);
 
-// ── Helpers ──
 inline bool IsRequest(const JsonRpcMessage& msg) noexcept {
     return std::holds_alternative<JsonRpcRequest>(msg);
 }
@@ -93,7 +82,6 @@ inline const JsonRpcErrorResponse* AsError(const JsonRpcMessage& msg) noexcept {
     return std::get_if<JsonRpcErrorResponse>(&msg);
 }
 
-// ── RequestId serialization (implemented in JsonRpc.cpp) ──
 JsonValue RequestIdToJson(const RequestId& id);
 RequestId RequestIdFromJson(const JsonValue& j);
 

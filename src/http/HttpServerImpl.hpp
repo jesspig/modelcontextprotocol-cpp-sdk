@@ -1,5 +1,3 @@
-// HttpServerImpl.hpp — 自研 HTTP/1.1 服务器实现
-
 #pragma once
 
 #include <mcp/http/HttpServer.hpp>

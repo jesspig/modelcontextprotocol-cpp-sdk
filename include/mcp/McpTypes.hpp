@@ -1,7 +1,5 @@
 #pragma once
 
-// McpTypes.hpp — Full MCP protocol data model types
-
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
@@ -18,9 +16,6 @@
 
 namespace mcp {
 
-// ====================================================================
-// ToolAnnotations
-// ====================================================================
 struct ToolAnnotations {
     std::optional<std::string> title;
     std::optional<bool> read_only_hint;
@@ -29,27 +24,18 @@ struct ToolAnnotations {
     std::optional<bool> destructive_hint;
 };
 
-// ====================================================================
-// ToolExecution
-// ====================================================================
 enum class ToolExecutionMode { Auto, Manual, Task };
 struct ToolExecution {
     ToolExecutionMode mode{ToolExecutionMode::Auto};
     std::optional<std::string> human_use;
 };
 
-// ====================================================================
-// ResourceAnnotations
-// ====================================================================
 struct ResourceAnnotations {
     std::optional<std::vector<std::string>> audience;
     std::optional<double> priority;
     std::optional<std::string> last_modified;
 };
 
-// ====================================================================
-// Tool
-// ====================================================================
 struct Tool {
     std::string name;
     std::optional<std::string> title;
@@ -62,9 +48,6 @@ struct Tool {
     std::optional<ToolExecution> execution;
 };
 
-// ====================================================================
-// Resource
-// ====================================================================
 struct Resource {
     std::string uri;
     std::string name;
@@ -77,9 +60,6 @@ struct Resource {
     std::optional<JsonValue> meta;
 };
 
-// ====================================================================
-// ResourceTemplate
-// ====================================================================
 struct ResourceTemplate {
     std::string uri_template;
     std::string name;
@@ -91,9 +71,6 @@ struct ResourceTemplate {
     std::optional<JsonValue> meta;
 };
 
-// ====================================================================
-// PromptArgument / Prompt / PromptMessage
-// ====================================================================
 struct PromptArgument {
     std::string name;
     std::optional<std::string> description;
@@ -114,16 +91,10 @@ struct PromptMessage {
     ContentVariant content;
 };
 
-// ====================================================================
-// Pagination
-// ====================================================================
 struct Pagination {
     std::optional<std::string> next_cursor;
 };
 
-// ====================================================================
-// Base Result
-// ====================================================================
 enum class ResultType { Complete, InputRequired };
 
 struct Result {
@@ -131,9 +102,6 @@ struct Result {
     ResultType result_type{ResultType::Complete};
 };
 
-// ====================================================================
-// Request params — shared types matching TS/C#/Python SDK patterns.
-// ====================================================================
 struct PaginatedRequestParams {
     std::optional<std::string> cursor;
     std::optional<RequestMeta> meta;
@@ -180,9 +148,6 @@ struct InitializeRequestParams {
     Implementation client_info;
 };
 
-// ====================================================================
-// Subscription
-// ====================================================================
 struct SubscriptionFilter {
     std::optional<bool> tools_list_changed;
     std::optional<bool> prompts_list_changed;
@@ -199,9 +164,6 @@ struct SubscriptionsAcknowledgedNotificationParams {
     SubscriptionFilter notifications;
 };
 
-// ====================================================================
-// InputRequiredResult (MRTR)
-// ====================================================================
 struct SamplingMessage {
     std::string role;
     ContentVariant content;
@@ -228,9 +190,6 @@ struct InputRequiredResult {
     std::optional<std::string> request_state;
 };
 
-// ====================================================================
-// Result types
-// ====================================================================
 struct EmptyResult : Result {};
 
 struct CallToolResult : Result {
@@ -295,9 +254,6 @@ struct DiscoverResult : Result {
 
 using PingResult = EmptyResult;
 
-// ====================================================================
-// Notification params
-// ====================================================================
 struct ProgressNotificationParams {
     ProgressToken progress_token;
     double progress;
@@ -310,18 +266,12 @@ struct CancelledNotificationParams {
     std::optional<std::string> reason;
 };
 
-// ====================================================================
-// Logging [deprecated].
-// ====================================================================
 struct LoggingMessageNotificationParams {
     LoggingLevel level;
     std::optional<std::string> logger;
     JsonValue data;
 };
 
-// ====================================================================
-// Elicitation
-// ====================================================================
 struct ElicitRequestParams {
     std::string message;
     std::optional<JsonValue> requested_schema;
@@ -334,8 +284,6 @@ struct ElicitResult : Result {
     std::string action;
     std::optional<JsonValue> content;
 };
-
-// ── Typed elicitation result / schema builder ──
 
 template <typename T>
 struct ElicitResultTyped {
@@ -352,9 +300,6 @@ JsonValue MakeInputResponseFromElicitResult(const ElicitResult& result);
 bool IsInputRequiredResult(const JsonValue& j);
 std::optional<InputRequests> ExtractInputRequests(const JsonValue& result);
 
-// ====================================================================
-// Sampling [deprecated] — use Elicitation instead (SEP-2577).
-// ====================================================================
 struct CreateMessageResult : Result {
     std::string role;
     ContentVariant content;
@@ -362,9 +307,6 @@ struct CreateMessageResult : Result {
     std::optional<std::string> stop_reason;
 };
 
-// ====================================================================
-// Roots [deprecated].
-// ====================================================================
 struct Root {
     std::string uri;
     std::optional<std::string> name;
@@ -377,9 +319,6 @@ struct ListRootsResult : Result {
 JsonValue MakeInputResponseFromCreateMessageResult(const CreateMessageResult& result);
 JsonValue MakeInputResponseFromListRootsResult(const ListRootsResult& result);
 
-// ====================================================================
-// RequestOptions / CacheableRequestOptions
-// ====================================================================
 struct RequestOptions {
     std::optional<JsonValue> meta;
     std::optional<int64_t> read_timeout_ms;
@@ -393,16 +332,10 @@ struct CacheableRequestOptions : RequestOptions {
     std::optional<int64_t> max_age_ms;
 };
 
-// ====================================================================
-// SetLevelRequestParams [deprecated].
-// ====================================================================
 struct SetLevelRequestParams {
     LoggingLevel level;
 };
 
-// ====================================================================
-// Tasks
-// ====================================================================
 struct GetTaskResult {
     std::string task_id;
     std::string status;
@@ -414,9 +347,9 @@ struct GetTaskResult {
 };
 
 struct CreateTaskResult : Result {
-    std::string task_id;        // wire: task.taskId
-    std::string status;         // wire: task.status
-    std::string created_at;     // wire: task.createdAt (ISO8601)
+    std::string task_id;
+    std::string status;
+    std::string created_at;
 };
 
 using UpdateTaskResult = EmptyResult;
@@ -441,9 +374,6 @@ struct TaskStatusNotificationParams {
     std::string status;
 };
 
-// ====================================================================
-// Options — registration helpers (replaces Tool.hpp/Resource.hpp/Prompt.hpp)
-// ====================================================================
 struct ToolOptions {
     std::optional<std::string> name;
     std::optional<std::string> description;
@@ -488,7 +418,6 @@ struct PromptOptions {
     PromptOptions& Arguments(std::vector<PromptArgument> a) { arguments = std::move(a); return *this; }
 };
 
-// ── Serialization ──
 JsonValue SerializeToolAnnotations(const ToolAnnotations& v);
 ToolAnnotations DeserializeToolAnnotations(const JsonValue& j);
 JsonValue SerializeToolExecution(const ToolExecution& v);
