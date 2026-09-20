@@ -1,5 +1,3 @@
-// NetStackTests.cpp — 自研网络栈单元测试
-
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX

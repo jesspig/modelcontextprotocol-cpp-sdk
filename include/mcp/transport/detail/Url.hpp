@@ -1,5 +1,4 @@
 #pragma once
-// Url.hpp — URL parsing utilities
 
 #include <stdexcept>
 #include <string>
@@ -43,7 +42,6 @@ inline UrlParts ParseUrl(const std::string& url) {
     uint16_t default_port = (c.scheme == "https" || c.scheme == "wss") ? 443 : 80;
 
     if (!host_port.empty() && host_port[0] == '[') {
-        // IPv6 literal: [::1]:port
         auto close_pos = host_port.find(']');
         if (close_pos == std::string::npos)
             throw std::invalid_argument("unterminated IPv6 host in URL: " + url);

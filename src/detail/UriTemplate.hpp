@@ -39,7 +39,6 @@ private:
     };
 
     struct MatchPart {
-        // literal separating this part from the previous one; the trailing part holds the tail
         std::string literal;
         std::string name;
         bool optional_equals = false;
@@ -582,8 +581,6 @@ inline std::optional<std::map<std::string, std::string>> UriTemplate::Match(
     for (std::size_t index = 0; index < variable_count; ++index) {
         const MatchPart& part = parts[index];
         const std::string_view next_literal = parts[index + 1].literal;
-        // greedy only for reserved expansions (+/#) and the trailing variable (whose value is the
-        // remainder up to the anchored tail); every earlier variable takes the first literal
         const bool greedy = part.preserve || index + 1 == variable_count;
         const std::optional<std::size_t> literal_position =
             FindLiteral(uri, position, next_literal, greedy);

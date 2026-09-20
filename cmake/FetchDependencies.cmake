@@ -1,11 +1,7 @@
-# 代理设置 — 仅从环境变量读取，不做自动探测
 if(DEFINED ENV{HTTP_PROXY})
     message(STATUS "[mcp] Using proxy from environment: $ENV{HTTP_PROXY}")
 endif()
 
-# ====================================================================
-# OpenSSL — TLS 与 PKCE 随机数（find_package 探测）
-# ====================================================================
 if(WIN32 AND NOT DEFINED OPENSSL_ROOT_DIR)
     file(GLOB _mcp_openssl_dirs "C:/Program Files/OpenSSL*")
     if(_mcp_openssl_dirs)

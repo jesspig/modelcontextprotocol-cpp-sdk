@@ -3,13 +3,13 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符、RFC 9207 iss 强制校验、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-09-20T21:46:56+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
 # OAuth 授权流程
 
-`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——头文件注释仍声明整体单线程使用；`GetAccessToken` 内部用 `refresh_mutex_` 串行化“读 token → 判断过期 → 刷新 → 写回”整段。因此只有 token 获取/刷新路径受该锁保护，`Authenticate`、`Revoke`、`StepUpAuthorization` 以及 metadata/registration 状态不能据此视为整体线程安全。无 token_cache 时默认 `InMemoryTokenCache`。
+`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——整体按单线程使用设计：不使用 `refresh_mutex_` 以外的同步保护。`GetAccessToken` 内部用 `refresh_mutex_` 串行化“读 token → 判断过期 → 刷新 → 写回”整段。因此只有 token 获取/刷新路径受该锁保护，`Authenticate`、`Revoke`、`StepUpAuthorization` 以及 metadata/registration 状态不能据此视为整体线程安全。无 token_cache 时默认 `InMemoryTokenCache`。
 
 ## 流程（`Authenticate()`）
 

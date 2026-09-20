@@ -1,13 +1,9 @@
-// McpTypesParams.cpp — Request params serialization and elicitation helpers
-
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
 namespace mcp {
-
-// ── PaginatedRequestParams ──
 
 JsonValue SerializePaginatedRequestParams(const PaginatedRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -24,8 +20,6 @@ PaginatedRequestParams DeserializePaginatedRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── ResourceRequestParams ──
-
 JsonValue SerializeResourceRequestParams(const ResourceRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
@@ -40,8 +34,6 @@ ResourceRequestParams DeserializeResourceRequestParams(const JsonValue& j) {
     if (m) v.meta = DeserializeRequestMeta(*m);
     return v;
 }
-
-// ── CallToolRequestParams ──
 
 JsonValue SerializeCallToolRequestParams(const CallToolRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -64,8 +56,6 @@ CallToolRequestParams DeserializeCallToolRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── GetPromptRequestParams ──
-
 GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j) {
     GetPromptRequestParams v;
     v.name = j[detail::kName].GetString();
@@ -74,8 +64,6 @@ GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j) {
     if (m) v.meta = DeserializeRequestMeta(*m);
     return v;
 }
-
-// ── CompleteRequestParams ──
 
 JsonValue SerializeCompleteRequestParams(const CompleteRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -103,13 +91,9 @@ CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── DiscoverRequestParams ──
-
 JsonValue SerializeDiscoverRequestParams(const DiscoverRequestParams&) {
     return JsonValue(JsonValue::object_tag);
 }
-
-// ── InitializeRequestParams ──
 
 JsonValue SerializeInitializeRequestParams(const InitializeRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -126,8 +110,6 @@ InitializeRequestParams DeserializeInitializeRequestParams(const JsonValue& j) {
     v.client_info = DeserializeImplementation(j["clientInfo"]);
     return v;
 }
-
-// ── ElicitRequestParams ──
 
 JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -152,8 +134,6 @@ ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── SamplingMessage ──
-
 JsonValue SerializeSamplingMessage(const SamplingMessage& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kRole] = JsonValue(v.role);
@@ -167,8 +147,6 @@ SamplingMessage DeserializeSamplingMessage(const JsonValue& j) {
     v.content = DeserializeContentVariant(j[detail::kContent]);
     return v;
 }
-
-// ── CreateMessageRequestParams ──
 
 JsonValue SerializeCreateMessageRequestParams(const CreateMessageRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -202,16 +180,12 @@ CreateMessageRequestParams DeserializeCreateMessageRequestParams(const JsonValue
     return v;
 }
 
-// ── Root ──
-
 JsonValue SerializeRoot(const Root& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
     detail::SerializeOptional(obj, detail::kName, v.name);
     return obj;
 }
-
-// ── ListRootsRequestParams ──
 
 JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams&) {
     return JsonValue(JsonValue::object_tag);
@@ -220,8 +194,6 @@ JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams&) {
 ListRootsRequestParams DeserializeListRootsRequestParams(const JsonValue&) {
     return ListRootsRequestParams{};
 }
-
-// ── SetLevelRequestParams ──
 
 JsonValue SerializeSetLevelRequestParams(const SetLevelRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -234,10 +206,6 @@ SetLevelRequestParams DeserializeSetLevelRequestParams(const JsonValue& j) {
     v.level = DeserializeLoggingLevel(j[detail::kLevel]);
     return v;
 }
-
-// ====================================================================
-// Free functions for elicitation helpers
-// ====================================================================
 
 InputRequest MakeInputRequestForElicitation(const ElicitRequestParams& params) {
     InputRequest request;

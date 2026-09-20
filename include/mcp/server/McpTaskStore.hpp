@@ -1,5 +1,3 @@
-// McpTaskStore.hpp - Task lifecycle management interface
-
 #pragma once
 
 #include <mcp/JsonValue.hpp>
@@ -13,7 +11,6 @@
 
 namespace mcp {
 
-// ── Task status values ──
 enum class TaskStatus {
     Pending,
     Working,
@@ -23,7 +20,6 @@ enum class TaskStatus {
     InputRequired,
 };
 
-// ── TaskState — full task state (persisted by store) ──
 struct TaskState {
     std::string task_id;
     TaskStatus status{TaskStatus::Pending};
@@ -35,8 +31,6 @@ struct TaskState {
     std::string created_at;
 };
 
-// ── IMcpTaskStore — interface for managing task lifecycle ──
-// Corresponds conceptually to C# IMcpTaskStore.
 class IMcpTaskStore {
 public:
     virtual ~IMcpTaskStore() = default;

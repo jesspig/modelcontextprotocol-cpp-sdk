@@ -1,5 +1,3 @@
-// JsonSerializer.hpp - Internal JSON serialization helpers (optional/vector field helpers)
-
 #pragma once
 
 #include <mcp/JsonValue.hpp>
@@ -14,8 +12,6 @@
 
 namespace mcp::detail {
 
-// ── Type name helper for error messages ──
-
 inline const char* JsonValueTypeName(const JsonValue& j) noexcept {
     if (j.IsNull()) return "null";
     if (j.IsBool()) return "bool";
@@ -26,9 +22,6 @@ inline const char* JsonValueTypeName(const JsonValue& j) noexcept {
     return "object";
 }
 
-// ── Optional field helpers ──
-// All use JsonValue which is pure C++17 (no external lib needed)
-
 template <typename T>
 inline void SerializeOptional(JsonValue& obj, const char* key,
                                const std::optional<T>& opt) {
@@ -36,10 +29,6 @@ inline void SerializeOptional(JsonValue& obj, const char* key,
         obj[key] = JsonValue(*opt);
     }
 }
-
-// ── Optional deserialization helpers ──
-// Generic template is intentionally not implemented: missing explicit
-// specializations fail at compile time instead of silently defaulting.
 
 template <typename T>
 struct DependentFalse : std::false_type {};
@@ -107,8 +96,6 @@ inline void DeserializeOptional(const JsonValue& j, const char* key,
     }
 }
 
-// ── Vector field serialization ──
-
 template <typename T, typename SerializeFn>
 inline void SerializeVector(JsonValue& obj, const char* key,
                              const std::vector<T>& vec,
@@ -121,8 +108,6 @@ inline void SerializeVector(JsonValue& obj, const char* key,
     }
     obj[key] = JsonValue(std::move(arr));
 }
-
-// ── Vector deserialization helpers ──
 
 template <typename T, typename DeserializeFn>
 inline std::vector<T> DeserializeVector(const JsonValue& j, const char* key,

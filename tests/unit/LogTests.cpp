@@ -1,4 +1,3 @@
-// LogTests.cpp — 日志钩子单元测试
 #include <mcp/Log.hpp>
 #include <mcp/test/McpTest.hpp>
 
@@ -36,12 +35,12 @@ TEST(LogTest, HandlerCapturesRecord) {
 
 TEST(LogTest, LevelFilterBelowNotTriggered) {
     std::vector<Captured> out;
-    mcp::SetLogLevel(mcp::LogLevel::Warning); // 仅 Warning 及以上
+    mcp::SetLogLevel(mcp::LogLevel::Warning);
     mcp::SetLogHandler([&out](const mcp::LogRecord& r) {
         Captured c; c.level = r.level; c.message = std::string(r.message);
         out.push_back(std::move(c));
     });
-    MCP_LOG(Info, "should-be-filtered"); // Info < Warning，不应触发
+    MCP_LOG(Info, "should-be-filtered");
     MCP_LOG(Error, "should-fire");
     mcp::SetLogHandler(nullptr);
     ASSERT_EQ(out.size(), 1u);
@@ -53,7 +52,6 @@ TEST(LogTest, HandlerThrowsDoesNotCrash) {
     mcp::SetLogHandler([](const mcp::LogRecord&) {
         throw std::runtime_error("boom");
     });
-    // 钩子抛异常必须被 SDK 吞掉，不应崩溃/传播
     MCP_LOG(Debug, "msg-after-handler-throw");
     mcp::SetLogHandler(nullptr);
     EXPECT_TRUE(true);
@@ -61,7 +59,7 @@ TEST(LogTest, HandlerThrowsDoesNotCrash) {
 
 TEST(LogTest, NullHandlerRestoresDefaultNoCrash) {
     mcp::SetLogLevel(mcp::LogLevel::Debug);
-    mcp::SetLogHandler(nullptr); // 恢复默认 stderr，不应崩溃
+    mcp::SetLogHandler(nullptr);
     MCP_LOG(Debug, "default-path");
     EXPECT_TRUE(true);
 }

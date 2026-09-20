@@ -1,5 +1,3 @@
-// FileEventStore.hpp - Event store persisted to per-session JSON Lines files
-
 #pragma once
 
 #include <mcp/http/EventStore.hpp>
@@ -12,8 +10,6 @@
 
 namespace mcp {
 
-// One JSON Lines file per session under storage_dir: each line is
-// {"id":N,"data":"..."} with monotonically increasing per-session ids.
 class FileEventStore : public EventStore {
 public:
     explicit FileEventStore(std::filesystem::path storage_dir);

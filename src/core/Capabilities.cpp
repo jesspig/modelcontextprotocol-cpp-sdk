@@ -1,5 +1,3 @@
-// Capabilities.cpp — Capability serialization/deserialization implementations
-
 #include <mcp/Capabilities.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
@@ -22,8 +20,6 @@ std::map<std::string, JsonValue> ExtensionsMapFromObject(const JsonValue& j) {
 
 }
 
-// ── ToolsCapability ──
-
 JsonValue SerializeToolsCapability(const ToolsCapability& v) {
     JsonValue obj(JsonValue::object_tag);
     detail::SerializeOptional(obj, detail::kListChanged, v.list_changed);
@@ -35,8 +31,6 @@ ToolsCapability DeserializeToolsCapability(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kListChanged, v.list_changed);
     return v;
 }
-
-// ── ResourcesCapability ──
 
 JsonValue SerializeResourcesCapability(const ResourcesCapability& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -52,8 +46,6 @@ ResourcesCapability DeserializeResourcesCapability(const JsonValue& j) {
     return v;
 }
 
-// ── PromptsCapability ──
-
 JsonValue SerializePromptsCapability(const PromptsCapability& v) {
     JsonValue obj(JsonValue::object_tag);
     detail::SerializeOptional(obj, detail::kListChanged, v.list_changed);
@@ -66,8 +58,6 @@ PromptsCapability DeserializePromptsCapability(const JsonValue& j) {
     return v;
 }
 
-// ── SamplingCapability ──
-
 JsonValue SerializeSamplingCapability(const SamplingCapability&) {
     return JsonValue(JsonValue::object_tag);
 }
@@ -75,8 +65,6 @@ JsonValue SerializeSamplingCapability(const SamplingCapability&) {
 SamplingCapability DeserializeSamplingCapability(const JsonValue&) {
     return SamplingCapability{};
 }
-
-// ── RootsCapability ──
 
 JsonValue SerializeRootsCapability(const RootsCapability& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -89,8 +77,6 @@ RootsCapability DeserializeRootsCapability(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kListChanged, v.list_changed);
     return v;
 }
-
-// ── ElicitationCapability ──
 
 JsonValue SerializeElicitationCapability(const ElicitationCapability& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -106,8 +92,6 @@ ElicitationCapability DeserializeElicitationCapability(const JsonValue& j) {
     return v;
 }
 
-// ── EmptyCapability ──
-
 JsonValue SerializeEmptyCapability(const EmptyCapability&) {
     return JsonValue(JsonValue::object_tag);
 }
@@ -115,8 +99,6 @@ JsonValue SerializeEmptyCapability(const EmptyCapability&) {
 EmptyCapability DeserializeEmptyCapability(const JsonValue&) {
     return EmptyCapability{};
 }
-
-// ── ServerCapabilities ──
 
 JsonValue SerializeServerCapabilities(const ServerCapabilities& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -159,8 +141,6 @@ ServerCapabilities DeserializeServerCapabilities(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kExperimental, v.experimental);
     return v;
 }
-
-// ── ClientCapabilities ──
 
 JsonValue SerializeClientCapabilities(const ClientCapabilities& v) {
     JsonValue obj(JsonValue::object_tag);

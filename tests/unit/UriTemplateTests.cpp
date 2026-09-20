@@ -1,5 +1,3 @@
-// UriTemplateTests — RFC 6570 URI template expansion/matching tests
-
 #include <detail/UriTemplate.hpp>
 
 #include <mcp/test/McpTest.hpp>
@@ -76,8 +74,6 @@ TEST(UriTemplateTest, ParseRejectsInvalidVarName) {
     EXPECT_FALSE(Parses("{a%2}"));
     EXPECT_FALSE(Parses("{}"));
     EXPECT_FALSE(Parses("{a,}"));
-    // "{.a}" is a valid label expression (label operator + name "a"), so the leading-dot
-    // name case is covered through a non-first variable instead.
     EXPECT_FALSE(Parses("{a,.b}"));
     EXPECT_FALSE(Parses("{..}"));
     EXPECT_TRUE(Parses("{a.b}"));
@@ -166,8 +162,6 @@ TEST(UriTemplateTest, ExpandPathStyles) {
 }
 
 TEST(UriTemplateTest, ExpandHandlesMissingAndEmptyVariables) {
-    // RFC 6570 §3.2.2-§3.2.8: undefined variables are skipped, defined-but-empty variables
-    // still emit their operator prefix and key.
     EXPECT_EQ(Expanding("{empty}", {{"empty", ""}}), std::string(""));
     EXPECT_EQ(Expanding("{undef}", {}), std::string(""));
     EXPECT_EQ(Expanding("{?empty}", {{"empty", ""}}), std::string("?empty="));
@@ -183,7 +177,6 @@ TEST(UriTemplateTest, ExpandHandlesMissingAndEmptyVariables) {
     EXPECT_EQ(Expanding("{?x,y,undef}", {{"x", "1024"}, {"y", "768"}}),
               std::string("?x=1024&y=768"));
     EXPECT_EQ(Expanding("{/x,y,undef}", {{"x", "1024"}, {"y", "768"}}), std::string("/1024/768"));
-    // the operator prefix is emitted once when at least one variable is defined
     EXPECT_EQ(Expanding("{.empty}", {{"empty", ""}}), std::string("."));
     EXPECT_EQ(Expanding("{/empty}", {{"empty", ""}}), std::string("/"));
     EXPECT_EQ(Expanding("{#empty}", {{"empty", ""}}), std::string("#"));
@@ -243,17 +236,12 @@ TEST(UriTemplateTest, MatchRejectsNonMatchingUri) {
 }
 
 TEST(UriTemplateTest, MatchRespectsGreedyDirection) {
-    // a variable before the multi-segment variable takes the first occurrence of its literal
     EXPECT_EQ(VariablesOf("{a}/x/{+rest}", "p/x/q/x/r", "a"), std::string("p"));
     EXPECT_EQ(VariablesOf("{a}/x/{+rest}", "p/x/q/x/r", "rest"), std::string("q/x/r"));
 
-    // only the trailing variable is greedy (its value is the remainder up to the anchored tail);
-    // every earlier variable takes the first occurrence of its literal — this is the corrected
-    // convention
     EXPECT_EQ(VariablesOf("{a}-x-{b}", "p-x-q-x-r", "a"), std::string("p"));
     EXPECT_EQ(VariablesOf("{a}-x-{b}", "p-x-q-x-r", "b"), std::string("q-x-r"));
 
-    // a variable after the multi-segment variable is greedy again
     EXPECT_EQ(VariablesOf("{+head}/x/{b}", "/a/x/y/x/z", "head"), std::string("/a/x/y"));
     EXPECT_EQ(VariablesOf("{+head}/x/{b}", "/a/x/y/x/z", "b"), std::string("z"));
 }

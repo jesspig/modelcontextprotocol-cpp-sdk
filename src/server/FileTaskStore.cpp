@@ -1,5 +1,3 @@
-// FileTaskStore.cpp - JSON file-backed task store implementation
-
 #include <mcp/storage/FileTaskStore.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/detail/AtomicJsonFile.hpp>

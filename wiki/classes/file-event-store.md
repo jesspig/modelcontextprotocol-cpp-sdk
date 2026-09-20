@@ -3,7 +3,7 @@ type: Class
 title: FileEventStore
 description: EventStore 的 JSONL 文件持久化实现：跨进程文件锁、崩溃残留容错、1024 事件裁剪。
 tags: [storage, event-store, sse, 文件锁, 持久化]
-timestamp: 2026-09-12T06:05:00+08:00
+timestamp: 2026-09-20T21:46:56+08:00
 resource: include/mcp/storage/FileEventStore.hpp
 ---
 
@@ -34,7 +34,7 @@ resource: include/mcp/storage/FileEventStore.hpp
 
 ## 构建注意
 
-`src/http/FileEventStore.cpp` 在 unity TU 中**必须排在末尾**：其 `windows.h` 依赖前面文件已建立的 winsock 包含顺序（CMakeLists 有注释固化该约束）。
+`src/http/FileEventStore.cpp` 在 unity TU 中**必须排在末尾**：其 `windows.h` 依赖前面文件已建立的 winsock 包含顺序（该顺序约束由目标源文件列表顺序固化，见根 `CMakeLists.txt` 的 `target_sources(mcp-http ...)` 序列）。
 
 ## 测试
 

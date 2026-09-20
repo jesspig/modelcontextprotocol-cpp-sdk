@@ -1,6 +1,3 @@
-// McpClientTests — unit tests for McpClient creation, options, tool conversion,
-// and real protocol negotiation against an in-memory server
-
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/server/McpServer.hpp>
@@ -19,7 +16,6 @@ using namespace mcp;
 
 using Ctx = RequestContext<CallToolRequestParams>;
 
-// ── Create client directly (no server, for unit testing) ──
 TEST(McpClientTest, CreateAndDestroy) {
     auto pair = InMemoryTransport::CreatePair();
     ClientOptions opts;
@@ -30,7 +26,6 @@ TEST(McpClientTest, CreateAndDestroy) {
     client->Close();
 }
 
-// ── Initial state ──
 TEST(McpClientTest, InitialState) {
     auto pair = InMemoryTransport::CreatePair();
     ClientOptions opts;
@@ -42,7 +37,6 @@ TEST(McpClientTest, InitialState) {
     client->Close();
 }
 
-// ── ClientOptions ──
 TEST(McpClientTest, ClientOptionsDefaults) {
     ClientOptions opts;
     EXPECT_EQ(opts.connect_mode, ConnectMode::Auto);
@@ -51,9 +45,6 @@ TEST(McpClientTest, ClientOptionsDefaults) {
     EXPECT_EQ(opts.discover_probe_timeout.count(), 5);
 }
 
-// ── Version negotiation against a real in-memory server ──
-
-// Legacy mode: must go through the initialize handshake and stay legacy.
 TEST(McpClientTest, LegacyNegotiationUsesInitialize) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -72,7 +63,6 @@ TEST(McpClientTest, LegacyNegotiationUsesInitialize) {
     server->Close();
 }
 
-// Auto mode with a modern server: server/discover probe succeeds.
 TEST(McpClientTest, AutoNegotiationDiscoversModern) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -91,13 +81,9 @@ TEST(McpClientTest, AutoNegotiationDiscoversModern) {
     server->Close();
 }
 
-// Auto mode against a peer that answers MethodNotFound for server/discover:
-// must fall back to the initialize handshake.
 TEST(McpClientTest, AutoNegotiationFallsBackToInitialize) {
     auto pair = InMemoryTransport::CreatePair();
 
-    // Bare peer handler with no server/discover handler registered: the probe
-    // fails with MethodNotFound, so negotiation must fall back to initialize.
     auto server_handler = std::make_shared<McpSessionHandler>(
         std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     server_handler->SetRequestHandler(methods::kInitialize,
@@ -122,8 +108,6 @@ TEST(McpClientTest, AutoNegotiationFallsBackToInitialize) {
     server_handler->Close();
 }
 
-// Auto mode against a server whose -32022 lists an overlapping supported
-// version: the probe is retried once with the shared version and succeeds.
 TEST(McpClientTest, AutoNegotiationCorrectsVersionOnSharedVersion) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -165,8 +149,6 @@ TEST(McpClientTest, AutoNegotiationCorrectsVersionOnSharedVersion) {
     server_handler->Close();
 }
 
-// Auto mode against a server whose -32022 lists only legacy versions: no
-// overlap exists, so negotiation falls back to initialize.
 TEST(McpClientTest, AutoNegotiationFallsBackWhenOnlyLegacySupported) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -209,9 +191,6 @@ TEST(McpClientTest, AutoNegotiationFallsBackWhenOnlyLegacySupported) {
     server_handler->Close();
 }
 
-// Auto mode against a TS-style server whose discover result carries no
-// top-level serverInfo: the _meta["io.modelcontextprotocol/serverInfo"]
-// envelope must be picked up and the probe must still succeed.
 TEST(McpClientTest, AutoNegotiationAcceptsMissingServerInfoWithMetaServerInfo) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -244,8 +223,6 @@ TEST(McpClientTest, AutoNegotiationAcceptsMissingServerInfoWithMetaServerInfo) {
     server_handler->Close();
 }
 
-// Auto mode against a server exposing serverInfo neither at the top level
-// nor in _meta: the probe still succeeds with an empty implementation.
 TEST(McpClientTest, AutoNegotiationAcceptsMissingServerInfoEntirely) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -274,9 +251,6 @@ TEST(McpClientTest, AutoNegotiationAcceptsMissingServerInfoEntirely) {
     server_handler->Close();
 }
 
-// Auto mode with a successful discover that lists only a non-latest
-// client-supported version: modern era is kept but the negotiated version
-// is the shared one, not unconditionally the latest.
 TEST(McpClientTest, AutoNegotiationUsesSharedVersionFromSuccessfulDiscover) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -306,9 +280,6 @@ TEST(McpClientTest, AutoNegotiationUsesSharedVersionFromSuccessfulDiscover) {
     server_handler->Close();
 }
 
-// Auto mode with a successful discover declaring an empty supportedVersions
-// list: the lists share no version, so the probe fails and negotiation
-// falls back to the initialize handshake.
 TEST(McpClientTest, AutoNegotiationFallsBackWhenSupportedVersionsEmpty) {
     auto pair = InMemoryTransport::CreatePair();
 
@@ -347,8 +318,6 @@ TEST(McpClientTest, AutoNegotiationFallsBackWhenSupportedVersionsEmpty) {
     server_handler->Close();
 }
 
-// Pin mode: no handshake is sent; the pinned version is negotiated directly.
-// Note: Pin mode does not populate server_info (known limitation).
 TEST(McpClientTest, PinNegotiationUsesPinnedVersion) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -366,7 +335,6 @@ TEST(McpClientTest, PinNegotiationUsesPinnedVersion) {
     server_handler->Close();
 }
 
-// ── SetNotificationHandler must take effect immediately after Create ──
 TEST(McpClientTest, SetNotificationHandlerFiresAfterCreate) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -393,7 +361,6 @@ TEST(McpClientTest, SetNotificationHandlerFiresAfterCreate) {
     server->Close();
 }
 
-// ── Client lifecycle ──
 TEST(McpClientTest, CreateAndClose) {
     auto pair = InMemoryTransport::CreatePair();
     ClientOptions opts;
@@ -403,7 +370,6 @@ TEST(McpClientTest, CreateAndClose) {
     client->Close();
 }
 
-// ── Pagination: without a cursor all pages are merged automatically ──
 TEST(McpClientTest, ListToolsAutoPaginates) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -444,13 +410,11 @@ TEST(McpClientTest, ListToolsAutoPaginates) {
     opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     auto client = McpClient::Create(std::move(pair.client), opts);
 
-    // Without a cursor both pages are merged.
     auto all = client->ListTools();
     ASSERT_EQ(all.tools.size(), 3u);
     EXPECT_EQ(all.tools[0].name, "tool-1");
     EXPECT_EQ(all.tools[2].name, "tool-3");
 
-    // With an explicit cursor a single page is returned.
     auto page = client->ListTools("c1");
     ASSERT_EQ(page.tools.size(), 1u);
     EXPECT_EQ(page.tools[0].name, "tool-3");
@@ -459,7 +423,6 @@ TEST(McpClientTest, ListToolsAutoPaginates) {
     server_handler->Close();
 }
 
-// ── MRTR total budget caps the per-round timeout ──
 TEST(McpClientTest, MrtrMaxTotalTimeoutCapsRoundTimeout) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -486,14 +449,12 @@ TEST(McpClientTest, MrtrMaxTotalTimeoutCapsRoundTimeout) {
         McpError);
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start);
-    // The round timeout must have been capped to ~1s by the total budget.
     EXPECT_LT(elapsed.count(), 10);
 
     client->Close();
     server_handler->Close();
 }
 
-// ── MRTR: input_required 内嵌 sampling/createMessage 由 SamplingHandler 填充 ──
 TEST(McpClientTest, MrtrFulfillsSamplingEmbeddedRequest) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -570,7 +531,6 @@ TEST(McpClientTest, MrtrFulfillsSamplingEmbeddedRequest) {
     server_handler->Close();
 }
 
-// ── MRTR: input_required 内嵌 roots/list 由 RootsHandler 填充 ──
 TEST(McpClientTest, MrtrFulfillsRootsEmbeddedRequest) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -639,7 +599,6 @@ TEST(McpClientTest, MrtrFulfillsRootsEmbeddedRequest) {
     server_handler->Close();
 }
 
-// ── MRTR: inputRequests 按 method 分派，inputResponses 键回显服务端原键 ──
 TEST(McpClientTest, MrtrEchoesServerAssignedInputRequestKeys) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -716,7 +675,6 @@ TEST(McpClientTest, MrtrEchoesServerAssignedInputRequestKeys) {
     server_handler->Close();
 }
 
-// ── MRTR: 未知 input request method 抛类型化错误（不静默忽略）──
 TEST(McpClientTest, MrtrUnknownInputRequestMethodThrows) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -756,7 +714,6 @@ TEST(McpClientTest, MrtrUnknownInputRequestMethodThrows) {
     server_handler->Close();
 }
 
-// ── MRTR: state-only 轮次（仅 requestState）重试前退避 >= 50ms ──
 TEST(McpClientTest, MrtrStateOnlyRoundBacksOff) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -805,7 +762,6 @@ TEST(McpClientTest, MrtrStateOnlyRoundBacksOff) {
     server_handler->Close();
 }
 
-// ── MRTR: state-only 退避指数增长，带 input_requests 的轮次后重置 ──
 TEST(McpClientTest, MrtrBackoffGrowsAndResetsAfterFulfilledRound) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -885,7 +841,6 @@ TEST(McpClientTest, MrtrBackoffGrowsAndResetsAfterFulfilledRound) {
     server_handler->Close();
 }
 
-// ── MRTR: 默认 max_rounds=10，第 11 轮后停止 ──
 TEST(McpClientTest, MrtrMaxRoundsDefaultTen) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -923,7 +878,6 @@ TEST(McpClientTest, MrtrMaxRoundsDefaultTen) {
     server_handler->Close();
 }
 
-// ── SEP-2549: ttlMs cache hint caches list results; listChanged invalidates ──
 TEST(McpClientTest, ListToolsCachesAndInvalidatesOnListChanged) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -955,13 +909,10 @@ TEST(McpClientTest, ListToolsCachesAndInvalidatesOnListChanged) {
     ASSERT_EQ(r1.tools.size(), 1u);
     EXPECT_EQ(calls.load(), 1);
 
-    // Second call is served from the cache.
     auto r2 = client->ListTools();
     ASSERT_EQ(r2.tools.size(), 1u);
     EXPECT_EQ(calls.load(), 1);
 
-    // A listChanged notification (handled by the built-in handler) invalidates
-    // the cache; the next call reaches the server again.
     server_handler->SendNotification(notifications::kToolListChanged,
         JsonValue(JsonValue::object_tag));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -973,7 +924,6 @@ TEST(McpClientTest, ListToolsCachesAndInvalidatesOnListChanged) {
     server_handler->Close();
 }
 
-// ── SEP-2106: server rejects tool output that violates outputSchema ──
 TEST(McpClientTest, ToolOutputSchemaValidation) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -997,7 +947,6 @@ TEST(McpClientTest, ToolOutputSchemaValidation) {
         std::function<CallToolResult(const Ctx&)>(
             [](const Ctx&) -> CallToolResult {
                 CallToolResult r;
-                // structured_content missing the required "name" property
                 r.structured_content = JsonValue(JsonValue::object_tag);
                 (*r.structured_content)["other"] = JsonValue("x");
                 return r;
@@ -1016,7 +965,6 @@ TEST(McpClientTest, ToolOutputSchemaValidation) {
     server->Close();
 }
 
-// ── SEP-2549: list pages with different cursors are cached separately ──
 TEST(McpClientTest, ListToolsCachesCursorPagesSeparately) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1067,7 +1015,6 @@ TEST(McpClientTest, ListToolsCachesCursorPagesSeparately) {
     server_handler->Close();
 }
 
-// ── SEP-2549: resources/read cache keys include the uri ──
 TEST(McpClientTest, ReadResourceCachesPerUri) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1113,7 +1060,6 @@ TEST(McpClientTest, ReadResourceCachesPerUri) {
     server_handler->Close();
 }
 
-// ── SEP-2549: ttl hints above 24h are clamped, not rejected ──
 TEST(McpClientTest, CacheClampsTtlTo24Hours) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1151,8 +1097,6 @@ TEST(McpClientTest, CacheClampsTtlTo24Hours) {
     server_handler->Close();
 }
 
-// ── SEP-2549: private entries hit within the same connection and stay
-// separate from public entries ──
 TEST(McpClientTest, CachePrivateEntryHitsInSameConnection) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1208,7 +1152,6 @@ TEST(McpClientTest, CachePrivateEntryHitsInSameConnection) {
     server_handler->Close();
 }
 
-// ── SEP-2549: private cache entries are dropped when the connection closes ──
 TEST(McpClientTest, CloseDropsPrivateCacheEntries) {
     auto pair_a = InMemoryTransport::CreatePair();
     auto server_a = std::make_shared<McpSessionHandler>(
@@ -1260,7 +1203,6 @@ TEST(McpClientTest, CloseDropsPrivateCacheEntries) {
     server_b->Close();
 }
 
-// ── SEP-2549: resources/updated invalidates only the affected uri ──
 TEST(McpClientTest, ResourceUpdatedInvalidatesOnlyThatUri) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1309,7 +1251,6 @@ TEST(McpClientTest, ResourceUpdatedInvalidatesOnlyThatUri) {
     server_handler->Close();
 }
 
-// ── SubscribeAsync: waits for the acknowledged first frame ──
 TEST(McpClientTest, SubscribeAsyncWaitsForAcknowledged) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1330,8 +1271,6 @@ TEST(McpClientTest, SubscribeAsyncWaitsForAcknowledged) {
     server->Close();
 }
 
-// ── SubscribeAsync: a server that answers the request but never sends the
-// acknowledged frame makes SubscribeAsync time out with an error ──
 TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1363,9 +1302,7 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
     server_handler->Close();
 }
 
-// ── SendRootsListChanged: allowed at the 2025-06-18 boundary and later ──
 TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
-    // Boundary: pinned exactly at 2025-06-18, the notification goes through.
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
         std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
@@ -1390,7 +1327,6 @@ TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
     client->Close();
     server_handler->Close();
 
-    // Later legacy era (2025-11-25) is after 2025-06-18, so it is allowed too.
     auto pair2 = InMemoryTransport::CreatePair();
     auto server_handler2 = std::make_shared<McpSessionHandler>(
         std::move(pair2.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
@@ -1425,7 +1361,6 @@ TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
     server_handler2->Close();
 }
 
-// ── SendRootsListChanged: rejected with McpError below 2025-06-18 ──
 TEST(McpClientTest, SendRootsListChangedRejectedBelowMinVersion) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1460,7 +1395,6 @@ TEST(McpClientTest, SendRootsListChangedRejectedBelowMinVersion) {
     server_handler->Close();
 }
 
-// ── progress: CallTool on_progress 收到服务端按请求 token 回显的通知 ──
 TEST(McpClientTest, CallToolReceivesProgressNotifications) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1520,7 +1454,6 @@ TEST(McpClientTest, CallToolReceivesProgressNotifications) {
     server->Close();
 }
 
-// ── progress: 未注册 on_progress 时收到的通知被静默忽略 ──
 TEST(McpClientTest, CallToolWithoutProgressCallbackIgnoresProgress) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1549,7 +1482,6 @@ TEST(McpClientTest, CallToolWithoutProgressCallbackIgnoresProgress) {
     server->Close();
 }
 
-// ── progress: 请求结束后同 token 的通知不再触发回调 ──
 TEST(McpClientTest, ProgressCallbackRemovedAfterRequestCompletes) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1604,7 +1536,6 @@ TEST(McpClientTest, ProgressCallbackRemovedAfterRequestCompletes) {
     server->Close();
 }
 
-// ── ListToolsAll aggregates a three-page cursor chain in order ──
 TEST(McpClientTest, ListToolsAllAggregatesCursorChain) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1659,7 +1590,6 @@ TEST(McpClientTest, ListToolsAllAggregatesCursorChain) {
     server_handler->Close();
 }
 
-// ── ListToolsAll throws at the 64-page cap when the cursor never ends ──
 TEST(McpClientTest, ListToolsAllThrowsWhenPaginationNeverConverges) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1700,7 +1630,6 @@ TEST(McpClientTest, ListToolsAllThrowsWhenPaginationNeverConverges) {
     server_handler->Close();
 }
 
-// ── ListToolsAll on a single page equals the plain listing ──
 TEST(McpClientTest, ListToolsAllSinglePageEqualsPlainList) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1741,7 +1670,6 @@ TEST(McpClientTest, ListToolsAllSinglePageEqualsPlainList) {
     server_handler->Close();
 }
 
-// ── ListResourcesAll / ListResourceTemplatesAll / ListPromptsAll aggregate ──
 TEST(McpClientTest, ListResourcesTemplatesPromptsAllAggregate) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1817,7 +1745,6 @@ TEST(McpClientTest, ListResourcesTemplatesPromptsAllAggregate) {
     server_handler->Close();
 }
 
-// ── CallToolAsTask: task 句柄立即返回，GetTask/PollTaskToCompletion 跟进 ──
 TEST(McpClientTest, CallToolAsTaskReturnsTaskHandle) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1874,7 +1801,6 @@ TEST(McpClientTest, CallToolAsTaskReturnsTaskHandle) {
     server_handler->Close();
 }
 
-// ── CallToolAsTask: 对端未任务化而同步返回 CallToolResult 时自动降级 ──
 TEST(McpClientTest, CallToolAsTaskDegradesSynchronousResult) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1912,7 +1838,6 @@ TEST(McpClientTest, CallToolAsTaskDegradesSynchronousResult) {
     server_handler->Close();
 }
 
-// ── U9 接线: ClientOptions::max_total_timeout 传入 handler 后封顶 progress 续命 ──
 TEST(McpClientTest, ClientMaxTotalTimeoutCapsProgressExtensions) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1984,7 +1909,6 @@ TEST(McpClientTest, ClientMaxTotalTimeoutCapsProgressExtensions) {
     server_handler->Close();
 }
 
-// ── U7: URL elicitation——url handler 被调用后自动发送 elicitation/complete ──
 TEST(McpClientTest, UrlElicitationInvokesHandlerAndSendsComplete) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -2040,7 +1964,6 @@ TEST(McpClientTest, UrlElicitationInvokesHandlerAndSendsComplete) {
     server_handler->Close();
 }
 
-// ── U7: 未设置 url handler 时按 decline 应答且仍发送 complete ──
 TEST(McpClientTest, UrlElicitationWithoutHandlerDeclinesAndStillSendsComplete) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -2084,7 +2007,6 @@ TEST(McpClientTest, UrlElicitationWithoutHandlerDeclinesAndStillSendsComplete) {
     server_handler->Close();
 }
 
-// ── U8: SessionExpired 触发恰一次重新 initialize 并重放原请求 ──
 TEST(McpClientTest, SessionExpiredTriggersReinitAndReplaysOnce) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -2131,7 +2053,6 @@ TEST(McpClientTest, SessionExpiredTriggersReinitAndReplaysOnce) {
     server_handler->Close();
 }
 
-// ── U8: 重放再次 SessionExpired 时原样透传，不再第二次恢复 ──
 TEST(McpClientTest, SecondSessionExpiredPropagatesWithoutSecondReinit) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -2174,7 +2095,6 @@ TEST(McpClientTest, SecondSessionExpiredPropagatesWithoutSecondReinit) {
     server_handler->Close();
 }
 
-// ── U8: reinit_on_expired_session=false 时 SessionExpired 直接透传 ──
 TEST(McpClientTest, ReinitDisabledPropagatesSessionExpired) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -2218,7 +2138,6 @@ TEST(McpClientTest, ReinitDisabledPropagatesSessionExpired) {
     server_handler->Close();
 }
 
-// ── U8: 非 SessionExpired 错误不触发重新初始化 ──
 TEST(McpClientTest, NonSessionExpiredErrorDoesNotReinit) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(

@@ -1,7 +1,5 @@
 #pragma once
 
-// McpVersion.hpp — SDK version constant (single source of truth)
-
 #include <string_view>
 
 namespace mcp {

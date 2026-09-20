@@ -1,5 +1,3 @@
-// McpServer.cpp - MCP server implementation: lifecycle, handler wiring, and primitive registration
-
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/server/RequestState.hpp>
@@ -25,14 +23,11 @@
 namespace mcp {
 
 namespace {
-    // ── Pagination helper ──
     constexpr size_t kDefaultPageSize = 100;
 
-    // ── Timeouts ──
     constexpr std::chrono::seconds kElicitTimeout(600);
     constexpr std::chrono::seconds kNoWait(0);
 
-    // ── Logging ──
     constexpr std::string_view kDefaultLoggerName = "mcp-server";
 
     size_t ParseCursor(const std::optional<std::string>& cursor) {
@@ -158,9 +153,6 @@ static bool RequireInitialized(bool initialized, bool modern_era, std::promise<J
     return false;
 }
 
-// ====================================================================
-// Factory
-// ====================================================================
 std::unique_ptr<McpServer> McpServer::Create(
     std::shared_ptr<ITransport> transport,
     const ServerOptions& options)
@@ -182,21 +174,16 @@ McpServer::McpServer(
         options_.incoming_filters,
         options_.outgoing_filters);
 
-    // Detect stateless transport
     is_stateless_ = transport_->IsStateless();
 
-    // Wire built-in handlers
     WireHandlers();
 
-    // Derive capabilities from registered primitives
     DeriveCapabilities();
 
-    // Negotiate protocol version
     if (options_.protocol_version) {
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
     }
 
-    // Wire request state verifier if configured
     if (options_.request_state_verifier) {
         handler_->SetRequestStateVerifier(options_.request_state_verifier);
     } else if (options_.request_state_key) {
@@ -209,7 +196,6 @@ McpServer::McpServer(
             });
     }
 
-    // Wire event callbacks — chain new full-message callbacks with existing shorthands
     if (options_.on_request || options_.on_method_called) {
         handler_->SetOnRequestCallback(
             [this](std::string_view method, const JsonRpcRequest& req) {
@@ -242,19 +228,13 @@ McpServer::McpServer(
         }
     }
 
-    // Start the transport's IO threads before the session handler's message loop
     transport_->Start();
 
-    // Start the session handler
     handler_->Start();
 
-    // Mark as running for Run() loop
     running_ = true;
 }
 
-// ====================================================================
-// Lifecycle
-// ====================================================================
 void McpServer::Run() {
     std::unique_lock<std::mutex> lock(run_mutex_);
     run_cv_.wait(lock, [this] { return !running_; });
@@ -276,9 +256,6 @@ void McpServer::Close() {
     run_cv_.notify_one();
 }
 
-// ====================================================================
-// Tool registration
-// ====================================================================
 void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     const auto& t = tool->ProtocolTool();
     if (!IsValidToolName(t.name)) {
@@ -290,14 +267,10 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
         tools_[t.name] = std::move(tool);
         cached_tools_json_ = std::nullopt;
     }
-    // Re-wire handlers
     WireHandlers();
     DeriveCapabilities();
 }
 
-// ====================================================================
-// Resource registration
-// ====================================================================
 void McpServer::RegisterResource(
     std::string_view name,
     std::string_view uri,
@@ -353,9 +326,6 @@ void McpServer::RegisterResourceTemplate(
     DeriveCapabilities();
 }
 
-// ====================================================================
-// Prompt registration
-// ====================================================================
 void McpServer::RegisterPrompt(
     std::string_view name,
     const PromptOptions& opts,
@@ -378,9 +348,6 @@ void McpServer::RegisterPrompt(
     DeriveCapabilities();
 }
 
-// ====================================================================
-// Notifications
-// ====================================================================
 void McpServer::SendToolListChanged() {
     SendListChangedNotification(notifications::kToolListChanged);
 }
@@ -400,9 +367,6 @@ void McpServer::SendPromptListChanged() {
 }
 
 void McpServer::SendListChangedNotification(std::string_view method) {
-    // 2026-era subscriptions carry an explicit filter, so the notification only
-    // reaches listeners that asked for this type. Legacy clients have no filter
-    // to consult and keep receiving the broadcast.
     if (handler_->IsJuly2026OrLater()) {
         handler_->NotifySubscribers(method, JsonValue(JsonValue::object_tag));
         return;
@@ -447,9 +411,6 @@ void McpServer::SendProgress(const ProgressToken& token, double progress,
         SerializeProgressNotificationParams(params));
 }
 
-// ====================================================================
-// Elicitation
-// ====================================================================
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
     RequestMeta meta;
     auto vers = handler_->NegotiatedProtocolVersion();
@@ -573,9 +534,6 @@ void McpServer::AbandonPendingUrlElicitation(
     pending->promise.set_exception(std::move(error));
 }
 
-// ====================================================================
-// Handlers auto-wiring
-// ====================================================================
 void McpServer::WireHandlers() {
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
 
@@ -589,7 +547,6 @@ void McpServer::WireHandlers() {
 }
 
 void McpServer::WireToolHandlers() {
-    // ── tools/list ──
     if (!tools_.empty()) {
         handler_->SetRequestHandler(methods::kListTools,
             [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -597,7 +554,6 @@ void McpServer::WireToolHandlers() {
             });
     }
 
-    // ── tools/call ──
     handler_->SetRequestHandler(methods::kCallTool,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleCallTool(req, std::move(p));
@@ -605,7 +561,6 @@ void McpServer::WireToolHandlers() {
 }
 
 void McpServer::WireResourceHandlers() {
-    // ── resources/list ──
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return !r.is_template; })) {
         handler_->SetRequestHandler(methods::kListResources,
@@ -614,7 +569,6 @@ void McpServer::WireResourceHandlers() {
             });
     }
 
-    // ── resources/templates/list ──
     if (!resources_.empty() && std::any_of(resources_.begin(), resources_.end(),
             [](const auto& r) { return r.is_template; })) {
         handler_->SetRequestHandler(methods::kListResourceTemplates,
@@ -623,7 +577,6 @@ void McpServer::WireResourceHandlers() {
             });
     }
 
-    // ── resources/read ──
     if (!resources_.empty()) {
         handler_->SetRequestHandler(methods::kReadResource,
             [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -631,7 +584,6 @@ void McpServer::WireResourceHandlers() {
             });
     }
 
-    // ── resources/subscribe / unsubscribe (2025-era) ──
     if (!resources_.empty()) {
         handler_->SetRequestHandler(methods::kSubscribeResource,
             [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -658,7 +610,6 @@ void McpServer::WireResourceHandlers() {
 }
 
 void McpServer::WirePromptHandlers() {
-    // ── prompts/list ──
     if (!prompts_.empty()) {
         handler_->SetRequestHandler(methods::kListPrompts,
             [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -666,7 +617,6 @@ void McpServer::WirePromptHandlers() {
             });
     }
 
-    // ── prompts/get ──
     handler_->SetRequestHandler(methods::kGetPrompt,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleGetPrompt(req, std::move(p));
@@ -674,19 +624,16 @@ void McpServer::WirePromptHandlers() {
 }
 
 void McpServer::WireCoreHandlers() {
-    // ── initialize ──
     handler_->SetRequestHandler(methods::kInitialize,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleInitialize(req, std::move(p));
         });
 
-    // ── server/discover ──
     handler_->SetRequestHandler(methods::kDiscover,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleDiscover(req, std::move(p));
         });
 
-    // ── ping ──
     handler_->SetRequestHandler(methods::kPing,
         [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
             if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
@@ -694,7 +641,6 @@ void McpServer::WireCoreHandlers() {
             p.set_value(SerializeEmptyResult(r));
         });
 
-    // ── notifications/initialized ──
     handler_->SetNotificationHandler(notifications::kInitialized,
         [this](const JsonRpcNotification&) {
             initialized_ = true;
@@ -705,7 +651,6 @@ void McpServer::WireCoreHandlers() {
             }
         });
 
-    // ── logging/setLevel ──
     handler_->SetRequestHandler(methods::kSetLoggingLevel,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
@@ -719,7 +664,6 @@ void McpServer::WireCoreHandlers() {
             p.set_value(SerializeEmptyResult(r));
         });
 
-    // ── notifications/progress ──
     handler_->SetNotificationHandler(notifications::kProgress,
         [this](const JsonRpcNotification& notif) {
             if (notif.params && notif.params->IsObject()) {
@@ -740,13 +684,11 @@ void McpServer::WireCoreHandlers() {
             }
         });
 
-    // ── completion/complete ──
     handler_->SetRequestHandler(methods::kComplete,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleComplete(req, std::move(p));
         });
 
-    // ── notifications/elicitation/complete ──
     handler_->SetNotificationHandler(notifications::kElicitationComplete,
         [this](const JsonRpcNotification& notif) {
             if (!notif.params || !notif.params->IsObject()) return;
@@ -773,7 +715,6 @@ void McpServer::WireCoreHandlers() {
 }
 
 void McpServer::WireExtensionHandlers() {
-    // ── server/extensions/list ──
     handler_->SetRequestHandler(methods::kListExtensions,
         [this](const JsonRpcRequest&, std::promise<JsonValue> p) {
             if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), p)) return;
@@ -793,7 +734,6 @@ void McpServer::WireExtensionHandlers() {
 }
 
 void McpServer::WireTaskHandlers() {
-    // ── tasks/get, tasks/update, tasks/cancel (2025 era only) ──
     auto& store = options_.task_store;
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
@@ -945,16 +885,12 @@ void McpServer::WireTaskHandlers() {
 }
 
 void McpServer::WireSubscriptionHandlers() {
-    // ── subscriptions/listen (2026 era only) ──
     handler_->SetRequestHandler(methods::kSubscribe,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             HandleSubscriptionsListen(req, std::move(p));
         });
 }
 
-// ====================================================================
-// Capability derivation
-// ====================================================================
 void McpServer::DeriveCapabilities() {
     std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
     if (!tools_.empty()) {
@@ -981,9 +917,6 @@ void McpServer::DeriveCapabilities() {
     }
 }
 
-// ====================================================================
-// Handler implementations
-// ====================================================================
 JsonValue McpServer::BuildToolsJson() {
     ListToolsResult result;
     for (const auto& [name, tool_ptr] : tools_) {
@@ -995,7 +928,7 @@ JsonValue McpServer::BuildToolsJson() {
 }
 
 std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
-    const std::string& /*method*/, const std::string& name) const
+    const std::string&, const std::string& name) const
 {
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     auto it = tools_.find(name);
@@ -1006,7 +939,7 @@ std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
 }
 
 void McpServer::HandleListTools(
-    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
+    const JsonRpcRequest&, std::promise<JsonValue> promise)
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
     {
@@ -1030,7 +963,6 @@ void McpServer::HandleCallTool(
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
 
-    // Parse params
     CallToolRequestParams params;
     if (req.params) {
         params = DeserializeCallToolRequestParams(*req.params);
@@ -1045,7 +977,6 @@ void McpServer::HandleCallTool(
         return;
     }
 
-    // Build RequestContext and invoke
     auto log_fn = [this](LoggingLevel level, std::string_view data) {
         SendLoggingMessage(level, data);
     };
@@ -1135,7 +1066,6 @@ void McpServer::HandleCallTool(
                 }
             });
 
-        // Store future for lifecycle management; clean up completed futures
         std::lock_guard<std::mutex> lock(pending_async_mutex_);
         pending_async_futures_.push_back(fut.share());
         pending_async_futures_.erase(
@@ -1188,7 +1118,6 @@ void McpServer::HandleCallTool(
             }
         });
 
-    // Store future for lifecycle management; clean up completed futures
     std::lock_guard<std::mutex> lock(pending_async_mutex_);
     pending_async_futures_.push_back(fut.share());
     pending_async_futures_.erase(
@@ -1390,7 +1319,7 @@ void McpServer::HandleComplete(
 }
 
 void McpServer::HandleDiscover(
-    const JsonRpcRequest& /*req*/, std::promise<JsonValue> promise)
+    const JsonRpcRequest&, std::promise<JsonValue> promise)
 {
     initialized_ = true;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
@@ -1430,7 +1359,6 @@ void McpServer::HandleInitialize(
         params = DeserializeInitializeRequestParams(*req.params);
     }
 
-    // Store client info
     {
         std::lock_guard<std::mutex> lock(client_info_mutex_);
         client_capabilities_ = std::make_shared<const ClientCapabilities>(params.capabilities);
@@ -1446,16 +1374,10 @@ void McpServer::HandleInitialize(
         options_.on_client_connected(*client_info);
     }
 
-    // Negotiate protocol version
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     if (options_.protocol_version) {
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
     } else {
-        // Find a common legacy version with the client.
-        // Modern versions (2026-07-28+) are NEVER negotiated via
-        // initialize — only through server/discover.
-        // Missing declaration falls back to the default version;
-        // an unknown non-empty version falls back to the legacy version.
         std::string_view selected = kDefaultNegotiatedProtocolVersion;
         if (!params.protocol_version.empty()) {
             selected = kLegacyProtocolVersion;
@@ -1538,9 +1460,6 @@ void McpServer::SendSubscriptionsAcknowledged(
     handler_->SendMessage(JsonRpcMessage{std::move(notif)});
 }
 
-// ====================================================================
-// Properties
-// ====================================================================
 std::shared_ptr<const ClientCapabilities> McpServer::GetClientCapabilities() const {
     std::lock_guard<std::mutex> lock(client_info_mutex_);
     return client_capabilities_;
@@ -1561,7 +1480,6 @@ const ServerCapabilities& McpServer::GetCapabilities() const {
 }
 
 bool McpServer::IsMrtrSupported() const {
-    // MRTR requires stateful transport
     if (is_stateless_) return false;
     auto caps = GetClientCapabilities();
     return caps && caps->elicitation.has_value();

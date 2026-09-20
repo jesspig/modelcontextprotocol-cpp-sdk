@@ -1,5 +1,3 @@
-// FileEventStore.cpp - JSON Lines file-backed event store implementation
-
 #include <mcp/storage/FileEventStore.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/detail/AtomicJsonFile.hpp>
@@ -26,8 +24,6 @@ namespace mcp {
 
 namespace {
 
-// [A-Za-z0-9_-] pass through, everything else becomes ~hh so any
-// session id maps bijectively to one safe file name component.
 std::string SanitizeSessionId(std::string_view session_id) {
     static constexpr char kHex[] = "0123456789abcdef";
     std::string name = "sess-";
@@ -44,10 +40,6 @@ std::string SanitizeSessionId(std::string_view session_id) {
     return name;
 }
 
-// Cross-process mutex via an exclusive blocking lock on a per-session
-// lock file: LockFileEx on Windows, flock on POSIX. Each operation opens
-// its own handle, so same-process threads and other processes serialize
-// on the same lock.
 class SessionFileLock {
 public:
     explicit SessionFileLock(const std::filesystem::path& lock_path) {
@@ -134,8 +126,6 @@ struct LoadedEvents {
     bool ends_with_newline;
 };
 
-// Torn tail lines from a crashed writer are skipped; a missing or
-// unreadable file yields an empty store.
 LoadedEvents LoadEvents(const std::filesystem::path& path)
 {
     LoadedEvents loaded{{}, true};

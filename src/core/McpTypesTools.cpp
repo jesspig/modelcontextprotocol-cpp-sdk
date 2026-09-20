@@ -1,13 +1,9 @@
-// McpTypesTools.cpp — Tool/resource/prompt type serialization
-
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
 namespace mcp {
-
-// ── ToolAnnotations ──
 
 JsonValue SerializeToolAnnotations(const ToolAnnotations& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -28,8 +24,6 @@ ToolAnnotations DeserializeToolAnnotations(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kDestructiveHint, v.destructive_hint);
     return v;
 }
-
-// ── ToolExecution ──
 
 JsonValue SerializeToolExecution(const ToolExecution& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -60,8 +54,6 @@ ToolExecution DeserializeToolExecution(const JsonValue& j) {
     return v;
 }
 
-// ── ResourceAnnotations ──
-
 JsonValue SerializeResourceAnnotations(const ResourceAnnotations& v) {
     JsonValue obj(JsonValue::object_tag);
     if (v.audience) {
@@ -84,8 +76,6 @@ ResourceAnnotations DeserializeResourceAnnotations(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kLastModified, v.last_modified);
     return v;
 }
-
-// ── Tool ──
 
 JsonValue SerializeTool(const Tool& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -118,8 +108,6 @@ Tool DeserializeTool(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── Resource ──
 
 JsonValue SerializeResource(const Resource& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -157,8 +145,6 @@ Resource DeserializeResource(const JsonValue& j) {
     return v;
 }
 
-// ── ResourceTemplate ──
-
 JsonValue SerializeResourceTemplate(const ResourceTemplate& v) {
     JsonValue obj(JsonValue::object_tag);
     obj["uriTemplate"] = JsonValue(v.uri_template);
@@ -193,8 +179,6 @@ ResourceTemplate DeserializeResourceTemplate(const JsonValue& j) {
     return v;
 }
 
-// ── PromptArgument ──
-
 JsonValue SerializePromptArgument(const PromptArgument& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kName] = JsonValue(v.name);
@@ -210,8 +194,6 @@ PromptArgument DeserializePromptArgument(const JsonValue& j) {
     detail::DeserializeOptional(j, "required", v.required);
     return v;
 }
-
-// ── Prompt ──
 
 JsonValue SerializePrompt(const Prompt& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -248,8 +230,6 @@ Prompt DeserializePrompt(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── PromptMessage ──
 
 JsonValue SerializePromptMessage(const PromptMessage& v) {
     JsonValue obj(JsonValue::object_tag);

@@ -1,5 +1,3 @@
-// OAuthClientProvider.cpp
-// OAuth PKCE flow, token refresh, and metadata discovery implementation
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <detail/JsonFields.hpp>
 #include <mcp/JsonValue.hpp>
@@ -84,7 +82,6 @@ namespace mcp {
 
 namespace {
 
-// Parse an OAuth authorization-server metadata document.
 OAuthMetadata ParseMetadataJson(const JsonValue& json) {
     OAuthMetadata meta;
     if (auto* v = json.Find("issuer"))
@@ -118,10 +115,6 @@ OAuthMetadata ParseMetadataJson(const JsonValue& json) {
     return meta;
 }
 
-// RFC 9728 §3.2: when a resource_metadata document advertises a `resource`,
-// it must match the URL the client actually requested (exactly, or at least
-// its scheme+host authority), otherwise the document does not belong to this
-// resource and must not be trusted.
 void VerifyResourceMatch(const std::string& requested_url,
                          const std::optional<std::string>& resource)
 {
@@ -136,8 +129,6 @@ void VerifyResourceMatch(const std::string& requested_url,
         "OAuth resource_metadata resource does not match the request URL");
 }
 
-// CIMD: a client_id that is itself a URL points at a client metadata
-// document hosted by the client.
 bool IsClientIdMetadataDocumentUrl(std::string_view client_id) {
     auto scheme_end = client_id.find("://");
     return scheme_end != std::string_view::npos && scheme_end > 0;
@@ -145,9 +136,6 @@ bool IsClientIdMetadataDocumentUrl(std::string_view client_id) {
 
 } // anonymous namespace
 
-// ====================================================================
-// PKCE implementation
-// ====================================================================
 namespace pkce {
 
 std::string Base64UrlEncode(std::string_view input) {
@@ -183,9 +171,6 @@ std::string ComputeCodeChallenge(std::string_view code_verifier) {
 
 } // namespace pkce
 
-// ====================================================================
-// TokenContainer
-// ====================================================================
 bool TokenContainer::IsExpired() const {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count() >= expires_at;
@@ -197,9 +182,6 @@ bool TokenContainer::WillExpireSoon(int64_t margin_ms) const {
     return (now_ms + margin_ms) >= expires_at;
 }
 
-// ====================================================================
-// InMemoryTokenCache
-// ====================================================================
 void InMemoryTokenCache::StoreTokens(const TokenContainer& tokens) {
     std::lock_guard<std::mutex> lock(mutex_);
     tokens_ = tokens;
@@ -215,9 +197,6 @@ void InMemoryTokenCache::ClearTokens() {
     tokens_.reset();
 }
 
-// ====================================================================
-// HTTP helper
-// ====================================================================
 JsonValue OAuthClientProvider::HttpPost(
     std::string_view url_str,
     const std::map<std::string, std::string>& form_data)
@@ -238,9 +217,6 @@ JsonValue OAuthClientProvider::HttpPost(
     return JsonValue::Parse(resp->body);
 }
 
-// ====================================================================
-// OAuthClientProvider
-// ====================================================================
 OAuthClientProvider::OAuthClientProvider(OAuthClientOptions options)
     : options_(std::move(options))
     , token_cache_(options_.token_cache
@@ -254,8 +230,6 @@ bool OAuthClientProvider::Authenticate() {
     if (!DiscoverMetadata()) return false;
 
     if (options_.client_id && IsClientIdMetadataDocumentUrl(*options_.client_id)) {
-        // CIMD: the authorization server fetches the document itself; the
-        // local fetch is best-effort and must not block authentication.
         FetchClientMetadataDocument();
     } else if (!options_.client_id && metadata_->registration_endpoint) {
         if (!RegisterClient()) return false;
@@ -295,7 +269,6 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
 }
 
 bool OAuthClientProvider::DiscoverMetadata() {
-    // Try RFC 8414 well-known discovery first, fall back to hardcoded URLs
     if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
         metadata_ = std::move(discovered);
         if (metadata_->issuer.empty()) metadata_->issuer = options_.server_url;
@@ -411,10 +384,7 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
     if (!options_.authorization_code_callback) return false;
     auto callback_result = options_.authorization_code_callback();
     if (!callback_result) return false;
-    // CSRF check: the state echoed back must match what we sent (RFC 6749 §10.12)
     if (callback_result->state != state_) return false;
-    // RFC 9207: when the authorization response carries `iss`, it must name
-    // the authorization server this client discovered.
     if (callback_result->iss && *callback_result->iss != metadata_->issuer) {
         MCP_LOG(Error, "OAuth authorization response issuer mismatch");
         return false;
@@ -476,7 +446,6 @@ bool OAuthClientProvider::RefreshTokens() {
 
     TokenContainer tokens;
     if (auto* v = json.Find("access_token")) tokens.access_token = v->GetString();
-    // refresh_token is retained when absent (RFC 6749 non-rotating refresh tokens)
     tokens.refresh_token = json.Find("refresh_token") ? json.Find("refresh_token")->GetString() : cached->refresh_token;
     if (auto* v = json.Find("token_type")) tokens.token_type = v->GetString();
     auto expires_in = json.Find("expires_in") ? json.Find("expires_in")->GetInt() : 3600;
@@ -515,8 +484,6 @@ void OAuthClientProvider::Revoke() {
         metadata_ && metadata_->revocation_endpoint) {
         std::map<std::string, std::string> form;
         form["token"] = tokens->access_token;
-        // Best-effort server-side revocation (RFC 7009); the local cache is
-        // cleared regardless of the HTTP result.
         HttpPost(*metadata_->revocation_endpoint, form);
     }
     token_cache_->ClearTokens();
@@ -549,7 +516,6 @@ bool OAuthClientProvider::StepUpAuthorization(
 }
 
 bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate) {
-    // RFC 9728: the challenge advertises "resource_metadata=\"<uri>\"".
     auto header = std::string(www_authenticate);
     auto pos = header.find("resource_metadata=");
     if (pos == std::string::npos) return false;

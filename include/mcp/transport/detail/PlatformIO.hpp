@@ -1,5 +1,4 @@
 #pragma once
-// PlatformIO.hpp — platform-specific process and pipe abstractions (Win32/POSIX)
 
 #include <cstdint>
 #include <string>
@@ -9,14 +8,12 @@
 
 namespace mcp { namespace detail {
 
-// ── Process handle abstraction ──
 struct ProcessHandle {
     virtual ~ProcessHandle() = default;
     virtual bool IsRunning() = 0;
     virtual bool Terminate(int timeout_ms) = 0;
 };
 
-// ── Pipe handle abstraction ──
 struct PipeHandle {
     virtual ~PipeHandle() = default;
     virtual size_t Read(char* buffer, size_t size) = 0;
@@ -25,7 +22,6 @@ struct PipeHandle {
     virtual bool IsEof() const { return true; }
 };
 
-// ── Process startup info ──
 struct ProcessStartInfo {
     std::string command;
     std::vector<std::string> arguments;
@@ -34,14 +30,12 @@ struct ProcessStartInfo {
     std::vector<std::pair<std::string, std::string>> environment_variables;
 };
 
-// ── Created process with pipes ──
 struct CreatedProcess {
     std::unique_ptr<ProcessHandle> process;
-    std::unique_ptr<PipeHandle> stdin_pipe;   // Parent writes to child stdin
-    std::unique_ptr<PipeHandle> stdout_pipe;  // Parent reads from child stdout
+    std::unique_ptr<PipeHandle> stdin_pipe;
+    std::unique_ptr<PipeHandle> stdout_pipe;
 };
 
-// ── Platform-specific factory ──
 CreatedProcess CreateProcess(const ProcessStartInfo& info);
 
 std::unique_ptr<PipeHandle> OpenStandardInput();

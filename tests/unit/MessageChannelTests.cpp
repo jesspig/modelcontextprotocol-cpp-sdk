@@ -1,6 +1,3 @@
-// MessageChannelTests — backpressure, non-blocking TrySend, and close wake-up
-// semantics of the bounded message queue shared by all transports.
-
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/JsonRpc.hpp>
 
@@ -23,7 +20,6 @@ JsonRpcMessage MakeMessage(int64_t seq) {
 
 } // namespace
 
-// A full channel rejects TrySend without blocking.
 TEST(MessageChannelTest, TrySendFailsWhenFull) {
     MessageChannel ch(1);
     EXPECT_TRUE(ch.TrySend(MakeMessage(1)));
@@ -31,8 +27,6 @@ TEST(MessageChannelTest, TrySendFailsWhenFull) {
     ch.Close();
 }
 
-// A consumer draining one slot lets a blocked Send complete; the message is
-// delivered in FIFO order.
 TEST(MessageChannelTest, FullSendBlocksUntilConsumerDrains) {
     MessageChannel ch(1);
     ASSERT_TRUE(ch.Send(MakeMessage(1)));
@@ -58,7 +52,6 @@ TEST(MessageChannelTest, FullSendBlocksUntilConsumerDrains) {
     ch.Close();
 }
 
-// Close wakes a Send blocked on a full channel; the message is dropped.
 TEST(MessageChannelTest, CloseWakesWaitingSend) {
     MessageChannel ch(1);
     ASSERT_TRUE(ch.Send(MakeMessage(1)));
@@ -76,7 +69,6 @@ TEST(MessageChannelTest, CloseWakesWaitingSend) {
     producer.join();
 }
 
-// Close wakes a receive waiting on an empty channel with operation_canceled.
 TEST(MessageChannelTest, CloseWakesWaitingReceive) {
     MessageChannel ch(1);
 
@@ -97,7 +89,6 @@ TEST(MessageChannelTest, CloseWakesWaitingReceive) {
     consumer.join();
 }
 
-// Sending after Close drops the message and returns false.
 TEST(MessageChannelTest, SendAfterCloseDropsMessage) {
     MessageChannel ch(1);
     ch.Close();

@@ -1,5 +1,4 @@
 #pragma once
-// StdioClientTransport.hpp — stdio-based client transport
 
 #include <mcp/Transport.hpp>
 #include <string>

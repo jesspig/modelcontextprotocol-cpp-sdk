@@ -1,5 +1,3 @@
-// AtomicJsonFile.cpp - Atomic write + JSON load helpers
-
 #include <mcp/detail/AtomicJsonFile.hpp>
 #include <mcp/Log.hpp>
 

@@ -1,5 +1,3 @@
-// JsonValue.cpp — JsonValue parsing and serialization implementation
-
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
@@ -17,8 +15,6 @@ namespace mcp::detail {
 namespace json {
 JsonValue ParseDocument(std::string_view json);
 }
-
-// ── Hand-written JSON serializer ──
 
 namespace {
 
@@ -96,7 +92,6 @@ static size_t EstimateSize(const JsonValue& jv, int indent) {
     return 8;
 }
 
-// Recursively serialize a JsonValue to JSON text with optional indentation.
 static void DumpValue(std::string& out, const JsonValue& jv, int indent, int depth) {
     auto indent_line = [&]() {
         int n = depth * indent;
@@ -178,8 +173,6 @@ static void DumpValue(std::string& out, const JsonValue& jv, int indent, int dep
 
 } // namespace mcp::detail
 
-// ── JsonValue public methods ──
-
 namespace mcp {
 
 namespace {
@@ -214,8 +207,6 @@ std::string JsonValue::Dump(int indent) const {
     detail::DumpValue(out, *this, indent, 0);
     return out;
 }
-
-// ── Accessors ──
 
 bool JsonValue::GetBool() const {
     if (!IsBool())

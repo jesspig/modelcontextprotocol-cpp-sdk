@@ -1,5 +1,3 @@
-// OAuthTests — unit tests for PKCE, token cache, and OAuth client provider
-
 #include <mcp/JsonRpc.hpp>
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
@@ -13,12 +11,10 @@
 
 using namespace mcp;
 
-// ── PKCE ──
 TEST(OAuthTest, PkceBase64UrlEncode) {
     std::string input = "test";
     auto encoded = pkce::Base64UrlEncode(input);
     EXPECT_FALSE(encoded.empty());
-    // No padding chars in URL-safe encoding
     EXPECT_EQ(encoded.find('='), std::string::npos);
 }
 
@@ -37,26 +33,24 @@ TEST(OAuthTest, PkceGenerateCodeVerifier) {
 }
 
 TEST(OAuthTest, PkceComputeCodeChallenge) {
-    // RFC 7636 Appendix B test vector
     std::string fixed_verifier =
         "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     auto challenge = pkce::ComputeCodeChallenge(fixed_verifier);
     EXPECT_EQ(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
 }
 
-// ── TokenContainer ──
 TEST(OAuthTest, TokenContainerNotExpiredInitially) {
     TokenContainer tokens;
     tokens.access_token = "abc";
     tokens.expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count()
-        + 3600000;  // 1 hour from now
+        + 3600000;
     EXPECT_FALSE(tokens.IsExpired());
 }
 
 TEST(OAuthTest, TokenContainerExpired) {
     TokenContainer tokens;
-    tokens.expires_at = 0;  // expired
+    tokens.expires_at = 0;
     EXPECT_TRUE(tokens.IsExpired());
 }
 
@@ -64,11 +58,10 @@ TEST(OAuthTest, TokenContainerWillExpireSoon) {
     TokenContainer tokens;
     tokens.expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count()
-        + 30000;  // 30 seconds from now
-    EXPECT_TRUE(tokens.WillExpireSoon(60000));  // margin 60s
+        + 30000;
+    EXPECT_TRUE(tokens.WillExpireSoon(60000));
 }
 
-// ── InMemoryTokenCache ──
 TEST(OAuthTest, InMemoryTokenCacheStoreAndGet) {
     InMemoryTokenCache cache;
     TokenContainer tokens;
@@ -99,7 +92,6 @@ TEST(OAuthTest, InMemoryTokenCacheEmptyInitially) {
     EXPECT_FALSE(result.has_value());
 }
 
-// ── OAuthClientOptions defaults ──
 TEST(OAuthTest, OAuthClientOptionsHasDefaults) {
     OAuthClientOptions opts;
     opts.server_url = "http://localhost:8080";
@@ -107,7 +99,6 @@ TEST(OAuthTest, OAuthClientOptionsHasDefaults) {
     EXPECT_EQ(opts.server_url, "http://localhost:8080");
 }
 
-// ── OAuthClientProvider creation ──
 TEST(OAuthTest, OAuthClientProviderCreate) {
     OAuthClientOptions opts;
     opts.server_url = "http://localhost:8080";
@@ -119,7 +110,6 @@ TEST(OAuthTest, OAuthClientProviderCreate) {
     EXPECT_FALSE(provider.HasToken());
 }
 
-// ── OAuthClientProvider with token cache ──
 TEST(OAuthTest, OAuthClientProviderWithPrepopulatedCache) {
     auto cache = std::make_shared<InMemoryTokenCache>();
 
@@ -128,7 +118,6 @@ TEST(OAuthTest, OAuthClientProviderWithPrepopulatedCache) {
     opts.redirect_uri = "http://localhost:8080/callback";
     opts.token_cache = cache;
 
-    // Pre-populate token
     TokenContainer tokens;
     tokens.access_token = "preloaded_token";
     tokens.expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -140,7 +129,6 @@ TEST(OAuthTest, OAuthClientProviderWithPrepopulatedCache) {
     EXPECT_EQ(provider.GetAuthorizationHeader(), "Bearer preloaded_token");
 }
 
-// ── Revoke clears tokens ──
 TEST(OAuthTest, OAuthClientProviderRevokeClearsTokens) {
     auto cache = std::make_shared<InMemoryTokenCache>();
     TokenContainer tokens;
@@ -159,7 +147,6 @@ TEST(OAuthTest, OAuthClientProviderRevokeClearsTokens) {
     EXPECT_FALSE(provider.HasToken());
 }
 
-// ── client_credentials grant (RFC 6749 §4.4, M2M) ──
 TEST(OAuthTest, ClientCredentialsGrant) {
     auto port = PickFreePort(kTestBasePort + 700);
     std::string issuer = "http://127.0.0.1:" + std::to_string(port);
@@ -186,7 +173,6 @@ TEST(OAuthTest, ClientCredentialsGrant) {
     server.Stop();
 }
 
-// ── 401 challenge → auth_challenge_handler → retry with Authorization ──
 TEST(OAuthTest, AuthChallengeTriggersRetryWithAuthorization) {
     auto port = PickFreePort(kTestBasePort + 800);
     std::atomic<int> calls{0};

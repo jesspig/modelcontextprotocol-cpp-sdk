@@ -1,12 +1,5 @@
-# ====================================================================
-# Compiler-specific flags — auto-detected from CMAKE_CXX_COMPILER_ID
-# 优先级: Clang(clang-cl) > MSVC(cl.exe) > GCC > fallback
-# ====================================================================
-
-# ── Clang (including clang-cl on Windows) ──
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     if(WIN32)
-        # clang-cl on Windows — MSVC-compatible flags
         add_compile_options(
             /utf-8
             /bigobj
@@ -33,7 +26,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(STATUS "[mcp] Clang flags applied")
     endif()
 
-# ── MSVC (cl.exe only) ──
 elseif(MSVC)
     add_compile_options(
         /utf-8
@@ -55,7 +47,6 @@ elseif(MSVC)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded CACHE INTERNAL "")
     message(STATUS "[mcp] MSVC flags applied")
 
-# ── GNU GCC ──
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(
         -Wall -Wextra -Wpedantic
@@ -70,9 +61,7 @@ else()
     message(WARNING "[mcp] Unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
-# ── Threads — required for std::thread on macOS/Clang (Unity builds) ──
 include(FindThreads)
 find_package(Threads REQUIRED)
 
-# ── PIC ──
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

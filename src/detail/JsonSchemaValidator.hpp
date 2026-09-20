@@ -1,15 +1,10 @@
 #pragma once
-// JsonSchemaValidator.hpp — minimal JSON Schema subset validator (SEP-2106)
 #include <mcp/JsonValue.hpp>
 
 #include <string>
 
 namespace mcp { namespace detail {
 
-// Validate `instance` against a JSON Schema subset (draft-07 style):
-// type, properties, required, items, enum, minimum/maximum,
-// minLength/maxLength, minItems/maxItems. Returns false and sets error_out
-// with a message that includes the failing path on validation failure.
 bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schema,
                         std::string& error_out);
 
@@ -17,7 +12,6 @@ inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schem
                                std::string& error_out) {
     if (schema.IsNull()) return true;
 
-    // enum: value must match one of the listed constants
     if (auto* e = schema.Find("enum"); e && e->IsArray()) {
         bool found = false;
         for (const auto& opt : e->GetArray()) {
@@ -26,7 +20,6 @@ inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schem
         if (!found) { error_out = "value not in enum"; return false; }
     }
 
-    // type: string or array of strings
     if (auto* t = schema.Find("type"); t) {
         bool ok = false;
         if (t->IsString()) {
@@ -53,7 +46,6 @@ inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schem
         if (!ok) { error_out = "type mismatch"; return false; }
     }
 
-    // object constraints
     if (schema.IsObject() && instance.IsObject()) {
         if (auto* req = schema.Find("required"); req && req->IsArray()) {
             for (const auto& r : req->GetArray()) {
@@ -75,7 +67,6 @@ inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schem
         }
     }
 
-    // array constraints
     if (instance.IsArray() && schema.IsObject()) {
         if (auto* items = schema.Find("items"); items) {
             for (size_t i = 0; i < instance.Size(); ++i) {
@@ -95,7 +86,6 @@ inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schem
         }
     }
 
-    // string constraints
     if (instance.IsString() && schema.IsObject()) {
         if (auto* mn = schema.Find("minLength"); mn && mn->IsInt() &&
             static_cast<int64_t>(instance.GetString().size()) < mn->GetInt()) {
@@ -107,7 +97,6 @@ inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schem
         }
     }
 
-    // number constraints
     if (instance.IsNumber() && schema.IsObject()) {
         double v = instance.IsDouble() ? instance.GetDouble()
                                        : static_cast<double>(instance.GetInt());

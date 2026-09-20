@@ -1,6 +1,4 @@
 #pragma once
-// VersionNegotiation.hpp
-// Protocol version auto-detection and negotiation between client and server
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
 
@@ -8,43 +6,28 @@
 
 namespace mcp {
 
-// ── Version negotiation result ──
 struct NegotiationResult {
-    bool is_modern;  // true = 2026-era (stateless), false = legacy
+    bool is_modern;
     std::string negotiated_version;
-    std::optional<DiscoverResult> discover;     // populated if modern
-    std::optional<InitializeResult> initialize; // populated if legacy
+    std::optional<DiscoverResult> discover;
+    std::optional<InitializeResult> initialize;
     ServerCapabilities capabilities;
     Implementation server_info;
     std::optional<std::string> instructions;
 };
 
-// ── VersionNegotiation — auto-detect server era ──
-// 1. Send server/discover
-// 2. On success → modern era (2026-07-28)
-// 3. Failure handling depends on the transport: stdio-like transports fall
-//    back to initialize on timeouts and legacy-era error signals
-//    (-32001/-32020/-32021/-32601 and any other code); HTTP-like transports
-//    surface timeouts, connection errors, and -32022 version mismatches as
-//    typed McpError. A -32022 with an overlapping supported version list is
-//    retried once with the shared version before erroring.
 class VersionNegotiation {
 public:
-    // Probe the server and negotiate the best protocol version.
-    // Must be called after connecting the transport but before sending
-    // non-negotiation requests.
     static NegotiationResult Negotiate(
         McpSessionHandler& handler,
         const ClientOptions& options);
 
-    // Send discover probe
     static std::optional<DiscoverResult> ProbeDiscover(
         McpSessionHandler& handler,
         std::string_view preferred_version,
         std::chrono::seconds timeout,
         const ClientOptions& options);
 
-    // Send initialize handshake
     static InitializeResult HandshakeInitialize(
         McpSessionHandler& handler,
         const Implementation& client_info,

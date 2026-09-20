@@ -1,12 +1,8 @@
-// McpTypesTasks.cpp — Task params and result serialization
-
 #include <mcp/McpTypes.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
 namespace mcp {
-
-// ── GetTaskResult ──
 
 JsonValue SerializeGetTaskResult(const GetTaskResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -32,8 +28,6 @@ GetTaskResult DeserializeGetTaskResult(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── CreateTaskResult ──
 
 JsonValue SerializeCreateTaskResult(const CreateTaskResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -61,8 +55,6 @@ CreateTaskResult DeserializeCreateTaskResult(const JsonValue& j) {
     return v;
 }
 
-// ── GetTaskRequestParams ──
-
 JsonValue SerializeGetTaskRequestParams(const GetTaskRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kTaskId] = JsonValue(v.task_id);
@@ -74,8 +66,6 @@ GetTaskRequestParams DeserializeGetTaskRequestParams(const JsonValue& j) {
     v.task_id = j[detail::kTaskId].GetString();
     return v;
 }
-
-// ── UpdateTaskRequestParams ──
 
 JsonValue SerializeUpdateTaskRequestParams(const UpdateTaskRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -90,8 +80,6 @@ UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kResult, v.result);
     return v;
 }
-
-// ── CancelTaskRequestParams ──
 
 JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);

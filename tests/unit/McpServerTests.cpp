@@ -1,5 +1,3 @@
-// McpServerTests — unit tests for McpServer creation, tool/resource/prompt registration
-
 #include <mcp/server/McpServer.hpp>
 #include <mcp/server/RequestState.hpp>
 #include <mcp/client/McpClient.hpp>
@@ -21,7 +19,6 @@
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
-// ── Server creation ──
 TEST(McpServerTest, CreateAndDestroy) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -29,7 +26,6 @@ TEST(McpServerTest, CreateAndDestroy) {
     server->Close();
 }
 
-// ── Tool registration via shared_ptr ──
 TEST(McpServerTest, RegisterTool) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -44,7 +40,6 @@ TEST(McpServerTest, RegisterTool) {
     server->Close();
 }
 
-// ── Capability derivation ──
 TEST(McpServerTest, CapabilitiesDeriveFromTools) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions opts;
@@ -63,7 +58,6 @@ TEST(McpServerTest, CapabilitiesDeriveFromTools) {
     server->Close();
 }
 
-// ── Register resource ──
 TEST(McpServerTest, RegisterResource) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions opts;
@@ -85,7 +79,6 @@ TEST(McpServerTest, RegisterResource) {
     server->Close();
 }
 
-// ── Register resource template ──
 TEST(McpServerTest, RegisterResourceTemplate) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions opts;
@@ -109,7 +102,6 @@ TEST(McpServerTest, RegisterResourceTemplate) {
     server->Close();
 }
 
-// ── resources/read resolves a registered URI template instance ──
 TEST(McpServerTest, ReadResourceMatchesRegisteredTemplate) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -153,7 +145,6 @@ TEST(McpServerTest, ReadResourceMatchesRegisteredTemplate) {
     client->Close();
 }
 
-// ── URI template variable values are pct-decoded before reaching the handler ──
 TEST(McpServerTest, ReadResourceTemplateValueIsPctDecoded) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -197,7 +188,6 @@ TEST(McpServerTest, ReadResourceTemplateValueIsPctDecoded) {
     client->Close();
 }
 
-// ── Unmatched URI still reports resource not found ──
 TEST(McpServerTest, ReadResourceUnknownUriStillNotFound) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -237,7 +227,6 @@ TEST(McpServerTest, ReadResourceUnknownUriStillNotFound) {
     client->Close();
 }
 
-// ── A static resource that also matches a template wins over the template ──
 TEST(McpServerTest, ReadResourcePrefersStaticOverTemplate) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -292,7 +281,6 @@ TEST(McpServerTest, ReadResourcePrefersStaticOverTemplate) {
     client->Close();
 }
 
-// ── RegisterResourceTemplate rejects malformed templates ──
 TEST(McpServerTest, RegisterResourceTemplateRejectsInvalidTemplate) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -325,7 +313,6 @@ TEST(McpServerTest, RegisterResourceTemplateRejectsInvalidTemplate) {
     server->Close();
 }
 
-// ── Register prompt ──
 TEST(McpServerTest, RegisterPrompt) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions opts;
@@ -349,7 +336,6 @@ TEST(McpServerTest, RegisterPrompt) {
     server->Close();
 }
 
-// ── Explicit capability declaration defaults off ──
 TEST(McpServerTest, ExplicitCapabilityDeclarationDefaultsOff) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -359,7 +345,6 @@ TEST(McpServerTest, ExplicitCapabilityDeclarationDefaultsOff) {
     server->Close();
 }
 
-// ── initialize result carries declared logging/completions capabilities ──
 TEST(McpServerTest, InitializeDeclaresExplicitLoggingAndCompletions) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -398,7 +383,6 @@ TEST(McpServerTest, InitializeDeclaresExplicitLoggingAndCompletions) {
     client->Close();
 }
 
-// ── notifications/message encodes level as the spec's lowercase string ──
 TEST(McpServerTest, SendLoggingMessageEncodesLevelAsString) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -430,7 +414,6 @@ TEST(McpServerTest, SendLoggingMessageEncodesLevelAsString) {
     client->Close();
 }
 
-// ── prompts/list carries registered arguments metadata ──
 TEST(McpServerTest, ListPromptsIncludesArguments) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -480,7 +463,6 @@ TEST(McpServerTest, ListPromptsIncludesArguments) {
     client->Close();
 }
 
-// ── McpServerTool::Create ──
 TEST(McpServerTest, McpServerToolFactory) {
     auto tool = McpServerTool::Create("calc",
         std::function<CallToolResult(const Ctx&)>(
@@ -492,7 +474,6 @@ TEST(McpServerTest, McpServerToolFactory) {
     EXPECT_EQ(tool->ProtocolTool().description, "Calculator");
 }
 
-// ── SendToolListChanged & friends deliver notifications to the peer ──
 namespace {
 
 void ExpectNotificationArrives(
@@ -532,7 +513,6 @@ TEST(McpServerTest, SendToolListChanged) {
     client->Close();
 }
 
-// ── Null client capabilities initially ──
 TEST(McpServerTest, ClientCapabilitiesInitialState) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -542,8 +522,6 @@ TEST(McpServerTest, ClientCapabilitiesInitialState) {
     server->Close();
 }
 
-// ── RequireInitialized guard: method handlers reject requests before
-// notifications/initialized arrives ──
 TEST(McpServerTest, RejectsRequestsBeforeInitialized) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -570,8 +548,6 @@ TEST(McpServerTest, RejectsRequestsBeforeInitialized) {
     client->Close();
 }
 
-// ── Modern era (2026-07-28) has no initialize handshake: a pinned client may
-// call tools before any notifications/initialized arrives ──
 TEST(McpServerTest, ServesRequestsBeforeInitializedInModernEra) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -596,7 +572,6 @@ TEST(McpServerTest, ServesRequestsBeforeInitializedInModernEra) {
     server->Close();
 }
 
-// ── HandleInitialize echoes the client's legacy protocol version back ──
 TEST(McpServerTest, InitializeEchoesClientVersion) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -625,8 +600,6 @@ TEST(McpServerTest, InitializeEchoesClientVersion) {
     client->Close();
 }
 
-// ── Transport Start is idempotent: pre-Starting the transport before
-// McpServer::Create must not break the session ──
 TEST(McpServerTest, PreStartedTransportRemainsFunctional) {
     auto pair = InMemoryTransport::CreatePair();
     pair.server->Start();
@@ -657,8 +630,6 @@ TEST(McpServerTest, PreStartedTransportRemainsFunctional) {
     client->Close();
 }
 
-// ── HandleInitialize falls back to the legacy protocol version when the
-// client declares a version outside the supported table ──
 TEST(McpServerTest, InitializeFallsBackToDefaultWhenClientVersionUnsupported) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -687,8 +658,6 @@ TEST(McpServerTest, InitializeFallsBackToDefaultWhenClientVersionUnsupported) {
     client->Close();
 }
 
-// ── HandleInitialize falls back to the default negotiated version when the
-// client declares no protocol version at all ──
 TEST(McpServerTest, InitializeFallsBackToDefaultWhenClientVersionMissing) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -717,7 +686,6 @@ TEST(McpServerTest, InitializeFallsBackToDefaultWhenClientVersionMissing) {
     client->Close();
 }
 
-// ── Tool name validation ──
 namespace {
 
 std::shared_ptr<McpServerTool> MakeTool(std::string_view name) {
@@ -767,7 +735,6 @@ TEST(McpServerTest, RegisterToolAcceptsValidName) {
     server->Close();
 }
 
-// ── Discover declares the full supported version list ──
 TEST(McpServerTest, DiscoverDeclaresAllSupportedVersions) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -793,7 +760,6 @@ TEST(McpServerTest, DiscoverDeclaresAllSupportedVersions) {
     client->Close();
 }
 
-// ── Task status notifications (2025 era) ──
 namespace {
 
 std::filesystem::path MakeTaskStorePath() {
@@ -1054,7 +1020,6 @@ TEST(McpServerTest, SendProgressDeliversNotificationWithStringToken) {
     client->Close();
 }
 
-// ── subscriptions/listen acknowledges the honored filter (2026 era) ──
 namespace {
 
 struct ModernServerWithClient {
@@ -1162,8 +1127,6 @@ TEST(McpServerTest, SubscriptionsListenAcknowledgesHonoredFilter) {
     ctx.client->Close();
 }
 
-// ── Task-mode tool execution (2025 era): tools/call returns a task handle,
-// the tool runs on a background worker, and the task reaches a terminal state ──
 namespace {
 
 struct TaskEraEnv {
@@ -1515,7 +1478,6 @@ TEST(McpServerTest, CallToolTaskModeKeepsCompletedWhenCancelArrivesLate) {
     CloseTaskEraEnv(env);
 }
 
-// ── URL elicitation (server→client url mode + complete notification) ──
 TEST(McpServerTest, ElicitRequestParamsFormModeOmitsModeOnWire) {
     ElicitRequestParams params;
     params.message = "pick one";
@@ -1628,8 +1590,6 @@ TEST(McpServerTest, ElicitUrlTimesOutWhenNoCompleteArrives) {
     client->Close();
 }
 
-// ── MRTR: a tool returns input_required (elicit user_name); the client
-// auto-fulfills the round and receives the completed "Hello, <name>!" ──
 TEST(McpServerTest, MrtrToolInputRequiredElicitationRoundTrip) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1694,8 +1654,6 @@ TEST(McpServerTest, MrtrToolInputRequiredElicitationRoundTrip) {
     server->Close();
 }
 
-// ── MRTR: the server mints an HMAC requestState; the built-in verifier
-// accepts the retry and the tool reads its round payload back ──
 TEST(McpServerTest, MrtrMintedRequestStateRoundTrip) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1760,8 +1718,6 @@ TEST(McpServerTest, MrtrMintedRequestStateRoundTrip) {
     server->Close();
 }
 
-// ── MRTR: a forged requestState is rejected before the tool handler with
-// -32602 and data.reason "invalid_request_state" ──
 TEST(McpServerTest, MrtrForgedRequestStateRejectedWithReason) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1795,7 +1751,6 @@ TEST(McpServerTest, MrtrForgedRequestStateRejectedWithReason) {
     client->Close();
 }
 
-// ── resources/updated reaches a listener that subscribed to that URI (2026 era) ──
 TEST(McpServerTest, SendResourceUpdatedReachesSubscribedUri) {
     auto ctx = MakeModernServerWithClient();
     NegotiateModernVersion(ctx.server);
@@ -1838,7 +1793,6 @@ TEST(McpServerTest, SendResourceUpdatedReachesSubscribedUri) {
     ctx.client->Close();
 }
 
-// ── A listener that did not subscribe to a URI is not notified (2026 era) ──
 TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
     auto ctx = MakeModernServerWithClient();
     NegotiateModernVersion(ctx.server);

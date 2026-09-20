@@ -1,12 +1,9 @@
-// JsonRpcTests — unit tests for JSON-RPC message serialization and variant dispatch
-
 #include <mcp/JsonRpc.hpp>
 
 #include <mcp/test/McpTest.hpp>
 
 using namespace mcp;
 
-// ── RequestId ──
 TEST(JsonRpcTest, RequestIdIntRoundTrip) {
     RequestId id{int64_t(42)};
     auto jv = RequestIdToJson(id);
@@ -23,7 +20,6 @@ TEST(JsonRpcTest, RequestIdStringRoundTrip) {
     EXPECT_TRUE(std::holds_alternative<std::string>(id2));
 }
 
-// ── JsonRpcRequest ──
 TEST(JsonRpcTest, RequestRoundTrip) {
     JsonRpcRequest req;
     req.id = RequestId{int64_t(1)};
@@ -40,7 +36,6 @@ TEST(JsonRpcTest, RequestRoundTrip) {
     EXPECT_EQ(req.params, req2->params);
 }
 
-// ── JsonRpcNotification ──
 TEST(JsonRpcTest, NotificationRoundTrip) {
     JsonRpcNotification notif;
     notif.method = "notifications/initialized";
@@ -53,7 +48,6 @@ TEST(JsonRpcTest, NotificationRoundTrip) {
     EXPECT_EQ(notif.method, notif2->method);
 }
 
-// ── JsonRpcResponse ──
 TEST(JsonRpcTest, ResponseRoundTrip) {
     JsonRpcResponse resp;
     resp.id = RequestId{int64_t(1)};
@@ -68,7 +62,6 @@ TEST(JsonRpcTest, ResponseRoundTrip) {
     EXPECT_EQ(resp.result, resp2->result);
 }
 
-// ── JsonRpcErrorResponse ──
 TEST(JsonRpcTest, ErrorRoundTrip) {
     JsonRpcErrorResponse err;
     err.id = RequestId{int64_t(1)};
@@ -83,7 +76,6 @@ TEST(JsonRpcTest, ErrorRoundTrip) {
     EXPECT_EQ(err.error.message, err2->error.message);
 }
 
-// ── JsonRpcMessage variant dispatch ──
 TEST(JsonRpcTest, MessageVariantDetectsRequest) {
     auto msg = DeserializeMessage(
         R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
@@ -120,7 +112,6 @@ TEST(JsonRpcTest, MessageVariantRoundTrip) {
     EXPECT_EQ(SerializeMessage(msg), SerializeMessage(msg2));
 }
 
-// ── ErrorData ──
 TEST(JsonRpcTest, ErrorDataRoundTrip) {
     ErrorData ed{McpErrorCode::InvalidParams, "invalid params"};
     JsonRpcErrorResponse err;

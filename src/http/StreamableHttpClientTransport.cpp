@@ -1,5 +1,3 @@
-// StreamableHttpClientTransport.cpp - Streamable HTTP client transport (Win32 WinHTTP / POSIX self-hosted)
-
 #include <mcp/detail/SseEventParser.hpp>
 #include <mcp/detail/StringUtils.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
@@ -19,7 +17,6 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
-// Windows.h defines GetObject macro which conflicts with JsonValue::GetObject
 #ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
@@ -46,9 +43,6 @@
 
 namespace mcp {
 
-// ═══════════════════════════════════════════════════════════════════════
-// Shared listen-stream state machine & SSE block parsing (both platforms)
-// ═══════════════════════════════════════════════════════════════════════
 namespace streamable_http_client_impl {
 
 constexpr const char* kInitializedNotificationMethod = "notifications/initialized";
@@ -137,7 +131,6 @@ inline constexpr std::chrono::milliseconds kListenRetryMaxDelay{30000};
 inline constexpr int kMaxListenReconnectAttempts = 5;
 inline constexpr std::chrono::seconds kListenStreamTimeout{600};
 
-// 运行期间可被 Close 打断的退避睡眠：running 转 false 时立即返回。
 inline void SleepInterruptibly(const std::atomic<bool>& running,
                                std::chrono::milliseconds duration) {
     auto deadline = std::chrono::steady_clock::now() + duration;
@@ -148,7 +141,6 @@ inline void SleepInterruptibly(const std::atomic<bool>& running,
 
 inline constexpr std::chrono::milliseconds kParamRefreshTimeout{30000};
 
-// SEP-2243 HeaderMismatch: the server rejected Mcp-Param-* validation.
 inline bool IsHeaderMismatchBody(const std::string& body) {
     if (body.empty()) return false;
     try {
@@ -163,8 +155,6 @@ inline bool IsHeaderMismatchBody(const std::string& body) {
     }
 }
 
-// Re-reads the tool inputSchema cache after a HeaderMismatch rejection so the
-// retried request carries headers matching the server's current schema.
 inline bool RefreshToolAnnotations(const std::string& endpoint,
                                    const std::string& session_id,
                                    const std::string& protocol_version,
@@ -208,9 +198,6 @@ inline bool RefreshToolAnnotations(const std::string& endpoint,
 
 } // namespace streamable_http_client_impl
 
-// ═══════════════════════════════════════════════════════════════════════
-// Win32 implementation (WinHTTP)
-// ═══════════════════════════════════════════════════════════════════════
 #ifdef _WIN32
 namespace {
 
@@ -227,7 +214,6 @@ std::wstring ToWideStr(const std::string& s) {
     return w;
 }
 
-// ── Win32 StreamableHttpSessionTransport ──
 class StreamableHttpSessionTransport : public TransportBase {
 public:
     StreamableHttpSessionTransport(
@@ -256,9 +242,6 @@ public:
             delete_pending_ = true;
             send_cv_.notify_one();
         }
-        // Stop the listen stream first: interrupt its in-flight request (same
-        // pattern as sse_request_) and join its thread before tearing down the
-        // POST path, so Close cannot hang on a blocked GET read.
         auto listen_req = listen_request_.exchange(nullptr);
         if (listen_req) {
             WinHttpSetTimeouts(listen_req, 0, 0, 0, 500);
@@ -269,9 +252,6 @@ public:
             listen_thread = std::move(listen_thread_);
         }
         detail::JoinThreadSafely(listen_thread);
-        // Interrupt a blocked WinHttpReadData (SSE POST response) so the send
-        // thread can exit promptly. sse_request_ names the in-flight request
-        // handle; Close only touches it to shorten its receive timeout.
         auto sse_req = sse_request_.exchange(nullptr);
         if (sse_req) {
             WinHttpSetTimeouts(sse_req, 0, 0, 0, 500);
@@ -290,10 +270,6 @@ public:
             std::lock_guard<std::mutex> lk(send_mutex_);
             send_queue_.push(std::move(body));
         } else {
-            // Notifications/responses carry no response-awaiting semantics;
-            // posting them immediately cannot wait behind an in-flight
-            // request POST, which would deadlock server→client requests
-            // (e.g. elicitation completing a suspended tools/call).
             LaunchImmediatePost(std::move(body));
             return;
         }
@@ -301,10 +277,6 @@ public:
     }
 
 private:
-    // Fire-and-forget POST on a short-lived detached thread. The thread keeps
-    // the session alive via shared_from_this, so a detached thread outliving
-    // Close() never touches a destroyed object; DoPost's HTTP timeouts bound
-    // the thread's lifetime.
     void LaunchImmediatePost(std::string body) {
         try {
             auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
@@ -622,7 +594,6 @@ private:
                 MCP_LOG(Warning, "WinHttpSetTimeouts failed");
             }
 
-            // Headers per MCP Streamable HTTP spec
             std::wstring hdrs = L"Content-Type: application/json\r\n"
                                 L"Accept: application/json, text/event-stream\r\n";
             std::string method;
@@ -694,14 +665,12 @@ private:
                 return;
             }
 
-            // Check response status code; a 4xx body may still be a JSON-RPC error payload
             DWORD status_code = 0;
             DWORD scSize = sizeof(status_code);
             BOOL status_ok = WinHttpQueryHeaders(hRequest,
                     WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                     nullptr, &status_code, &scSize, nullptr);
 
-            // Capture a session id from any response; later requests carry it.
             wchar_t sid_buf[512] = {};
             DWORD sid_size = sizeof(sid_buf);
             if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
@@ -729,9 +698,6 @@ private:
                         continue;
                     }
                 }
-                // A 4xx body may carry a JSON-RPC error response (e.g. -32601
-                // mapped to HTTP 404); deliver it to the channel instead of
-                // failing the connection.
                 std::string err_body;
                 char ebuf[4096];
                 DWORD eread = 0;
@@ -781,7 +747,6 @@ private:
                 return;
             }
 
-            // 202 acknowledges a notification; it never carries a response.
             if (status_ok && status_code == 202)
             {
                 bool had_id = false;
@@ -801,7 +766,6 @@ private:
                 return;
             }
 
-            // Read response headers to determine content type
             wchar_t contentType[64] = {};
             DWORD ctSize = sizeof(contentType);
             bool isSse = false;
@@ -812,12 +776,6 @@ private:
             }
 
             if (isSse) {
-                // POST SSE response stream: dispatch each complete event block
-                // as its bytes arrive; a held-open stream (server→client request
-                // awaiting our reply) must not defer dispatch until EOF.
-                // QueryDataAvailable + ReadData(available) is the documented
-                // incremental read pairing: bare WinHttpReadData would wait to
-                // fill the whole 4KB buffer before returning.
                 sse_request_ = hRequest;
                 std::string sse_body;
                 char sbuf[4096];
@@ -854,7 +812,6 @@ private:
                 WinHttpCloseHandle(hSession);
                 return;
             } else {
-                // Drain response (single JSON response)
                 std::string resp_body;
                 char buf[4096];
                 DWORD read = 0;
@@ -862,7 +819,6 @@ private:
                     resp_body.append(buf, read);
                     read = 0;
                 }
-                // Try to parse as JSON-RPC response and enqueue
                 if (!resp_body.empty()) {
                     if (resp_body.size() > detail::kMaxMessageSize) {
                         MCP_LOG(Error, "HTTP response exceeded max message size");
@@ -889,7 +845,6 @@ private:
                 return;
             }
         }
-        // Both attempts failed with 401/403.
     }
 
     void DispatchSseBlock(const std::string& block, bool learn_version) {
@@ -980,8 +935,6 @@ private:
     std::queue<std::string> send_queue_;
     std::atomic<bool> running_{false};
     std::atomic<bool> delete_pending_{false};
-    // Handle of the request whose SSE response is being read by the send
-    // thread; Close() shortens its receive timeout to interrupt the read.
     std::atomic<HINTERNET> sse_request_{nullptr};
     std::thread listen_thread_;
     std::mutex listen_mutex_;
@@ -990,8 +943,6 @@ private:
     std::mutex last_event_id_mutex_;
     std::string last_event_id_;
     std::atomic<bool> listen_requested_{false};
-    // Handle of the in-flight listen GET request; Close() shortens its
-    // receive timeout to interrupt the read (same pattern as sse_request_).
     std::atomic<HINTERNET> listen_request_{nullptr};
 
     http_detail::ToolAnnotationCache tool_annotations_;
@@ -999,9 +950,6 @@ private:
 
 } // namespace
 
-// ═══════════════════════════════════════════════════════════════════════
-// POSIX implementation using the internal HTTP client
-// ═══════════════════════════════════════════════════════════════════════
 #else
 
 namespace httpclient_posix_impl {
@@ -1048,9 +996,6 @@ public:
             delete_pending_ = true;
             send_cv_.notify_one();
         }
-        // Stop the listen stream first: interrupt its in-flight GET (closing
-        // the socket wakes the blocked read) and join its thread before
-        // tearing down the POST path, so Close cannot hang.
         {
             std::lock_guard<std::mutex> lk(listen_mutex_);
             if (listen_client_) listen_client_->Close();
@@ -1075,10 +1020,6 @@ public:
             std::lock_guard<std::mutex> lk(send_mutex_);
             send_queue_.push(std::move(body));
         } else {
-            // Notifications/responses carry no response-awaiting semantics;
-            // posting them immediately cannot wait behind an in-flight
-            // request POST, which would deadlock server→client requests
-            // (e.g. elicitation completing a suspended tools/call).
             LaunchImmediatePost(std::move(body));
             return;
         }
@@ -1086,10 +1027,6 @@ public:
     }
 
 private:
-    // Fire-and-forget POST on a short-lived detached thread. The thread keeps
-    // the session alive via shared_from_this, so a detached thread outliving
-    // Close() never touches a destroyed object; DoPost's HTTP timeouts bound
-    // the thread's lifetime.
     void LaunchImmediatePost(std::string body) {
         try {
             auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
@@ -1323,10 +1260,6 @@ private:
                     if (full_body.size() > detail::kMaxMessageSize) {
                         throw PostBodyTooLarge{};
                     }
-                    // Headers are invisible inside the callback (HttpClient
-                    // fills them on return), so split unconditionally: a JSON
-                    // body never yields a block whose lines start with "data:",
-                    // and DispatchSseBlock silently ignores such blocks.
                     sse_pending.append(chunk.data(), chunk.size());
                     size_t pos;
                     while ((pos = sse_pending.find("\n\n")) != std::string::npos) {
@@ -1345,7 +1278,6 @@ private:
                 return;
             }
 
-            // Capture a session id from any response; later requests carry it.
             auto sid = httpclient_posix_impl::GetHeader(resp, "Mcp-Session-Id");
             if (!sid.empty()) {
                 StoreSessionId(std::move(sid));
@@ -1361,9 +1293,6 @@ private:
                         continue;
                     }
                 }
-                // A 4xx body may carry a JSON-RPC error response (e.g. -32601
-                // mapped to HTTP 404); deliver it to the channel instead of
-                // failing the connection.
                 if (resp.status_code == 400 && attempt == 0 &&
                     streamable_http_client_impl::IsHeaderMismatchBody(full_body)) {
                     if (streamable_http_client_impl::RefreshToolAnnotations(
@@ -1400,7 +1329,6 @@ private:
                 return;
             }
 
-            // 202 acknowledges a notification; it never carries a response.
             if (resp.status_code == 202)
             {
                 bool had_id = false;
@@ -1419,8 +1347,6 @@ private:
 
             auto ct = httpclient_posix_impl::GetHeader(resp, "Content-Type");
             if (ct.find("text/event-stream") != std::string::npos) {
-                // Complete blocks were already dispatched from the streaming
-                // callback; a held-open stream simply keeps being read.
                 return;
             } else {
                 if (full_body.empty()) return;
@@ -1444,7 +1370,6 @@ private:
                 return;
             }
         }
-        // Both attempts failed with 401/403.
     }
 
     void DispatchSseBlock(const std::string& block, bool learn_version) {
@@ -1506,8 +1431,6 @@ private:
     std::mutex last_event_id_mutex_;
     std::string last_event_id_;
     std::atomic<bool> listen_requested_{false};
-    // In-flight listen GET's HttpClient, owned by the listen thread; Close()
-    // calls Close() on it (never deletes it) to wake a blocked socket read.
     detail::net::HttpClient* listen_client_ = nullptr;
 
     http_detail::ToolAnnotationCache tool_annotations_;
@@ -1551,10 +1474,6 @@ private:
 
 } // namespace
 #endif
-
-// ═══════════════════════════════════════════════════════════════════════
-// Common StreamableHttpClientTransport
-// ═══════════════════════════════════════════════════════════════════════
 
 StreamableHttpClientTransport::StreamableHttpClientTransport(
     const HttpClientTransportOptions& options)

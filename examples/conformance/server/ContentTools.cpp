@@ -1,5 +1,3 @@
-// ContentTools.cpp — content-shaped and schema-shaped conformance tools
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/McpError.hpp>
@@ -244,7 +242,6 @@ CallToolResult LoggingTool(const ToolContext& ctx)
     return MakeTextResult("logged through the request-scoped, logLevel-gated channel");
 }
 
-// V7 placeholder: a plain successful call for the response-stream check.
 CallToolResult StreamingElicitation(const ToolContext&)
 {
     return MakeTextResult("stream observed: result frames only, no top-level requests");

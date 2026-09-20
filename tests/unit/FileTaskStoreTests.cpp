@@ -1,5 +1,3 @@
-// FileTaskStoreTests - unit tests for FileTaskStore
-
 #include <mcp/storage/FileTaskStore.hpp>
 
 #include <mcp/test/McpTest.hpp>
@@ -104,14 +102,12 @@ TEST_F(FileTaskStoreTest, SetTaskStatus) {
     EXPECT_EQ(task->status, TaskStatus::Working);
 }
 
-// ── Duplicate task ids are rejected (throws, not silent overwrite) ──
 TEST_F(FileTaskStoreTest, CreateDuplicateTaskThrows) {
     FileTaskStore store(store_path);
     store.CreateTask("task-1");
     EXPECT_THROW(store.CreateTask("task-1"), std::runtime_error);
 }
 
-// ── State survives store destruction and reconstruction from the file ──
 TEST_F(FileTaskStoreTest, PersistsAcrossInstances) {
     {
         FileTaskStore store(store_path);
@@ -131,7 +127,6 @@ TEST_F(FileTaskStoreTest, PersistsAcrossInstances) {
     EXPECT_EQ(tasks[0].result->At("answer").GetInt(), 42);
 }
 
-// ── A corrupt store file must not throw on construction; the store is empty ──
 TEST_F(FileTaskStoreTest, CorruptFileDoesNotThrow) {
     {
         std::ofstream ofs(store_path);

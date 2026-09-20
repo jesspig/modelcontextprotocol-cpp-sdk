@@ -1,5 +1,3 @@
-// SelfTests.cpp — 自研测试框架自测（仅自研宏）
-
 #include <mcp/test/McpTest.hpp>
 #include <mcp/test/McpTrace.hpp>
 
@@ -14,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-// ── ToString ──
 TEST(FrameworkSelfTest, ToStringInt) {
     EXPECT_EQ(mcp::test::ToString(42), "42");
 }
@@ -51,7 +48,6 @@ TEST(FrameworkSelfTest, ToStringOptional) {
     EXPECT_EQ(mcp::test::ToString(std::optional<int>()), "(empty)");
 }
 
-// ── 断言宏全通过 ──
 TEST(FrameworkSelfTest, AssertionMacrosPass) {
     EXPECT_EQ(1, 1);
     EXPECT_NE(1, 2);
@@ -66,7 +62,6 @@ TEST(FrameworkSelfTest, AssertionMacrosPass) {
     EXPECT_STREQ("a", "a");
 }
 
-// ── 断言失败记录机制 ──
 TEST(FrameworkSelfTest, AssertionFailureRecordsFailure) {
     mcp::test::AssertionFailure(__FILE__, __LINE__, "probe");
     EXPECT_GE(FailureCount(), 1);
@@ -83,13 +78,11 @@ TEST(FrameworkSelfTest, SubthreadFailureCounted) {
     ClearFailures();
 }
 
-// ── 当前测试名反射 ──
 TEST(FrameworkSelfTest, CurrentTestNameReflects) {
     EXPECT_EQ(mcp::test::CurrentTestName(), "CurrentTestNameReflects");
     EXPECT_EQ(mcp::test::CurrentSuiteName(), "FrameworkSelfTest");
 }
 
-// ── fixture 生命周期 ──
 namespace {
 
 class CounterFixture : public mcp::test::TestCase {
@@ -105,13 +98,11 @@ TEST_F(CounterFixture, LifecycleOrder) {
     EXPECT_EQ(order_, "S");
 }
 
-// ── 注册表 ──
 TEST(FrameworkSelfTest, RegistryHasEntries) {
     EXPECT_GT(mcp::test::Registry::Instance().Entries().size(), 0u);
     EXPECT_TRUE(&mcp::test::Registry::Instance() == &mcp::test::Registry::Instance());
 }
 
-// ── T1 双求值修复 ──
 namespace {
 
 int NextCounter(int& counter) { return ++counter; }
@@ -137,7 +128,6 @@ TEST(FrameworkSelfTest, ExpectCompareEvaluatesOperandsOnceOnFailure) {
     EXPECT_EQ(counter_after_failure, 1);
 }
 
-// ── T1 致命语义 ──
 namespace {
 
 void FatalProbe(int& marker) {
@@ -199,7 +189,6 @@ TEST(FrameworkSelfTest, DoubleAndNearAssertionsPass) {
     EXPECT_NEAR(1.0, 1.05, 0.1);
 }
 
-// ── T2 SCOPED_TRACE ──
 TEST(FrameworkSelfTest, ScopedTraceAppearsInFailure) {
     {
         SCOPED_TRACE("probe-trace");
@@ -228,7 +217,6 @@ TEST(FrameworkSelfTest, ScopedTraceNestedInLoop) {
     }
 }
 
-// ── T4 跳过与套件钩子 ──
 namespace {
 
 struct SkipFixture : mcp::test::TestCase {
@@ -280,7 +268,6 @@ TEST_F(SuiteHookFixture, SetUpTestSuiteNotRepeatedForSecondCase) {
     EXPECT_EQ(SetupCalls(), 1);
 }
 
-// ── T4 全局环境 ──
 namespace {
 
 int& EnvironmentSetUpCount() {
@@ -313,7 +300,6 @@ TEST(FrameworkSelfTest, GlobalEnvironmentSetUpRunsOnce) {
     EXPECT_EQ(EnvironmentSetUpCount(), 1);
 }
 
-// ── T5 扩展断言 ──
 TEST(FrameworkSelfTest, StringCaseAssertionsPass) {
     EXPECT_STRNE("a", "b");
     EXPECT_STRCASEEQ("AbC", "aBc");
@@ -330,7 +316,6 @@ TEST(FrameworkSelfTest, FloatAssertionsPass) {
     EXPECT_NEAR(1.0, 1.1, 0.2);
 }
 
-// ── T5 匹配器 ──
 TEST(FrameworkSelfTest, MatchersMatchValues) {
     EXPECT_THAT(std::string("hello world"), mcp::test::HasSubstr("world"));
     const std::vector<int> values{1, 2, 3};
@@ -346,7 +331,6 @@ TEST(FrameworkSelfTest, MatcherFailureIsRecorded) {
     EXPECT_GE(failure_count, 1);
 }
 
-// ── T5 ToString 增强 ──
 TEST(FrameworkSelfTest, ToStringExpandsContainers) {
     EXPECT_EQ(mcp::test::ToString(std::vector<int>{1, 2, 3}), "[1, 2, 3]");
     EXPECT_EQ(mcp::test::ToString(std::pair<int, std::string>(1, "x")), "(1, \"x\")");
@@ -365,7 +349,6 @@ TEST(FrameworkSelfTest, ToStringPrefersAdlPrintTo) {
     EXPECT_EQ(mcp::test::ToString(AdlPrinted{}), "adl-printed");
 }
 
-// ── T8 属性与结束监听 ──
 TEST(FrameworkSelfTest, RecordPropertyStoresValues) {
     RecordProperty("k", "v");
     RecordProperty("n", 7);

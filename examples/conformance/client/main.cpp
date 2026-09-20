@@ -1,9 +1,3 @@
-// conformance-client — MCP 官方 conformance 场景驱动客户端
-// 用法: MCP_CONFORMANCE_SCENARIO=<scenario> conformance-client <server-url>
-// 驱动协议对齐 TS SDK test/conformance/src/everythingClient.ts：
-// 场景名经环境变量 MCP_CONFORMANCE_SCENARIO 下发，服务器 URL 取 argv[1]，
-// modern run 经 MCP_CONFORMANCE_PROTOCOL_VERSION 判定；成功退出码 0，异常 1。
-
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
@@ -85,8 +79,6 @@ std::unique_ptr<McpClient> ConnectClient(
     return client;
 }
 
-// ── initialize ──
-
 void RunBasicClient(const std::string& server_url) {
     auto client = ConnectClient(server_url, "test-client", ConnectMode::Legacy,
         ClientCapabilities{});
@@ -96,8 +88,6 @@ void RunBasicClient(const std::string& server_url) {
     client->Close();
     std::cout << "Connection closed successfully" << std::endl;
 }
-
-// ── tools_call ──
 
 void RunToolsCallClient(const std::string& server_url) {
     ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto
@@ -121,8 +111,6 @@ void RunToolsCallClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
-// ── request-metadata ──
-
 void RunRequestMetadataClient(const std::string& server_url) {
     ClientCapabilities capabilities;
     RootsCapability roots_capability;
@@ -136,8 +124,6 @@ void RunRequestMetadataClient(const std::string& server_url) {
     client->Close();
     std::cout << "Connection closed successfully" << std::endl;
 }
-
-// ── http-standard-headers ──
 
 void RunHttpStandardHeadersClient(const std::string& server_url) {
     auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
@@ -161,8 +147,6 @@ void RunHttpStandardHeadersClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
-// ── http-custom-headers ──
-
 void RunHttpCustomHeadersClient(const std::string& server_url) {
     auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
         ClientCapabilities{});
@@ -176,8 +160,6 @@ void RunHttpCustomHeadersClient(const std::string& server_url) {
         client->CallTool(name, arguments);
     client->Close();
 }
-
-// ── http-invalid-tool-headers ──
 
 void RunHttpInvalidToolHeadersClient(const std::string& server_url) {
     auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
@@ -199,8 +181,6 @@ void RunHttpInvalidToolHeadersClient(const std::string& server_url) {
     }
     client->Close();
 }
-
-// ── sep-2322-client-request-state ──
 
 void RunMrtrClient(const std::string& server_url) {
     ClientCapabilities capabilities;
@@ -239,8 +219,6 @@ void RunMrtrClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
-// ── elicitation-sep1034-client-defaults ──
-
 void RunElicitationDefaultsClient(const std::string& server_url) {
     ClientCapabilities capabilities;
     ElicitationCapability elicitation_capability;
@@ -275,8 +253,6 @@ void RunElicitationDefaultsClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
-// ── sse-retry ──
-
 void RunSSERetryClient(const std::string& server_url) {
     auto client = ConnectClient(server_url, "sse-retry-test-client",
         ConnectMode::Legacy, ClientCapabilities{});
@@ -295,8 +271,6 @@ void RunSSERetryClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
-// ── json-schema-ref-no-deref ──
-
 void RunJsonSchemaRefNoDerefClient(const std::string& server_url) {
     auto client = ConnectClient(server_url, "json-schema-ref-no-deref-client",
         ConnectMode::Legacy, ClientCapabilities{});
@@ -305,8 +279,6 @@ void RunJsonSchemaRefNoDerefClient(const std::string& server_url) {
     client->Close();
     std::cout << "Connection closed successfully" << std::endl;
 }
-
-// ── json-schema-2020-12-preservation ──
 
 void RunJsonSchema2020_12PreservationClient(const std::string& server_url) {
     ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto

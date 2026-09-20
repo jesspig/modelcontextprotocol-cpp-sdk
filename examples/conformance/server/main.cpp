@@ -1,7 +1,3 @@
-// main.cpp — MCP conformance test server (Streamable HTTP, legacy 2025-11-25 leg)
-// Fixture for the official @modelcontextprotocol/conformance package; mirrors
-// typescript-sdk test/conformance/src/everythingServer.ts
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/Methods.hpp>

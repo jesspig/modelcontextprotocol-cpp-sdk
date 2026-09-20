@@ -1,7 +1,5 @@
 #pragma once
 
-// ProtocolVersion.hpp — Protocol version constants and helpers
-
 #include <string_view>
 
 namespace mcp {

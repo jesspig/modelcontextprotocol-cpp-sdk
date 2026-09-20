@@ -1,6 +1,4 @@
 #pragma once
-// ClientOptions.hpp
-// Client connection options and configuration
 #include <mcp/Export.hpp>
 
 #include <mcp/Capabilities.hpp>
@@ -17,52 +15,37 @@
 
 namespace mcp {
 
-// ── Connect mode ──
 enum class ConnectMode {
-    Auto,      // probe server/discover then fallback initialize
-    Legacy,    // force initialize handshake
-    Pin,       // pin to specific protocol version
+    Auto,
+    Legacy,
+    Pin,
 };
 
-// ── ClientOptions (对应 C# McpClientOptions) ──
 struct MCP_API ClientOptions {
-    // Client identity
     Implementation client_info{"mcp-cpp-client", std::string(kSdkVersion)};
     std::optional<ClientCapabilities> capabilities;
 
-    // Connection mode
     ConnectMode connect_mode{ConnectMode::Auto};
     std::optional<std::string> pin_protocol_version;
 
-    // Timeouts
     std::chrono::seconds initialization_timeout{60};
     std::chrono::seconds discover_probe_timeout{5};
 
-    // Total budget for a single request in seconds. Zero disables the cap
-    // (existing default); progress extensions cannot push a pending request
-    // past this deadline.
     std::chrono::seconds max_total_timeout{0};
 
-    // MRTR (InputRequired) config
     struct InputRequiredConfig {
         bool auto_fulfill{true};
         int max_rounds{10};
         std::chrono::seconds round_timeout{600};
 
-        // Hard budget for the whole MRTR flow across all rounds. Zero
-        // disables the cap (round_timeout applies per round).
         std::chrono::seconds max_total_timeout{0};
     };
     std::optional<InputRequiredConfig> input_required_config;
 
-    // Extensions declaration map
     std::optional<JsonValue> extensions;
 
-    // 404 会话过期时自动重新初始化并重放失败请求恰一次。
     bool reinit_on_expired_session{true};
 
-    // Span observation hook: invoked on the transport send/receive boundaries.
-    // See mcp/SpanHooks.hpp.
     SpanHandler span_handler;
 
 };

@@ -1,5 +1,3 @@
-// WebSocketClientTests.cpp — WebSocket 客户端单元测试
-
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX

@@ -1,23 +1,3 @@
-// Phase2ClosureTests — second-phase feature closure integration tests
-//
-// Covered features:
-//   * Tasks: ToolOptions.execution(mode=Task) + ServerOptions::task_store,
-//     CallToolAsTask handle, status notifications, GetTask / CancelTask
-//     (cooperative cancellation, terminal states never migrate)
-//   * URL elicitation: McpServer::ElicitUrl inside a tool handler,
-//     McpClient::SetUrlElicitationHandler, automatic
-//     notifications/elicitation/complete, server future resolves as accept
-//   * Resilience: McpClient::ListToolsAll aggregation and
-//     ClientOptions::max_total_timeout hard cap
-//
-// Transport matrix:
-//   * InMemory        — tasks closure, URL elicitation closure
-//   * Streamable HTTP — tasks main path, robustness, URL elicitation closure
-//
-// Era note: tasks and URL-mode elicitation are gated to non-modern protocol
-// versions, so every fixture uses ConnectMode::Legacy whose initialize
-// handshake settles on 2025-11-25 on both sides.
-
 #include <mcp/Content.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Methods.hpp>
@@ -92,8 +72,6 @@ void RemoveQuietly(const std::filesystem::path& p) {
     std::filesystem::remove(p, ec);
 }
 
-// Worker that runs for ~500ms in short slices so cancellation is observed
-// quickly and the task completes deterministically on its own.
 CallToolResult TaskWorkerBody(const Ctx& ctx) {
     for (int i = 0; i < 25; ++i) {
         if (ctx.IsCancellationRequested()) return MakeTextResult("cancelled");
@@ -116,9 +94,6 @@ void RegisterUrlGateTool(McpServer& server) {
 
 } // namespace
 
-// ============================================================
-// InMemory: tasks full closure
-// ============================================================
 struct Phase2InMemoryTaskFixture : mcp::test::TestCase {
     std::filesystem::path store_path;
     std::shared_ptr<FileTaskStore> store;
@@ -257,9 +232,6 @@ TEST_F(Phase2InMemoryTaskFixture, CancelRunningTask) {
     });
 }
 
-// ============================================================
-// InMemory: URL elicitation closure
-// ============================================================
 struct Phase2InMemoryElicitFixture : mcp::test::TestCase {
     std::unique_ptr<McpServer> server;
     std::unique_ptr<McpClient> client;
@@ -316,9 +288,6 @@ TEST_F(Phase2InMemoryElicitFixture, UrlElicitationRoundTrip) {
     });
 }
 
-// ============================================================
-// Streamable HTTP: tasks main path
-// ============================================================
 struct Phase2HttpTaskFixture : mcp::test::TestCase {
     uint16_t port = 0;
     std::filesystem::path store_path;
@@ -414,9 +383,6 @@ TEST_F(Phase2HttpTaskFixture, TaskLifecycleOverHttp) {
     });
 }
 
-// ============================================================
-// Streamable HTTP: robustness (ListToolsAll + max_total_timeout)
-// ============================================================
 struct Phase2HttpResilienceFixture : mcp::test::TestCase {
     uint16_t port = 0;
     std::shared_ptr<StreamableHttpServerTransport> server_transport;
@@ -543,9 +509,6 @@ TEST_F(Phase2HttpResilienceFixture, MaxTotalTimeoutTruncatesRequest) {
     });
 }
 
-// ============================================================
-// Streamable HTTP: URL elicitation closure
-// ============================================================
 struct Phase2HttpElicitFixture : mcp::test::TestCase {
     uint16_t port = 0;
     std::shared_ptr<StreamableHttpServerTransport> server_transport;

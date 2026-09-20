@@ -1,4 +1,3 @@
-# 自研测试框架核心：静态库 mcp-test（断言/注册/运行）与 mcp-test-main（main 入口）
 include(McpDiscoverTests)
 
 add_library(mcp-test STATIC

@@ -1,7 +1,3 @@
-// SimpleClient — MCP client example
-// Demonstrates creating a client, listing tools, and calling a tool
-// Uses InMemoryTransport to connect to an embedded EchoServer
-
 #include <mcp/client/McpClient.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
@@ -17,10 +13,8 @@ int main() {
     std::thread server_thread;
     std::unique_ptr<McpServer> server;
     try {
-        // 创建内存传输对
         auto transport_pair = InMemoryTransport::CreatePair();
 
-        // ── 服务端 ──
         ServerOptions srv_opts;
         srv_opts.server_info = Implementation{"EchoServer", "1.0.0"};
         server = McpServer::Create(
@@ -40,11 +34,8 @@ int main() {
                     return r;
                 }));
 
-        // 在后台线程运行服务器；main 退出前 join
         server_thread = std::thread([&server]() { server->Run(); });
 
-        // ── 客户端 ──
-        // Create 阻塞直到协商完成,无需手动等待服务器就绪
         ClientOptions cl_opts;
         cl_opts.client_info = Implementation{"SimpleClient", "1.0.0"};
         cl_opts.connect_mode = ConnectMode::Auto;
@@ -52,7 +43,6 @@ int main() {
         auto client = McpClient::Create(
             std::move(transport_pair.client), cl_opts);
 
-        // 列出工具
         std::cout << "Server: " << client->GetServerInfo().name
                   << " v" << client->GetServerInfo().version << std::endl;
         std::cout << "Protocol: " << client->GetNegotiatedProtocolVersion() << std::endl;
@@ -65,7 +55,6 @@ int main() {
                       << std::endl;
         }
 
-        // 调用 echo 工具
         std::cout << "\nCalling echo tool with 'Hello, MCP!'..." << std::endl;
         JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
         auto result = client->CallTool("echo", args);

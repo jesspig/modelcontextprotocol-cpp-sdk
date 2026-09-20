@@ -1,7 +1,3 @@
-// EchoServer — MCP server example
-// Uses StdioServerTransport, registers an echo tool
-// Communicates with MCP clients via stdio line-delimited JSON
-
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
@@ -14,17 +10,14 @@ using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
 int main() {
-    // 创建 stdio 传输
     auto transport = std::make_unique<StdioServerTransport>();
 
-    // 创建服务器
     ServerOptions opts;
     opts.server_info = Implementation{"EchoServer", "1.0.0"};
     opts.server_instructions = "An echo server — sends back what you send.";
 
     auto server = McpServer::Create(std::move(transport), opts);
 
-    // 注册 echo 工具
     server->RegisterTool("echo",
         ToolOptions{}.Description("Echo the input text back"),
         std::function<CallToolResult(const Ctx&)>(
@@ -39,7 +32,6 @@ int main() {
                 return result;
             }));
 
-    // 注册静态资源
     server->RegisterResource("echo-static", "echo://static",
         ResourceOptions{}.Description("Static echo resource"),
         [](const std::string& uri) -> ReadResourceResult {
@@ -51,7 +43,6 @@ int main() {
             return rr;
         });
 
-    // 注册模板资源
     server->RegisterResourceTemplate("echo-template",
         "echo://{text}",
         ResourceOptions{}.Description("Echo the URI parameter"),
@@ -65,7 +56,6 @@ int main() {
             return rr;
         });
 
-    // 注册 prompt
     server->RegisterPrompt("capitalize",
         PromptOptions{}.Description("Capitalize the input text"),
         [](const std::string& name,
@@ -75,7 +65,6 @@ int main() {
             if (args && args->Contains("text")) {
                 text = (*args)["text"].GetString();
             }
-            // Capitalize
             for (auto& c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             GetPromptResult r;
             PromptMessage pm;
@@ -85,7 +74,6 @@ int main() {
             return r;
         });
 
-    // 启动服务器（阻塞，等待 stdio 输入）
     std::cerr << "EchoServer starting on stdio..." << std::endl;
     server->Run();
 

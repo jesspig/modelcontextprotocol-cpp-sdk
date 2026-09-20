@@ -1,5 +1,3 @@
-// InMemoryTransport.cpp — in-memory transport pair implementation
-
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
@@ -42,7 +40,6 @@ private:
 } // namespace
 
 InMemoryTransport::Pair InMemoryTransport::CreatePair() {
-    // Client receives from s2c, writes to c2s; server receives from c2s, writes to s2c
     auto c2s = std::make_shared<MessageChannel>(detail::kChannelCapacity);
     auto s2c = std::make_shared<MessageChannel>(detail::kChannelCapacity);
 

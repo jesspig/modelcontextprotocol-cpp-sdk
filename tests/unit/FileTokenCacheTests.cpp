@@ -1,5 +1,3 @@
-// FileTokenCacheTests — unit tests for FileTokenCache persistence
-
 #include <mcp/storage/FileTokenCache.hpp>
 
 #include <fstream>
@@ -31,7 +29,6 @@ private:
     }
 };
 
-// ── Create cache ──
 TEST_F(FileTokenCacheTest, CreateCache) {
     FileTokenCache cache(cache_path);
     TokenContainer tokens;
@@ -40,7 +37,6 @@ TEST_F(FileTokenCacheTest, CreateCache) {
     EXPECT_TRUE(std::filesystem::exists(cache_path));
 }
 
-// ── Store and retrieve tokens ──
 TEST_F(FileTokenCacheTest, StoreAndRetrieveTokens) {
     FileTokenCache cache(cache_path);
 
@@ -64,7 +60,6 @@ TEST_F(FileTokenCacheTest, StoreAndRetrieveTokens) {
     EXPECT_EQ(result->token_type, "Bearer");
 }
 
-// ── Clear tokens ──
 TEST_F(FileTokenCacheTest, ClearTokens) {
     FileTokenCache cache(cache_path);
 
@@ -77,7 +72,6 @@ TEST_F(FileTokenCacheTest, ClearTokens) {
     EXPECT_FALSE(result.has_value());
 }
 
-// ── Persist across instances ──
 TEST_F(FileTokenCacheTest, PersistAcrossInstances) {
     {
         FileTokenCache cache_a(cache_path);
@@ -90,7 +84,7 @@ TEST_F(FileTokenCacheTest, PersistAcrossInstances) {
         tokens.token_type = "Bearer";
 
         cache_a.StoreTokens(tokens);
-    } // cache_a destroyed
+    }
 
     FileTokenCache cache_b(cache_path);
 
@@ -104,9 +98,6 @@ TEST_F(FileTokenCacheTest, PersistAcrossInstances) {
     EXPECT_EQ(result->token_type, "Bearer");
 }
 
-// ── Corrupt file handling ──
-// A corrupt cache file must not throw in the constructor's Load() and
-// yields no tokens.
 TEST_F(FileTokenCacheTest, CorruptFileHandling) {
     {
         std::ofstream ofs(cache_path);

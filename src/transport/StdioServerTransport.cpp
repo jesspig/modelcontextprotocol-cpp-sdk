@@ -1,5 +1,3 @@
-// StdioServerTransport.cpp — stdio server transport implementation
-
 #include <mcp/transport/StdioServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
@@ -28,12 +26,10 @@ void StdioServerTransport::Start() {
 
 void StdioServerTransport::Close() {
     if (running_.exchange(false)) {
-        // Closing the pipes unblocks the read thread's blocking Read, so join completes
         if (stdin_pipe_) stdin_pipe_->Close();
         if (stdout_pipe_) stdout_pipe_->Close();
     }
 
-    // Join unconditionally: the read thread may have exited on its own (EOF/error)
     detail::JoinThreadSafely(read_thread_);
 
     if (channel_) channel_->Close();
@@ -96,8 +92,6 @@ void StdioServerTransport::ReadLoop() {
         }
     }
 
-    // The read thread exited on its own (EOF/error/oversize); leave running_
-    // untouched so Close() still performs the full teardown and joins us.
     if (channel_) channel_->Close();
     SetDisconnected();
 }

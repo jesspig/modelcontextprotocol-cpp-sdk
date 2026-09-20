@@ -1,7 +1,5 @@
 #pragma once
 
-// JsonFields.hpp — JSON field name constants shared by core serializers
-
 namespace mcp {
 namespace detail {
 
@@ -82,7 +80,6 @@ inline constexpr char kTraceparent[] = "traceparent";
 inline constexpr char kTracestate[] = "tracestate";
 inline constexpr char kBaggage[] = "baggage";
 
-// _meta envelope keys (2026-era)
 inline constexpr char kMetaProtocolVersionKey[] = "io.modelcontextprotocol/protocolVersion";
 inline constexpr char kMetaClientInfoKey[] = "io.modelcontextprotocol/clientInfo";
 inline constexpr char kMetaClientCapabilitiesKey[] = "io.modelcontextprotocol/clientCapabilities";
@@ -90,7 +87,6 @@ inline constexpr char kMetaLogLevelKey[] = "io.modelcontextprotocol/logLevel";
 inline constexpr char kMetaSubscriptionIdKey[] = "io.modelcontextprotocol/subscriptionId";
 inline constexpr char kMetaServerInfoKey[] = "io.modelcontextprotocol/serverInfo";
 
-// ResultType enum value strings
 inline constexpr char kInputRequiredValue[] = "input_required";
 inline constexpr char kCompleteValue[] = "complete";
 

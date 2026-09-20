@@ -1,5 +1,3 @@
-// EventStore.cpp - Event sequence store implementation
-
 #include <mcp/http/EventStore.hpp>
 
 #include <mutex>
@@ -15,7 +13,6 @@ uint64_t EventStore::Append(
     auto& events = events_[std::string(session_id)];
     events.push_back({id, std::move(event_data)});
 
-    // Trim excess events for this session only
     if (events.size() > kMaxEventsPerSession) {
         events.erase(
             events.begin(),

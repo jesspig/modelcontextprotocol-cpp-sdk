@@ -1,4 +1,3 @@
-# McpDiscoverTests.cmake.script — 运行 --list-tests 并生成逐用例 add_test 文件（-P 脚本模式）
 execute_process(COMMAND "${TARGET_EXE}" --list-tests
     OUTPUT_VARIABLE OUT
     RESULT_VARIABLE RC)

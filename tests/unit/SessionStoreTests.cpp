@@ -17,8 +17,6 @@ namespace {
 
 constexpr auto kHttpTimeout = std::chrono::milliseconds(2000);
 
-// MessageChannel::AsyncReceive blocks until a message arrives; poll Empty()
-// first so the subsequent receive returns immediately (single consumer).
 bool WaitForChannelMessage(MessageChannel& channel,
                            std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -27,7 +25,6 @@ bool WaitForChannelMessage(MessageChannel& channel,
     return !channel.Empty();
 }
 
-// Never throws: a failed request surfaces as status_code 0 for assertions.
 mcp::detail::net::HttpResponseInfo TryRequest(
     mcp::detail::net::HttpClient& http,
     const mcp::detail::net::HttpRequestSpec& req) {
@@ -38,9 +35,6 @@ mcp::detail::net::HttpResponseInfo TryRequest(
     }
 }
 
-// Server-side POST handling parks on a promise until the message loop replies,
-// so each request must be sent from its own thread while the main thread
-// feeds the reply through the message channel.
 struct HttpThread {
     std::optional<mcp::detail::net::HttpResponseInfo> response;
     std::thread thread;
@@ -127,9 +121,6 @@ TEST(SessionStoreTest, InMemoryOverwriteExisting) {
     EXPECT_EQ(loaded->created_at_ms, 2);
 }
 
-// ── 回环：实例 A 创建会话（initialize 响应下发 Mcp-Session-Id），
-//    实例 B（同 store、无本地会话）接管该 session 继续服务；
-//    DELETE 后同 id 再请求得到 404。──
 TEST(SessionStoreTest, ServerAdoptsSessionCreatedByOtherInstance) {
     auto session_store = std::make_shared<InMemorySessionStore>();
     auto event_store = std::make_shared<EventStore>();

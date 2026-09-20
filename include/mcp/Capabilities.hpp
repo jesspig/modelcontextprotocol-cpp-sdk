@@ -1,7 +1,5 @@
 #pragma once
 
-// Capabilities.hpp — MCP client/server capability types and serialization
-
 #include <mcp/JsonValue.hpp>
 
 #include <map>
@@ -63,7 +61,6 @@ struct ClientCapabilities {
     std::optional<JsonValue> experimental;
 };
 
-// ── Serialization ──
 JsonValue SerializeToolsCapability(const ToolsCapability& v);
 ToolsCapability DeserializeToolsCapability(const JsonValue& j);
 JsonValue SerializeResourcesCapability(const ResourcesCapability& v);

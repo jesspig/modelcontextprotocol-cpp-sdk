@@ -1,5 +1,3 @@
-// McpTypesTests — unit tests for MCP type serialization/deserialization round-trips
-
 #include <mcp/McpTypes.hpp>
 
 #include <detail/JsonSchemaValidator.hpp>
@@ -8,7 +6,6 @@
 
 using namespace mcp;
 
-// ── Tool ──
 TEST(McpTypesTest, ToolRoundTrip) {
     Tool t;
     t.name = "test_tool";
@@ -36,7 +33,6 @@ TEST(McpTypesTest, ToolRoundTrip) {
     EXPECT_EQ(t.annotations->read_only_hint, t2.annotations->read_only_hint);
 }
 
-// ── Resource ──
 TEST(McpTypesTest, ResourceRoundTrip) {
     Resource r;
     r.uri = "file:///data";
@@ -49,7 +45,6 @@ TEST(McpTypesTest, ResourceRoundTrip) {
     EXPECT_EQ(r.name, r2.name);
 }
 
-// ── Prompt ──
 TEST(McpTypesTest, PromptRoundTrip) {
     Prompt p;
     p.name = "greet";
@@ -69,7 +64,6 @@ TEST(McpTypesTest, PromptRoundTrip) {
     EXPECT_TRUE(p2.arguments->at(0).required.value_or(false));
 }
 
-// ── Implementation ──
 TEST(McpTypesTest, ImplementationRoundTrip) {
     Implementation impl;
     impl.name = "test-server";
@@ -82,7 +76,6 @@ TEST(McpTypesTest, ImplementationRoundTrip) {
     EXPECT_EQ(impl.version, impl2.version);
 }
 
-// ── CallToolResult ──
 TEST(McpTypesTest, CallToolResultRoundTrip) {
     CallToolResult r;
     r.content = {TextContent{"text", "Hello!"}};
@@ -98,7 +91,6 @@ TEST(McpTypesTest, CallToolResultRoundTrip) {
     EXPECT_FALSE(r2.is_error);
 }
 
-// ── CallToolResult with isError ──
 TEST(McpTypesTest, CallToolResultWithError) {
     CallToolResult r;
     r.is_error = true;
@@ -109,7 +101,6 @@ TEST(McpTypesTest, CallToolResultWithError) {
     EXPECT_TRUE(r2.is_error);
 }
 
-// ── ListToolsResult ──
 TEST(McpTypesTest, ListToolsResultRoundTrip) {
     ListToolsResult r;
     Tool t;
@@ -125,7 +116,6 @@ TEST(McpTypesTest, ListToolsResultRoundTrip) {
     EXPECT_EQ(r2.next_cursor, "cursor123");
 }
 
-// ── Content variants ──
 TEST(McpTypesTest, TextContentRoundTrip) {
     TextContent tc{"text", "Hello world", "text/plain"};
     auto jv = SerializeTextContent(tc);
@@ -156,7 +146,6 @@ TEST(McpTypesTest, ContentVariantAudioRoundTrip) {
     EXPECT_TRUE(std::holds_alternative<AudioContent>(cv2));
 }
 
-// ── ServerCapabilities ──
 TEST(McpTypesTest, ServerCapabilitiesRoundTrip) {
     ServerCapabilities caps;
     caps.tools = ToolsCapability{true};
@@ -170,7 +159,6 @@ TEST(McpTypesTest, ServerCapabilitiesRoundTrip) {
     EXPECT_TRUE(caps2.resources.has_value());
 }
 
-// ── ClientCapabilities ──
 TEST(McpTypesTest, ClientCapabilitiesRoundTrip) {
     ClientCapabilities caps;
     caps.elicitation = ElicitationCapability{};
@@ -182,7 +170,6 @@ TEST(McpTypesTest, ClientCapabilitiesRoundTrip) {
     EXPECT_TRUE(caps2.elicitation.has_value());
 }
 
-// ── DiscoverResult ──
 TEST(McpTypesTest, DiscoverResultRoundTrip) {
     DiscoverResult r;
     r.supported_versions = {"2025-11-25", "2026-07-28"};
@@ -198,7 +185,6 @@ TEST(McpTypesTest, DiscoverResultRoundTrip) {
     EXPECT_EQ(r2.server_info.name, "my-server");
 }
 
-// ── InitializeResult ──
 TEST(McpTypesTest, InitializeResultRoundTrip) {
     InitializeResult r;
     r.protocol_version = "2026-07-28";
@@ -212,7 +198,6 @@ TEST(McpTypesTest, InitializeResultRoundTrip) {
     EXPECT_EQ(r2.protocol_version, "2026-07-28");
 }
 
-// ── GetPromptResult with PromptMessage ──
 TEST(McpTypesTest, GetPromptResultRoundTrip) {
     GetPromptResult r;
     PromptMessage pm;
@@ -228,7 +213,6 @@ TEST(McpTypesTest, GetPromptResultRoundTrip) {
     EXPECT_TRUE(std::holds_alternative<TextContent>(r2.messages[0].content));
 }
 
-// ── ResourceContents ──
 TEST(McpTypesTest, TextResourceContentsRoundTrip) {
     TextResourceContents r;
     r.uri = "file:///doc.txt";
@@ -241,7 +225,6 @@ TEST(McpTypesTest, TextResourceContentsRoundTrip) {
     EXPECT_EQ(std::get<TextResourceContents>(rc2).text, "content");
 }
 
-// ── ReadResourceResult ──
 TEST(McpTypesTest, ReadResourceResultRoundTrip) {
     ReadResourceResult r;
     TextResourceContents trc;
@@ -258,7 +241,6 @@ TEST(McpTypesTest, ReadResourceResultRoundTrip) {
     EXPECT_EQ(rc->text, "Hello");
 }
 
-// ── LoggingLevel ──
 TEST(McpTypesTest, LoggingLevelRoundTrip) {
     auto jv = SerializeLoggingLevel(LoggingLevel::Warning);
     EXPECT_EQ(jv.GetString(), "warning");
@@ -267,7 +249,6 @@ TEST(McpTypesTest, LoggingLevelRoundTrip) {
     EXPECT_EQ(l, LoggingLevel::Warning);
 }
 
-// ── RequestMeta ──
 TEST(McpTypesTest, RequestMetaRoundTrip) {
     RequestMeta m;
     m.protocol_version = "2026-07-28";
@@ -281,7 +262,6 @@ TEST(McpTypesTest, RequestMetaRoundTrip) {
     EXPECT_EQ(m2.client_info->name, "client");
 }
 
-// ── CallToolRequestParams ──
 TEST(McpTypesTest, CallToolRequestParamsRoundTrip) {
     CallToolRequestParams p;
     p.name = "echo";
@@ -298,7 +278,6 @@ TEST(McpTypesTest, CallToolRequestParamsRoundTrip) {
     EXPECT_EQ((*p2.arguments)["text"].GetString(), "hello");
 }
 
-// ── EmbeddedResource ──
 TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
     TextResourceContents trc;
     trc.uri = "file:///doc.txt";
@@ -314,7 +293,6 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
     EXPECT_EQ(rc->text, "embedded");
 }
 
-// ── EmptyResult ──
 TEST(McpTypesTest, EmptyResultSerializes) {
     EmptyResult r;
     auto jv = SerializeEmptyResult(r);
@@ -324,7 +302,6 @@ TEST(McpTypesTest, EmptyResultSerializes) {
     EXPECT_EQ(r2.result_type, ResultType::Complete);
 }
 
-// ── CompleteRequestParams ──
 TEST(McpTypesTest, CompleteRequestParamsStandardShape) {
     const char* wire =
         "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
@@ -355,7 +332,6 @@ TEST(McpTypesTest, CompleteRequestParamsFlatShapeCompat) {
     EXPECT_EQ(params.argument_value, "py");
 }
 
-// ── CompleteResult ──
 TEST(McpTypesTest, CompleteResultRoundTrip) {
     CompleteResult r;
     {
@@ -373,7 +349,6 @@ TEST(McpTypesTest, CompleteResultRoundTrip) {
     EXPECT_EQ(r2.completion["values"].Size(), 2);
 }
 
-// ── ResourceTemplate ──
 TEST(McpTypesTest, ResourceTemplateRoundTrip) {
     ResourceTemplate rt;
     rt.uri_template = "file:///{path}";
@@ -383,7 +358,6 @@ TEST(McpTypesTest, ResourceTemplateRoundTrip) {
     EXPECT_EQ(rt2.uri_template, "file:///{path}");
 }
 
-// ── Icon ──
 TEST(McpTypesTest, IconRoundTrip) {
     Icon ic{"https://example.com/icon.svg", "image/svg+xml", std::vector<std::string>{"any"}};
     auto jv = SerializeIcon(ic);
@@ -391,7 +365,6 @@ TEST(McpTypesTest, IconRoundTrip) {
     EXPECT_EQ(ic2.src, "https://example.com/icon.svg");
 }
 
-// ── JSON Schema subset validator (SEP-2106) ──
 TEST(McpTypesTest, JsonSchemaValidatorRequiredAndProperties) {
     JsonValue schema(JsonValue::object_tag);
     schema["type"] = "object";

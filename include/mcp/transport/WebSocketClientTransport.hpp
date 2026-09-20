@@ -1,5 +1,4 @@
 #pragma once
-// WebSocketClientTransport.hpp — WebSocket-based client transport
 
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>

@@ -1,5 +1,3 @@
-// StdioClientTransport.cpp — stdio client transport implementation
-
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>

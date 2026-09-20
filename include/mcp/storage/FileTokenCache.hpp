@@ -1,5 +1,3 @@
-// FileTokenCache.hpp - OAuth token cache persisted to file
-
 #pragma once
 
 #include <mcp/client/auth/TokenCache.hpp>
@@ -15,7 +13,6 @@ public:
     explicit FileTokenCache(std::filesystem::path cache_path);
     ~FileTokenCache() override;
 
-    // ITokenCache interface
     void StoreTokens(const TokenContainer& tokens) override;
     std::optional<TokenContainer> GetTokens() override;
     void ClearTokens() override;

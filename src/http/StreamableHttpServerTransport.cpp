@@ -1,5 +1,3 @@
-// StreamableHttpServerTransport.cpp - Streamable HTTP server transport implementation
-
 #include <mcp/detail/StringUtils.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
@@ -21,8 +19,6 @@
 #include <thread>
 
 #ifdef _WIN32
-// Windows.h defines a GetObject macro that clashes with JsonValue::GetObject
-// when translation units are merged (Unity build).
 #ifdef GetObject
 #pragma push_macro("GetObject")
 #undef GetObject
@@ -148,7 +144,6 @@ void RespondInsufficientScope(HttpResponse& resp,
     resp.headers["content-type"] = "application/json";
 }
 
-// Header-body validation failure (SEP-2243): HTTP 400 with JSON-RPC -32020.
 void RespondHeaderMismatch(HttpResponse& resp, const std::string& message) {
     resp.status_code = 400;
     resp.status_text = "Bad Request";
@@ -164,7 +159,6 @@ void RespondHeaderMismatch(HttpResponse& resp, const std::string& message) {
     resp.headers["content-type"] = "application/json";
 }
 
-// Mcp-Name is required for requests that target a named primitive or resource.
 bool RequiresMcpNameHeader(std::string_view method) {
     return method == methods::kCallTool || method == methods::kReadResource ||
            method == methods::kGetPrompt;
@@ -203,7 +197,6 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
         session_store_->Save(session_id_, record);
     }
 
-    // Wire HTTP handlers
     http_server_->SetHandler("POST", options_.endpoint,
         [this](const HttpRequest& req, HttpResponse& resp) {
             HandlePost(req, resp);
@@ -216,8 +209,6 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
             });
     }
 
-    // Session termination (RFC 9110 DELETE). Stateless mode has no session:
-    // reject with 405. Closing the channel ends the session's message loop.
     http_server_->SetHandler("DELETE", options_.endpoint,
         [this](const HttpRequest&, HttpResponse& resp) {
             if (options_.stateless) {
@@ -260,7 +251,6 @@ void StreamableHttpServerTransport::Close() {
     SetDisconnected();
 }
 
-// ── Bearer auth (RFC 6750/9728) ──
 bool StreamableHttpServerTransport::AuthorizeRequest(
     const HttpRequest& req, HttpResponse& resp)
 {
@@ -318,7 +308,6 @@ void StreamableHttpServerTransport::HandleMetadataRequest(HttpResponse& resp) {
     resp.headers["content-type"] = "application/json";
 }
 
-// ── Session adoption (external SessionStore) ──
 std::string StreamableHttpServerTransport::ActiveSessionId() const {
     std::lock_guard<std::mutex> lock(session_state_mutex_);
     return session_id_;
@@ -349,7 +338,6 @@ bool StreamableHttpServerTransport::EnsureSession(
     return false;
 }
 
-// ── ValidateMcpHeaders ──
 bool StreamableHttpServerTransport::ValidateMcpHeaders(
     const std::string& method_header,
     const std::string& name_header,
@@ -389,7 +377,6 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
     return true;
 }
 
-// ── ValidateParamHeaders (SEP-2243) ──
 bool StreamableHttpServerTransport::ValidateParamHeaders(
     const HttpRequest& req, const JsonRpcRequest& request, std::string& error_out)
 {
@@ -451,19 +438,16 @@ bool StreamableHttpServerTransport::ValidateParamHeaders(
     return true;
 }
 
-// ── Handle POST ──
 void StreamableHttpServerTransport::HandlePost(
     const HttpRequest& req, HttpResponse& resp)
 {
     if (!AuthorizeRequest(req, resp)) return;
     if (!EnsureSession(req, resp)) return;
 
-    // Extract MCP headers
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     auto mcp_method = GetMcpHeader(req, "mcp-method");
     auto mcp_name = GetMcpHeader(req, "mcp-name");
 
-    // Parse JSON-RPC message from body (single parse inside DeserializeMessage)
     JsonRpcMessage msg;
     try {
         if (req.body.size() > detail::kMaxHttpBodyBytes) {
@@ -483,7 +467,6 @@ void StreamableHttpServerTransport::HandlePost(
         return;
     }
 
-    // Reuse the parsed message for header validation instead of re-parsing the body
     JsonValue body_jv;
     if (auto* req_ptr = std::get_if<JsonRpcRequest>(&msg)) {
         JsonValue::Object body_obj;
@@ -497,10 +480,6 @@ void StreamableHttpServerTransport::HandlePost(
         body_jv = JsonValue(std::move(body_obj));
     }
 
-    // Required standard headers are a validation failure when missing
-    // (streamable-http.md Server Validation). Enforced only for requests that
-    // declare a modern protocol version: earlier revisions did not define
-    // these headers.
     if (proto_ver.has_value() && IsModernProtocolVersion(*proto_ver)) {
         std::string body_method;
         if (auto* m = body_jv.Find("method"); m && m->IsString()) body_method = m->GetString();
@@ -514,19 +493,16 @@ void StreamableHttpServerTransport::HandlePost(
         }
     }
 
-    // Validate MCP headers match body
     std::string header_error;
     if (!ValidateMcpHeaders(mcp_method.value_or(""), mcp_name.value_or(""), body_jv, header_error)) {
         RespondHeaderMismatch(resp, header_error);
         return;
     }
 
-    // Set MCP protocol version in response
     if (proto_ver.has_value()) {
         resp.headers["mcp-protocol-version"] = proto_ver.value();
     }
 
-    // Echo Mcp-Method and Mcp-Name headers in response (SEP-2243)
     if (mcp_method.has_value()) {
         resp.headers["mcp-method"] = mcp_method.value();
     }
@@ -534,7 +510,6 @@ void StreamableHttpServerTransport::HandlePost(
         resp.headers["mcp-name"] = mcp_name.value();
     }
 
-    // Extract Mcp-Param-* headers from request (case-insensitive) and store in meta
     if (auto* req_ptr = std::get_if<JsonRpcRequest>(&msg)) {
         JsonValue::Object meta_headers_obj;
         for (const auto& [key, val] : req.headers) {
@@ -557,10 +532,8 @@ void StreamableHttpServerTransport::HandlePost(
         }
     }
 
-    // Check if this is a request (needs response) or notification (no response)
     bool needs_response = IsRequest(msg);
 
-    // Extract request ID before msg is moved (request/response correlation)
     std::optional<RequestId> req_id;
     bool is_initialize = false;
     if (needs_response) {
@@ -590,8 +563,6 @@ void StreamableHttpServerTransport::HandlePost(
             stateless_inflight_.fetch_add(1);
             inflight_guard.emplace(stateless_inflight_);
         }
-        // Wait for the response synchronously; the pending entry is resolved
-        // by SendMessageAsync when the matching response arrives.
         auto id_str = RequestIdToString(*req_id);
         auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
         auto future = promise->get_future();
@@ -632,9 +603,6 @@ void StreamableHttpServerTransport::HandlePost(
             return;
         }
         auto response = future.get();
-        // Protocol errors map to conventional HTTP status codes
-        // (-32020/-32021/-32022/-32602 -> 400, -32601 -> 404); all other
-        // responses are delivered as an SSE stream event.
         if (const auto* err = std::get_if<JsonRpcErrorResponse>(&response)) {
             auto mapped = MapRequestErrorHttpStatus(static_cast<int>(err->error.code));
             if (mapped) {
@@ -645,8 +613,6 @@ void StreamableHttpServerTransport::HandlePost(
                 return;
             }
         }
-        // Mirror x-mcp-header annotations from the result meta into
-        // Mcp-Param-* response headers (SEP-2243).
         if (const auto* r = std::get_if<JsonRpcResponse>(&response)) {
             if (r->result.IsObject()) {
                 if (auto* meta = r->result.Find("_meta"); meta && meta->IsObject()) {
@@ -672,7 +638,6 @@ void StreamableHttpServerTransport::HandlePost(
         resp.body = "event: message\ndata: " +
                     SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
     } else {
-        // Notification: fire-and-forget
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
             resp.status_code = 503;
             resp.status_text = "Service Unavailable";
@@ -687,7 +652,6 @@ void StreamableHttpServerTransport::HandlePost(
     }
 }
 
-// ── Handle GET (SSE stream) ──
 void StreamableHttpServerTransport::HandleGet(
     const HttpRequest& req, HttpResponse& resp)
 {
@@ -698,11 +662,8 @@ void StreamableHttpServerTransport::HandleGet(
     resp.headers["content-type"] = "text/event-stream";
     resp.headers["cache-control"] = "no-cache";
 
-    // The body carries the endpoint event; HttpServer writes it to the SSE
-    // stream explicitly after flushing the headers.
     resp.body = "event: endpoint\ndata: " + SseEscapeData(options_.endpoint) + "\n\n";
 
-    // Resume: replay missed events after the client's Last-Event-ID
     if (!options_.stateless) {
         auto last_id = GetMcpHeader(req, "last-event-id");
         if (last_id && !last_id->empty()) {
@@ -719,10 +680,7 @@ void StreamableHttpServerTransport::HandleGet(
     }
 }
 
-// ── Send message (server-initiated notification via SSE) ──
 void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
-    // A response matching an in-flight request resolves its pending promise;
-    // the response is delivered on the POST response stream, not broadcast.
     if (auto* resp = std::get_if<JsonRpcResponse>(&message)) {
         auto id_str = RequestIdToString(resp->id);
         std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -764,7 +722,6 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
         }
     }
 
-    // Normal path: store event and broadcast via SSE
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
         auto event_id = event_store_->Append(ActiveSessionId(), event_data);
@@ -775,7 +732,6 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     }
 }
 
-// ── Convert RequestId to string for map key ──
 std::string StreamableHttpServerTransport::RequestIdToString(const RequestId& id) {
     if (std::holds_alternative<int64_t>(id)) {
         return std::to_string(std::get<int64_t>(id));
@@ -783,7 +739,6 @@ std::string StreamableHttpServerTransport::RequestIdToString(const RequestId& id
     return std::get<std::string>(id);
 }
 
-// ── Build SSE event ──
 std::string StreamableHttpServerTransport::BuildSseEvent(
     JsonRpcMessage msg)
 {
@@ -791,7 +746,6 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
     return data;
 }
 
-// ── Header helper ──
 std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(
     const HttpRequest& req, std::string_view header_name) const
 {

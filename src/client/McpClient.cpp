@@ -1,5 +1,3 @@
-// McpClient.cpp
-// McpClient and VersionNegotiation implementation
 #include <detail/JsonFields.hpp>
 #include <detail/ResponseCache.hpp>
 #include <mcp/client/McpClient.hpp>
@@ -20,15 +18,10 @@
 namespace mcp {
 
 namespace {
-    // ── Timeouts ──
-    // kDefaultRequestTimeout (60s) comes from mcp/protocol/McpSessionHandler.hpp
     constexpr std::chrono::seconds kTaskRequestTimeout(600);
     constexpr std::chrono::seconds kPingTimeout(10);
-    // Waiting window for the subscriptions/acknowledged first frame after a
-    // subscriptions/listen request (matches the TS SDK's 5s SUBSCRIPTION ack).
     constexpr std::chrono::milliseconds kSubscriptionAckTimeout(5000);
 
-    // ── MRTR state-only backoff (50ms base, x2 per round, capped at 250ms) ──
     constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffBase(50);
     constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffMax(250);
 
@@ -40,7 +33,6 @@ namespace {
                "-" + std::to_string(g_subscription_counter.fetch_add(1));
     }
 
-    // ── Helper: apply client extensions declaration to capabilities ──
     static void ApplyExtensions(
         ClientCapabilities& caps, const std::optional<JsonValue>& extensions)
     {
@@ -55,11 +47,8 @@ namespace {
         }
     }
 
-    // ── Pagination ──
-    // Defensive cap: pagination must converge within this many pages.
     constexpr size_t kMaxListPages = 64;
 
-    // ── Helper: send request and check for protocol errors ──
     static JsonValue DoSendRequest(
         McpSessionHandler& handler,
         std::string_view method,
@@ -82,9 +71,6 @@ namespace {
         return result;
     }
 
-    // ── Helper: extract a cache hint from a wire result ──
-    // The 2026 era flattens ttlMs/cacheScope onto the result top level; the
-    // 2025 era nests them under cacheHint. Returns the canonical nested shape.
     static std::optional<JsonValue> ExtractCacheHint(const JsonValue& result) {
         auto* ttl = result.Find(detail::kTTLMs);
         auto* scope = result.Find(detail::kCacheScope);
@@ -99,8 +85,6 @@ namespace {
         return std::nullopt;
     }
 
-    // Cache keys combine the method with pagination/uri context so distinct
-    // cursors and resources never share an entry.
     static std::string CacheKey(std::string_view method, std::string_view context) {
         std::string key(method);
         if (!context.empty()) {
@@ -110,9 +94,6 @@ namespace {
         return key;
     }
 
-    // Fetch a paginated list method. With an explicit cursor a single page is
-    // returned (caller-driven pagination); without one all pages are merged
-    // automatically until nextCursor is exhausted.
     JsonValue ListPages(
         McpSessionHandler& handler,
         std::string_view method,
@@ -156,12 +137,6 @@ namespace {
             std::to_string(kMaxListPages) + " pages");
     }
 
-    // ── Helper: classify the active transport for probe-failure handling ──
-    // stdio and in-memory transports have no network-failure concept: any
-    // discover probe failure falls back to initialize. HTTP-like transports
-    // (streamable-http, sse, websocket) surface timeouts and connection
-    // errors as typed errors instead of falling back. ITransport exposes no
-    // Name(); the concrete session transports are identified via RTTI.
     static bool IsStdioLikeTransport(const ITransport& transport)
     {
         const char* type_name = typeid(transport).name();
@@ -169,9 +144,6 @@ namespace {
                std::strstr(type_name, "StdioClientSessionTransport") != nullptr;
     }
 
-    // ── Helper: extract result["data"]["supported"] as version strings ──
-    // Returns nullopt when the field is missing or malformed; callers treat
-    // that like any unrecognized error code (fall back to initialize).
     static std::optional<std::vector<std::string>> ExtractSupportedVersions(
         const JsonValue& result)
     {
@@ -187,16 +159,12 @@ namespace {
         return versions;
     }
 
-    // ── Helper: check for a JSON-RPC error response ──
     static bool IsErrorResponse(const JsonValue& result)
     {
         return result.Contains(detail::kCode) &&
                static_cast<int32_t>(result[detail::kCode].GetInt()) < 0;
     }
 
-    // ── Helper: does the discover response declare any client-supported
-    // version? Only a declared supportedVersions array is judged; a response
-    // that omits the field made no claim and accepts the probed version.
     static bool DeclaresSharedClientVersion(
         const JsonValue& response, const std::vector<std::string>& parsed_versions)
     {
@@ -209,10 +177,6 @@ namespace {
         return false;
     }
 
-    // ── Helper: newest client-supported version the server also lists.
-    // kProtocolVersions is ordered oldest → newest; an undeclared (empty)
-    // list keeps the probed kLatestProtocolVersion, which the server
-    // implicitly accepted by answering the probe.
     static std::string SelectSharedVersion(const std::vector<std::string>& supported)
     {
         for (auto it = std::rbegin(kProtocolVersions);
@@ -224,7 +188,6 @@ namespace {
         return std::string(kLatestProtocolVersion);
     }
 
-    // RAII: run the cleanup callable on scope exit (normal or exceptional)
     class ScopedProgressCleanup {
     public:
         explicit ScopedProgressCleanup(std::function<void()> cleanup)
@@ -239,7 +202,6 @@ namespace {
     };
 }
 
-// ── Helper: build RequestMeta from ClientOptions and version ──
 static RequestMeta BuildClientMeta(
     const ClientOptions& options, const std::string& version)
 {
@@ -257,9 +219,6 @@ static RequestMeta BuildClientMeta(
     return meta;
 }
 
-// ====================================================================
-// VersionNegotiation implementation
-// ====================================================================
 NegotiationResult VersionNegotiation::Negotiate(
     McpSessionHandler& handler, const ClientOptions& options)
 {
@@ -293,7 +252,6 @@ NegotiationResult VersionNegotiation::Negotiate(
         return result;
     }
 
-    // Auto mode: probe server/discover, fallback to initialize
     auto discover = ProbeDiscover(
         handler, std::string(kLatestProtocolVersion),
         options.discover_probe_timeout, options);
@@ -311,7 +269,6 @@ NegotiationResult VersionNegotiation::Negotiate(
         return result;
     }
 
-    // Fallback to initialize
     auto init = HandshakeInitialize(
         handler, options.client_info, options.capabilities,
         options.initialization_timeout);
@@ -332,9 +289,6 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
     std::chrono::seconds timeout,
     const ClientOptions& options)
 {
-    // stdio-like transports fall back to initialize on any probe failure;
-    // HTTP-like transports surface timeouts and connection errors as typed
-    // errors instead of falling back.
     const bool stdio_like = IsStdioLikeTransport(handler.GetTransport());
 
     auto send_probe = [&handler, &options, timeout](std::string_view version) {
@@ -347,8 +301,6 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
             methods::kDiscover, JsonValue(JsonValue::object_tag), meta, timeout);
     };
 
-    // Awaits a probe future. Returns nullopt for the fallback outcome
-    // (stdio-like timeout); throws McpError for network-class failures.
     auto await_probe = [stdio_like, timeout](std::future<JsonValue>& future)
         -> std::optional<JsonValue>
     {
@@ -395,8 +347,6 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
             }
 
             if (shares_latest) {
-                // Corrective: retry server/discover once with the shared
-                // version; a second rejection is a hard error (no fallback).
                 auto retry = send_probe(kLatestProtocolVersion);
                 auto retried = await_probe(retry);
                 if (!retried) {
@@ -424,15 +374,13 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
                 return parsed;
             }
 
-            if (!has_modern) return std::nullopt;  // only legacy versions → initialize
+            if (!has_modern) return std::nullopt;
 
             throw McpError(McpErrorCode::UnsupportedProtocolVersion,
                 "server does not support the client protocol version " +
                 std::string(kLatestProtocolVersion));
         }
 
-        // Legacy-era signals (-32001, -32020, -32021, -32601) and any other
-        // error code fall back to initialize.
         return std::nullopt;
     }
 
@@ -440,7 +388,6 @@ std::optional<DiscoverResult> VersionNegotiation::ProbeDiscover(
     try {
         parsed = DeserializeDiscoverResult(*first);
     } catch (...) {
-        // Unrecognized result shape falls back to initialize.
         return std::nullopt;
     }
     if (!DeclaresSharedClientVersion(*first, parsed.supported_versions))
@@ -469,9 +416,6 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
     return DeserializeInitializeResult(result);
 }
 
-// ====================================================================
-// McpClient construction / destruction
-// ====================================================================
 McpClient::McpClient(
     std::shared_ptr<ITransport> transport,
     ClientOptions options)
@@ -504,26 +448,16 @@ std::unique_ptr<McpClient> McpClient::Create(
     return client;
 }
 
-// ====================================================================
-// Negotiation
-// ====================================================================
 NegotiationResult McpClient::NegotiateProtocol() {
     return VersionNegotiation::Negotiate(*handler_, options_);
 }
 
-// ====================================================================
-// Close
-// ====================================================================
 void McpClient::Close() {
     if (handler_) handler_->Close();
     response_cache_->ClearPrivate();
 }
 
-// ====================================================================
-// Wire client-side handlers
-// ====================================================================
 void McpClient::WireClientHandlers() {
-    // Elicitation handler
     handler_->SetRequestHandler(methods::kElicit,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             ElicitRequestParams params;
@@ -572,8 +506,6 @@ void McpClient::WireClientHandlers() {
             }
         });
 
-    // ── Client-side notification handlers: listChanged invalidates the
-    // response cache so subsequent calls observe the new listing ──
     handler_->SetNotificationHandler(notifications::kToolListChanged,
         [this](const JsonRpcNotification&) { response_cache_->Clear(); });
     handler_->SetNotificationHandler(notifications::kResourceListChanged,
@@ -591,8 +523,6 @@ void McpClient::WireClientHandlers() {
             }
         });
 
-    // ── notifications/progress: reset the pending deadline, then dispatch to
-    // the per-request callback registered via RequestOptions::on_progress ──
     handler_->SetNotificationHandler(notifications::kProgress,
         [this](const JsonRpcNotification& notif) {
             if (!notif.params || !notif.params->IsObject()) return;
@@ -643,9 +573,6 @@ void McpClient::WireClientHandlers() {
         });
 }
 
-// ====================================================================
-// Properties
-// ====================================================================
 const ServerCapabilities& McpClient::GetServerCapabilities() const {
     return negotiation_.capabilities;
 }
@@ -666,9 +593,6 @@ bool McpClient::IsModernProtocol() const {
     return negotiation_.is_modern;
 }
 
-// ====================================================================
-// Client handlers
-// ====================================================================
 void McpClient::SetSamplingHandler(SamplingHandler handler) {
     sampling_handler_ = std::move(handler);
     handler_->SetRequestHandler(methods::kCreateMessage,
@@ -748,9 +672,6 @@ void McpClient::SetLoggingHandler(
         });
 }
 
-// ====================================================================
-// Progress callback registration
-// ====================================================================
 std::optional<std::string> McpClient::AttachProgressCallback(
     const RequestOptions& options, RequestMeta& meta)
 {
@@ -789,9 +710,6 @@ void McpClient::DetachProgressCallback(const std::string& key) {
     progress_callbacks_.erase(key);
 }
 
-// ====================================================================
-// MRTR helper: attempt to fulfill input_required responses via handlers
-// ====================================================================
 static bool TryFulfillInputRequired(
     const JsonValue& result_json,
     const ClientOptions& options,
@@ -900,7 +818,6 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
         auto future = handler_->SendRequest(method, params_json, meta, effective_timeout);
         auto result_json = future.get();
 
-        // Check for protocol errors
         if (result_json.Contains(detail::kCode) && result_json[detail::kCode].GetInt() < 0) {
             throw McpError(
                 static_cast<McpErrorCode>(result_json[detail::kCode].GetInt()),
@@ -909,7 +826,6 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
                     : "request failed");
         }
 
-        // Check for input_required (MRTR)
         JsonValue input_responses(JsonValue::object_tag);
         std::optional<std::string> request_state;
         bool state_only = false;
@@ -930,7 +846,6 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
             continue;
         }
 
-        // Complete result or non-MRTR — return raw JSON
         return result_json;
     }
 
@@ -963,9 +878,6 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
     }
 }
 
-// ====================================================================
-// Tools
-// ====================================================================
 ListToolsResult McpClient::ListTools(
     std::optional<std::string> cursor)
 {
@@ -995,9 +907,6 @@ ListToolsResult McpClient::ListToolsAll() {
         std::to_string(kMaxListPages) + " pages");
 }
 
-// ── Helper: complete a task-typed result by polling to completion ──
-// Returns nullopt when the result is not a task; throws on failed/cancelled;
-// returns a (possibly null) JsonValue payload for task results.
 static std::optional<JsonValue> ResolveTaskResult(
     McpClient& client, const JsonValue& result_json)
 {
@@ -1033,7 +942,6 @@ CallToolResult McpClient::CallTool(
     params.name = std::string(name);
     params.arguments = std::move(arguments);
 
-    // Send with meta
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
     auto progress_key = AttachProgressCallback(options, meta);
@@ -1062,9 +970,6 @@ CallToolResult McpClient::CallTool(
     return DeserializeCallToolResult(result_json);
 }
 
-// ====================================================================
-// Resources
-// ====================================================================
 ListResourcesResult McpClient::ListResources(
     std::optional<std::string> cursor)
 {
@@ -1172,9 +1077,6 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
     return DeserializeEmptyResult(result);
 }
 
-// ====================================================================
-// Prompts
-// ====================================================================
 ListPromptsResult McpClient::ListPrompts(
     std::optional<std::string> cursor)
 {
@@ -1237,9 +1139,6 @@ GetPromptResult McpClient::GetPrompt(
     return DeserializeGetPromptResult(result_json);
 }
 
-// ====================================================================
-// Tasks
-// ====================================================================
 GetTaskResult McpClient::CallToolAsTask(
     std::string_view name,
     std::optional<JsonValue> arguments,
@@ -1332,9 +1231,6 @@ CancelTaskResult McpClient::CancelTask(
     return DeserializeEmptyResult(result);
 }
 
-// ====================================================================
-// PollTaskToCompletion
-// ====================================================================
 GetTaskResult McpClient::PollTaskToCompletion(
     const std::string& task_id,
     std::chrono::milliseconds poll_interval,
@@ -1363,9 +1259,6 @@ GetTaskResult McpClient::PollTaskToCompletion(
         "Task polling timed out for task: " + task_id);
 }
 
-// ====================================================================
-// Completions / Ping / Discover
-// ====================================================================
 CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto result = DoSendRequest(*handler_, methods::kComplete,
@@ -1386,9 +1279,6 @@ DiscoverResult McpClient::Discover() {
     return DeserializeDiscoverResult(result);
 }
 
-// ====================================================================
-// Subscriptions
-// ====================================================================
 void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     std::string subscription_id;
@@ -1432,9 +1322,6 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
     }
 }
 
-// ====================================================================
-// Notifications
-// ====================================================================
 void McpClient::SendRootsListChanged() {
     static constexpr std::string_view kMinVersion = "2025-06-18";
     const std::string_view negotiated = negotiation_.negotiated_version;

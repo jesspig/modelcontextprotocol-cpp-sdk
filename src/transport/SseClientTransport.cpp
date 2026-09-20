@@ -1,5 +1,3 @@
-// SseClientTransport.cpp — SSE client transport implementation
-
 #include <mcp/detail/SseEventParser.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
@@ -56,8 +54,8 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
 struct SseEvent {
     std::string event_type;
     std::string data;
-    std::string id;   // from the "id:" line
-    std::optional<uint64_t> retry_ms;   // from the "retry:" line
+    std::string id;
+    std::optional<uint64_t> retry_ms;
 };
 
 SseEvent ParseSseEvent(const std::string& block) {
@@ -66,7 +64,6 @@ SseEvent ParseSseEvent(const std::string& block) {
 
     detail::ForEachSseLine(block, [&evt](std::string_view line) {
         detail::SseFieldLine field;
-        // 冒号后无负载的字段行（如裸 "data:"）在本侧历来被忽略。
         if (!detail::ParseSseFieldLine(line, field) || !field.has_payload) return;
 
         if (field.name == "event") {
@@ -119,15 +116,12 @@ public:
                 send_cv_.notify_one();
             }
 
-            // Closing both clients unblocks the SSE read and POST sends
             if (post_client_)
                 post_client_->Close();
             if (http_client_)
                 http_client_->Close();
         }
 
-        // Join unconditionally: the SSE read thread may have exited on its own
-        // (reconnect exhaustion / oversize), so Close() must not be short-circuited
         detail::JoinThreadSafely(send_thread_);
         detail::JoinThreadSafely(sse_thread_);
 
@@ -169,7 +163,6 @@ private:
                         sse_buffer_.clear();
                         NotifyError("message size exceeds maximum allowed size");
                         running_.store(false);
-                        // Closing the client aborts the blocking recv in Request()
                         http_client_->Close();
                         return;
                     }
@@ -189,19 +182,12 @@ private:
                 if (!running_) break;
             }
 
-            // The stream ended. Exit on explicit Close, otherwise back off
-            // and reconnect (the server replays missed events via
-            // Last-Event-ID).
             if (!running_) break;
             if (reconnect_attempts >= kMaxReconnectAttempts) break;
             ++reconnect_attempts;
             if (!WaitForReconnect(reconnect_attempts)) break;
         }
 
-        // The SSE read thread exited on its own (reconnect exhaustion/oversize);
-        // leave running_ untouched so Close() performs the full teardown.
-        // Close the channel first, then wake SendLoop, whose wait predicate
-        // also checks the channel state.
         if (channel_) channel_->Close();
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
@@ -229,8 +215,6 @@ private:
         if (evt.retry_ms.has_value()) {
             retry_ms_ = evt.retry_ms;
         }
-        // Comment-only frames (e.g. keepalive ": ping") carry no event
-        // fields; skip them so Last-Event-ID is not reset.
         if (evt.event_type == "message" && evt.data.empty() && evt.id.empty() &&
             !evt.retry_ms.has_value()) {
             return;

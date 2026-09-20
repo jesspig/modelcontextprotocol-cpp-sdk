@@ -15,7 +15,6 @@ TEST(WebSocketTransportTest, ConstructionDefaultNameAndIndependence) {
     EXPECT_EQ(t1.Name(), "websocket");
     EXPECT_EQ(t2.Name(), "websocket");
 
-    // Construction must not throw or open a connection
     EXPECT_NO_THROW({
         WebSocketClientTransport t3("ws://localhost:8080");
         EXPECT_EQ(t3.Name(), "websocket");

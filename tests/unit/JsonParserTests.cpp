@@ -1,5 +1,3 @@
-// JsonParserTests.cpp — JSON 解析器行为基线测试（simdjson 时代锁定）
-
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 
@@ -17,7 +15,7 @@ void ExpectParseError(std::string_view json, McpErrorCode expected) {
     EXPECT_THROW(JsonValue::Parse(json), mcp::McpError);
     try {
         JsonValue::Parse(json);
-        EXPECT_TRUE(false);  // FAIL() << "should throw" 的等价：记录失败
+        EXPECT_TRUE(false);
     } catch (const mcp::McpError& e) {
         EXPECT_EQ(e.Code(), expected);
     }
@@ -25,7 +23,6 @@ void ExpectParseError(std::string_view json, McpErrorCode expected) {
 
 } // namespace
 
-// ── 合法语法 ──
 TEST(JsonParserTest, ParsesNull) {
     EXPECT_TRUE(JsonValue::Parse("null").IsNull());
 }
@@ -121,7 +118,6 @@ TEST(JsonParserTest, DuplicateKeysFirstWins) {
     EXPECT_EQ(v.At("a").GetInt(), 1);
 }
 
-// ── 数字合法边界 ──
 TEST(JsonParserTest, NumberZero) {
     auto v = JsonValue::Parse("0");
     EXPECT_TRUE(v.IsInt());
@@ -190,7 +186,6 @@ TEST(JsonParserTest, NumberInt42IsInt) {
     EXPECT_EQ(v.GetInt(), 42);
 }
 
-// ── 数字错误 ──
 TEST(JsonParserTest, RejectLeadingZero) {
     ExpectParseError("01", McpErrorCode::ParseError);
 }
@@ -231,7 +226,6 @@ TEST(JsonParserTest, RejectTrailingCommaNumber) {
     ExpectParseError("1,", McpErrorCode::ParseError);
 }
 
-// ── 数字超界 ──
 TEST(JsonParserTest, Uint64MaxDeserializeFailed) {
     ExpectParseError("18446744073709551615", McpErrorCode::DeserializeFailed);
 }
@@ -248,7 +242,6 @@ TEST(JsonParserTest, DoubleOverflowParseError) {
     ExpectParseError("1e400", McpErrorCode::ParseError);
 }
 
-// ── 截断输入 ──
 TEST(JsonParserTest, EmptyInputParseError) {
     ExpectParseError("", McpErrorCode::ParseError);
 }
@@ -285,7 +278,6 @@ TEST(JsonParserTest, TruncatedFalseParseError) {
     ExpectParseError("fal", McpErrorCode::ParseError);
 }
 
-// ── 非法字符 ──
 TEST(JsonParserTest, UnquotedObjectKeyParseError) {
     ExpectParseError("{a:1}", McpErrorCode::ParseError);
 }
@@ -326,7 +318,6 @@ TEST(JsonParserTest, BareTokenParseError) {
     ExpectParseError("abc", McpErrorCode::ParseError);
 }
 
-// ── 字符串错误 ──
 TEST(JsonParserTest, InvalidEscapeParseError) {
     ExpectParseError(std::string("\"a\\x\""), McpErrorCode::ParseError);
 }
@@ -351,7 +342,6 @@ TEST(JsonParserTest, RawNewlineInStringParseError) {
     ExpectParseError(std::string("\"a\nb\""), McpErrorCode::ParseError);
 }
 
-// ── UTF-8 错误 ──
 TEST(JsonParserTest, InvalidUtf8ByteParseError) {
     ExpectParseError(std::string("\"\xFF\""), McpErrorCode::ParseError);
 }
@@ -364,7 +354,6 @@ TEST(JsonParserTest, TruncatedMultibyteUtf8ParseError) {
     ExpectParseError(std::string("\"\xE2\x82\""), McpErrorCode::ParseError);
 }
 
-// ── 深度边界 ──
 TEST(JsonParserTest, DeepNesting512Succeeds) {
     std::string json(512, '[');
     json.append(512, ']');
@@ -377,7 +366,6 @@ TEST(JsonParserTest, DeepNesting513Fails) {
     ExpectParseError(json, McpErrorCode::ParseError);
 }
 
-// ── 类型判别 ──
 TEST(JsonParserTest, TypeDiscriminationScalars) {
     EXPECT_TRUE(JsonValue::Parse("42").IsInt());
     EXPECT_TRUE(JsonValue::Parse("42.0").IsDouble());
@@ -391,7 +379,6 @@ TEST(JsonParserTest, TypeDiscriminationContainers) {
     EXPECT_TRUE(JsonValue::Parse("{}").IsObject());
 }
 
-// ── round-trip 幂等 ──
 TEST(JsonParserTest, RoundTripDumpIdempotent) {
     auto v1 = JsonValue::Parse(R"({"a":[1,2.5,true,null,"x"]})");
     std::string dump1 = v1.Dump();

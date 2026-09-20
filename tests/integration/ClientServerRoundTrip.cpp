@@ -1,6 +1,3 @@
-// ClientServerRoundTrip — full-stack Client ↔ Server integration test
-// Uses InMemoryTransport, covering all major APIs
-
 #include <mcp/server/McpServer.hpp>
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
@@ -25,7 +22,6 @@ struct ClientServerFixture : mcp::test::TestCase {
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
         server = McpServer::Create(pair.server, sopts);
 
-        // Register echo tool (text echo)
         server->RegisterTool("echo",
             ToolOptions{}.Description("Echo input"),
             std::function<CallToolResult(const Ctx&)>(
@@ -40,7 +36,6 @@ struct ClientServerFixture : mcp::test::TestCase {
                     return r;
                 }));
 
-        // Register add tool (numeric addition)
         server->RegisterTool("add",
             ToolOptions{}.Description("Add two numbers"),
             std::function<CallToolResult(const Ctx&)>(
@@ -54,7 +49,6 @@ struct ClientServerFixture : mcp::test::TestCase {
                     return r;
                 }));
 
-        // Register static resource
         server->RegisterResource("hello", "hello://world",
             ResourceOptions{}.Description("Hello resource"),
             [](const std::string& uri) -> ReadResourceResult {
@@ -66,10 +60,8 @@ struct ClientServerFixture : mcp::test::TestCase {
                 return rr;
             });
 
-        // Start server in background thread
         server_thread = std::thread([this]() { server->Run(); });
 
-        // Create client with auto mode to discover server info and capabilities
         ClientOptions cops;
         cops.client_info = Implementation{"TestClient", "1.0.0"};
         cops.connect_mode = ConnectMode::Auto;
@@ -83,13 +75,11 @@ struct ClientServerFixture : mcp::test::TestCase {
     }
 };
 
-// ── List tools ──
 TEST_F(ClientServerFixture, ListTools) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         auto result = client->ListTools();
         ASSERT_GE(result.tools.size(), 2);
 
-        // Find echo and add tools in results
         bool found_echo = false, found_add = false;
         for (const auto& t : result.tools) {
             if (t.name == "echo") found_echo = true;
@@ -100,7 +90,6 @@ TEST_F(ClientServerFixture, ListTools) {
     });
 }
 
-// ── Call echo tool ──
 TEST_F(ClientServerFixture, CallToolEcho) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         auto result = client->CallTool("echo",
@@ -114,7 +103,6 @@ TEST_F(ClientServerFixture, CallToolEcho) {
     });
 }
 
-// ── Call add tool ──
 TEST_F(ClientServerFixture, CallToolAdd) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         auto result = client->CallTool("add",
@@ -127,7 +115,6 @@ TEST_F(ClientServerFixture, CallToolAdd) {
     });
 }
 
-// ── Call nonexistent tool ──
 TEST_F(ClientServerFixture, CallToolNotFound) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         EXPECT_THROW(
@@ -136,7 +123,6 @@ TEST_F(ClientServerFixture, CallToolNotFound) {
     });
 }
 
-// ── Read resource ──
 TEST_F(ClientServerFixture, ReadResource) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         ReadResourceResult result;
@@ -149,7 +135,6 @@ TEST_F(ClientServerFixture, ReadResource) {
     });
 }
 
-// ── Server info ──
 TEST_F(ClientServerFixture, ServerInfo) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         EXPECT_EQ(client->GetServerInfo().name, "TestServer");
@@ -157,7 +142,6 @@ TEST_F(ClientServerFixture, ServerInfo) {
     });
 }
 
-// ── Server capabilities (tools + resources) ──
 TEST_F(ClientServerFixture, ServerCapabilities) {
     MCP_RUN_WITH_TIMEOUT([this]() {
         auto& caps = client->GetServerCapabilities();
@@ -167,7 +151,6 @@ TEST_F(ClientServerFixture, ServerCapabilities) {
     });
 }
 
-// ── Ping server ──
 TEST_F(ClientServerFixture, Ping) {
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -180,8 +163,6 @@ __pragma(warning(push))
 __pragma(warning(disable : 4996))
 #endif
     MCP_RUN_WITH_TIMEOUT([]() {
-        // Ping is a 2025-only wire method; the fixture's Auto client
-        // negotiates 2026, so build a dedicated legacy connection.
         auto pair = InMemoryTransport::CreatePair();
 
         ServerOptions sopts;
