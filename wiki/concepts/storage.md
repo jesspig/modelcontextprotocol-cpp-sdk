@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-09-20T19:34:31+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -40,7 +40,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 ## FileTaskStore 双锁结构
 
-`write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；**锁序固定 `write_mutex_` → `data_mutex_`**（[FileTaskStore.hpp](../../include/mcp/storage/FileTaskStore.hpp:36)）。
+`write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；**锁序固定 `write_mutex_` → `data_mutex_`**（[FileTaskStore.hpp:36](../../include/mcp/storage/FileTaskStore.hpp)）。
 
 写方法（CreateTask/UpdateTask/CancelTask/SetTaskStatus）流程：
 

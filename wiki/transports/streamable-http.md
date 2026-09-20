@@ -3,7 +3,7 @@ type: Transport
 title: Streamable HTTP 传输
 description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战、外部 SessionStore 会话接管、x-mcp-header 参数头、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 504 语义。
 tags: [transport, http, streamable, stateless, winhttp, sse, bearer]
-timestamp: 2026-09-20T18:14:09+08:00
+timestamp: 2026-09-20T19:34:31+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -36,7 +36,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 - **平台双实现**：Win32 用 WinHTTP（`#pragma comment(lib, "winhttp.lib")`），POSIX 用自研 `detail::net::HttpClient`；**Request 走 `send_thread_ + send_queue_` 串行队列**，Notification/Response 改为 `LaunchImmediatePost` **独立即时 POST**（短命 detached 线程 `mcp-post`，`shared_from_this` 保活、HTTP 超时兜底线程寿命）——否则 server→client 请求场景（如 elicitation 挂起的 tools/call 等完成通知）互等死锁；Win32 会话 `Start()` 补 `SetConnected()`（与 POSIX 对齐，状态机不再恒为 Initial）
 - **IPv6 Host 头**（detail/net/HttpClient.cpp，POSIX 分支）：Host 含 `:` 时自动加方括号 `[v6]` 形式
 - **Mcp-Method / Mcp-Name / Mcp-Param-* 头**：解析 body 的 method 字段生成 `Mcp-Method`，`Mcp-Name` 使用 `params.name` 回退 URI；`Mcp-Param-*` 只按 `tools/list` 的 `inputSchema` 中合法 `x-mcp-header` 注解镜像有值参数，未注解参数不发头。服务端可用 `resolve_param_annotations` 校验头与 `tools/call` body 的存在性、编码和值一致性，失败返回 400 `HeaderMismatch (-32020)`；服务端结果 `_meta.x-mcp-header` 会镜像为响应头，详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)
-- **`MCP-Protocol-Version` 头自学习**：initialize 请求**不带**该头；从 initialize 响应 `result.protocolVersion` 学习（只认 `initialize` 的 POST 响应——单 JSON 体或 SSE 块，GET 流不参与；`DispatchSseBlock` 仅在 `is_initialize` 时学习），后续请求与 GET 流按协商版本携带，无学习值兜底 `2026-07-28`（`ProtocolVersionHeaderFor`/`NegotiatedVersionFromResponse`，[StreamableHttpClientTransport.cpp:57](../../src/http/StreamableHttpClientTransport.cpp)）；**initialize 请求同样不带 `Mcp-Session-Id` 头**（`SessionIdHeaderFor` 对 initialize 豁免，避免握手期携带过期会话 id）
+- **`MCP-Protocol-Version` 头自学习**：initialize 请求**不带**该头；从 initialize 响应 `result.protocolVersion` 学习（只认 `initialize` 的 POST 响应——单 JSON 体或 SSE 块，GET 流不参与；`DispatchSseBlock` 仅在 `is_initialize` 时学习），后续请求与 GET 流按协商版本携带，无学习值兜底 `2026-07-28`（`ProtocolVersionHeaderFor`/`NegotiatedVersionFromResponse`，[StreamableHttpClientTransport.cpp:63](../../src/http/StreamableHttpClientTransport.cpp)）；**initialize 请求同样不带 `Mcp-Session-Id` 头**（`SessionIdHeaderFor` 对 initialize 豁免，避免握手期携带过期会话 id）
 - **GET SSE 接收流**（`enable_listen_stream` 默认 true）：发送 `notifications/initialized` 后在独立 `mcp-listen` 线程发起 GET 长流（WinHTTP/POSIX 两平台一致），服务端主动推送的消息经 SSE 分块解析、反序列化后并入 MessageChannel，由会话引擎统一分发；单流读超时 600s；**405 视为服务器不支持**（`ListenState::Unsupported`，静默放弃不再重试）；断线退避重连——1s 起倍增封顶 30s、**最多 5 次**（超限 `GivenUp`），只按本地阈值退避、**不解析服务端 `retry:` 字段**，已记录事件 id 时重连携带 `Last-Event-ID` 头，退避睡眠可被 `Close()` 打断（`SleepInterruptibly` 谓词 `running.load()`）；流内消息超 8MB 丢弃并记 Error 日志（该路径不 `NotifyError`，POST SSE 路径才通知）
 - **会话头（stateful 兼容）**：`known_session_id` 非空则从首个非 initialize 的 POST 起携带 `Mcp-Session-Id` 请求头（initialize 豁免，见上）；任意响应（含 4xx）返回 `Mcp-Session-Id` 头时捕获为当前会话 id（存入会话传输内部状态），后续请求携带——stateless 服务端不发该头则全程不带，行为不变
 - **Close 顺序**：先停 listen 流（Win32 缩短 `listen_request_` 接收超时、POSIX `listen_client_->Close()` 中断在途 GET，再 join 监听线程，避免 Close 阻塞在读上），再走 POST 通路收尾（置 `delete_pending_` 唤醒发送线程，发送线程退出循环后**仅当已持有会话 id** 时同步发送 `DELETE`（带 `Mcp-Session-Id` 头；Win32 独立 WinHTTP 请求 / POSIX `HttpClient`），随后 join——无会话 id（stateless）不发 DELETE，默认路径无额外请求）
