@@ -3,7 +3,7 @@ type: Transport
 title: Streamable HTTP 传输
 description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战、外部 SessionStore 会话接管、x-mcp-header 参数头、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 504 语义。
 tags: [transport, http, streamable, stateless, winhttp, sse, bearer]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-09-20T18:14:09+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -24,9 +24,9 @@ resource: src/http/StreamableHttpServerTransport.cpp
     - 协议错误（JsonRpcErrorResponse）按规范映射 HTTP 状态码：`-32020/-32021/-32022/-32600/-32602/-32700` → **400**，`-32601` → **404**，body 为 JSON-RPC error JSON（`application/json`）；其余错误码仍 200 + SSE 流
     - 30s（`kStatelessTimeout`）无响应 → **504** + JSON `-32000`
   - 通知：fire-and-forget，**202 + `{}`**（202 仅用于确认客户端发来的通知/响应，不等待也不承载 JSON-RPC 响应）
-- **GET（SSE 流）**：承载 `SendMessageAsync` 中未匹配 pending 响应的服务端→客户端消息——通知与**请求**（如 `McpServer::Elicit` 的 `elicitation/create`）都经 `BroadcastSse` 走本流，响应则走 POST 流；首帧 `event: endpoint`，非 stateless 时按 `Last-Event-ID` 回放（stateless 不回放）；连接存活期间按 `sse_keep_alive_ms`（默认 15s）周期性广播注释帧 `: ping\r\n\r\n`（对齐 python `_SSE_PING_INTERVAL=15s` / ts `DEFAULT_SSE_KEEP_ALIVE_MS=15000`）
+- **GET（SSE 流）**：承载 `SendMessageAsync` 中未匹配 pending 响应的服务端→客户端消息——通知与**请求**（如 `McpServer::Elicit` 的 `elicitation/create`）都经 `BroadcastSse` 走本流，响应则走 POST 流；请求在无监听者时先经有界等待（见下 `SendMessageAsync`），通知保持 fire-and-forget；首帧 `event: endpoint`，非 stateless 时按 `Last-Event-ID` 回放（stateless 不回放）；连接存活期间按 `sse_keep_alive_ms`（默认 15s）周期性广播注释帧 `: ping\r\n\r\n`（对齐 python `_SSE_PING_INTERVAL=15s` / ts `DEFAULT_SSE_KEEP_ALIVE_MS=15000`）
 - **DELETE**：stateless → 405 `-32601`；否则关 channel、`SetDisconnected()`、200 `{}`
-- `SendMessageAsync`：**无条件**先查 `pending_responses_`（响应/错误响应按 id 匹配则 set promise 并返回，不广播）；未匹配的消息经 `BuildSseEvent(std::move(message))`（`SerializeMessage(std::move)`）生成 `event: message`，非 stateless 时 Append 到 EventStore 并带 `id:` 前缀，最后 `BroadcastSse`
+- `SendMessageAsync`：**无条件**先查 `pending_responses_`（响应/错误响应按 id 匹配则 set promise 并返回，不广播）；未匹配的消息中**仅 `IsRequest`（`JsonRpcRequest`）在快照为空时有界等待监听者**——`http_server_->SseClientCount() == 0` 时以 50ms 步长（`kSseListenerWaitStep`）轮询至多 2s（`kSseListenerWaitBudget`），期间 `TransportState::Disconnected` 可中断退出，超时记 Warning（`server-initiated request '<method>' broadcast with no SSE listener`）后仍走广播路径；**Notification 不等待、保持 fire-and-forget**（此前的"快照为空即经 `BroadcastSse` 静默丢弃"已不适用于请求）；之后经 `BuildSseEvent(std::move(message))`（`SerializeMessage(std::move)`）生成 `event: message`，非 stateless 时 Append 到 EventStore 并带 `id:` 前缀，最后 `BroadcastSse`（零监听者时仍是空操作）
 - `Close()`：停 HttpServer、非 stateless 清 EventStore、关通道、SetDisconnected
 
 ## 客户端

@@ -80,4 +80,9 @@ void HttpServer::BroadcastSse(std::string_view event) {
     if (impl) impl->BroadcastSse(event);
 }
 
+std::size_t HttpServer::SseClientCount() const {
+    auto impl = std::atomic_load(&impl_);
+    return impl ? impl->SseClientCount() : 0;
+}
+
 } // namespace mcp

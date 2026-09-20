@@ -3,7 +3,7 @@ type: Module
 title: mcp-http HTTP 库
 description: HttpServer（自研实现）、EventStore（SSE 回放，可插拔接口 + FileEventStore）、SessionStore（外部会话接管）、Streamable HTTP 双端传输（Bearer 鉴权、x-mcp-header 参数头）与客户端发送侧独立 POST 与边读边分发。
 tags: [http, sse, webserver, streamable, bearer, storage]
-timestamp: 2026-09-20T17:13:14+08:00
+timestamp: 2026-09-20T18:14:09+08:00
 resource: src/http/HttpServer.cpp
 ---
 
@@ -27,6 +27,7 @@ resource: src/http/HttpServer.cpp
 - accept 线程 + 每连接一线程（上限 256，超出 503）；stateless 并发上限 8（超出 503 `"server busy"`），同步等待超时 30s 返回 **504**（非 500）
 - 传输层错误体为 JSON-RPC 格式：413（超限 body，兜底）`-32700`、400（解析失败）`-32700 Parse error`、400（头不匹配）`-32020 HeaderMismatch`、503 `-32000 server closed`、504 `-32000`；HTTP 服务层自身的 400/413/503（畸形请求、`Content-Length` 超限、连接数超限）为空体
 - SSE 广播在非 stateless 时带 `id:` 行；GET 支持 `Last-Event-ID` 断线回放（stateless 无 id、不回放）
+- `HttpServer::SseClientCount()`（[HttpServer.hpp](../../include/mcp/http/HttpServer.hpp)，`Impl::SseClientCount` 持 `sse_mutex_`（现为 `mutable`）返回 `sse_clients_.size()`，`HttpServer.cpp` 经 `atomic_load(impl_)`、空 impl 返回 0）：供 `StreamableHttpServerTransport::SendMessageAsync` 在 server-initiated **请求**（`IsRequest` 即 `JsonRpcRequest`）广播前判断有无 GET 监听者——零监听者时 50ms 步长轮询至多 2s（`kSseListenerWaitStep`/`kSseListenerWaitBudget`，[StreamableHttpServerTransport.cpp](../../src/http/StreamableHttpServerTransport.cpp)），`Disconnected` 可中断，超时记 Warning 后仍广播；**Notification 不等待、保持 fire-and-forget**
 - `Mcp-Method` 头：客户端从 JSON-RPC body 的 method 字段动态生成（[StreamableHttpClientTransport.cpp:574](../../src/http/StreamableHttpClientTransport.cpp)，POSIX 分支 `:1178`）；服务端在响应中**回显** `mcp-method`/`mcp-name`/`mcp-protocol-version`（SEP-2243，[StreamableHttpServerTransport.cpp:425](../../src/http/StreamableHttpServerTransport.cpp)）；`Mcp-Param-*` 只镜像 `inputSchema` 中合法的 `x-mcp-header` 注解参数，不再无差别复制顶层标量，详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)
 - Streamable HTTP 客户端 **GET SSE 接收流**：`enable_listen_stream`（默认 true），发送 `notifications/initialized` 后自动开 GET 长流接收服务端通知，消息经 MessageChannel 并入会话引擎；405 视为服务器不支持（静默放弃）；断线退避重连（1s 起倍增封顶 30s、最多 5 次）携带 `Last-Event-ID`；详见 [/transports/streamable-http.md](../transports/streamable-http.md)
 - **发送侧分流**（解开 server→client 请求互等死锁）：Request 保持 `send_thread_` 串行队列；**Notification/Response 经 `LaunchImmediatePost` 独立即时 POST**（短命 detached 线程 `mcp-post`，`shared_from_this` 保活），不再排在在途 Request 之后——否则 elicitation 完成通知会被挂起的 tools/call POST 阻塞，server→client 请求互等死锁

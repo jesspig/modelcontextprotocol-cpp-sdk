@@ -836,6 +836,11 @@ void Impl::BroadcastSse(std::string_view event) {
     }
 }
 
+std::size_t Impl::SseClientCount() const {
+    std::lock_guard<std::mutex> lock(sse_mutex_);
+    return sse_clients_.size();
+}
+
 void Impl::KeepAliveLoop() {
     auto interval = std::chrono::milliseconds(options_.sse_keep_alive_ms);
     for (;;) {

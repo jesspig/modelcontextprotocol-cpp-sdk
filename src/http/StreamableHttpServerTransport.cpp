@@ -18,6 +18,7 @@
 #include <cctype>
 #include <chrono>
 #include <stdexcept>
+#include <thread>
 
 #ifdef _WIN32
 // Windows.h defines a GetObject macro that clashes with JsonValue::GetObject
@@ -33,6 +34,8 @@ namespace mcp {
 
 namespace {
 constexpr std::chrono::seconds kStatelessTimeout(30);
+constexpr std::chrono::milliseconds kSseListenerWaitStep(50);
+constexpr std::chrono::milliseconds kSseListenerWaitBudget(2000);
 const char* kMcpParamHeaderPrefix = "mcp-param-";
 constexpr size_t kMaxStatelessInflight = 8;
 
@@ -739,6 +742,25 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
                 pending_responses_.erase(it);
                 return;
             }
+        }
+    }
+
+    if (IsRequest(message) && http_server_ &&
+        http_server_->SseClientCount() == 0) {
+        std::string wait_method;
+        if (const auto* pending = std::get_if<JsonRpcRequest>(&message))
+            wait_method = pending->method;
+        auto waited = std::chrono::milliseconds(0);
+        while (http_server_->SseClientCount() == 0) {
+            if (GetState() == TransportState::Disconnected)
+                break;
+            if (waited >= kSseListenerWaitBudget) {
+                MCP_LOG(Warning, "server-initiated request '" + wait_method +
+                    "' broadcast with no SSE listener");
+                break;
+            }
+            std::this_thread::sleep_for(kSseListenerWaitStep);
+            waited += kSseListenerWaitStep;
         }
     }
 

@@ -89,6 +89,7 @@ public:
     SseClientId AddSseClient(std::function<void(std::string_view)> send_fn);
     void RemoveSseClient(SseClientId id);
     void BroadcastSse(std::string_view event);
+    std::size_t SseClientCount() const;
 
 private:
     uint16_t port_;

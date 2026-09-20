@@ -49,6 +49,7 @@ public:
     uint64_t AddSseClient(std::function<void(std::string_view)> send_fn);
     bool RemoveSseClient(uint64_t id);
     void BroadcastSse(std::string_view event);
+    std::size_t SseClientCount() const;
 
 private:
     using HandlerMap = std::map<std::pair<std::string, std::string>, HttpHandler>;
@@ -92,7 +93,7 @@ private:
     std::mutex conns_mutex_;
     std::vector<ConnEntry> conn_threads_;
     std::vector<std::shared_ptr<net::TcpSocket>> conn_fds_;
-    std::mutex sse_mutex_;
+    mutable std::mutex sse_mutex_;
     std::unordered_map<uint64_t, std::shared_ptr<SseClientEntry>> sse_clients_;
     uint64_t next_sse_id_{1};
     std::thread keepalive_thread_;
