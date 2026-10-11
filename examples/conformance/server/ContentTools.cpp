@@ -216,8 +216,14 @@ CallToolResult ToolWithLogging(const ToolContext& ctx)
 CallToolResult ToolWithProgress(const ToolContext& ctx)
 {
     const ProgressToken* token = nullptr;
+    ProgressToken raw_token;
     if (ctx.Params().meta && ctx.Params().meta->progress_token) {
         token = &*ctx.Params().meta->progress_token;
+    } else if (ctx.GetRequest().meta) {
+        if (auto* value = ctx.GetRequest().meta->Find("progressToken")) {
+            raw_token = DeserializeProgressToken(*value);
+            token = &raw_token;
+        }
     }
     if (token) {
         for (int progress : {0, 50, 100}) {
@@ -234,8 +240,17 @@ CallToolResult ToolWithProgress(const ToolContext& ctx)
 
 CallToolResult LoggingTool(const ToolContext& ctx)
 {
-    if (ctx.Params().meta && ctx.Params().meta->log_level
-        && static_cast<int>(LoggingLevel::Info) >= static_cast<int>(*ctx.Params().meta->log_level)) {
+    std::optional<LoggingLevel> level;
+    if (ctx.Params().meta && ctx.Params().meta->log_level) {
+        level = *ctx.Params().meta->log_level;
+    } else if (ctx.GetRequest().meta) {
+        if (auto* value = ctx.GetRequest().meta->Find(
+                "io.modelcontextprotocol/logLevel")) {
+            level = DeserializeLoggingLevel(*value);
+        }
+    }
+    if (level
+        && static_cast<int>(LoggingLevel::Info) >= static_cast<int>(*level)) {
         ctx.Log(LoggingLevel::Info,
             "test_logging_tool ran (delivered only when the request set _meta.logLevel)");
     }

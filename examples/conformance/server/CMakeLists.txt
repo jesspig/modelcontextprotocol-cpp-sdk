@@ -4,6 +4,7 @@ add_executable(conformance-server
     InteractionTools.cpp
     MrtrTools.cpp
     ResourcesAndPrompts.cpp
+    SkillsAndTasks.cpp
 )
 target_link_libraries(conformance-server PRIVATE mcp-server mcp-http)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND WIN32)

@@ -1,7 +1,8 @@
 # C++ SDK 官方 conformance 已知偏差基线。
 #
-# 驱动包：@modelcontextprotocol/conformance@0.2.0-alpha.11（与 TS SDK 的 pin
-# 一致）。升级 referee 版本时须在同一变更里对账本文件——新增场景按实际结果
+# 驱动包：@modelcontextprotocol/conformance@0.2.0-alpha.12（alpha 通道最新，
+# 2026-10-01；requirements 内核与 alpha.11 一致，升级只收 referee 修补）。
+# 升级 referee 版本时须在同一变更里对账本文件——新增场景按实际结果
 # 决定是否入基线，绝不预先臆测。
 #
 # 退出码语义（referee 保证，CI 不得用 continue-on-error 替代本机制）：
@@ -12,39 +13,70 @@
 #   本 leg 未运行的场景：其条目被容忍（不会误判过期）。
 #
 # 本地复现：scripts/run-conformance.sh server|client
+#   CONFORMANCE_SPEC_VERSION=2025-11-25（默认，有状态 legacy leg）
+#   CONFORMANCE_SPEC_VERSION=2026-07-28（stateless modern leg，
+#   以 --requirements 2026-07-28 运行 50 场景 canonical 集）
 #
-# 双 era 说明：C++ conformance-server / conformance-client 当前仅覆盖 legacy
-# 2025-11-25 有状态 wire（initialize 握手），两个 leg 均以 --spec-version
-# 2025-11-25 运行。modern（2026-07-28）per-request _meta 场景因 applicability
-# 窗口之外被 referee skip：这是运行配置层面的排除而非逐条偏差，故不为其
-# 伪造基线条目；待两侧 fixture 实现 modern 生命周期后另开 modern leg 再对账。
+# 双 era 说明：conformance-server 以 --stateless 切换双模式。
+# 有状态模式固定 --spec-version 2025-11-25（initialize 握手）；
+# stateless 模式跑 --requirements 2026-07-28（per-request _meta）。
+# skills/tasks/sse-retry 等扩展场景默认被 referee skip（extension 不在
+# active 适用集内），只在 --suite all / --force 下 run for visibility。
 #
-# server 侧现状：`--spec-version 2025-11-25` + 默认 active suite 覆盖 2025-11-25
-# revision 要求的全部 30 个 scored server 场景。条目按 2026-09-12 referee
-# （conformance@0.2.0-alpha.11）实跑失败清单逐条归因补录，禁止整场景无归因
-# 兜底。tasks-*（SEP-2663 扩展）与 auth 类 server 场景不在 active suite 选择
-# 范围内，C++ server 亦无对应表面，不开 --suite all 前无需条目。
+# server 侧现状：legacy leg 31 场景全绿（基线已清空）；
+# modern leg（--requirements 2026-07-28）剩余 4 个 scored 缺口，
+# 均为生产侧缺口（见下），fixture 无从修补且基线只减不增，故 modern
+# leg 当前为红，逐条证据见 workflow 输出与 T11a 收口报告。
+#   - server-stateless：_meta 缺失拒收的 400 映射、-32020 对 -32022、
+#     initialize 现代 404、-32021 能力拒收、subscriptions/listen 流
+#   - sep-2164-resource-not-found：错误 data.uri 回声缺失（SHOULD WARNING）
+#   - input-required-result-non-tool-request：prompts/get 无
+#     InputRequiredResult 表达形状
+#   - tools-call-with-progress：stateless 下 POST 单写即关，
+#     tool 内 progress 广播无 GET 流可达（legacy leg 已绿，见下）
+#
+# 已删条目归因（删前均有 referee 变绿证据，禁恢复）：
+#   - tools-call-with-progress：双因——其一传输未开 GET 流
+#     广播无人收（enable_legacy_sse=true 修好 logging/sampling/
+#     elicitation 系列），其二 _meta 反序列化剥离后 Params().meta
+#     恒空（fixture 改读 GetRequest().meta 取 progressToken，
+#     同法修好 LoggingTool 的 logLevel 门控）。
+#     legacy leg 2/2 变绿故删；modern leg 仍失败（上），删后 modern
+#     报 unexpected，属已知缺口不另增条目。
+#
+# 恢复保留条目（曾删后恢复，有证据，禁再删）：
+#   - server-sse-multiple-streams：modern 2/2 与 legacy 单跑 2/2 曾
+#     构成删除证据，已删；后发现 legacy suite 内 skip 以 WARNING
+#     记账，无条目 legacy 退出 1，故恢复。跨 leg 状态见 server 键注释。
+
+# （server 键：仅 server-sse-multiple-streams 一条。注意跨 leg 语义——
+# legacy suite 内它以 WARNING 形式 skip（0/0，无 session 时 referee
+# 记 WARNING 不记失败），无条目则 legacy 报 unexpected 退出 1；
+# modern requirements 内它 2/2 通过（该 invocation 会顺带报 stale，
+# 但该 invocation 本就因生产缺口为红，见上）。条目为 legacy 保绿所
+# 必需，禁止以 modern 的 stale 为由删除；删则 legacy 变红。）
 
 server:
-    # --- server→client 消息流关联缺口（SEP-2260 请求-流关联）---
-    # server 主动消息（progress notification / elicitation request）经
-    # BroadcastSse 走 GET SSE 流广播，而 POST 响应流单写即关
-    # （sse_close_after_write）：无 per-request 流关联能力。referee client
-    # 不开 GET 流，故 tools-call-with-progress 收不到 progress。
-    - tools-call-with-progress
-
-    # --- server-sse-multiple-streams（传输层多流能力缺口，归因为推断）---
-    # 传输层 POST 响应流单写即关、server 主动消息依赖 GET 流广播，无多路
-    # SSE 流并存/路由管理；未逐断言核对 referee 输出，按代码证据归因，
-    # 复跑时若失败特征不同须重审本条目。
+    # --- server-sse-multiple-streams（跨 leg 保留，见上）---
+    # 旧“传输层多流能力缺口”归因为推断错误。实测有 session 时 3 并发
+    # POST 全 200 全 SSE（legacy 单跑 2/2，modern 2/2）。
+    # suite 内保持 skip：fixture 若发 session 会激活 lifecycle DELETE，
+    # 而单通道传输的 DELETE 关闭共享 channel 毒化后续全场景（生产缺口），
+    # 故 stateful fixture 显式不设 session_store。
     - server-sse-multiple-streams
 
 client:
     # --- sse-retry（SEP-1699，legacy client scored）---
-    # graceful-reconnect 断言已过；retry 计时断言失败：server 关流后 client
-    # 未等待 retry 字段声明的 500ms 即重连（实测 -70ms，要求 >=450ms 且 <=1000ms）；
-    # 另有 WARNING/SHOULD：重连未携带 Last-Event-ID 头。实现 retry 等待与
-    # Last-Event-ID 后删除本条目
+    # 2026-10-11 referee alpha.12 实测仍失败，保留。失败特征已更新：
+    # POST 流被 server 关断后 client 从不开 resume GET（单次初始 GET
+    # 后无二次连接），pending 的 tools/call 永不决议，client 悬挂至
+    # referee 30s kill（CLIENT TIMED OUT）。旧归因“重连过早 -70ms”
+    # 实为初始 GET 被误计为重连（本轮 -54ms）；Last-Event-ID 从未发出
+    # （无二次 GET 可带）。T9 重试钳制与 T9b Last-Event-ID 代码在此
+    # 路径无从触发。生产缺口：POST SSE clean-EOF 不向 pending 调用
+    # 报错（WinHTTP 路径静默丢弃；此为 Windows 本地悬挂、CI Linux
+    # 表现为快失败的根因候选）+ 缺 POST 中断后的 GET resume。
+    # 待生产补齐 resume 后以变绿证据删除本条目。
     - sse-retry
 
     # --- SEP-1034 elicitation 默认值 ---
@@ -53,21 +85,33 @@ client:
     # 实现 applyDefaults 后删除本条目（届时 runner 会以过期条目报错）。
     - elicitation-sep1034-client-defaults
 
-    # --- fetch-shim / discover 注入点依赖场景（2026-07-28 scored）---
-    # referee 经 MCP_CONFORMANCE_CONTEXT 注入 toolCalls 与自定义 header 断言，
-    # 依赖 TS 侧 fetch shim（undici interceptor）注入 discover 请求头；C++
-    # client 无对应注入点，无法受测。当前 legacy leg 下这些场景本就被 skip，
-    # 条目为 future-proofing：modern leg 开通后按实际结果对账或删除。
-    - http-standard-headers
+    # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
+    # fixture 有对应场景注册且逻辑正确（列工具→按 context 逐个调用），
+    # 但 Windows 下 MCP_CONFORMANCE_CONTEXT 经 getenv 取回时非 ASCII
+    # （世界）与字面控制字符致 JsonValue::Parse 报 invalid UTF-8，
+    # client 退出 1。CI Linux（UTF-8 locale）下预期通过；若 CI modern
+    # invocation 报本条目 stale，即为变绿证据，届时删除。
+    # 旧“fetch-shim/注入点依赖”归因错误：context 系经环境变量下发，
+    # C++ fixture 可读，无需 TS fetch shim。
     - http-custom-headers
-    - http-invalid-tool-headers
-    - sep-2322-client-request-state
 
+    # --- 已删 client 条目（modern leg 变绿证据，禁恢复）---
+    # sep-2322-client-request-state（5/0）、http-standard-headers（9/0）、
+    # http-invalid-tool-headers（12/0）：2026-10-11 --requirements
+    # 2026-07-28 实测全过。legacy leg 不运行这些场景（core 18 场景无
+    # 它们），删后 legacy 不受影响。
+    #
     # --- auth/*（C++ client 无 OAuth 表面，全部 untestable）---
-    # core suite 不选择 auth 场景，条目当前依赖 referee 对未运行场景的容忍；
-    # 未来扩到 --suite auth / --suite all 时由这些条目兜底。清单为 conformance
-    # 0.2.0-alpha.11 requirements/2025-11-25.yaml 与 2026-07-28.yaml 中 client
-    # leg auth 场景的并集（含 extension）。
+    # 注意旧注释“core 不选择 auth”已证伪：core/active 逐个运行 auth
+    # 场景，client 以 Unknown scenario 退出 1，靠本基线放行。
+    # 2026 requirements 新增 11 个 scored auth 场景（resource-mismatch、
+    # offline-access-scope、offline-access-not-supported、
+    # authorization-server-migration、iss-supported、iss-not-advertised、
+    # iss-supported-missing、iss-wrong-issuer、iss-unexpected、
+    # iss-normalized、metadata-issuer-mismatch），C++ 侧同样无表面，
+    # 同样 unknown 退出 1，但基线只减不增不得补，故 modern client leg
+    # 当前为红（exit 1），与 legacy 无关。待 OAuth client 表面落地
+    # （生产）或 referee 收敛后重审。
     - auth/metadata-default
     - auth/metadata-var1
     - auth/metadata-var2

@@ -2,6 +2,7 @@
 
 #include <mcp/server/RequestState.hpp>
 
+#include <mcp/Capabilities.hpp>
 #include <mcp/McpError.hpp>
 
 #include <functional>
@@ -121,9 +122,9 @@ CallToolResult MakeInputRequired(InputRequiredResult ir)
 
 CallToolResult Elicitation(const ToolContext& ctx)
 {
-    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "name");
+    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "user_name");
     if (content) {
-        auto* name = content->Find("user_name");
+        auto* name = content->Find("name");
         if (name && name->IsString())
             return MakeTextResult("Hello, " + name->GetString() + "!");
     }
@@ -132,8 +133,8 @@ CallToolResult Elicitation(const ToolContext& ctx)
     InputRequiredResult ir;
     ElicitRequestParams params;
     params.message = "What is your name?";
-    params.requested_schema = MakeFormSchema("user_name", "string");
-    ir.input_requests["name"] = MakeInputRequestForElicitation(params);
+    params.requested_schema = MakeFormSchema("name", "string");
+    ir.input_requests["user_name"] = MakeInputRequestForElicitation(params);
     result.input_required = std::move(ir);
     return result;
 }
@@ -197,20 +198,20 @@ CallToolResult RequestState(const ToolContext& ctx)
 CallToolResult MultipleInputs(const ToolContext& ctx)
 {
     const auto& responses = ctx.Params().input_responses;
-    auto* name_content = AcceptedElicitContent(responses, "name");
-    auto* name = name_content ? name_content->Find("user_name") : nullptr;
+    auto* name_content = AcceptedElicitContent(responses, "user_name");
+    auto* name = name_content ? name_content->Find("name") : nullptr;
     std::string greeting;
     bool has_greeting = false;
-    if (auto* entry = ResponseEntry(responses, "message"); entry && entry->IsObject()) {
+    if (auto* entry = ResponseEntry(responses, "greeting"); entry && entry->IsObject()) {
         has_greeting = TrySamplingText(*entry, greeting) != nullptr;
     }
-    auto* roots_entry = ResponseEntry(responses, "paths");
+    auto* roots_entry = ResponseEntry(responses, "client_roots");
     auto* roots = roots_entry ? RootsResponseArray(*roots_entry) : nullptr;
     if (!name || !name->IsString() || !has_greeting || !roots) {
         InputRequiredResult ir;
-        ir.input_requests["name"] = MakeNameElicitRequest();
-        ir.input_requests["message"] = MakeGreetingSamplingRequest("Generate a greeting", 50);
-        ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
+        ir.input_requests["user_name"] = MakeNameElicitRequest();
+        ir.input_requests["greeting"] = MakeGreetingSamplingRequest("Generate a greeting", 50);
+        ir.input_requests["client_roots"] = MakeInputRequestForRoots(ListRootsRequestParams{});
         JsonValue payload(JsonValue::object_tag);
         payload["tool"] = JsonValue("multiple_inputs");
         ir.request_state = payload.Dump();
@@ -299,10 +300,19 @@ CallToolResult Capabilities(const ToolContext& ctx)
         return MakeTextResult("Capability-aware input requests fulfilled");
     }
     std::optional<ClientCapabilities> declared;
-    if (ctx.Params().meta && ctx.Params().meta->client_capabilities) {
+    if (ctx.GetRequest().meta) {
+        if (auto* caps = ctx.GetRequest().meta->Find(
+                "io.modelcontextprotocol/clientCapabilities")) {
+            declared = DeserializeClientCapabilities(*caps);
+        }
+    }
+    if (!declared && ctx.Params().meta && ctx.Params().meta->client_capabilities) {
         declared = *ctx.Params().meta->client_capabilities;
-    } else if (auto caps = ctx.Server().GetClientCapabilities()) {
-        declared = *caps;
+    }
+    if (!declared) {
+        if (auto caps = ctx.Server().GetClientCapabilities()) {
+            declared = *caps;
+        }
     }
     InputRequiredResult ir;
     if (declared && declared->elicitation) {

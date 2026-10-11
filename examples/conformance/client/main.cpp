@@ -305,6 +305,39 @@ void RunJsonSchema2020_12PreservationClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
+void RunSkillsNoPrefetchClient(const std::string& server_url) {
+    auto client = ConnectClient(server_url, "skills-no-prefetch-client",
+        ConnectMode::Legacy, ClientCapabilities{});
+    auto skills = client->ListSkills();
+    std::cout << "Listed skills (" << skills.skills.size() << ")" << std::endl;
+    client->Close();
+    std::cout << "Connection closed successfully" << std::endl;
+}
+
+void RunSkillsVerifyClient(const std::string& server_url) {
+    auto client = ConnectClient(server_url, "skills-verify-client",
+        ConnectMode::Legacy, ClientCapabilities{});
+    auto skills = client->ListSkills();
+    std::cout << "Listed skills (" << skills.skills.size() << ")" << std::endl;
+    std::string target;
+    for (const auto& skill : skills.skills) {
+        if (skill.uri.size() >= 9 &&
+            skill.uri.compare(skill.uri.size() - 9, 9, "/SKILL.md") == 0) {
+            target = skill.uri;
+            break;
+        }
+    }
+    if (target.empty() && !skills.skills.empty()) target = skills.skills.front().uri;
+    if (target.empty())
+        throw std::runtime_error("Test server advertised no skills");
+    auto resource = client->ReadResource(target);
+    std::cout << "Read skill manifest (" << resource.contents.size()
+              << " content blocks), stopping before supporting files"
+              << std::endl;
+    client->Close();
+    std::cout << "Connection closed successfully" << std::endl;
+}
+
 using ScenarioHandler = void (*)(const std::string&);
 
 const std::map<std::string, ScenarioHandler>& ScenarioRegistry() {
@@ -321,6 +354,10 @@ const std::map<std::string, ScenarioHandler>& ScenarioRegistry() {
         {"json-schema-ref-no-deref", RunJsonSchemaRefNoDerefClient},
         {"json-schema-2020-12-preservation",
             RunJsonSchema2020_12PreservationClient},
+        {"sep-2640-client-no-prefetch", RunSkillsNoPrefetchClient},
+        {"sep-2640-client-verify-digest", RunSkillsVerifyClient},
+        {"sep-2640-client-verify-size", RunSkillsVerifyClient},
+        {"sep-2640-client-verify-frontmatter", RunSkillsVerifyClient},
     };
     return registry;
 }

@@ -3,6 +3,7 @@
 #include <mcp/McpTypes.hpp>
 #include <mcp/server/McpServer.hpp>
 
+#include <memory>
 #include <string>
 
 namespace mcp::conformance {
@@ -29,5 +30,8 @@ void RegisterInteractionTools(McpServer& server);
 void RegisterMrtrTools(McpServer& server);
 void RegisterConformanceResources(McpServer& server);
 void RegisterConformancePrompts(McpServer& server);
+void RegisterConformanceSkills(McpServer& server);
+void RegisterConformanceTaskTools(McpServer& server);
+std::shared_ptr<IMcpTaskStore> MakeConformanceTaskStore();
 
 }
