@@ -101,6 +101,7 @@ target_sources(mcp-core PRIVATE
     src/core/McpTypesResults.cpp
     src/core/McpTypesNotifications.cpp
     src/core/McpTypesTasks.cpp
+    src/core/McpTypesSkills.cpp
     src/core/McpTypesParams.cpp
     src/core/Content.cpp
     src/core/Capabilities.cpp

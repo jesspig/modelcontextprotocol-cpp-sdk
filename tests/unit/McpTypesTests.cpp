@@ -427,3 +427,320 @@ TEST(McpTypesTest, JsonSchemaValidatorNumbersAndArrays) {
     arr_bad2.PushBack(JsonValue(int64_t(1)));
     EXPECT_FALSE(detail::ValidateJsonSchema(arr_bad2, arr_schema, err));
 }
+
+TEST(McpTypesTest, ResultTypeTaskRoundTrip) {
+    EXPECT_EQ(SerializeResultType(ResultType::Task), JsonValue("task"));
+    EXPECT_EQ(DeserializeResultType(JsonValue("task")), ResultType::Task);
+    EXPECT_EQ(DeserializeResultType(JsonValue("complete")), ResultType::Complete);
+    EXPECT_EQ(DeserializeResultType(JsonValue("input_required")), ResultType::InputRequired);
+}
+
+TEST(McpTypesTest, CreateTaskResultFlatAndNestedCompat) {
+    CreateTaskResult r;
+    r.task_id = "task-1";
+    r.status = "working";
+    r.created_at = "2026-01-01T00:00:00Z";
+    r.ttl_ms = int64_t(60000);
+    InputRequests reqs;
+    ElicitRequestParams ep;
+    ep.message = "name?";
+    reqs["q"] = MakeInputRequestForElicitation(ep);
+    r.input_requests = reqs;
+
+    auto jv = SerializeCreateTaskResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "task");
+    EXPECT_EQ(jv["taskId"].GetString(), "task-1");
+    EXPECT_EQ(jv["status"].GetString(), "working");
+    EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(60000));
+    ASSERT_TRUE(jv.Contains("task"));
+    EXPECT_EQ(jv["task"]["taskId"].GetString(), "task-1");
+
+    auto r2 = DeserializeCreateTaskResult(jv);
+    EXPECT_EQ(r2.task_id, "task-1");
+    EXPECT_EQ(r2.status, "working");
+    EXPECT_EQ(r2.created_at, "2026-01-01T00:00:00Z");
+    ASSERT_TRUE(r2.input_requests.has_value());
+    EXPECT_EQ(r2.input_requests->size(), size_t{1});
+}
+
+TEST(McpTypesTest, CreateTaskResultReadsLegacyNestedTask) {
+    JsonValue task(JsonValue::object_tag);
+    task["taskId"] = JsonValue("t-9");
+    task["status"] = JsonValue("working");
+    task["createdAt"] = JsonValue("2026-01-01T00:00:00Z");
+    JsonValue jv(JsonValue::object_tag);
+    jv["resultType"] = JsonValue("task");
+    jv["task"] = std::move(task);
+
+    auto r = DeserializeCreateTaskResult(jv);
+    EXPECT_EQ(r.task_id, "t-9");
+    EXPECT_EQ(r.status, "working");
+    EXPECT_EQ(r.created_at, "2026-01-01T00:00:00Z");
+}
+
+TEST(McpTypesTest, UpdateTaskRequestParamsInputResponses) {
+    UpdateTaskRequestParams p;
+    p.task_id = "task-1";
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue elic(JsonValue::object_tag);
+    elic["action"] = JsonValue("accept");
+    responses["q"] = std::move(elic);
+    p.input_responses = responses;
+
+    auto jv = SerializeUpdateTaskRequestParams(p);
+    EXPECT_EQ(jv["taskId"].GetString(), "task-1");
+    ASSERT_TRUE(jv.Contains("inputResponses"));
+
+    auto p2 = DeserializeUpdateTaskRequestParams(jv);
+    EXPECT_EQ(p2.task_id, "task-1");
+    ASSERT_TRUE(p2.input_responses.has_value());
+    EXPECT_EQ((*p2.input_responses)["q"]["action"].GetString(), "accept");
+    EXPECT_FALSE(p2.result.has_value());
+}
+
+TEST(McpTypesTest, GetTaskResultExtendedFields) {
+    GetTaskResult r;
+    r.task_id = "task-2";
+    r.status = "input_required";
+    r.created_at = "2026-01-01T00:00:00Z";
+    r.ttl_ms = int64_t(60000);
+    r.poll_interval_ms = int64_t(5000);
+    InputRequests reqs;
+    ElicitRequestParams ep;
+    ep.message = "name?";
+    reqs["q"] = MakeInputRequestForElicitation(ep);
+    r.input_requests = reqs;
+
+    auto jv = SerializeGetTaskResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "task");
+    EXPECT_EQ(jv["createdAt"].GetString(), "2026-01-01T00:00:00Z");
+
+    auto r2 = DeserializeGetTaskResult(jv);
+    EXPECT_EQ(r2.task_id, "task-2");
+    ASSERT_TRUE(r2.input_requests.has_value());
+    ASSERT_TRUE(r2.ttl_ms.has_value());
+    EXPECT_EQ(*r2.ttl_ms, int64_t(60000));
+}
+
+TEST(McpTypesTest, GetTaskResultReadsLegacyErrorFields) {
+    JsonValue jv(JsonValue::object_tag);
+    jv["taskId"] = JsonValue("task-3");
+    jv["status"] = JsonValue("failed");
+    jv["resultType"] = JsonValue("task");
+    jv["errorMessage"] = JsonValue("boom");
+
+    auto r = DeserializeGetTaskResult(jv);
+    ASSERT_TRUE(r.error_message.has_value());
+    EXPECT_EQ(*r.error_message, "boom");
+    EXPECT_FALSE(r.error.has_value());
+}
+
+TEST(McpTypesTest, SkillResourcesManifestRoundTrip) {
+    Skill s;
+    s.uri = "skill://code-review/SKILL.md";
+    JsonValue fm(JsonValue::object_tag);
+    fm["name"] = JsonValue("code-review");
+    fm["description"] = JsonValue("Review code.");
+    s.frontmatter = fm;
+    SkillResource res{"skill://code-review/SKILL.md", "sha256:abc", int64_t(149)};
+    s.resources = SkillResources{std::vector<SkillResource>{res}};
+
+    auto jv = SerializeSkill(s);
+    EXPECT_EQ(jv["uri"].GetString(), "skill://code-review/SKILL.md");
+    EXPECT_EQ(jv["frontmatter"]["name"].GetString(), "code-review");
+    ASSERT_TRUE(jv["resources"].IsArray());
+    EXPECT_EQ(jv["resources"].Size(), size_t{1});
+
+    auto s2 = DeserializeSkill(jv);
+    EXPECT_EQ(s2.uri, s.uri);
+    ASSERT_TRUE(std::holds_alternative<std::vector<SkillResource>>(s2.resources));
+    EXPECT_EQ(std::get<std::vector<SkillResource>>(s2.resources)[0].digest, "sha256:abc");
+}
+
+TEST(McpTypesTest, SkillResourcesDynamicRoundTrip) {
+    Skill s;
+    s.uri = "skill://gen/SKILL.md";
+    s.frontmatter = JsonValue(JsonValue::object_tag);
+    s.resources = SkillResources{std::string("dynamic")};
+
+    auto jv = SerializeSkill(s);
+    EXPECT_EQ(jv["resources"].GetString(), "dynamic");
+
+    auto s2 = DeserializeSkill(jv);
+    ASSERT_TRUE(std::holds_alternative<std::string>(s2.resources));
+    EXPECT_EQ(std::get<std::string>(s2.resources), "dynamic");
+}
+
+TEST(McpTypesTest, SkillsListResultRoundTrip) {
+    SkillsListResult r;
+    Skill s;
+    s.uri = "skill://code-review/SKILL.md";
+    s.frontmatter = JsonValue(JsonValue::object_tag);
+    s.resources = SkillResources{std::string("dynamic")};
+    r.skills = {s};
+    r.next_cursor = "c1";
+    r.ttl_ms = int64_t(300000);
+    r.cache_scope = "public";
+
+    auto jv = SerializeSkillsListResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
+    EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(300000));
+    EXPECT_EQ(jv["cacheScope"].GetString(), "public");
+    ASSERT_TRUE(jv["skills"].IsArray());
+
+    auto r2 = DeserializeSkillsListResult(jv);
+    ASSERT_EQ(r2.skills.size(), size_t{1});
+    EXPECT_EQ(r2.skills[0].uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(r2.next_cursor, "c1");
+
+    JsonValue bare(JsonValue::object_tag);
+    auto r3 = DeserializeSkillsListResult(bare);
+    EXPECT_EQ(r3.result_type, ResultType::Complete);
+    EXPECT_TRUE(r3.skills.empty());
+}
+
+TEST(McpTypesTest, SkillsGetResultRoundTrip) {
+    SkillsGetResult r;
+    r.skill.uri = "skill://code-review/SKILL.md";
+    r.skill.frontmatter = JsonValue(JsonValue::object_tag);
+    r.skill.resources = SkillResources{std::string("dynamic")};
+    r.ttl_ms = int64_t(300000);
+    r.cache_scope = "public";
+
+    auto jv = SerializeSkillsGetResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
+    ASSERT_TRUE(jv.Contains("skill"));
+
+    auto r2 = DeserializeSkillsGetResult(jv);
+    EXPECT_EQ(r2.skill.uri, "skill://code-review/SKILL.md");
+}
+
+TEST(McpTypesTest, SkillsGetRequestParamsRoundTrip) {
+    SkillsGetRequestParams p;
+    p.uri = "skill://code-review/SKILL.md";
+
+    auto jv = SerializeSkillsGetRequestParams(p);
+    auto p2 = DeserializeSkillsGetRequestParams(jv);
+    EXPECT_EQ(p2.uri, "skill://code-review/SKILL.md");
+}
+
+TEST(McpTypesTest, ReadDirectoryResultRoundTrip) {
+    ReadDirectoryResult r;
+    DirectoryChild child;
+    child.uri = "skill://code-review/references/checklist.md";
+    child.name = "checklist.md";
+    child.mime_type = "text/markdown";
+    r.resources = {child};
+    r.next_cursor = "n1";
+
+    auto jv = SerializeReadDirectoryResult(r);
+    EXPECT_EQ(jv["resultType"].GetString(), "complete");
+    ASSERT_TRUE(jv["resources"].IsArray());
+    EXPECT_EQ(jv["resources"][size_t{0}]["name"].GetString(), "checklist.md");
+
+    auto r2 = DeserializeReadDirectoryResult(jv);
+    ASSERT_EQ(r2.resources.size(), size_t{1});
+    EXPECT_EQ(r2.resources[0].uri, "skill://code-review/references/checklist.md");
+    EXPECT_EQ(r2.next_cursor, "n1");
+}
+
+TEST(McpTypesTest, ReadDirectoryRequestParamsRoundTrip) {
+    ReadDirectoryRequestParams p;
+    p.uri = "skill://code-review/references";
+    p.cursor = "c9";
+
+    auto jv = SerializeReadDirectoryRequestParams(p);
+    EXPECT_EQ(jv["cursor"].GetString(), "c9");
+
+    auto p2 = DeserializeReadDirectoryRequestParams(jv);
+    EXPECT_EQ(p2.uri, "skill://code-review/references");
+    EXPECT_EQ(p2.cursor, "c9");
+}
+
+TEST(McpTypesTest, ListToolsResultWritesFlatCacheFields) {
+    ListToolsResult r;
+    Tool t;
+    t.name = "tool1";
+    r.tools = {t};
+    CacheHint hint;
+    hint.ttl_ms = int64_t(60000);
+    hint.cache_scope = "public";
+    r.cache_hint = hint;
+
+    auto jv = SerializeListToolsResult(r);
+    ASSERT_TRUE(jv.Contains("cacheHint"));
+    EXPECT_EQ(jv["cacheHint"]["ttlMs"].GetInt(), int64_t(60000));
+    EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(60000));
+    EXPECT_EQ(jv["cacheScope"].GetString(), "public");
+
+    auto r2 = DeserializeListToolsResult(jv);
+    ASSERT_TRUE(r2.cache_hint.has_value());
+    EXPECT_EQ(*r2.cache_hint->ttl_ms, int64_t(60000));
+}
+
+TEST(McpTypesTest, ListToolsResultReadsNestedCacheHint) {
+    JsonValue hint(JsonValue::object_tag);
+    hint["ttlMs"] = JsonValue(int64_t(60000));
+    JsonValue jv(JsonValue::object_tag);
+    jv["tools"] = JsonValue(JsonValue::array_tag);
+    jv["cacheHint"] = std::move(hint);
+
+    auto r = DeserializeListToolsResult(jv);
+    ASSERT_TRUE(r.cache_hint.has_value());
+    EXPECT_EQ(*r.cache_hint->ttl_ms, int64_t(60000));
+    EXPECT_EQ(r.result_type, ResultType::Complete);
+}
+
+TEST(McpTypesTest, SkillsExtensionSettingsRoundTrip) {
+    SkillsExtensionSettings s;
+    auto jv = SerializeSkillsExtensionSettings(s);
+    EXPECT_TRUE(jv.IsObject());
+    EXPECT_TRUE(jv.Empty());
+    EXPECT_EQ(std::string(kSkillsExtensionId), "io.modelcontextprotocol/skills");
+
+    auto s2 = DeserializeSkillsExtensionSettings(jv);
+    EXPECT_FALSE(s2.directory_read);
+
+    s.directory_read = true;
+    auto jv2 = SerializeSkillsExtensionSettings(s);
+    EXPECT_TRUE(jv2["directoryRead"].GetBool());
+
+    auto s3 = DeserializeSkillsExtensionSettings(jv2);
+    EXPECT_TRUE(s3.directory_read);
+}
+
+TEST(McpTypesTest, TasksExtensionSettingsRoundTrip) {
+    TasksExtensionSettings s;
+    auto jv = SerializeTasksExtensionSettings(s);
+    EXPECT_TRUE(jv.IsObject());
+    EXPECT_TRUE(jv.Empty());
+    EXPECT_EQ(std::string(kTasksExtensionId), "io.modelcontextprotocol/tasks");
+
+    auto s2 = DeserializeTasksExtensionSettings(jv);
+    (void)s2;
+}
+
+TEST(McpTypesTest, OutputSchemaArbitraryType) {
+    Tool t;
+    t.name = "t";
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("string");
+    t.output_schema = schema;
+
+    auto jv = SerializeTool(t);
+    auto t2 = DeserializeTool(jv);
+    ASSERT_TRUE(t2.output_schema.has_value());
+    EXPECT_EQ((*t2.output_schema)["type"].GetString(), "string");
+
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue("hello"), *t2.output_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(int64_t(3)), *t2.output_schema, err));
+}
+
+TEST(McpTypesTest, SkillsAndLegacyTaskMethods) {
+    EXPECT_EQ(std::string(methods::kListSkills), "skills/list");
+    EXPECT_EQ(std::string(methods::kGetSkill), "skills/get");
+    EXPECT_EQ(std::string(methods::kReadDirectory), "resources/directory/read");
+    EXPECT_EQ(std::string(methods::kLegacyGetTaskPayload), std::string(methods::kGetTaskPayload));
+    EXPECT_EQ(std::string(methods::kLegacyListTasks), std::string(methods::kListTasks));
+}

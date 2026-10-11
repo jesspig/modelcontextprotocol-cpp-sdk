@@ -5,6 +5,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace mcp {
 
@@ -38,6 +39,15 @@ using LoggingCapability = EmptyCapability;
 using TasksCapability = EmptyCapability;
 using SubscriptionsCapability = EmptyCapability;
 using CompletionsCapability = EmptyCapability;
+
+inline constexpr std::string_view kTasksExtensionId = "io.modelcontextprotocol/tasks";
+inline constexpr std::string_view kSkillsExtensionId = "io.modelcontextprotocol/skills";
+
+struct TasksExtensionSettings {};
+
+struct SkillsExtensionSettings {
+    bool directory_read{false};
+};
 
 struct ServerCapabilities {
     std::optional<ToolsCapability> tools;
@@ -75,6 +85,10 @@ JsonValue SerializeElicitationCapability(const ElicitationCapability& v);
 ElicitationCapability DeserializeElicitationCapability(const JsonValue& j);
 JsonValue SerializeEmptyCapability(const EmptyCapability& v);
 EmptyCapability DeserializeEmptyCapability(const JsonValue& j);
+JsonValue SerializeTasksExtensionSettings(const TasksExtensionSettings& v);
+TasksExtensionSettings DeserializeTasksExtensionSettings(const JsonValue& j);
+JsonValue SerializeSkillsExtensionSettings(const SkillsExtensionSettings& v);
+SkillsExtensionSettings DeserializeSkillsExtensionSettings(const JsonValue& j);
 JsonValue SerializeServerCapabilities(const ServerCapabilities& v);
 ServerCapabilities DeserializeServerCapabilities(const JsonValue& j);
 JsonValue SerializeClientCapabilities(const ClientCapabilities& v);
