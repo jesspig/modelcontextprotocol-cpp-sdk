@@ -1804,6 +1804,68 @@ TEST(McpClientTest, CallToolAsTaskReturnsTaskHandle) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, FlatTaskResultPreferredOverNested) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue nested(JsonValue::object_tag);
+            nested["taskId"] = JsonValue("t-nested");
+            nested["status"] = JsonValue("working");
+            nested["createdAt"] = JsonValue("2026-01-01T00:00:00Z");
+            JsonValue result(JsonValue::object_tag);
+            result["resultType"] = JsonValue("task");
+            result["taskId"] = JsonValue("t-flat");
+            result["status"] = JsonValue("working");
+            result["createdAt"] = JsonValue("2026-01-01T00:00:00Z");
+            result["task"] = std::move(nested);
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kGetTask,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue content(JsonValue::object_tag);
+            content["type"] = JsonValue("text");
+            content["text"] = JsonValue("flat-done");
+            JsonValue arr(JsonValue::array_tag);
+            arr.PushBack(std::move(content));
+            JsonValue payload(JsonValue::object_tag);
+            payload["content"] = JsonValue(std::move(arr));
+            JsonValue result(JsonValue::object_tag);
+            result["taskId"] = JsonValue("t-flat");
+            result["status"] = JsonValue("completed");
+            result["resultType"] = JsonValue("task");
+            result["result"] = std::move(payload);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    JsonValue task_ext(JsonValue::object_tag);
+    task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    opts.extensions = std::move(task_ext);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto handle = client->CallToolAsTask("flat-tool");
+    EXPECT_EQ(handle.task_id, "t-flat");
+    EXPECT_EQ(handle.status, "working");
+
+    auto done = client->PollTaskToCompletion("t-flat");
+    EXPECT_EQ(done.task_id, "t-flat");
+    EXPECT_EQ(done.status, "completed");
+    ASSERT_TRUE(done.result.has_value());
+    auto tool_result = DeserializeCallToolResult(*done.result);
+    ASSERT_EQ(tool_result.content.size(), 1u);
+    auto* text = std::get_if<TextContent>(&tool_result.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "flat-done");
+
+    client->Close();
+    server_handler->Close();
+}
+
 TEST(McpClientTest, CallToolAsTaskDegradesSynchronousResult) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -2505,6 +2567,373 @@ TEST(McpClientTest, TtlExpiryRefetch) {
     auto r3 = client->GetSkill("skill://code-review/SKILL.md");
     EXPECT_EQ(r3.skill.uri, "skill://code-review/SKILL.md");
     EXPECT_EQ(calls.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ElicitationApplyDefaultsFillsFiveFieldKinds) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLegacyProtocolVersion);
+    ClientCapabilities caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    caps.elicitation = elicitation;
+    opts.capabilities = caps;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult r;
+        r.action = "accept";
+        r.content = JsonValue(JsonValue::object_tag);
+        return r;
+    });
+
+    JsonValue props(JsonValue::object_tag);
+    JsonValue name_prop(JsonValue::object_tag);
+    name_prop["type"] = JsonValue("string");
+    name_prop["default"] = JsonValue("octocat");
+    props["name"] = std::move(name_prop);
+    JsonValue age_prop(JsonValue::object_tag);
+    age_prop["type"] = JsonValue("integer");
+    age_prop["default"] = JsonValue(30);
+    props["age"] = std::move(age_prop);
+    JsonValue score_prop(JsonValue::object_tag);
+    score_prop["type"] = JsonValue("number");
+    score_prop["default"] = JsonValue(9.5);
+    props["score"] = std::move(score_prop);
+    JsonValue color_prop(JsonValue::object_tag);
+    color_prop["type"] = JsonValue("string");
+    JsonValue colors(JsonValue::array_tag);
+    colors.PushBack(JsonValue("red"));
+    colors.PushBack(JsonValue("green"));
+    color_prop["enum"] = std::move(colors);
+    color_prop["default"] = JsonValue("green");
+    props["color"] = std::move(color_prop);
+    JsonValue active_prop(JsonValue::object_tag);
+    active_prop["type"] = JsonValue("boolean");
+    active_prop["default"] = JsonValue(true);
+    props["active"] = std::move(active_prop);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(props);
+
+    ElicitRequestParams req;
+    req.message = "defaults";
+    req.requested_schema = schema;
+
+    RequestMeta elicitation_meta;
+    elicitation_meta.protocol_version = std::string(kLegacyProtocolVersion);
+
+    auto result_json = server_handler->SendRequest(
+        methods::kElicit, SerializeElicitRequestParams(req),
+        elicitation_meta).get();
+    auto result = DeserializeElicitResult(result_json);
+    EXPECT_EQ(result.action, "accept");
+    ASSERT_TRUE(result.content.has_value());
+    ASSERT_TRUE(result.content->IsObject());
+    EXPECT_EQ((*result.content)["name"].GetString(), "octocat");
+    EXPECT_EQ((*result.content)["age"].GetInt(), 30);
+    EXPECT_EQ((*result.content)["score"].GetDouble(), 9.5);
+    EXPECT_EQ((*result.content)["color"].GetString(), "green");
+    EXPECT_TRUE((*result.content)["active"].GetBool());
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ElicitationApplyDefaultsDisabledLeavesContentEmpty) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLegacyProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult r;
+        r.action = "accept";
+        r.content = JsonValue(JsonValue::object_tag);
+        return r;
+    });
+
+    JsonValue name_prop(JsonValue::object_tag);
+    name_prop["type"] = JsonValue("string");
+    name_prop["default"] = JsonValue("octocat");
+    JsonValue props(JsonValue::object_tag);
+    props["name"] = std::move(name_prop);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(props);
+
+    ElicitRequestParams req;
+    req.message = "defaults";
+    req.requested_schema = schema;
+
+    RequestMeta elicitation_meta;
+    elicitation_meta.protocol_version = std::string(kLegacyProtocolVersion);
+
+    auto result_json = server_handler->SendRequest(
+        methods::kElicit, SerializeElicitRequestParams(req),
+        elicitation_meta).get();
+    auto result = DeserializeElicitResult(result_json);
+    EXPECT_EQ(result.action, "accept");
+    ASSERT_TRUE(result.content.has_value());
+    ASSERT_TRUE(result.content->IsObject());
+    EXPECT_TRUE(result.content->Empty());
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ElicitationApplyDefaultsKeepsExistingValues) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLegacyProtocolVersion);
+    ClientCapabilities caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    caps.elicitation = elicitation;
+    opts.capabilities = caps;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult r;
+        r.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["name"] = JsonValue("Alice");
+        r.content = std::move(content);
+        return r;
+    });
+
+    JsonValue props(JsonValue::object_tag);
+    JsonValue name_prop(JsonValue::object_tag);
+    name_prop["type"] = JsonValue("string");
+    name_prop["default"] = JsonValue("octocat");
+    props["name"] = std::move(name_prop);
+    JsonValue age_prop(JsonValue::object_tag);
+    age_prop["type"] = JsonValue("integer");
+    age_prop["default"] = JsonValue(30);
+    props["age"] = std::move(age_prop);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(props);
+
+    ElicitRequestParams req;
+    req.message = "defaults";
+    req.requested_schema = schema;
+
+    RequestMeta elicitation_meta;
+    elicitation_meta.protocol_version = std::string(kLegacyProtocolVersion);
+
+    auto result_json = server_handler->SendRequest(
+        methods::kElicit, SerializeElicitRequestParams(req),
+        elicitation_meta).get();
+    auto result = DeserializeElicitResult(result_json);
+    ASSERT_TRUE(result.content.has_value());
+    EXPECT_EQ((*result.content)["name"].GetString(), "Alice");
+    EXPECT_EQ((*result.content)["age"].GetInt(), 30);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ElicitationApplyDefaultsIgnoresDecline) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLegacyProtocolVersion);
+    ClientCapabilities caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    caps.elicitation = elicitation;
+    opts.capabilities = caps;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult r;
+        r.action = "decline";
+        return r;
+    });
+
+    JsonValue name_prop(JsonValue::object_tag);
+    name_prop["type"] = JsonValue("string");
+    name_prop["default"] = JsonValue("octocat");
+    JsonValue props(JsonValue::object_tag);
+    props["name"] = std::move(name_prop);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(props);
+
+    ElicitRequestParams req;
+    req.message = "defaults";
+    req.requested_schema = schema;
+
+    RequestMeta elicitation_meta;
+    elicitation_meta.protocol_version = std::string(kLegacyProtocolVersion);
+
+    auto result_json = server_handler->SendRequest(
+        methods::kElicit, SerializeElicitRequestParams(req),
+        elicitation_meta).get();
+    auto result = DeserializeElicitResult(result_json);
+    EXPECT_EQ(result.action, "decline");
+    EXPECT_FALSE(result.content.has_value());
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ElicitationApplyDefaultsRecursesNestedAndVariants) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLegacyProtocolVersion);
+    ClientCapabilities caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    caps.elicitation = elicitation;
+    opts.capabilities = caps;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult r;
+        r.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["address"] = JsonValue(JsonValue::object_tag);
+        r.content = std::move(content);
+        return r;
+    });
+
+    JsonValue city_prop(JsonValue::object_tag);
+    city_prop["type"] = JsonValue("string");
+    city_prop["default"] = JsonValue("Paris");
+    JsonValue address_props(JsonValue::object_tag);
+    address_props["city"] = std::move(city_prop);
+    JsonValue address_prop(JsonValue::object_tag);
+    address_prop["type"] = JsonValue("object");
+    address_prop["properties"] = std::move(address_props);
+    JsonValue props(JsonValue::object_tag);
+    props["address"] = std::move(address_prop);
+    JsonValue nick_prop(JsonValue::object_tag);
+    nick_prop["type"] = JsonValue("string");
+    nick_prop["default"] = JsonValue("bob");
+    JsonValue nick_props(JsonValue::object_tag);
+    nick_props["nick"] = std::move(nick_prop);
+    JsonValue variant(JsonValue::object_tag);
+    variant["type"] = JsonValue("object");
+    variant["properties"] = std::move(nick_props);
+    JsonValue any_of(JsonValue::array_tag);
+    any_of.PushBack(std::move(variant));
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(props);
+    schema["anyOf"] = std::move(any_of);
+
+    ElicitRequestParams req;
+    req.message = "defaults";
+    req.requested_schema = schema;
+
+    RequestMeta elicitation_meta;
+    elicitation_meta.protocol_version = std::string(kLegacyProtocolVersion);
+
+    auto result_json = server_handler->SendRequest(
+        methods::kElicit, SerializeElicitRequestParams(req),
+        elicitation_meta).get();
+    auto result = DeserializeElicitResult(result_json);
+    ASSERT_TRUE(result.content.has_value());
+    ASSERT_TRUE(result.content->IsObject());
+    auto* address = result.content->Find("address");
+    ASSERT_NE(address, nullptr);
+    ASSERT_TRUE(address->IsObject());
+    EXPECT_EQ((*address)["city"].GetString(), "Paris");
+    EXPECT_EQ((*result.content)["nick"].GetString(), "bob");
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrElicitationApplyDefaultsFillsInputResponses) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> round{0};
+    std::atomic<bool> saw_default{false};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&round, &saw_default](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (round.load() == 0) {
+                round.store(1);
+                JsonValue name_prop(JsonValue::object_tag);
+                name_prop["type"] = JsonValue("string");
+                name_prop["default"] = JsonValue("octocat");
+                JsonValue props(JsonValue::object_tag);
+                props["name"] = std::move(name_prop);
+                JsonValue schema(JsonValue::object_tag);
+                schema["type"] = JsonValue("object");
+                schema["properties"] = std::move(props);
+                ElicitRequestParams params;
+                params.message = "What is your name?";
+                params.requested_schema = schema;
+                InputRequiredResult ir;
+                ir.input_requests["info"] = MakeInputRequestForElicitation(params);
+                p.set_value(SerializeInputRequiredResult(ir));
+                return;
+            }
+            round.store(2);
+            auto* responses = req.params ? req.params->Find("inputResponses") : nullptr;
+            auto* info = responses && responses->IsObject() ? responses->Find("info") : nullptr;
+            auto* content = info && info->IsObject() ? info->Find("content") : nullptr;
+            auto* name = content && content->IsObject() ? content->Find("name") : nullptr;
+            saw_default.store(name && name->IsString() && name->GetString() == "octocat");
+            JsonValue result(JsonValue::object_tag);
+            result["structuredContent"] = JsonValue(JsonValue::object_tag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.input_required_config = ClientOptions::InputRequiredConfig{};
+    ClientCapabilities caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    caps.elicitation = elicitation;
+    opts.capabilities = caps;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult r;
+        r.action = "accept";
+        r.content = JsonValue(JsonValue::object_tag);
+        return r;
+    });
+
+    client->CallTool("echo", JsonValue(JsonValue::object_tag));
+    EXPECT_TRUE(saw_default.load());
+    EXPECT_EQ(round.load(), 2);
 
     client->Close();
     server_handler->Close();

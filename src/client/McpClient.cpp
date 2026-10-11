@@ -202,6 +202,52 @@ namespace {
         return std::string(kLatestProtocolVersion);
     }
 
+    static void MaybeApplyElicitationDefaults(
+        ElicitResult& result,
+        const ElicitRequestParams& params,
+        const ClientOptions& options)
+    {
+        try {
+            if (params.mode != "form") return;
+            if (result.action != "accept") return;
+            if (!result.content || !result.content->IsObject()) return;
+            if (!params.requested_schema || !params.requested_schema->IsObject())
+                return;
+            bool enabled = false;
+            if (options.capabilities && options.capabilities->elicitation &&
+                options.capabilities->elicitation->form &&
+                options.capabilities->elicitation->form->IsObject()) {
+                auto* flag =
+                    options.capabilities->elicitation->form->Find("applyDefaults");
+                enabled = flag && flag->IsBool() && flag->GetBool();
+            }
+            if (!enabled) return;
+            std::function<void(const JsonValue&, JsonValue&)> fill =
+                [&](const JsonValue& schema, JsonValue& content) {
+                    if (!schema.IsObject() || !content.IsObject()) return;
+                    for (const char* key : {"anyOf", "oneOf"}) {
+                        auto* subs = schema.Find(key);
+                        if (!subs || !subs->IsArray()) continue;
+                        for (const auto& sub : subs->GetArray()) fill(sub, content);
+                    }
+                    auto* props = schema.Find("properties");
+                    if (!props || !props->IsObject()) return;
+                    for (const auto& [name, prop] : props->GetObject()) {
+                        if (!prop.IsObject()) continue;
+                        auto* existing = content.Find(name);
+                        if (!existing) {
+                            auto* def = prop.Find("default");
+                            if (def) content[name] = *def;
+                        } else if (existing->IsObject()) {
+                            fill(prop, *existing);
+                        }
+                    }
+                };
+            fill(*params.requested_schema, *result.content);
+        } catch (...) {
+        }
+    }
+
     class ScopedProgressCleanup {
     public:
         explicit ScopedProgressCleanup(std::function<void()> cleanup)
@@ -514,6 +560,7 @@ void McpClient::WireClientHandlers() {
             }
             try {
                 auto result = (*elicitation_handler_)(params);
+                MaybeApplyElicitationDefaults(result, params, options_);
                 p.set_value(SerializeElicitResult(result));
             } catch (...) {
                 p.set_exception(std::current_exception());
@@ -759,8 +806,9 @@ static bool TryFulfillInputRequired(
             if (!elicitation_handler) {
                 throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
             }
-            auto elicit_result = (*elicitation_handler)(
-                DeserializeElicitRequestParams(request.params));
+            auto elicit_params = DeserializeElicitRequestParams(request.params);
+            auto elicit_result = (*elicitation_handler)(elicit_params);
+            MaybeApplyElicitationDefaults(elicit_result, elicit_params, options);
             responses[key] = MakeInputResponseFromElicitResult(elicit_result);
         } else if (request.method == methods::kCreateMessage) {
             if (!sampling_handler) {
@@ -1284,20 +1332,14 @@ GetTaskResult McpClient::CallToolAsTask(
             throw McpError(McpErrorCode::HandlerError,
                 "received task result without declaring tasks extension io.modelcontextprotocol/tasks");
         }
-        auto* task = result_json.Find("task");
-        if (!task || !task->IsObject()) {
-            throw McpError(McpErrorCode::InvalidParams,
-                "task result missing task object");
-        }
-        auto* task_id = task->Find(detail::kTaskId);
-        auto* status = task->Find(detail::kStatus);
-        if (!task_id || !task_id->IsString() || !status || !status->IsString()) {
+        auto created = DeserializeCreateTaskResult(result_json);
+        if (created.task_id.empty() || created.status.empty()) {
             throw McpError(McpErrorCode::InvalidParams,
                 "task result missing valid taskId/status");
         }
         GetTaskResult handle;
-        handle.task_id = task_id->GetString();
-        handle.status = status->GetString();
+        handle.task_id = std::move(created.task_id);
+        handle.status = std::move(created.status);
         return handle;
     }
 
