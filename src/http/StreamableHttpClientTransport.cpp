@@ -30,6 +30,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -102,6 +103,7 @@ enum class ListenState { Idle, Connecting, Streaming, Unsupported, GivenUp };
 struct SseBlockParseResult {
     std::string data;
     std::string event_id;
+    std::optional<uint64_t> retry_ms;
     std::optional<JsonRpcMessage> message;
 };
 
@@ -114,6 +116,15 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
             detail::AppendSseData(result.data, field.value);
         } else if (field.name == "id") {
             result.event_id = std::string(field.value);
+        } else if (field.name == "retry") {
+            if (!field.value.empty() &&
+                field.value.find_first_not_of("0123456789") ==
+                    std::string_view::npos) {
+                try {
+                    result.retry_ms = std::stoull(std::string(field.value));
+                } catch (...) {
+                }
+            }
         }
     });
     if (!result.data.empty()) {
@@ -145,6 +156,27 @@ inline constexpr std::chrono::milliseconds kListenRetryInitialDelay{1000};
 inline constexpr std::chrono::milliseconds kListenRetryMaxDelay{30000};
 inline constexpr int kMaxListenReconnectAttempts = 5;
 inline constexpr std::chrono::seconds kListenStreamTimeout{600};
+inline constexpr std::chrono::milliseconds kReconnectWaitFloor{450};
+inline constexpr std::chrono::milliseconds kReconnectWaitCeiling{1000};
+
+inline std::chrono::milliseconds ReconnectDelayForAttempt(
+    int attempt, std::optional<uint64_t> retry_ms) {
+    std::chrono::milliseconds wait = kListenRetryInitialDelay;
+    for (int i = 1; i < attempt; ++i)
+        wait = (std::min)(wait * 3 / 2, kListenRetryMaxDelay);
+    if (retry_ms.has_value()) {
+        uint64_t raw = *retry_ms;
+        if (raw <= static_cast<uint64_t>(kReconnectWaitFloor.count()))
+            wait = kReconnectWaitFloor;
+        else if (raw >= static_cast<uint64_t>(kReconnectWaitCeiling.count()))
+            wait = kReconnectWaitCeiling;
+        else
+            wait = std::chrono::milliseconds(raw);
+    }
+    if (wait < kReconnectWaitFloor) wait = kReconnectWaitFloor;
+    if (wait > kReconnectWaitCeiling) wait = kReconnectWaitCeiling;
+    return wait;
+}
 
 inline void SleepInterruptibly(const std::atomic<bool>& running,
                                std::chrono::milliseconds duration) {
@@ -334,7 +366,6 @@ private:
     void RunListenStream() {
         using streamable_http_client_impl::ListenState;
         int reconnects = 0;
-        auto delay = streamable_http_client_impl::kListenRetryInitialDelay;
         for (;;) {
             if (!running_) return;
             auto result = DoListenGet();
@@ -351,8 +382,10 @@ private:
                 return;
             }
             ++reconnects;
-            streamable_http_client_impl::SleepInterruptibly(running_, delay);
-            delay = (std::min)(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
+            streamable_http_client_impl::SleepInterruptibly(
+                running_,
+                streamable_http_client_impl::ReconnectDelayForAttempt(
+                    reconnects, CurrentRetryMs()));
         }
     }
 
@@ -480,12 +513,24 @@ private:
         return finish(ListenState::Streaming);
     }
 
+    std::optional<uint64_t> CurrentRetryMs() {
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        return retry_ms_;
+    }
+
+    void StoreRetryMs(std::optional<uint64_t> retry_ms) {
+        if (!retry_ms.has_value()) return;
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        retry_ms_ = retry_ms;
+    }
+
     bool ProcessListenBlock(const std::string& block) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
         if (!parsed.event_id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return true;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -885,6 +930,7 @@ private:
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -978,6 +1024,8 @@ private:
         streamable_http_client_impl::ListenState::Idle};
     std::mutex last_event_id_mutex_;
     std::string last_event_id_;
+    std::mutex retry_mutex_;
+    std::optional<uint64_t> retry_ms_;
     std::atomic<bool> listen_requested_{false};
     std::atomic<HINTERNET> listen_request_{nullptr};
 
@@ -1103,7 +1151,6 @@ private:
     void RunListenStream() {
         using streamable_http_client_impl::ListenState;
         int reconnects = 0;
-        auto delay = streamable_http_client_impl::kListenRetryInitialDelay;
         for (;;) {
             if (!running_) return;
             auto result = DoListenGet();
@@ -1120,8 +1167,10 @@ private:
                 return;
             }
             ++reconnects;
-            streamable_http_client_impl::SleepInterruptibly(running_, delay);
-            delay = (std::min)(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
+            streamable_http_client_impl::SleepInterruptibly(
+                running_,
+                streamable_http_client_impl::ReconnectDelayForAttempt(
+                    reconnects, CurrentRetryMs()));
         }
     }
 
@@ -1190,12 +1239,24 @@ private:
         return mapped;
     }
 
+    std::optional<uint64_t> CurrentRetryMs() {
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        return retry_ms_;
+    }
+
+    void StoreRetryMs(std::optional<uint64_t> retry_ms) {
+        if (!retry_ms.has_value()) return;
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        retry_ms_ = retry_ms;
+    }
+
     bool ProcessListenBlock(const std::string& block) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
         if (!parsed.event_id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return true;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -1431,6 +1492,7 @@ private:
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -1487,6 +1549,8 @@ private:
         streamable_http_client_impl::ListenState::Idle};
     std::mutex last_event_id_mutex_;
     std::string last_event_id_;
+    std::mutex retry_mutex_;
+    std::optional<uint64_t> retry_ms_;
     std::atomic<bool> listen_requested_{false};
     detail::net::HttpClient* listen_client_ = nullptr;
 

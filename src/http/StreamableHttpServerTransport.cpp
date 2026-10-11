@@ -225,14 +225,6 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     session_id_ = "srv-" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count());
 
-    if (session_store_ && !options_.stateless) {
-        SessionRecord record;
-        record.protocol_version = std::string(kDefaultNegotiatedProtocolVersion);
-        record.created_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        session_store_->Save(session_id_, record);
-    }
-
     http_server_->SetHandler("POST", options_.endpoint,
         [this](const HttpRequest& req, HttpResponse& resp) {
             HandlePost(req, resp);
@@ -371,11 +363,8 @@ bool StreamableHttpServerTransport::EnsureSession(
     if (!session_store_) return true;
     auto session_id = GetMcpHeader(req, "mcp-session-id");
     if (!session_id || session_id->empty()) return true;
-    if (*session_id == ActiveSessionId() && channel_ && channel_->IsOpen()) {
-        return true;
-    }
     if (session_store_->Load(*session_id)) {
-        AdoptSession(*session_id);
+        if (*session_id != ActiveSessionId()) AdoptSession(*session_id);
         return true;
     }
     resp.status_code = 404;
@@ -612,6 +601,20 @@ void StreamableHttpServerTransport::HandlePost(
         if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
             req_id = r->id;
             is_initialize = (r->method == methods::kInitialize);
+        }
+    }
+
+    if (is_initialize && session_store_ && !options_.stateless) {
+        SessionRecord record;
+        record.protocol_version = std::string(kDefaultNegotiatedProtocolVersion);
+        record.created_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (!session_store_->TrySave(ActiveSessionId(), record)) {
+            resp.status_code = 503;
+            resp.status_text = "Service Unavailable";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session store is full"}})";
+            resp.headers["content-type"] = "application/json";
+            return;
         }
     }
 
