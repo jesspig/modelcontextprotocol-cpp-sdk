@@ -55,6 +55,14 @@ std::string SseEscapeData(std::string_view data) {
     return out;
 }
 
+std::optional<std::string> RequestStreamTokenFromObject(const JsonValue& obj) {
+    auto* pt = obj.Find(detail::kProgressToken);
+    if (!pt) return std::nullopt;
+    if (pt->IsString()) return pt->GetString();
+    if (pt->IsInt()) return std::to_string(pt->GetInt());
+    return std::nullopt;
+}
+
 std::optional<int> MapRequestErrorHttpStatus(int code) {
     switch (code) {
         case static_cast<int>(McpErrorCode::ParseError):
@@ -639,16 +647,29 @@ void StreamableHttpServerTransport::HandlePost(
             inflight_guard.emplace(stateless_inflight_);
         }
         auto id_str = RequestIdToString(*req_id);
+        std::string hold_version(kDefaultNegotiatedProtocolVersion);
+        if (proto_ver && !proto_ver->empty()) hold_version = *proto_ver;
+        bool hold_open = IsModernProtocolVersion(hold_version);
+        std::optional<std::string> hold_token;
+        if (hold_open) {
+            if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg))
+                hold_token = RequestTokenKey(*hold_req);
+        }
         auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
         auto future = promise->get_future();
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
             pending_responses_[id_str] = promise;
+            if (hold_open) {
+                hold_open_requests_.insert(id_str);
+                if (hold_token) progress_token_routes_[*hold_token] = id_str;
+            }
         }
         if (!channel_->TrySend(std::move(msg))) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_responses_.erase(id_str);
+                EraseRequestStreamStateLocked(id_str);
             }
             resp.status_code = 503;
             resp.status_text = "Service Unavailable";
@@ -662,6 +683,7 @@ void StreamableHttpServerTransport::HandlePost(
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_responses_.erase(id_str);
+                EraseRequestStreamStateLocked(id_str);
             }
             resp.status_code = 504;
             resp.status_text = "Gateway Timeout";
@@ -678,6 +700,16 @@ void StreamableHttpServerTransport::HandlePost(
             return;
         }
         auto response = future.get();
+        std::vector<std::string> hold_frames;
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            if (hold_open) {
+                auto fit = request_stream_frames_.find(id_str);
+                if (fit != request_stream_frames_.end())
+                    hold_frames = std::move(fit->second);
+                EraseRequestStreamStateLocked(id_str);
+            }
+        }
         if (const auto* err = std::get_if<JsonRpcErrorResponse>(&response)) {
             auto mapped = MapRequestErrorHttpStatus(static_cast<int>(err->error.code));
             if (mapped) {
@@ -710,7 +742,9 @@ void StreamableHttpServerTransport::HandlePost(
         resp.headers["content-type"] = "text/event-stream";
         resp.headers["cache-control"] = "no-cache";
         resp.headers["x-accel-buffering"] = "no";
-        resp.body = "event: message\ndata: " +
+        resp.body.clear();
+        for (auto& hold_frame : hold_frames) resp.body += hold_frame;
+        resp.body += "event: message\ndata: " +
                     SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
     } else {
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
@@ -791,6 +825,8 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
         }
     }
 
+    if (TryBufferRequestStreamNotification(message)) return;
+
     if (IsRequest(message) && http_server_ &&
         http_server_->SseClientCount() == 0) {
         std::string wait_method;
@@ -832,6 +868,71 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
 {
     std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(std::move(msg))) + "\n\n";
     return data;
+}
+
+std::optional<std::string> StreamableHttpServerTransport::RequestTokenKey(
+    const JsonRpcRequest& req)
+{
+    if (req.meta && req.meta->IsObject()) {
+        if (auto key = RequestStreamTokenFromObject(*req.meta)) return key;
+    }
+    if (req.params && req.params->IsObject()) {
+        if (auto* m = req.params->Find(detail::kMeta); m && m->IsObject()) {
+            if (auto key = RequestStreamTokenFromObject(*m)) return key;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> StreamableHttpServerTransport::NotificationTokenKey(
+    const JsonRpcNotification& notif)
+{
+    if (!notif.params || !notif.params->IsObject()) return std::nullopt;
+    return RequestStreamTokenFromObject(*notif.params);
+}
+
+void StreamableHttpServerTransport::EraseRequestStreamStateLocked(
+    const std::string& id_str)
+{
+    hold_open_requests_.erase(id_str);
+    request_stream_frames_.erase(id_str);
+    for (auto it = progress_token_routes_.begin();
+         it != progress_token_routes_.end();) {
+        if (it->second == id_str) it = progress_token_routes_.erase(it);
+        else ++it;
+    }
+}
+
+bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
+    const JsonRpcMessage& message)
+{
+    auto* notif = AsNotification(message);
+    if (!notif) return false;
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (hold_open_requests_.empty()) return false;
+    if (notif->method == notifications::kProgress) {
+        auto key = NotificationTokenKey(*notif);
+        if (!key) return false;
+        auto route = progress_token_routes_.find(*key);
+        if (route == progress_token_routes_.end()) return false;
+        if (hold_open_requests_.count(route->second) == 0) return false;
+        request_stream_frames_[route->second].push_back(
+            BuildSseEvent(JsonRpcMessage(message)));
+        return true;
+    }
+    if (notif->method == notifications::kMessage) {
+        for (const auto& id_str : hold_open_requests_)
+            request_stream_frames_[id_str].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+        return true;
+    }
+    return false;
+}
+
+bool StreamableHttpServerTransport::BufferRequestStreamNotification(
+    JsonRpcMessage message)
+{
+    return TryBufferRequestStreamNotification(message);
 }
 
 std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(

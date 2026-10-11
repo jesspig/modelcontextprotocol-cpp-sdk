@@ -1538,3 +1538,190 @@ TEST(StreamableHttpTransportTest, GetKeepsSessionAlive) {
 
     server.Close();
 }
+
+namespace {
+
+size_t CountSseFrames(const std::string& body) {
+    size_t frames = 0;
+    size_t at = 0;
+    while ((at = body.find("event: message", at)) != std::string::npos) {
+        ++frames;
+        ++at;
+    }
+    return frames;
+}
+
+mcp::detail::net::HttpResponseInfo HoldOpenPost(
+    uint16_t port, const std::string& body,
+    const std::unordered_map<std::string, std::string>& extra_headers) {
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "POST";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.body = body;
+    req.headers["Content-Type"] = "application/json";
+    req.headers["Accept"] = "application/json, text/event-stream";
+    for (const auto& [key, value] : extra_headers) req.headers[key] = value;
+    req.timeout = std::chrono::seconds(5);
+    return client.Request(req);
+}
+
+void RespondWithResult(StreamableHttpServerTransport& server,
+                       const RequestId& id,
+                       std::promise<void>* done) {
+    JsonRpcResponse resp;
+    resp.id = id;
+    JsonValue result(JsonValue::object_tag);
+    result["ok"] = JsonValue(true);
+    resp.result = std::move(result);
+    server.SendMessageAsync(JsonRpcMessage(std::move(resp)));
+    if (done) done->set_value();
+}
+
+} // namespace
+
+TEST(StreamableHttpTransportTest, RequestStreamHoldOpenDeliversProgressBeforeResult) {
+    auto port = PickFreePort(kTestBasePort + 2050);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                JsonRpcNotification progress;
+                progress.method = "notifications/progress";
+                JsonValue progress_params(JsonValue::object_tag);
+                progress_params["progressToken"] = JsonValue("tok-hold");
+                progress_params["progress"] = JsonValue(0.5);
+                progress.params = std::move(progress_params);
+                server.SendMessageAsync(JsonRpcMessage(std::move(progress)));
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::unordered_map<std::string, std::string> headers;
+    headers["Mcp-Method"] = "tools/call";
+    headers["Mcp-Name"] = "echo";
+    headers["Mcp-Protocol-Version"] = "2026-07-28";
+    auto resp = HoldOpenPost(port,
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call",)"
+        R"("params":{"name":"echo","arguments":{},)"
+        R"("_meta":{"progressToken":"tok-hold"}}})",
+        headers);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(resp.status_code, 200);
+    auto content_type = resp.headers.find("content-type");
+    ASSERT_TRUE(content_type != resp.headers.end());
+    EXPECT_EQ(content_type->second, "text/event-stream");
+    auto progress_pos = resp.body.find("notifications/progress");
+    auto result_pos = resp.body.find("\"ok\":true");
+    EXPECT_NE(progress_pos, std::string::npos);
+    EXPECT_NE(result_pos, std::string::npos);
+    EXPECT_LT(progress_pos, result_pos);
+    EXPECT_EQ(CountSseFrames(resp.body), size_t{2});
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, PlainRequestKeepsSingleWriteAndClose) {
+    auto port = PickFreePort(kTestBasePort + 2060);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HoldOpenPost(port,
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call",)"
+        R"("params":{"name":"echo","arguments":{}}})",
+        {});
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(resp.status_code, 200);
+    auto content_type = resp.headers.find("content-type");
+    ASSERT_TRUE(content_type != resp.headers.end());
+    EXPECT_EQ(content_type->second, "text/event-stream");
+    EXPECT_EQ(CountSseFrames(resp.body), size_t{1});
+    EXPECT_NE(resp.body.find("\"ok\":true"), std::string::npos);
+    EXPECT_EQ(resp.body.find("notifications/progress"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, RequestStreamHoldOpenDeliversMessageBeforeResult) {
+    auto port = PickFreePort(kTestBasePort + 2070);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                JsonRpcNotification log;
+                log.method = "notifications/message";
+                JsonValue log_params(JsonValue::object_tag);
+                log_params["level"] = JsonValue("info");
+                log_params["data"] = JsonValue("halfway");
+                log.params = std::move(log_params);
+                server.SendMessageAsync(JsonRpcMessage(std::move(log)));
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::unordered_map<std::string, std::string> headers;
+    headers["Mcp-Method"] = "tools/call";
+    headers["Mcp-Name"] = "echo";
+    headers["Mcp-Protocol-Version"] = "2026-07-28";
+    auto resp = HoldOpenPost(port,
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call",)"
+        R"("params":{"name":"echo","arguments":{}}})",
+        headers);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(resp.status_code, 200);
+    auto content_type = resp.headers.find("content-type");
+    ASSERT_TRUE(content_type != resp.headers.end());
+    EXPECT_EQ(content_type->second, "text/event-stream");
+    auto message_pos = resp.body.find("notifications/message");
+    auto result_pos = resp.body.find("\"ok\":true");
+    EXPECT_NE(message_pos, std::string::npos);
+    EXPECT_NE(result_pos, std::string::npos);
+    EXPECT_LT(message_pos, result_pos);
+    EXPECT_EQ(CountSseFrames(resp.body), size_t{2});
+
+    server.Close();
+    consumer.join();
+}
