@@ -34,6 +34,7 @@ inline const std::unordered_set<std::string_view> k2026OnlyRequestMethods = {
     "server/discover",
     "subscriptions/listen",
     "tasks/get", "tasks/update", "tasks/cancel",
+    "skills/list", "skills/get", "resources/directory/read",
 };
 
 inline const std::unordered_set<std::string_view> kCommonNotifMethods = {
@@ -169,7 +170,7 @@ public:
         }
         static const std::unordered_set<std::string_view> kListMethods = {
             "tools/list", "resources/list", "resources/templates/list",
-            "prompts/list",
+            "prompts/list", "skills/list",
         };
         if (kListMethods.count(method) > 0) {
             auto* rt = raw.Find(detail::kResultType);

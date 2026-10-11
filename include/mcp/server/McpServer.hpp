@@ -66,6 +66,9 @@ public:
         std::function<GetPromptResult(const std::string& name,
             const std::optional<JsonValue>& args)> handler);
 
+    void RegisterSkill(Skill skill);
+    void SetSkillsDirectoryRead(bool enabled);
+
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
     std::future<ElicitResult> ElicitUrl(const std::string& url,
         const std::string& message,
@@ -106,6 +109,7 @@ private:
     void WireCoreHandlers();
     void WireExtensionHandlers();
     void WireTaskHandlers();
+    void WireSkillHandlers();
     void WireSubscriptionHandlers();
     void DeriveCapabilities();
     void SendListChangedNotification(std::string_view method);
@@ -124,6 +128,12 @@ private:
     void HandleListPrompts(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleGetPrompt(
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void HandleListSkills(
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void HandleGetSkill(
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void HandleReadDirectory(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleComplete(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
@@ -167,6 +177,9 @@ private:
         std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)> handler;
     };
     std::vector<PromptEntry> prompts_;
+
+    std::vector<Skill> skills_;
+    bool skills_directory_read_{false};
 
     std::shared_ptr<const ClientCapabilities> client_capabilities_;
     std::shared_ptr<const Implementation> client_info_;

@@ -46,6 +46,71 @@ namespace {
         return std::to_string(next_index);
     }
 
+    constexpr std::string_view kSkillSchemePrefix = "skill://";
+    constexpr std::string_view kSkillFileSuffix = "/SKILL.md";
+    constexpr std::string_view kDirectoryMimeType = "inode/directory";
+
+    bool IsSkillEntryUri(std::string_view uri) {
+        if (uri.size() <= kSkillSchemePrefix.size() + kSkillFileSuffix.size()) return false;
+        if (uri.compare(0, kSkillSchemePrefix.size(), kSkillSchemePrefix) != 0) return false;
+        if (uri.compare(uri.size() - kSkillFileSuffix.size(),
+                kSkillFileSuffix.size(), kSkillFileSuffix) != 0) return false;
+        return true;
+    }
+
+    std::string SkillRootFromEntryUri(const std::string& uri) {
+        return uri.substr(0, uri.size() - kSkillFileSuffix.size());
+    }
+
+    std::string NormalizeDirectoryUri(const std::string& uri) {
+        std::string out = uri;
+        while (out.size() > 1 && out.back() == '/') out.pop_back();
+        return out;
+    }
+
+    struct SkillDirectoryView {
+        bool is_directory{false};
+        std::vector<DirectoryChild> children;
+    };
+
+    SkillDirectoryView CollectDirectoryChildren(
+        const std::vector<Skill>& skills, const std::string& dir)
+    {
+        SkillDirectoryView view;
+        std::set<std::string> seen;
+        for (const auto& skill : skills) {
+            if (!IsSkillEntryUri(skill.uri)) continue;
+            if (dir == SkillRootFromEntryUri(skill.uri)) view.is_directory = true;
+            auto* manifest = std::get_if<std::vector<SkillResource>>(&skill.resources);
+            if (!manifest) continue;
+            for (const auto& res : *manifest) {
+                const std::string& uri = res.uri;
+                if (uri == dir) continue;
+                if (uri.size() <= dir.size() + 1) continue;
+                if (uri.compare(0, dir.size(), dir) != 0 || uri[dir.size()] != '/') continue;
+                view.is_directory = true;
+                std::string rest = uri.substr(dir.size() + 1);
+                auto slash = rest.find('/');
+                DirectoryChild child;
+                if (slash == std::string::npos) {
+                    if (rest.empty()) continue;
+                    child.uri = uri;
+                    child.name = rest;
+                } else {
+                    std::string seg = rest.substr(0, slash);
+                    if (seg.empty()) continue;
+                    child.uri = dir + "/" + seg;
+                    child.name = seg;
+                    child.mime_type = std::string(kDirectoryMimeType);
+                }
+                if (seen.insert(child.uri).second) view.children.push_back(std::move(child));
+            }
+        }
+        std::sort(view.children.begin(), view.children.end(),
+            [](const DirectoryChild& a, const DirectoryChild& b) { return a.uri < b.uri; });
+        return view;
+    }
+
     template <typename Entry, typename Fn, typename IncludeFn = std::nullptr_t>
     bool PaginateEntries(
         const std::vector<Entry>& entries,
@@ -63,7 +128,7 @@ namespace {
             }
             if (index++ < cursor_val) continue;
             if (sent >= page_size) {
-                next_index = index;
+                next_index = index - 1;
                 return true;
             }
             emit(entry);
@@ -366,6 +431,30 @@ void McpServer::RegisterPrompt(
     DeriveCapabilities();
 }
 
+void McpServer::RegisterSkill(Skill skill) {
+    if (!IsSkillEntryUri(skill.uri)) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "invalid skill uri: " + skill.uri);
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        auto it = skills_.begin();
+        while (it != skills_.end() && it->uri != skill.uri) ++it;
+        if (it != skills_.end()) *it = std::move(skill);
+        else skills_.push_back(std::move(skill));
+    }
+    WireHandlers();
+    DeriveCapabilities();
+}
+
+void McpServer::SetSkillsDirectoryRead(bool enabled) {
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        skills_directory_read_ = enabled;
+    }
+    DeriveCapabilities();
+}
+
 void McpServer::SendToolListChanged() {
     SendListChangedNotification(notifications::kToolListChanged);
 }
@@ -562,6 +651,7 @@ void McpServer::WireHandlers() {
     WireCoreHandlers();
     WireExtensionHandlers();
     WireTaskHandlers();
+    WireSkillHandlers();
     WireSubscriptionHandlers();
 }
 
@@ -977,6 +1067,22 @@ void McpServer::WireTaskHandlers() {
     }
 }
 
+void McpServer::WireSkillHandlers() {
+    if (skills_.empty()) return;
+    handler_->SetRequestHandler(methods::kListSkills,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleListSkills(req, std::move(p));
+        });
+    handler_->SetRequestHandler(methods::kGetSkill,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleGetSkill(req, std::move(p));
+        });
+    handler_->SetRequestHandler(methods::kReadDirectory,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleReadDirectory(req, std::move(p));
+        });
+}
+
 void McpServer::WireSubscriptionHandlers() {
     handler_->SetRequestHandler(methods::kSubscribe,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -1010,6 +1116,14 @@ void McpServer::DeriveCapabilities() {
             capabilities_.extensions = std::map<std::string, JsonValue>{};
         (*capabilities_.extensions)[std::string(kTasksExtensionId)] =
             SerializeTasksExtensionSettings(TasksExtensionSettings{});
+    }
+    if (!skills_.empty() && capabilities_.resources) {
+        if (!capabilities_.extensions)
+            capabilities_.extensions = std::map<std::string, JsonValue>{};
+        SkillsExtensionSettings skills_settings;
+        skills_settings.directory_read = skills_directory_read_;
+        (*capabilities_.extensions)[std::string(kSkillsExtensionId)] =
+            SerializeSkillsExtensionSettings(skills_settings);
     }
 }
 
@@ -1384,6 +1498,127 @@ void McpServer::HandleGetPrompt(
     promise.set_exception(std::make_exception_ptr(
         McpError(McpErrorCode::InvalidParams,
                  "prompt not found: " + params.name)));
+}
+
+void McpServer::HandleListSkills(
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills/list is only available in 2026 and later protocol versions")));
+        return;
+    }
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (!capabilities_.resources) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "skills/list requires the resources capability")));
+        return;
+    }
+    SkillsListResult result;
+    size_t cursor_val = 0;
+    if (req.params) {
+        cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
+    }
+    size_t next_index = 0;
+    if (PaginateEntries(skills_, cursor_val, kDefaultPageSize, next_index,
+            [&result](const Skill& skill) {
+                result.skills.push_back(skill);
+            })) {
+        result.next_cursor = MakeNextCursor(next_index);
+    }
+    auto hint = GetCacheHint(options_.cache_hints, "skills/list");
+    result.ttl_ms = hint.ttl_ms;
+    result.cache_scope = hint.cache_scope;
+    promise.set_value(SerializeSkillsListResult(result));
+}
+
+void McpServer::HandleGetSkill(
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills/get is only available in 2026 and later protocol versions")));
+        return;
+    }
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (!capabilities_.resources) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "skills/get requires the resources capability")));
+        return;
+    }
+    SkillsGetRequestParams params;
+    if (req.params) {
+        params = DeserializeSkillsGetRequestParams(*req.params);
+    }
+    for (const auto& skill : skills_) {
+        if (skill.uri == params.uri) {
+            SkillsGetResult result;
+            result.skill = skill;
+            auto hint = GetCacheHint(options_.cache_hints, "skills/get");
+            result.ttl_ms = hint.ttl_ms;
+            result.cache_scope = hint.cache_scope;
+            promise.set_value(SerializeSkillsGetResult(result));
+            return;
+        }
+    }
+    promise.set_exception(std::make_exception_ptr(
+        McpError(McpErrorCode::InvalidParams,
+                 "skill not found: " + params.uri)));
+}
+
+void McpServer::HandleReadDirectory(
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "resources/directory/read is only available in 2026 and later protocol versions")));
+        return;
+    }
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (!capabilities_.resources) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "resources/directory/read requires the resources capability")));
+        return;
+    }
+    if (!skills_directory_read_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "resources/directory/read requires directoryRead to be declared")));
+        return;
+    }
+    ReadDirectoryRequestParams params;
+    if (req.params) {
+        params = DeserializeReadDirectoryRequestParams(*req.params);
+    }
+    auto view = CollectDirectoryChildren(skills_, NormalizeDirectoryUri(params.uri));
+    if (!view.is_directory) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "directory not found: " + params.uri)));
+        return;
+    }
+    ReadDirectoryResult result;
+    size_t cursor_val = ParseCursor(params.cursor);
+    size_t next_index = 0;
+    if (PaginateEntries(view.children, cursor_val, kDefaultPageSize, next_index,
+            [&result](const DirectoryChild& child) {
+                result.resources.push_back(child);
+            })) {
+        result.next_cursor = MakeNextCursor(next_index);
+    }
+    auto hint = GetCacheHint(options_.cache_hints, "resources/directory/read");
+    result.ttl_ms = hint.ttl_ms;
+    result.cache_scope = hint.cache_scope;
+    promise.set_value(SerializeReadDirectoryResult(result));
 }
 
 void McpServer::SetCompletionHandler(CompletionHandler handler) {
