@@ -661,6 +661,7 @@ std::string MetadataUrlFor(uint16_t port) {
 StreamableHttpServerOptions BearerServerOptions(uint16_t port) {
     StreamableHttpServerOptions opts;
     opts.port = port;
+    opts.enable_legacy_sse = true;
     opts.bearer_auth = StreamableHttpServerOptions::BearerAuthConfig{};
     opts.bearer_auth->resource_metadata_url = MetadataUrlFor(port);
     return opts;

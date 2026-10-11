@@ -7,6 +7,7 @@ namespace mcp {
 inline constexpr std::string_view kLatestProtocolVersion = "2026-07-28";
 inline constexpr std::string_view kLegacyProtocolVersion = "2025-11-25";
 inline constexpr std::string_view kDefaultNegotiatedProtocolVersion = "2025-03-26";
+inline constexpr std::string_view kModernProtocolVersion = "2026-07-28";
 inline constexpr std::string_view kJsonRpcVersion = "2.0";
 
 inline constexpr std::string_view kProtocolVersions[] = {

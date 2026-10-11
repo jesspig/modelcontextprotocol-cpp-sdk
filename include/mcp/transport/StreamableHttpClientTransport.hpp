@@ -23,6 +23,7 @@ struct HttpClientTransportOptions {
     std::map<std::string, std::string> additional_headers;
     std::function<std::string(std::string_view www_authenticate)> auth_challenge_handler;
     bool enable_listen_stream = true;
+    bool stateless = false;
 };
 
 class StreamableHttpClientTransport : public IClientTransport {

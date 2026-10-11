@@ -36,7 +36,7 @@ struct StreamableHttpServerOptions {
 
     bool stateless{true};
 
-    bool enable_legacy_sse{true};
+    bool enable_legacy_sse{false};
 
     int sse_keep_alive_ms{15000};
 
