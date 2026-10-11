@@ -195,7 +195,12 @@ ListResourceTemplatesResult DeserializeListResourceTemplatesResult(const JsonVal
 JsonValue SerializeReadResourceResult(const ReadResourceResult& v) {
     JsonValue obj(JsonValue::object_tag);
     SerializeListItems(obj, detail::kContents, v.contents, SerializeResourceContents);
-    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta, v.result_type);
+    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta,
+        v.input_required ? ResultType::InputRequired : v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    }
     return obj;
 }
 
@@ -229,7 +234,13 @@ JsonValue SerializeGetPromptResult(const GetPromptResult& v) {
     }
     detail::SerializeOptional(obj, detail::kDescription, v.description);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        obj[detail::kResultType] = JsonValue(detail::kInputRequiredValue);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    } else {
+        obj[detail::kResultType] = SerializeResultType(v.result_type);
+    }
     return obj;
 }
 

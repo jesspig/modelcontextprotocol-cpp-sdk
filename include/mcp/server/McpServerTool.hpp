@@ -79,16 +79,8 @@ public:
         try {
             auto result = callable_(ctx);
             result_promise.set_value(std::move(result));
-        } catch (const McpError& e) {
-            CallToolResult err_result;
-            err_result.is_error = true;
-            err_result.content.push_back(TextContent{"text", e.what()});
-            result_promise.set_value(std::move(err_result));
         } catch (...) {
-            CallToolResult err_result;
-            err_result.is_error = true;
-            err_result.content.push_back(TextContent{"text", "internal error"});
-            result_promise.set_value(std::move(err_result));
+            result_promise.set_exception(std::current_exception());
         }
     }
 

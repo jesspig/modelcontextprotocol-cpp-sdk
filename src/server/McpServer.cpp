@@ -193,7 +193,11 @@ namespace {
         GetTaskResult r;
         r.task_id = task.task_id;
         r.status = TaskStatusToWireString(task.status);
-        r.result = task.result;
+        if (task.status == TaskStatus::Failed) {
+            r.error = task.result;
+        } else {
+            r.result = task.result;
+        }
         if (include_optional_fields) {
             r.error_message = task.error_message;
             r.input_required = task.input_required;
@@ -493,6 +497,16 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     params[detail::kLevel] = SerializeLoggingLevel(level);
     params[detail::kData] = JsonValue(std::string(data));
     params["logger"] = JsonValue(std::string(kDefaultLoggerName));
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        JsonRpcNotification notif;
+        notif.method = std::string(notifications::kMessage);
+        notif.params = params;
+        RequestMeta meta;
+        meta.protocol_version = handler_->NegotiatedProtocolVersion();
+        notif.meta = SerializeRequestMeta(meta);
+        if (transport_->BufferRequestStreamNotification(JsonRpcMessage{std::move(notif)}))
+            return;
+    }
     handler_->SendNotification(notifications::kMessage, std::move(params));
 }
 
@@ -515,8 +529,18 @@ void McpServer::SendProgress(const ProgressToken& token, double progress,
     params.progress = progress;
     params.total = total;
     params.message = std::move(message);
-    handler_->SendNotification(notifications::kProgress,
-        SerializeProgressNotificationParams(params));
+    JsonValue wire = SerializeProgressNotificationParams(params);
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        JsonRpcNotification notif;
+        notif.method = std::string(notifications::kProgress);
+        notif.params = wire;
+        RequestMeta meta;
+        meta.protocol_version = handler_->NegotiatedProtocolVersion();
+        notif.meta = SerializeRequestMeta(meta);
+        if (transport_->BufferRequestStreamNotification(JsonRpcMessage{std::move(notif)}))
+            return;
+    }
+    handler_->SendNotification(notifications::kProgress, std::move(wire));
 }
 
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
@@ -1195,6 +1219,56 @@ void McpServer::HandleCallTool(
     if (req.params) {
         params = DeserializeCallToolRequestParams(*req.params);
     }
+    if (req.meta) {
+        RequestMeta incoming;
+        try {
+            incoming = DeserializeRequestMeta(*req.meta);
+        } catch (const McpError&) {
+            throw;
+        } catch (const std::exception& e) {
+            throw McpError(McpErrorCode::InvalidParams,
+                std::string("invalid _meta: ") + e.what());
+        }
+        if (!params.meta) {
+            params.meta = std::move(incoming);
+        } else {
+            if (!params.meta->progress_token && incoming.progress_token) {
+                params.meta->progress_token = incoming.progress_token;
+            }
+            if (req.meta->Find(detail::kMetaProtocolVersionKey)) {
+                params.meta->protocol_version = incoming.protocol_version;
+            }
+            if (!params.meta->client_info && incoming.client_info) {
+                params.meta->client_info = incoming.client_info;
+            }
+            if (!params.meta->client_capabilities && incoming.client_capabilities) {
+                params.meta->client_capabilities = incoming.client_capabilities;
+            }
+            if (!params.meta->log_level && incoming.log_level) {
+                params.meta->log_level = incoming.log_level;
+            }
+            if (incoming.extensions) {
+                if (!params.meta->extensions) {
+                    params.meta->extensions = incoming.extensions;
+                } else {
+                    for (const auto& [key, value] : incoming.extensions->GetObject()) {
+                        if (!params.meta->extensions->Contains(key)) {
+                            (*params.meta->extensions)[key] = value;
+                        }
+                    }
+                }
+            }
+            if (!params.meta->traceparent && incoming.traceparent) {
+                params.meta->traceparent = incoming.traceparent;
+            }
+            if (!params.meta->tracestate && incoming.tracestate) {
+                params.meta->tracestate = incoming.tracestate;
+            }
+            if (!params.meta->baggage && incoming.baggage) {
+                params.meta->baggage = incoming.baggage;
+            }
+        }
+    }
 
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     auto it = tools_.find(params.name);
@@ -1242,7 +1316,10 @@ void McpServer::HandleCallTool(
         created.task_id = task_id;
         created.status = "working";
         created.created_at = MakeIso8601Now();
-        promise.set_value(SerializeCreateTaskResult(created));
+        created.last_updated_at = created.created_at;
+        JsonValue created_wire = SerializeCreateTaskResult(created);
+        if (modern) created_wire.GetObject().erase(std::string(detail::kTask));
+        promise.set_value(std::move(created_wire));
 
         auto fut = std::async(std::launch::async,
             [this, tool, ctx = std::move(ctx), store, task_id, cancel_flag, modern]() mutable {
@@ -1258,6 +1335,15 @@ void McpServer::HandleCallTool(
                     }
                     retire_task();
                 };
+                auto fail_with = [&](int64_t code, std::string message,
+                        std::optional<JsonValue> data) {
+                    JsonValue error_payload(JsonValue::object_tag);
+                    error_payload[detail::kCode] = JsonValue(code);
+                    error_payload[detail::kMessage] = JsonValue(std::move(message));
+                    if (data) error_payload[detail::kData] = std::move(*data);
+                    store->UpdateTask(task_id, error_payload);
+                    finish(TaskStatus::Failed, true);
+                };
                 auto result_promise = std::make_shared<std::promise<CallToolResult>>();
                 auto result_future = result_promise->get_future();
                 tool->InvokeAsync(ctx, std::move(*result_promise));
@@ -1267,27 +1353,28 @@ void McpServer::HandleCallTool(
                         finish(TaskStatus::Cancelled, false);
                         return;
                     }
-                    if (result.is_error) {
-                        std::string error_text = "tool execution failed";
-                        for (const auto& c : result.content) {
-                            if (auto* t = std::get_if<TextContent>(&c)) {
-                                error_text = t->text;
-                                break;
-                            }
-                        }
-                        JsonValue error_payload(JsonValue::object_tag);
-                        error_payload["error"] = JsonValue(error_text);
-                        store->UpdateTask(task_id, error_payload);
-                        finish(TaskStatus::Failed, true);
-                        return;
-                    }
                     store->UpdateTask(task_id, SerializeCallToolResult(result));
                     finish(TaskStatus::Completed, true);
+                } catch (const McpError& e) {
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(e.Code()),
+                            std::string(e.ErrorMessage()), e.Data());
+                    }
+                } catch (const std::exception& e) {
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
+                            std::string(e.what()), std::nullopt);
+                    }
                 } catch (...) {
                     if (cancel_flag->load()) {
                         finish(TaskStatus::Cancelled, false);
                     } else {
-                        finish(TaskStatus::Failed, true);
+                        fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
+                            std::string("tool execution failed"), std::nullopt);
                     }
                 }
             });
@@ -1309,8 +1396,24 @@ void McpServer::HandleCallTool(
             auto result_promise = std::make_shared<std::promise<CallToolResult>>();
             auto result_future = result_promise->get_future();
             tool->InvokeAsync(ctx, std::move(*result_promise));
+            CallToolResult sync_result;
             try {
-                auto result = result_future.get();
+                sync_result = result_future.get();
+            } catch (const McpError& e) {
+                CallToolResult err_result;
+                err_result.is_error = true;
+                err_result.content.push_back(TextContent{"text", e.what()});
+                captured_promise->set_value(SerializeCallToolResult(err_result));
+                return;
+            } catch (...) {
+                CallToolResult err_result;
+                err_result.is_error = true;
+                err_result.content.push_back(TextContent{"text", "internal error"});
+                captured_promise->set_value(SerializeCallToolResult(err_result));
+                return;
+            }
+            try {
+                auto result = std::move(sync_result);
                 if (result.input_required) {
                     if (request_state_key) {
                         JsonValue payload(JsonValue::object_tag);
@@ -1427,6 +1530,22 @@ void McpServer::HandleReadResource(
         if (entry.uri_pattern == params.uri) {
             try {
                 auto result = entry.handler(params.uri);
+                if (result.input_required) {
+                    if (options_.request_state_key) {
+                        JsonValue payload(JsonValue::object_tag);
+                        if (result.input_required->request_state) {
+                            auto parsed =
+                                JsonValue::Parse(*result.input_required->request_state);
+                            if (parsed.IsObject()) payload = parsed;
+                        }
+                        payload["iat"] = JsonValue(
+                            static_cast<int64_t>(std::time(nullptr)));
+                        result.input_required->request_state =
+                            detail::MintRequestState(*options_.request_state_key, payload);
+                    }
+                    promise.set_value(SerializeReadResourceResult(result));
+                    return;
+                }
                 auto hint = GetCacheHint(options_.cache_hints, "resources/read");
                 if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
                 promise.set_value(SerializeReadResourceResult(result));
@@ -1447,6 +1566,22 @@ void McpServer::HandleReadResource(
         if (!variables) continue;
         try {
             auto result = entry.template_handler(params.uri, *variables);
+            if (result.input_required) {
+                if (options_.request_state_key) {
+                    JsonValue payload(JsonValue::object_tag);
+                    if (result.input_required->request_state) {
+                        auto parsed =
+                            JsonValue::Parse(*result.input_required->request_state);
+                        if (parsed.IsObject()) payload = parsed;
+                    }
+                    payload["iat"] = JsonValue(
+                        static_cast<int64_t>(std::time(nullptr)));
+                    result.input_required->request_state =
+                        detail::MintRequestState(*options_.request_state_key, payload);
+                }
+                promise.set_value(SerializeReadResourceResult(result));
+                return;
+            }
             auto hint = GetCacheHint(options_.cache_hints, "resources/read");
             if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
             promise.set_value(SerializeReadResourceResult(result));
@@ -1506,6 +1641,22 @@ void McpServer::HandleGetPrompt(
         if (entry.name == params.name) {
             try {
                 auto result = entry.handler(params.name, params.arguments);
+                if (result.input_required) {
+                    if (options_.request_state_key) {
+                        JsonValue payload(JsonValue::object_tag);
+                        if (result.input_required->request_state) {
+                            auto parsed =
+                                JsonValue::Parse(*result.input_required->request_state);
+                            if (parsed.IsObject()) payload = parsed;
+                        }
+                        payload["iat"] = JsonValue(
+                            static_cast<int64_t>(std::time(nullptr)));
+                        result.input_required->request_state =
+                            detail::MintRequestState(*options_.request_state_key, payload);
+                    }
+                    promise.set_value(SerializeGetPromptResult(result));
+                    return;
+                }
                 promise.set_value(SerializeGetPromptResult(result));
                 return;
             } catch (...) {

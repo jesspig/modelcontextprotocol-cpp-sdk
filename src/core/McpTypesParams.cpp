@@ -24,6 +24,8 @@ JsonValue SerializeResourceRequestParams(const ResourceRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
     if (v.meta) obj[detail::kMeta] = SerializeRequestMeta(*v.meta);
+    detail::SerializeOptional(obj, detail::kInputResponses, v.input_responses);
+    detail::SerializeOptional(obj, detail::kRequestState, v.request_state);
     return obj;
 }
 
@@ -32,6 +34,8 @@ ResourceRequestParams DeserializeResourceRequestParams(const JsonValue& j) {
     v.uri = j[detail::kUri].GetString();
     auto* m = j.Find(detail::kMeta);
     if (m) v.meta = DeserializeRequestMeta(*m);
+    detail::DeserializeOptional(j, detail::kInputResponses, v.input_responses);
+    detail::DeserializeOptional(j, detail::kRequestState, v.request_state);
     return v;
 }
 
@@ -62,6 +66,8 @@ GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kArguments, v.arguments);
     auto* m = j.Find(detail::kMeta);
     if (m) v.meta = DeserializeRequestMeta(*m);
+    detail::DeserializeOptional(j, detail::kInputResponses, v.input_responses);
+    detail::DeserializeOptional(j, detail::kRequestState, v.request_state);
     return v;
 }
 
