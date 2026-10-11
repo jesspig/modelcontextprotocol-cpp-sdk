@@ -622,6 +622,156 @@ TEST(StreamableHttpTransportTest, Post404DeliversSessionExpiredError) {
     mock.Stop();
 }
 
+#ifdef _WIN32
+TEST(StreamableHttpTransportTest, PostSseStreamEofDeliversConnectionClosedError) {
+    auto port = PickFreePort(kTestBasePort + 1970);
+    HttpServer mock(port);
+    mock.SetHandler("POST", "/mcp", [](const HttpRequest&, HttpResponse& resp) {
+        resp.is_sse = true;
+        resp.sse_close_after_write = true;
+        resp.body = "id: evt-9\nretry: 500\n\n";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+    auto& channel = transport->GetMessageChannel();
+
+    std::atomic<bool> got_error{false};
+    JsonRpcMessage received;
+    std::thread receiver([&] {
+        channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+            if (!ec) {
+                received = std::move(msg);
+                got_error.store(true);
+            }
+        });
+    });
+
+    JsonRpcRequest call;
+    call.method = "tools/call";
+    call.id = 7;
+    transport->SendMessageAsync(std::move(call));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!got_error.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (!got_error.load()) {
+        transport->Close();
+        mock.Stop();
+        receiver.join();
+        ASSERT_TRUE(got_error.load());
+        return;
+    }
+    receiver.join();
+
+    auto* err = AsError(received);
+    ASSERT_TRUE(err != nullptr);
+    EXPECT_EQ(err->error.code, McpErrorCode::ConnectionClosed);
+    ASSERT_TRUE(err->id.has_value());
+    EXPECT_EQ(std::get<int64_t>(*err->id), 7);
+
+    transport->Close();
+    mock.Stop();
+}
+#endif
+
+TEST(StreamableHttpTransportTest, PostSseInterruptedResumesViaGetWithLastEventId) {
+    auto port = PickFreePort(kTestBasePort + 1980);
+    HttpServer mock(port);
+    std::atomic<int> post_calls{0};
+    std::atomic<int> get_calls{0};
+    std::mutex state_mutex;
+    std::string resume_last_event_id;
+    std::chrono::steady_clock::time_point post_eof{};
+    std::chrono::steady_clock::time_point resume_arrival{};
+    std::promise<void> resumed;
+    mock.SetHandler("POST", "/mcp", [&](const HttpRequest&, HttpResponse& resp) {
+        post_calls.fetch_add(1);
+        resp.is_sse = true;
+        resp.sse_close_after_write = true;
+        resp.body = "retry: 500\nid: evt-resume\n\n";
+        std::lock_guard<std::mutex> lk(state_mutex);
+        post_eof = std::chrono::steady_clock::now();
+    });
+    mock.SetHandler("GET", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
+        int index = get_calls.fetch_add(1);
+        auto it = req.headers.find("last-event-id");
+        std::string observed = it == req.headers.end() ? std::string{} : it->second;
+        if (index == 0) {
+            std::lock_guard<std::mutex> lk(state_mutex);
+            resume_last_event_id = observed;
+            resume_arrival = std::chrono::steady_clock::now();
+            resumed.set_value();
+        }
+        resp.is_sse = true;
+        resp.sse_close_after_write = true;
+        resp.body =
+            "id: evt-done\n"
+            "data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"resumed\":true}}\n\n";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+    auto& channel = transport->GetMessageChannel();
+
+    std::atomic<bool> got{false};
+    JsonRpcMessage received;
+    std::thread receiver([&] {
+        channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+            if (!ec) {
+                received = std::move(msg);
+                got.store(true);
+            }
+        });
+    });
+
+    JsonRpcRequest call;
+    call.method = "tools/call";
+    call.id = 9;
+    transport->SendMessageAsync(std::move(call));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!got.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    bool resume_seen = resumed.get_future().wait_for(std::chrono::seconds(8)) ==
+                       std::future_status::ready;
+    transport->Close();
+    mock.Stop();
+    receiver.join();
+
+    ASSERT_TRUE(resume_seen);
+    ASSERT_TRUE(got.load());
+    EXPECT_EQ(post_calls.load(), 1);
+    EXPECT_EQ(get_calls.load(), 1);
+    std::string observed_id;
+    std::chrono::steady_clock::time_point observed_eof{};
+    std::chrono::steady_clock::time_point observed_arrival{};
+    {
+        std::lock_guard<std::mutex> lk(state_mutex);
+        observed_id = resume_last_event_id;
+        observed_eof = post_eof;
+        observed_arrival = resume_arrival;
+    }
+    EXPECT_EQ(observed_id, "evt-resume");
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          observed_arrival - observed_eof)
+                          .count();
+    EXPECT_GE(elapsed_ms, 400);
+    auto* response = AsResponse(received);
+    ASSERT_TRUE(response != nullptr);
+    EXPECT_EQ(std::get<int64_t>(response->id), 9);
+}
+
 TEST(StreamableHttpTransportTest, ImmediatePostWhileRequestInFlight) {
     auto port = PickFreePort(kTestBasePort + 1500);
     HttpServer mock(port);

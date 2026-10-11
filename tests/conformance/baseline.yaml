@@ -66,19 +66,6 @@ server:
     - server-sse-multiple-streams
 
 client:
-    # --- sse-retry（SEP-1699，legacy client scored）---
-    # 2026-10-11 referee alpha.12 实测仍失败，保留。失败特征已更新：
-    # POST 流被 server 关断后 client 从不开 resume GET（单次初始 GET
-    # 后无二次连接），pending 的 tools/call 永不决议，client 悬挂至
-    # referee 30s kill（CLIENT TIMED OUT）。旧归因“重连过早 -70ms”
-    # 实为初始 GET 被误计为重连（本轮 -54ms）；Last-Event-ID 从未发出
-    # （无二次 GET 可带）。T9 重试钳制与 T9b Last-Event-ID 代码在此
-    # 路径无从触发。生产缺口：POST SSE clean-EOF 不向 pending 调用
-    # 报错（WinHTTP 路径静默丢弃；此为 Windows 本地悬挂、CI Linux
-    # 表现为快失败的根因候选）+ 缺 POST 中断后的 GET resume。
-    # 待生产补齐 resume 后以变绿证据删除本条目。
-    - sse-retry
-
     # --- SEP-1034 elicitation 默认值 ---
     # SDK 客户端缺 applyDefaults：elicitation handler 返回空 content 时未按
     # 请求 schema 的默认值填充即回传，server 侧校验失败，预期 FAIL。
@@ -96,6 +83,11 @@ client:
     - http-custom-headers
 
     # --- 已删 client 条目（modern leg 变绿证据，禁恢复）---
+    # sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
+    # 本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
+    # event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报
+    # stale，故删。生产侧为 G8b：POST SSE 过早 EOF 后按钳制延迟重建
+    # GET 并把原 ID 结果递回 pending，失败仍走 G8 fail-fast。
     # sep-2322-client-request-state（5/0）、http-standard-headers（9/0）、
     # http-invalid-tool-headers（12/0）：2026-10-11 --requirements
     # 2026-07-28 实测全过。legacy leg 不运行这些场景（core 18 场景无

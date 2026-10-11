@@ -18,7 +18,8 @@ cd "${REPO_ROOT}"
 BIN_DIR="build/${BUILD_PRESET}/examples/conformance"
 resolve_binary() {
     local name="$1"
-    local target_dir="${BIN_DIR}/${name}"
+    local subdir="${name#conformance-}"
+    local target_dir="${BIN_DIR}/${subdir}"
     if [ -f "${target_dir}/${name}.exe" ]; then
         echo "${target_dir}/${name}.exe"
         return 0
