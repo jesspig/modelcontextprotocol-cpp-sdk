@@ -21,10 +21,19 @@
 
 namespace mcp {
 
-namespace {
+namespace sse_client_impl {
 
 constexpr std::chrono::milliseconds kBackoffBase(1000);
 constexpr std::chrono::milliseconds kBackoffCap(30000);
+constexpr std::chrono::milliseconds kReconnectWaitFloor(450);
+constexpr std::chrono::milliseconds kReconnectWaitCeiling(1000);
+
+std::chrono::milliseconds ReconnectDelayForAttempt(int attempt, std::optional<uint64_t> retry_ms);
+
+} // namespace sse_client_impl
+
+namespace {
+
 constexpr std::chrono::milliseconds kSseClientIdleTimeout(5 * 60 * 1000);
 constexpr int kMaxReconnectAttempts = 2;
 
@@ -182,6 +191,8 @@ private:
                 if (!running_) break;
             }
 
+            FlushSseBuffer();
+
             if (!running_) break;
             if (reconnect_attempts >= kMaxReconnectAttempts) break;
             ++reconnect_attempts;
@@ -197,11 +208,7 @@ private:
     }
 
     bool WaitForReconnect(int attempt) {
-        auto delay = kBackoffBase;
-        for (int i = 1; i < attempt; ++i)
-            delay = (std::min)(delay * 3 / 2, kBackoffCap);
-        if (retry_ms_.has_value())
-            delay = std::chrono::milliseconds(*retry_ms_);
+        auto delay = sse_client_impl::ReconnectDelayForAttempt(attempt, retry_ms_);
         auto deadline = std::chrono::steady_clock::now() + delay;
         while (std::chrono::steady_clock::now() < deadline) {
             if (!running_.load()) return false;
@@ -242,6 +249,28 @@ private:
                 NotifyError(std::string("SSE parse error: ") + e.what());
             }
         }
+    }
+
+    void FlushSseBuffer() {
+        if (sse_buffer_.empty())
+            return;
+        std::string pending = std::move(sse_buffer_);
+        sse_buffer_.clear();
+        auto last_nl = pending.find_last_of('\n');
+        if (last_nl == std::string::npos)
+            return;
+        std::string_view complete(pending.data(), last_nl);
+        bool resumable = false;
+        detail::ForEachSseLine(complete, [&resumable](std::string_view line) {
+            detail::SseFieldLine field;
+            if (!detail::ParseSseFieldLine(line, field) || !field.has_payload)
+                return;
+            if (field.name == "id" || field.name == "retry")
+                resumable = true;
+        });
+        if (!resumable)
+            return;
+        DispatchSseEvent(std::string(complete));
     }
 
     void SendLoop() {
@@ -300,6 +329,30 @@ private:
 };
 
 } // namespace
+
+namespace sse_client_impl {
+
+std::chrono::milliseconds ReconnectDelayForAttempt(int attempt, std::optional<uint64_t> retry_ms) {
+    std::chrono::milliseconds wait = kBackoffBase;
+    for (int i = 1; i < attempt; ++i)
+        wait = (std::min)(wait * 3 / 2, kBackoffCap);
+    if (retry_ms.has_value()) {
+        uint64_t raw = *retry_ms;
+        if (raw <= static_cast<uint64_t>(kReconnectWaitFloor.count()))
+            wait = kReconnectWaitFloor;
+        else if (raw >= static_cast<uint64_t>(kReconnectWaitCeiling.count()))
+            wait = kReconnectWaitCeiling;
+        else
+            wait = std::chrono::milliseconds(raw);
+    }
+    if (wait < kReconnectWaitFloor)
+        wait = kReconnectWaitFloor;
+    if (wait > kReconnectWaitCeiling)
+        wait = kReconnectWaitCeiling;
+    return wait;
+}
+
+} // namespace sse_client_impl
 
 SseClientTransport::SseClientTransport(std::string_view server_url, std::string_view name)
     : server_url_(server_url)
