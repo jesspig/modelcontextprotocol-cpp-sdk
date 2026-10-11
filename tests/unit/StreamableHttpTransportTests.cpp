@@ -161,7 +161,8 @@ TEST(StreamableHttpTransportTest, ListenStateForStatusCode) {
     using mcp::streamable_http_client_impl::ListenStateForStatusCode;
     EXPECT_TRUE(ListenStateForStatusCode(405) == ListenState::Unsupported);
     EXPECT_TRUE(ListenStateForStatusCode(200) == ListenState::Streaming);
-    EXPECT_TRUE(ListenStateForStatusCode(500) == ListenState::Connecting);
+    EXPECT_TRUE(ListenStateForStatusCode(500) == ListenState::GivenUp);
+    EXPECT_TRUE(ListenStateForStatusCode(503) == ListenState::GivenUp);
     EXPECT_TRUE(ListenStateForStatusCode(404) == ListenState::Connecting);
 }
 
@@ -758,6 +759,105 @@ TEST(StreamableHttpTransportTest, BearerAuthInsufficientScope) {
     EXPECT_EQ(HeaderOf(resp, "WWW-Authenticate"),
         "Bearer error=\"insufficient_scope\", scope=\"mcp:read mcp:write\"");
     server.Close();
+}
+
+TEST(StreamableHttpTransportTest, BearerAuthAudienceMismatch) {
+    auto port = PickFreePort(kTestBasePort + 1780);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->expected_resource =
+        "http://127.0.0.1:" + std::to_string(port);
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        result.resource = "https://other.example/resource";
+        return result;
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer test-token");
+
+    EXPECT_EQ(resp.status_code, 401);
+    EXPECT_NE(HeaderOf(resp, "WWW-Authenticate").find("invalid_token"),
+              std::string::npos);
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, BearerAuthAudienceNormalizedMatch) {
+    auto port = PickFreePort(kTestBasePort + 1820);
+    auto opts = BearerServerOptions(port);
+    std::string expected = "http://127.0.0.1:" + std::to_string(port);
+    opts.bearer_auth->expected_resource = expected;
+    opts.bearer_auth->verify = [expected](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        result.resource = expected + "/#section";
+        return result;
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer test-token");
+
+    EXPECT_EQ(resp.status_code, 202);
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, BearerAuthForbiddenWithoutInsufficientScopeNoRetry) {
+    auto port = PickFreePort(kTestBasePort + 1840);
+    mcp::HttpServer mock(port);
+    std::atomic<int> calls{0};
+    mock.SetHandler("POST", "/mcp",
+        [&calls](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            calls.fetch_add(1);
+            resp.status_code = 403;
+            resp.status_text = "Forbidden";
+            resp.body = R"({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"forbidden"}})";
+            resp.headers["content-type"] = "application/json";
+        });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions client_opts;
+    client_opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    std::atomic<int> challenge_calls{0};
+    client_opts.auth_challenge_handler = [&challenge_calls](std::string_view) {
+        challenge_calls.fetch_add(1);
+        return "Bearer test-token";
+    };
+    StreamableHttpClientTransport client(client_opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+    auto& channel = transport->GetMessageChannel();
+
+    JsonRpcRequest call;
+    call.method = "tools/call";
+    call.id = 1;
+    transport->SendMessageAsync(std::move(call));
+
+    std::atomic<bool> got_error{false};
+    JsonRpcMessage error_msg;
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (!ec) {
+            error_msg = std::move(msg);
+            got_error.store(true);
+        }
+    });
+    WaitUntil(got_error);
+    ASSERT_TRUE(got_error.load());
+
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(challenge_calls.load(), 0);
+    auto* err = AsError(error_msg);
+    ASSERT_TRUE(err != nullptr);
+    EXPECT_EQ(err->error.message, "forbidden");
+
+    transport->Close();
+    mock.Stop();
 }
 
 TEST(StreamableHttpTransportTest, BearerAuthValidTokenReachesHandler) {

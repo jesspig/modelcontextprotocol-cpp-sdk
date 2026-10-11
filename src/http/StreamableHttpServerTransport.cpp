@@ -107,6 +107,13 @@ std::string MetadataPathFromUrl(const std::string& url) {
     return path.empty() ? std::string(kWellKnownMetadataPath) : path;
 }
 
+std::string NormalizeResourceUrl(std::string_view url) {
+    std::string out(url);
+    if (auto hash = out.find('#'); hash != std::string::npos) out.resize(hash);
+    if (out.size() > 1 && out.back() == '/') out.pop_back();
+    return out;
+}
+
 std::string ResourceUrlFromMetadataUrl(const std::string& metadata_url) {
     auto base = metadata_url;
     auto query = base.find('?');
@@ -300,6 +307,16 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
         RespondUnauthorized(resp, config.resource_metadata_url, true,
                             config.scopes_supported);
         return false;
+    }
+    if (config.validate_token_resource && !config.expected_resource.empty()) {
+        bool audience_ok = result.resource && !result.resource->empty() &&
+            NormalizeResourceUrl(*result.resource) ==
+                NormalizeResourceUrl(config.expected_resource);
+        if (!audience_ok) {
+            RespondUnauthorized(resp, config.resource_metadata_url, true,
+                                config.scopes_supported);
+            return false;
+        }
     }
     for (const auto& required : config.required_scopes) {
         if (std::find(result.scopes.begin(), result.scopes.end(), required)

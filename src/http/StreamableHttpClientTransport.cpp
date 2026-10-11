@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <map>
@@ -128,7 +129,16 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
 ListenState ListenStateForStatusCode(int status_code) {
     if (status_code == 200) return ListenState::Streaming;
     if (status_code == 405) return ListenState::Unsupported;
+    if (status_code >= 500 && status_code <= 599) return ListenState::GivenUp;
     return ListenState::Connecting;
+}
+
+inline bool IsInsufficientScopeChallenge(std::string_view www_authenticate) {
+    std::string lower;
+    lower.reserve(www_authenticate.size());
+    for (char c : www_authenticate)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.find("insufficient_scope") != std::string::npos;
 }
 
 inline constexpr std::chrono::milliseconds kListenRetryInitialDelay{1000};
@@ -330,6 +340,10 @@ private:
             auto result = DoListenGet();
             if (result == ListenState::Unsupported) {
                 listen_state_ = ListenState::Unsupported;
+                return;
+            }
+            if (result == ListenState::GivenUp) {
+                listen_state_ = ListenState::GivenUp;
                 return;
             }
             if (reconnects >= streamable_http_client_impl::kMaxListenReconnectAttempts) {
@@ -701,13 +715,18 @@ private:
                             L"WWW-Authenticate", www_auth, &waSize, nullptr)) {
                         www_auth_str = wide_to_utf8(www_auth);
                     }
-                    auto new_auth = options_.auth_challenge_handler(www_auth_str);
-                    if (!new_auth.empty()) {
-                        auth_value = std::move(new_auth);
-                        WinHttpCloseHandle(hRequest);
-                        WinHttpCloseHandle(hConnect);
-                        WinHttpCloseHandle(hSession);
-                        continue;
+                    bool eligible = (status_code == 401) ||
+                        streamable_http_client_impl::IsInsufficientScopeChallenge(
+                            www_auth_str);
+                    if (eligible) {
+                        auto new_auth = options_.auth_challenge_handler(www_auth_str);
+                        if (!new_auth.empty()) {
+                            auth_value = std::move(new_auth);
+                            WinHttpCloseHandle(hRequest);
+                            WinHttpCloseHandle(hConnect);
+                            WinHttpCloseHandle(hSession);
+                            continue;
+                        }
                     }
                 }
                 std::string err_body;
@@ -1092,6 +1111,10 @@ private:
                 listen_state_ = ListenState::Unsupported;
                 return;
             }
+            if (result == ListenState::GivenUp) {
+                listen_state_ = ListenState::GivenUp;
+                return;
+            }
             if (reconnects >= streamable_http_client_impl::kMaxListenReconnectAttempts) {
                 listen_state_ = ListenState::GivenUp;
                 return;
@@ -1311,10 +1334,15 @@ private:
                 if ((resp.status_code == 401 || resp.status_code == 403) &&
                     attempt == 0 && options_.auth_challenge_handler) {
                     auto www_auth = httpclient_posix_impl::GetHeader(resp, "WWW-Authenticate");
-                    auto new_auth = options_.auth_challenge_handler(www_auth);
-                    if (!new_auth.empty()) {
-                        auth_value = std::move(new_auth);
-                        continue;
+                    bool eligible = (resp.status_code == 401) ||
+                        streamable_http_client_impl::IsInsufficientScopeChallenge(
+                            www_auth);
+                    if (eligible) {
+                        auto new_auth = options_.auth_challenge_handler(www_auth);
+                        if (!new_auth.empty()) {
+                            auth_value = std::move(new_auth);
+                            continue;
+                        }
                     }
                 }
                 if (resp.status_code == 400 && attempt == 0 &&

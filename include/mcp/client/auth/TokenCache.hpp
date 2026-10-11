@@ -14,6 +14,7 @@ struct TokenContainer {
     std::vector<std::string> scopes;
     int64_t expires_at{0};
     std::string token_type{"Bearer"};
+    std::optional<std::string> resource;
 
     bool IsExpired() const;
     bool WillExpireSoon(int64_t margin_ms = 60000) const;
@@ -64,13 +65,15 @@ struct OAuthTokenResponse {
 struct ClientRegistrationInfo {
     std::string client_id;
     std::optional<std::string> client_secret;
+    std::optional<std::string> token_endpoint_auth_method;
     std::vector<std::string> grant_types;
     std::vector<std::string> redirect_uris;
 
     static std::optional<ClientRegistrationInfo> Register(
         std::string_view registration_endpoint,
         std::string_view redirect_uri,
-        std::string_view client_name);
+        std::string_view client_name,
+        std::string_view application_type = "native");
 };
 
 } // namespace mcp
