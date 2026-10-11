@@ -77,6 +77,16 @@ public:
         std::optional<JsonValue> arguments = std::nullopt,
         const RequestOptions& options = {});
 
+    SkillsListResult ListSkills(
+        std::optional<std::string> cursor = std::nullopt);
+    SkillsGetResult GetSkill(
+        std::string_view uri,
+        const CacheableRequestOptions& options = {});
+    ReadDirectoryResult ReadDirectory(
+        std::string_view uri,
+        std::optional<std::string> cursor = std::nullopt,
+        const CacheableRequestOptions& options = {});
+
     CompleteResult Complete(const CompleteRequestParams& params);
 
     GetTaskResult CallToolAsTask(

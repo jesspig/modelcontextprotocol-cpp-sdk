@@ -2312,3 +2312,200 @@ TEST(McpClientTest, UndeclaredExtensionReceivesTaskThrows) {
     client->Close();
     server_handler->Close();
 }
+
+TEST(McpClientTest, ListSkillsRoundTrip) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kListSkills,
+        [&calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            std::string cursor;
+            if (req.params && req.params->IsObject()) {
+                if (auto* c = req.params->Find("cursor"); c && c->IsString())
+                    cursor = c->GetString();
+            }
+            std::string uri = cursor == "c1"
+                ? "skill://other/SKILL.md" : "skill://code-review/SKILL.md";
+            std::string name = cursor == "c1" ? "other" : "code-review";
+            JsonValue skill(JsonValue::object_tag);
+            skill["uri"] = JsonValue(uri);
+            JsonValue fm(JsonValue::object_tag);
+            fm["name"] = JsonValue(name);
+            fm["description"] = JsonValue("Review code.");
+            skill["frontmatter"] = std::move(fm);
+            skill["resources"] = JsonValue("dynamic");
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            arr.PushBack(std::move(skill));
+            result["skills"] = JsonValue(std::move(arr));
+            result["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheScope"] = JsonValue("private");
+            result["resultType"] = JsonValue("complete");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ListSkills();
+    ASSERT_EQ(r1.skills.size(), 1u);
+    EXPECT_EQ(r1.skills[0].uri, "skill://code-review/SKILL.md");
+    ASSERT_TRUE(r1.ttl_ms.has_value());
+    EXPECT_EQ(*r1.ttl_ms, int64_t(60000));
+    ASSERT_TRUE(r1.cache_scope.has_value());
+    EXPECT_EQ(*r1.cache_scope, "private");
+    EXPECT_EQ(calls.load(), 1);
+
+    auto r2 = client->ListSkills();
+    ASSERT_EQ(r2.skills.size(), 1u);
+    EXPECT_EQ(r2.skills[0].uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(calls.load(), 1);
+
+    auto page = client->ListSkills("c1");
+    ASSERT_EQ(page.skills.size(), 1u);
+    EXPECT_EQ(page.skills[0].uri, "skill://other/SKILL.md");
+    EXPECT_EQ(calls.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SkillDirectFetchWithoutList) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+    std::atomic<int> get_calls{0};
+    std::atomic<int> dir_calls{0};
+    std::atomic<int> res_calls{0};
+    std::atomic<int> list_calls{0};
+    server_handler->SetRequestHandler(methods::kGetSkill,
+        [&get_calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            get_calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            JsonValue skill(JsonValue::object_tag);
+            skill["uri"] = JsonValue(uri);
+            JsonValue fm(JsonValue::object_tag);
+            fm["name"] = JsonValue("code-review");
+            skill["frontmatter"] = std::move(fm);
+            skill["resources"] = JsonValue("dynamic");
+            JsonValue result(JsonValue::object_tag);
+            result["skill"] = std::move(skill);
+            result["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheScope"] = JsonValue("public");
+            result["resultType"] = JsonValue("complete");
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kReadDirectory,
+        [&dir_calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            dir_calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            EXPECT_EQ(uri, "skill://code-review/references");
+            JsonValue child(JsonValue::object_tag);
+            child["uri"] = JsonValue("skill://code-review/references/checklist.md");
+            child["name"] = JsonValue("checklist.md");
+            child["mimeType"] = JsonValue("text/markdown");
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            arr.PushBack(std::move(child));
+            result["resources"] = JsonValue(std::move(arr));
+            result["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheScope"] = JsonValue("public");
+            result["resultType"] = JsonValue("complete");
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&res_calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            res_calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue(uri);
+            c["text"] = JsonValue("skill body");
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kListSkills,
+        [&list_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            list_calls.fetch_add(1);
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto got = client->GetSkill("skill://code-review/SKILL.md");
+    EXPECT_EQ(got.skill.uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(get_calls.load(), 1);
+
+    auto dir = client->ReadDirectory("skill://code-review/references");
+    ASSERT_EQ(dir.resources.size(), 1u);
+    EXPECT_EQ(dir.resources[0].uri, "skill://code-review/references/checklist.md");
+    EXPECT_EQ(dir_calls.load(), 1);
+
+    auto res = client->ReadResource("skill://code-review/SKILL.md");
+    ASSERT_EQ(res.contents.size(), 1u);
+    EXPECT_EQ(res_calls.load(), 1);
+
+    EXPECT_EQ(list_calls.load(), 0);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, TtlExpiryRefetch) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kGetSkill,
+        [&calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            JsonValue skill(JsonValue::object_tag);
+            skill["uri"] = JsonValue(uri);
+            skill["frontmatter"] = JsonValue(JsonValue::object_tag);
+            skill["resources"] = JsonValue("dynamic");
+            JsonValue result(JsonValue::object_tag);
+            result["skill"] = std::move(skill);
+            result["ttlMs"] = JsonValue(int64_t(50));
+            result["cacheScope"] = JsonValue("private");
+            result["resultType"] = JsonValue("complete");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->GetSkill("skill://code-review/SKILL.md");
+    EXPECT_EQ(r1.skill.uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(calls.load(), 1);
+
+    auto r2 = client->GetSkill("skill://code-review/SKILL.md");
+    EXPECT_EQ(r2.skill.uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(calls.load(), 1);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    auto r3 = client->GetSkill("skill://code-review/SKILL.md");
+    EXPECT_EQ(r3.skill.uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(calls.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
