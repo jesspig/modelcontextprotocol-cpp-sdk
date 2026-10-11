@@ -228,6 +228,49 @@ TEST(McpServerTest, ReadResourceUnknownUriStillNotFound) {
     client->Close();
 }
 
+TEST(McpServerTest, ReadResourceMissCarriesUri) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterResourceTemplate("template-resource",
+        "test://template/{id}/data",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>& vars) -> ReadResourceResult {
+            (void)vars;
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "unused";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    ResourceRequestParams params;
+    params.uri = "test://missing-resource";
+    auto future = client->SendRequest(methods::kReadResource,
+        SerializeResourceRequestParams(params), {}, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+    ASSERT_TRUE(resp.Contains("data"));
+    auto* uri = resp["data"].Find("uri");
+    ASSERT_NE(uri, nullptr);
+    EXPECT_EQ(uri->GetString(), "test://missing-resource");
+
+    server->Close();
+    client->Close();
+}
+
 TEST(McpServerTest, ReadResourcePrefersStaticOverTemplate) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -1589,6 +1632,173 @@ TEST(McpServerTest, ElicitUrlTimesOutWhenNoCompleteArrives) {
 
     server->Close();
     client->Close();
+}
+
+TEST(McpServerTest, ElicitationMissingCapability32021) {
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"test-server", "1.0.0"};
+        sopts.protocol_version = std::string(kLegacyProtocolVersion);
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        ElicitRequestParams params;
+        params.message = "form question";
+        try {
+            (void)server->Elicit(params);
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(static_cast<int32_t>(e.Code()), -32021);
+            ASSERT_TRUE(e.Data().has_value());
+            const JsonValue* required = e.Data()->Find("requiredCapabilities");
+            ASSERT_NE(required, nullptr);
+            const JsonValue* elicitation = required->Find("elicitation");
+            ASSERT_NE(elicitation, nullptr);
+            EXPECT_TRUE(elicitation->Contains("form"));
+            EXPECT_FALSE(elicitation->Contains("url"));
+        }
+        server->Close();
+    }
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"test-server", "1.0.0"};
+        sopts.protocol_version = std::string(kLegacyProtocolVersion);
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        ElicitRequestParams params;
+        params.message = "url question";
+        params.mode = "url";
+        params.url = "https://example.com/consent";
+        try {
+            (void)server->Elicit(params);
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(static_cast<int32_t>(e.Code()), -32021);
+            ASSERT_TRUE(e.Data().has_value());
+            const JsonValue* required = e.Data()->Find("requiredCapabilities");
+            ASSERT_NE(required, nullptr);
+            const JsonValue* elicitation = required->Find("elicitation");
+            ASSERT_NE(elicitation, nullptr);
+            EXPECT_TRUE(elicitation->Contains("url"));
+            EXPECT_FALSE(elicitation->Contains("form"));
+        }
+        server->Close();
+    }
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"test-server", "1.0.0"};
+        sopts.protocol_version = std::string(kLegacyProtocolVersion);
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        auto client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+        client->Start();
+
+        InitializeRequestParams iparams;
+        iparams.protocol_version = std::string(kLegacyProtocolVersion);
+        iparams.client_info = Implementation{"test-client", "1.0"};
+        iparams.capabilities.roots = RootsCapability{};
+        auto init_future = client->SendRequest(methods::kInitialize,
+            SerializeInitializeRequestParams(iparams), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        (void)init_future.get();
+        client->SendNotification(notifications::kInitialized);
+
+        ElicitRequestParams params;
+        params.message = "form question";
+        try {
+            (void)server->Elicit(params);
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(static_cast<int32_t>(e.Code()), -32021);
+            ASSERT_TRUE(e.Data().has_value());
+            const JsonValue* elicitation =
+                e.Data()->Find("requiredCapabilities")->Find("elicitation");
+            ASSERT_NE(elicitation, nullptr);
+            EXPECT_TRUE(elicitation->Contains("form"));
+        }
+        server->Close();
+        client->Close();
+    }
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"test-server", "1.0.0"};
+        sopts.protocol_version = std::string(kLegacyProtocolVersion);
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        auto client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+        client->Start();
+        client->SetRequestHandler(methods::kElicit,
+            [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+                JsonValue result(JsonValue::object_tag);
+                result["action"] = JsonValue("accept");
+                p.set_value(std::move(result));
+            });
+
+        InitializeRequestParams iparams;
+        iparams.protocol_version = std::string(kLegacyProtocolVersion);
+        iparams.client_info = Implementation{"test-client", "1.0"};
+        ElicitationCapability declared;
+        declared.form = JsonValue(JsonValue::object_tag);
+        iparams.capabilities.elicitation = declared;
+        auto init_future = client->SendRequest(methods::kInitialize,
+            SerializeInitializeRequestParams(iparams), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        (void)init_future.get();
+        client->SendNotification(notifications::kInitialized);
+
+        ElicitRequestParams params;
+        params.message = "form question";
+        auto future = server->Elicit(params);
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        EXPECT_EQ(future.get().action, "accept");
+
+        server->Close();
+        client->Close();
+    }
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"test-server", "1.0.0"};
+        sopts.protocol_version = std::string(kLegacyProtocolVersion);
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        auto client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+        client->Start();
+        client->SetRequestHandler(methods::kElicit,
+            [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+                JsonValue result(JsonValue::object_tag);
+                result["action"] = JsonValue("accept");
+                p.set_value(std::move(result));
+            });
+
+        InitializeRequestParams iparams;
+        iparams.protocol_version = std::string(kLegacyProtocolVersion);
+        iparams.client_info = Implementation{"test-client", "1.0"};
+        iparams.capabilities.elicitation = ElicitationCapability{};
+        auto init_future = client->SendRequest(methods::kInitialize,
+            SerializeInitializeRequestParams(iparams), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        (void)init_future.get();
+        client->SendNotification(notifications::kInitialized);
+
+        ElicitRequestParams params;
+        params.message = "form question";
+        auto future = server->Elicit(params);
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        EXPECT_EQ(future.get().action, "accept");
+
+        server->Close();
+        client->Close();
+    }
 }
 
 TEST(McpServerTest, MrtrToolInputRequiredElicitationRoundTrip) {

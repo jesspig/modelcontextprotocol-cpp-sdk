@@ -520,6 +520,24 @@ void McpServer::SendProgress(const ProgressToken& token, double progress,
 }
 
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
+    const bool url_mode = params.mode == "url";
+    const auto caps = GetClientCapabilities();
+    const ElicitationCapability* elicitation =
+        (caps && caps->elicitation) ? &*caps->elicitation : nullptr;
+    const bool declared = elicitation != nullptr &&
+        (url_mode ? elicitation->url.has_value()
+                  : (elicitation->form.has_value() || !elicitation->url.has_value()));
+    if (!declared) {
+        JsonValue missing(JsonValue::object_tag);
+        missing[url_mode ? detail::kUrl : detail::kForm] = JsonValue(JsonValue::object_tag);
+        JsonValue required(JsonValue::object_tag);
+        required[detail::kElicitation] = std::move(missing);
+        JsonValue data(JsonValue::object_tag);
+        data[detail::kRequiredCapabilities] = std::move(required);
+        throw McpError(McpErrorCode::MissingRequiredClientCapability,
+            "Missing required client capabilities: elicitation", std::move(data));
+    }
+
     RequestMeta meta;
     auto vers = handler_->NegotiatedProtocolVersion();
     meta.protocol_version = vers.empty()
@@ -1439,9 +1457,11 @@ void McpServer::HandleReadResource(
         }
     }
 
+    JsonValue data(JsonValue::object_tag);
+    data["uri"] = JsonValue(params.uri);
     promise.set_exception(std::make_exception_ptr(
         McpError(McpErrorCode::InvalidParams,
-                 "resource not found: " + params.uri)));
+                 "resource not found: " + params.uri, std::move(data))));
 }
 
 void McpServer::HandleListPrompts(
