@@ -51,7 +51,11 @@ auto codec = MakeWireCodec("2026-07-28");
 
 `Rev2026Codec::ValidateResponse` 验证出站响应：
 1. **`resultType` 字段**：所有响应必须包含 `resultType`。缺失则返回 `Invalid`。
-2. **列表方法**：对于 `tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`，`resultType` 必须为 `"complete"`。列表结果不能是部分/input_required。
+2. **列表方法**：对于 `tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`、`skills/list`，`resultType` 必须为 `"complete"`。列表结果不能是部分/input_required。
+
+### 任务头校验
+
+`WireCodec::ValidateTaskHeaders(method, params, mcp_name)` 只对 `tasks/get`、`tasks/update`、`tasks/cancel` 生效：`params.taskId` 缺失/空 → `InvalidParams`，`Mcp-Name` 头值与 `taskId` 不等 → `HeaderMismatch`（`-32020`）。服务端在 2026 时代（请求带头时）与 Streamable HTTP 层（强制要求该头，400）两处调用，客户端对任务三方法按 `params.taskId` 发送该头。
 
 ### 通知验证（2026 时代）
 
@@ -99,9 +103,9 @@ auto codec = MakeWireCodec("2026-07-28");
 |-----|---------|
 | 公共（两个时代） | `tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/templates/list`、`prompts/list`、`prompts/get`、`completion/complete` |
 | 仅 2025 | `initialize`、`ping`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage`、`elicitation/create`、`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` |
-| 仅 2026 | `server/discover`、`subscriptions/listen` |
+| 仅 2026 | `server/discover`、`subscriptions/listen`、`tasks/get`、`tasks/update`、`tasks/cancel`、`skills/list`、`skills/get`、`resources/directory/read` |
 
-注意 `ping`、`elicitation/create` 与全部 `tasks/*` 方法仅属于 2025 时代：2026 时代不提供这些方法（`server/extensions/list` 不属于任何时代集合）。
+其中 `tasks/get`、`tasks/update`、`tasks/cancel` 为双时代交集（2026 下任务通知抑制 + `Mcp-Name` 头校验）；`tasks/result`、`tasks/list` 仍仅 2025；`skills/list`、`skills/get`、`resources/directory/read` 仅 2026（`ping`、`elicitation/create` 等其余 2025-only 方法在 2026 时代仍不可用；`server/extensions/list` 不属于任何时代集合）。
 
 ### 按时代划分的通知
 

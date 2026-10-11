@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 版本协商
-description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、supportedVersions 交集、codec 重建与 HTTP 版本头自学习。
-tags: [协议, 版本, 协商, 2026]
-timestamp: 2026-09-20T19:34:31+08:00
+description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、supportedVersions 交集、codec 重建、HTTP 版本头自学习与主动校验、tasks/skills 双时代门控。
+tags: [协议, 版本, 协商, 2026, tasks, skills]
+timestamp: 2026-10-11T16:35:00+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -55,6 +55,7 @@ transport 层无协商状态，改为**从流量中学习**（[StreamableHttpCli
 - initialize 请求**不带** `MCP-Protocol-Version` 头（版本尚未确定，由 body 的 `params.protocolVersion` 表达）
 - 从 initialize 响应 `result.protocolVersion` 学习协商版本——**只认 initialize 的 POST 响应**（单 JSON 体或 SSE 块；GET 监听流不参与，`DispatchSseBlock` 仅在 `is_initialize` 时学习，`NegotiatedVersionFromResponse`）
 - 后续所有请求与 GET 接收流按学习到的版本携带 `MCP-Protocol-Version` 头；尚无学习值时兜底 `2026-07-28`（`EffectiveProtocolVersion`）
+- **服务端主动校验**：POST/GET 入口对非空 `MCP-Protocol-Version` 查支持表——未知版本回 **400 + `-32022 UnsupportedProtocolVersion`**（`RespondUnsupportedVersion`）；响应恒带 `mcp-protocol-version` 头（有值回显，无值回 `kDefaultNegotiatedProtocolVersion` "2025-03-26"）
 
 ## 客户端通知的版本门控
 
@@ -62,7 +63,17 @@ transport 层无协商状态，改为**从流量中学习**（[StreamableHttpCli
 
 ## 时代差异
 
-详见 [/classes/wire-codec.md](../classes/wire-codec.md)：2026 无状态（每请求 `_meta` 携带版本/客户端信息）、`subscriptions/listen` 取代 `resources/subscribe`、tasks 系列方法仅 2025 存在（2026 时代被 `NotInEra` 拒绝，入站验证抛 MethodNotFound）、2025 通知（`notifications/initialized`、`notifications/tasks/*` 等 9 种）在 2026 时代无效。
+详见 [/classes/wire-codec.md](../classes/wire-codec.md)：2026 无状态（每请求 `_meta` 携带版本/客户端信息）、`subscriptions/listen` 取代 `resources/subscribe`。
+
+门控表（含技能/任务扩展）：
+
+| 方法 | 2025 | 2026 | 备注 |
+|------|------|------|------|
+| tasks/get、tasks/update、tasks/cancel | 可用 | 可用 | 双时代（SEP-2663）；2026 下任务通知抑制 + `Mcp-Name` 头校验，见 [/concepts/tasks-extension.md](tasks-extension.md) |
+| tasks/result、tasks/list | 可用 | `NotInEra` → MethodNotFound | 仍仅 2025（`kLegacyGetTaskPayload`/`kLegacyListTasks`） |
+| skills/list、skills/get、resources/directory/read | `NotInEra` → MethodNotFound | 可用 | 仅 2026（SEP-2640），见 [/concepts/skills-extension.md](skills-extension.md) |
+| ping、elicitation/create、resources/subscribe 等其余 2025-only | 可用 | `NotInEra` → MethodNotFound | 不变 |
+| tools/call（任务执行模式） | 立即返回 task | 立即返回 task | 双时代均可（此前 2026 拒绝，现放行；通知抑制） |
 
 ## 官方互通验证（TS conformance 服务器，端口 3010）
 

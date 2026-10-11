@@ -20,7 +20,8 @@ The client supports the MCP OAuth authorization flow for servers that require au
 | `client_secret` | `optional<string>` | Client secret (optional) |
 | `scopes` | `vector<string>` | Requested OAuth scopes |
 | `token_cache` | `shared_ptr<ITokenCache>` | Token persistence (default: `InMemoryTokenCache`) |
-| `resource` | `optional<string>` | RFC 8707 resource indicator sent with the authorization request and token requests; falls back to the discovered metadata `resource`, then to `server_url`; when the resolved value is empty the parameter is omitted entirely |
+| `resource` | `optional<string>` | RFC 8707 resource indicator sent with the authorization request and token requests; falls back to the discovered metadata `resource`, then to `server_url`; when the resolved value is empty the parameter is omitted entirely; persisted as the token's audience — cached tokens are treated as invalid once the indicator changes |
+| `application_type` | `string` | `application_type` sent during dynamic registration (default `"native"`) |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | Callback to open the authorization URL |
 | `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | Callback returning the authorization code, the echoed `state`, and the optional `iss` (`AuthorizationCodeResult{code, state, iss}`), `nullopt` on failure |
 
@@ -69,16 +70,19 @@ auto token = auth->GetAccessToken();
 ## Resource Indicator and Issuer Validation
 
 - **RFC 8707 `resource`**: resolved as "explicit `options.resource` → discovered metadata `resource` → `server_url`". When the resolved value is non-empty it is injected into the authorization URL and all three token requests (`client_credentials`, authorization-code exchange, `refresh_token`).
+- **Audience binding**: token responses are persisted together with the current resource indicator (`TokenContainer.resource`, also persisted by `FileTokenCache`); once the indicator changes, `Authenticate` clears the mismatched cache first, and `GetAccessToken` / `IsAuthenticated` / `HasToken` / `GetAuthorizationHeader` all behave as if no valid token exists.
 - **RFC 9207 `iss`**: the `iss` in token and refresh responses must be present and match the discovered metadata issuer, otherwise the response is rejected. On the authorization-response side the same comparison runs after the `state` check and before the code is exchanged: a non-empty `AuthorizationCodeResult::iss` that differs from the issuer is rejected, while an absent `iss` is not validated.
-- **CIMD (Client ID Metadata Document)**: when `client_id` is a URL, the client metadata document at that URL is fetched and parsed. Failures are best-effort (a warning is logged and the configured values are used) and do not abort the authorization flow.
+- **Issuer binding**: a discovery response missing `issuer` fails (no longer falls back to `server_url`); the first discovery binds the issuer, and a later issuer change clears dynamic registration info and local tokens before rebinding.
+- **CIMD (Client ID Metadata Document)**: when `client_id` is a URL, the client metadata document at that URL is fetched and parsed (adopting its `token_endpoint_auth_method`). Failures are best-effort (a warning is logged and the configured values are used) and do not abort the authorization flow; dynamic registration sends `application_type` (default `"native"`).
+- **Challenge hardening**: `HandleAuthChallenge` returns false on oversized/illegal input (never throws); illegal URLs and mismatched resources are both refused.
 
 ## Integration with Server-Side Bearer Auth
 
-The SDK ships built-in RFC 6750/9728 bearer auth on the server side (`StreamableHttpServerOptions::bearer_auth`, see [Transports](/en/guide/transports)): failed verification returns a 401/403 challenge, the `WWW-Authenticate` header references the protected-resource metadata URL, and the metadata document is optionally served at `/.well-known/oauth-protected-resource`.
+The SDK ships built-in RFC 6750/9728 bearer auth on the server side (`StreamableHttpServerOptions::bearer_auth`, see [Transports](/en/guide/transports)): failed verification returns a 401/403 challenge, the `WWW-Authenticate` header references the protected-resource metadata URL, and the metadata document is optionally served at `/.well-known/oauth-protected-resource`. When `expected_resource` is non-empty the token audience is additionally validated (mismatch → 401 `invalid_token`, split from the scope-gap 403).
 
 The client has two integration points:
 
-- `HttpClientTransportOptions::auth_challenge_handler` (see [Transports](/en/guide/transports)): invoked with the `WWW-Authenticate` header on 401/403; returning a non-empty `Authorization` header retries the request exactly once. Inside the callback you can delegate to `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` to parse the challenge and obtain a fresh token.
+- `HttpClientTransportOptions::auth_challenge_handler` (see [Transports](/en/guide/transports)): always invoked on 401, invoked on 403 only when `WWW-Authenticate` contains `insufficient_scope`; returning a non-empty `Authorization` header retries the request exactly once. Inside the callback you can delegate to `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` to parse the challenge and obtain a fresh token.
 - `HandleAuthChallenge(www_authenticate)` (returns `bool`): parses the metadata URL from the challenge per RFC 9728 to discover the authorization server and re-runs the authorization flow when needed.
 
 ## PKCE Helpers

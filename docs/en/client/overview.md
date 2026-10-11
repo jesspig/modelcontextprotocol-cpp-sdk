@@ -28,7 +28,7 @@ auto client = McpClient::Create(transport, opts);
 | `max_total_timeout` | `chrono::seconds` | Total budget for a single request (default `0` = unlimited; progress extensions cannot push a pending request past this deadline) |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation config: `auto_fulfill=true`, `max_rounds=10`, `round_timeout=600s` |
 | `input_required_config.max_total_timeout` | `chrono::seconds` | Hard budget for the whole MRTR flow (default `0` = unlimited; `round_timeout` applies per round) |
-| `extensions` | `optional<JsonValue>` | Protocol extension declarations |
+| `extensions` | `optional<JsonValue>` | Protocol extension declarations (in the 2026 era, receiving task results requires `"io.modelcontextprotocol/tasks"`, otherwise `HandlerError` is thrown) |
 
 ## Making Requests
 
@@ -70,10 +70,16 @@ client->UnsubscribeResource("file:///config.json");
 // Task operations
 auto task = client->GetTask("task-123");
 client->UpdateTask("task-123", result_json);
+client->UpdateTask("task-123", std::nullopt, input_responses_json);  // answer the task's input request (mutually exclusive with result)
 client->CancelTask("task-123", "no longer needed");
 
 // Poll task until completion (with configurable interval and timeout)
 auto completed = client->PollTaskToCompletion("task-123");
+
+// Skill operations (2026-era; listing supports cursors, reads accept cache options)
+auto skills = client->ListSkills();
+auto skill = client->GetSkill("skill://conformance-weather/SKILL.md");
+auto dir = client->ReadDirectory("skill://conformance-weather");
 ```
 
 ## Server-to-Client Handlers
