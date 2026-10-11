@@ -7,6 +7,9 @@ namespace mcp {
 
 namespace {
 
+constexpr int64_t kDefaultTtlMs = 0;
+constexpr char kDefaultCacheScope[] = "private";
+
 std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
     auto* ttl = j.Find(detail::kTTLMs);
     auto* scope = j.Find(detail::kCacheScope);
@@ -63,6 +66,9 @@ void WriteListResultCommon(JsonValue& obj,
         obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
         detail::SerializeOptional(obj, detail::kTTLMs, cache_hint->ttl_ms);
         detail::SerializeOptional(obj, detail::kCacheScope, cache_hint->cache_scope);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kDefaultTtlMs);
+        obj[detail::kCacheScope] = JsonValue(kDefaultCacheScope);
     }
     detail::SerializeOptional(obj, detail::kMeta, meta);
     obj[detail::kResultType] = SerializeResultType(result_type);
@@ -296,6 +302,9 @@ JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
         obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
         detail::SerializeOptional(obj, detail::kTTLMs, v.cache_hint->ttl_ms);
         detail::SerializeOptional(obj, detail::kCacheScope, v.cache_hint->cache_scope);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kDefaultTtlMs);
+        obj[detail::kCacheScope] = JsonValue(kDefaultCacheScope);
     }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
