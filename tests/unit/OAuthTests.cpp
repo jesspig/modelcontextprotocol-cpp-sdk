@@ -173,6 +173,36 @@ TEST(OAuthTest, ClientCredentialsGrant) {
     server.Stop();
 }
 
+TEST(OAuthTest, RegisterSendsApplicationType) {
+    auto port = PickFreePort(kTestBasePort + 900);
+    std::string seen_body;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/register",
+        [&seen_body](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            seen_body = req.body;
+            resp.body = R"({"client_id":"dyn-id","token_endpoint_auth_method":"none"})";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string endpoint = "http://127.0.0.1:" + std::to_string(port) + "/register";
+    auto info = ClientRegistrationInfo::Register(
+        endpoint, "http://localhost/callback", "test-client");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->client_id, "dyn-id");
+    EXPECT_NE(seen_body.find("\"application_type\""), std::string::npos);
+    EXPECT_NE(seen_body.find("\"native\""), std::string::npos);
+    ASSERT_TRUE(info->token_endpoint_auth_method.has_value());
+    EXPECT_EQ(*info->token_endpoint_auth_method, "none");
+
+    auto web_info = ClientRegistrationInfo::Register(
+        endpoint, "http://localhost/callback", "test-client", "web");
+    ASSERT_TRUE(web_info.has_value());
+    EXPECT_NE(seen_body.find("\"web\""), std::string::npos);
+    server.Stop();
+}
+
 TEST(OAuthTest, AuthChallengeTriggersRetryWithAuthorization) {
     auto port = PickFreePort(kTestBasePort + 800);
     std::atomic<int> calls{0};

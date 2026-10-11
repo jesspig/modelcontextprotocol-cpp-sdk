@@ -5,9 +5,12 @@
 #include <cctype>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
-#include <iterator>
+#include <limits>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -126,13 +129,102 @@ struct LoadedEvents {
     bool ends_with_newline;
 };
 
+struct ScannedEvents {
+    size_t count{0};
+    uint64_t max_id{0};
+    bool ends_with_newline{true};
+};
+
+std::optional<std::string> ReadFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return std::nullopt;
+    auto size = file.tellg();
+    if (size <= 0) return std::string();
+    std::string content(static_cast<size_t>(size), '\0');
+    file.seekg(0);
+    file.read(content.data(), size);
+    content.resize(static_cast<size_t>(file.gcount()));
+    return content;
+}
+
+bool ParseCanonicalEventId(std::string_view line, uint64_t& id_out)
+{
+    static constexpr std::string_view kIdPrefix = "{\"id\":";
+    static constexpr std::string_view kDataPrefix = ",\"data\":\"";
+    if (line.size() <= kIdPrefix.size() ||
+        line.compare(0, kIdPrefix.size(), kIdPrefix) != 0)
+        return false;
+    uint64_t value = 0;
+    size_t pos = kIdPrefix.size();
+    size_t digits = 0;
+    while (pos < line.size() && line[pos] >= '0' && line[pos] <= '9') {
+        uint64_t digit = static_cast<uint64_t>(line[pos] - '0');
+        if (value > ((std::numeric_limits<uint64_t>::max)() - digit) / 10)
+            return false;
+        value = value * 10 + digit;
+        ++pos;
+        ++digits;
+    }
+    if (digits == 0 || line.compare(pos, kDataPrefix.size(), kDataPrefix) != 0)
+        return false;
+    pos += kDataPrefix.size();
+    while (pos < line.size() && line[pos] != '"') {
+        if (line[pos] == '\\') ++pos;
+        ++pos;
+    }
+    if (pos + 1 != line.size() || line[pos] != '"')
+        return false;
+    id_out = value;
+    return true;
+}
+
+void CountEventLine(std::string_view line, ScannedEvents& scanned)
+{
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (line.empty()) return;
+    uint64_t id = 0;
+    if (ParseCanonicalEventId(line, id)) {
+        ++scanned.count;
+        if (id > scanned.max_id) scanned.max_id = id;
+        return;
+    }
+    try {
+        auto json = JsonValue::Parse(line);
+        auto* id_value = json.Find("id");
+        auto* data = json.Find("data");
+        if (!id_value || !data) return;
+        auto parsed = static_cast<uint64_t>(id_value->GetInt());
+        ++scanned.count;
+        if (parsed > scanned.max_id) scanned.max_id = parsed;
+    } catch (const std::exception&) {
+        return;
+    }
+}
+
+ScannedEvents ScanEvents(const std::filesystem::path& path)
+{
+    ScannedEvents scanned;
+    auto bytes = ReadFileBytes(path);
+    if (!bytes) return scanned;
+    scanned.ends_with_newline = !bytes->empty() && bytes->back() == '\n';
+    std::string_view rest(*bytes);
+    while (!rest.empty()) {
+        auto end = rest.find('\n');
+        auto line = rest.substr(0, end);
+        rest.remove_prefix(
+            end == std::string_view::npos ? rest.size() : end + 1);
+        CountEventLine(line, scanned);
+    }
+    return scanned;
+}
+
 LoadedEvents LoadEvents(const std::filesystem::path& path)
 {
     LoadedEvents loaded{{}, true};
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) return loaded;
-    std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
+    auto bytes = ReadFileBytes(path);
+    if (!bytes) return loaded;
+    const std::string& content = *bytes;
     loaded.ends_with_newline = !content.empty() && content.back() == '\n';
     std::string_view rest(content);
     while (!rest.empty()) {
@@ -203,11 +295,8 @@ uint64_t FileEventStore::Append(
     auto file_path = SessionFilePath(session_id);
     SessionFileLock lock(SessionLockPath(session_id));
 
-    auto loaded = LoadEvents(file_path);
-    uint64_t next_id = 1;
-    for (const auto& entry : loaded.items) {
-        if (entry.first >= next_id) next_id = entry.first + 1;
-    }
+    auto scanned = ScanEvents(file_path);
+    uint64_t next_id = scanned.max_id + 1;
 
     {
         std::ofstream file(file_path, std::ios::binary | std::ios::app);
@@ -215,7 +304,7 @@ uint64_t FileEventStore::Append(
             throw std::runtime_error("event store: failed to open " +
                                      file_path.string() + " for append");
         }
-        if (!loaded.ends_with_newline) file << '\n';
+        if (!scanned.ends_with_newline) file << '\n';
         file << SerializeEventLine(next_id, event_data);
         file.flush();
         if (!file.good()) {
@@ -224,8 +313,8 @@ uint64_t FileEventStore::Append(
         }
     }
 
-    loaded.items.emplace_back(next_id, std::move(event_data));
-    if (loaded.items.size() > kMaxEventsPerSession) {
+    if (scanned.count + 1 > kMaxEventsPerSession) {
+        auto loaded = LoadEvents(file_path);
         RewriteTrimmed(file_path, loaded.items);
     }
     return next_id;

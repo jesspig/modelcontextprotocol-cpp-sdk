@@ -5,6 +5,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/Methods.hpp>
+#include <mcp/ProtocolVersion.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
@@ -26,8 +27,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -47,11 +50,15 @@ namespace streamable_http_client_impl {
 
 constexpr const char* kInitializedNotificationMethod = "notifications/initialized";
 constexpr const char* kInitializeMethod = "initialize";
-constexpr const char* kModernProtocolVersion = "2026-07-28";
 
 std::string EffectiveProtocolVersion(const std::string& negotiated_version) {
     return negotiated_version.empty() ? std::string{kModernProtocolVersion}
                                       : negotiated_version;
+}
+
+inline bool IsTaskNameMethod(const std::string& method) {
+    return method == methods::kGetTask || method == methods::kUpdateTask ||
+           method == methods::kCancelTask;
 }
 
 std::optional<std::string> ProtocolVersionHeaderFor(
@@ -96,6 +103,7 @@ enum class ListenState { Idle, Connecting, Streaming, Unsupported, GivenUp };
 struct SseBlockParseResult {
     std::string data;
     std::string event_id;
+    std::optional<uint64_t> retry_ms;
     std::optional<JsonRpcMessage> message;
 };
 
@@ -108,6 +116,15 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
             detail::AppendSseData(result.data, field.value);
         } else if (field.name == "id") {
             result.event_id = std::string(field.value);
+        } else if (field.name == "retry") {
+            if (!field.value.empty() &&
+                field.value.find_first_not_of("0123456789") ==
+                    std::string_view::npos) {
+                try {
+                    result.retry_ms = std::stoull(std::string(field.value));
+                } catch (...) {
+                }
+            }
         }
     });
     if (!result.data.empty()) {
@@ -123,13 +140,43 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
 ListenState ListenStateForStatusCode(int status_code) {
     if (status_code == 200) return ListenState::Streaming;
     if (status_code == 405) return ListenState::Unsupported;
+    if (status_code >= 500 && status_code <= 599) return ListenState::GivenUp;
     return ListenState::Connecting;
+}
+
+inline bool IsInsufficientScopeChallenge(std::string_view www_authenticate) {
+    std::string lower;
+    lower.reserve(www_authenticate.size());
+    for (char c : www_authenticate)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.find("insufficient_scope") != std::string::npos;
 }
 
 inline constexpr std::chrono::milliseconds kListenRetryInitialDelay{1000};
 inline constexpr std::chrono::milliseconds kListenRetryMaxDelay{30000};
 inline constexpr int kMaxListenReconnectAttempts = 5;
 inline constexpr std::chrono::seconds kListenStreamTimeout{600};
+inline constexpr std::chrono::milliseconds kReconnectWaitFloor{450};
+inline constexpr std::chrono::milliseconds kReconnectWaitCeiling{1000};
+
+inline std::chrono::milliseconds ReconnectDelayForAttempt(
+    int attempt, std::optional<uint64_t> retry_ms) {
+    std::chrono::milliseconds wait = kListenRetryInitialDelay;
+    for (int i = 1; i < attempt; ++i)
+        wait = (std::min)(wait * 3 / 2, kListenRetryMaxDelay);
+    if (retry_ms.has_value()) {
+        uint64_t raw = *retry_ms;
+        if (raw <= static_cast<uint64_t>(kReconnectWaitFloor.count()))
+            wait = kReconnectWaitFloor;
+        else if (raw >= static_cast<uint64_t>(kReconnectWaitCeiling.count()))
+            wait = kReconnectWaitCeiling;
+        else
+            wait = std::chrono::milliseconds(raw);
+    }
+    if (wait < kReconnectWaitFloor) wait = kReconnectWaitFloor;
+    if (wait > kReconnectWaitCeiling) wait = kReconnectWaitCeiling;
+    return wait;
+}
 
 inline void SleepInterruptibly(const std::atomic<bool>& running,
                                std::chrono::milliseconds duration) {
@@ -319,7 +366,6 @@ private:
     void RunListenStream() {
         using streamable_http_client_impl::ListenState;
         int reconnects = 0;
-        auto delay = streamable_http_client_impl::kListenRetryInitialDelay;
         for (;;) {
             if (!running_) return;
             auto result = DoListenGet();
@@ -327,13 +373,19 @@ private:
                 listen_state_ = ListenState::Unsupported;
                 return;
             }
+            if (result == ListenState::GivenUp) {
+                listen_state_ = ListenState::GivenUp;
+                return;
+            }
             if (reconnects >= streamable_http_client_impl::kMaxListenReconnectAttempts) {
                 listen_state_ = ListenState::GivenUp;
                 return;
             }
             ++reconnects;
-            streamable_http_client_impl::SleepInterruptibly(running_, delay);
-            delay = (std::min)(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
+            streamable_http_client_impl::SleepInterruptibly(
+                running_,
+                streamable_http_client_impl::ReconnectDelayForAttempt(
+                    reconnects, CurrentRetryMs()));
         }
     }
 
@@ -375,13 +427,13 @@ private:
             streamable_http_client_impl::EffectiveProtocolVersion(
                 NegotiatedVersion())) + L"\r\n";
         auto listen_sid = CurrentSessionId();
-        if (!listen_sid.empty()) {
+        if (!options_.stateless && !listen_sid.empty()) {
             hdrs += L"Mcp-Session-Id: " +
                 ToWideStr(listen_sid) + L"\r\n";
         }
         {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
-            if (!last_event_id_.empty()) {
+            if (!options_.stateless && !last_event_id_.empty()) {
                 hdrs += L"Last-Event-ID: " + ToWideStr(last_event_id_) + L"\r\n";
             }
         }
@@ -461,12 +513,24 @@ private:
         return finish(ListenState::Streaming);
     }
 
+    std::optional<uint64_t> CurrentRetryMs() {
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        return retry_ms_;
+    }
+
+    void StoreRetryMs(std::optional<uint64_t> retry_ms) {
+        if (!retry_ms.has_value()) return;
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        retry_ms_ = retry_ms;
+    }
+
     bool ProcessListenBlock(const std::string& block) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
         if (!parsed.event_id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return true;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -498,6 +562,7 @@ private:
     }
 
     void DoDelete() {
+        if (options_.stateless) return;
         auto sid = CurrentSessionId();
         if (sid.empty()) return;
         HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
@@ -605,7 +670,11 @@ private:
                 }
                 if (auto* p = body_jv2.Find("params"); p && p->IsObject()) {
                     const auto& obj = p->GetObject();
-                    if (auto n = obj.find("name"); n != obj.end() && n->second.IsString()) {
+                    auto task_it = obj.find("taskId");
+                    if (streamable_http_client_impl::IsTaskNameMethod(method) &&
+                        task_it != obj.end() && task_it->second.IsString()) {
+                        hdrs += L"Mcp-Name: " + ToWideStr(McpHeaderValue(task_it->second)) + L"\r\n";
+                    } else if (auto n = obj.find("name"); n != obj.end() && n->second.IsString()) {
                         hdrs += L"Mcp-Name: " + ToWideStr(McpHeaderValue(n->second)) + L"\r\n";
                     } else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString()) {
                         hdrs += L"Mcp-Name: " + ToWideStr(McpHeaderValue(u->second)) + L"\r\n";
@@ -622,9 +691,11 @@ private:
             }
             bool is_initialize =
                 method == streamable_http_client_impl::kInitializeMethod;
-            if (auto sid = streamable_http_client_impl::SessionIdHeaderFor(
-                    method, CurrentSessionId())) {
-                hdrs += L"Mcp-Session-Id: " + ToWideStr(*sid) + L"\r\n";
+            if (!options_.stateless) {
+                if (auto sid = streamable_http_client_impl::SessionIdHeaderFor(
+                        method, CurrentSessionId())) {
+                    hdrs += L"Mcp-Session-Id: " + ToWideStr(*sid) + L"\r\n";
+                }
             }
             if (auto version = streamable_http_client_impl::ProtocolVersionHeaderFor(
                     method, NegotiatedVersion())) {
@@ -689,13 +760,18 @@ private:
                             L"WWW-Authenticate", www_auth, &waSize, nullptr)) {
                         www_auth_str = wide_to_utf8(www_auth);
                     }
-                    auto new_auth = options_.auth_challenge_handler(www_auth_str);
-                    if (!new_auth.empty()) {
-                        auth_value = std::move(new_auth);
-                        WinHttpCloseHandle(hRequest);
-                        WinHttpCloseHandle(hConnect);
-                        WinHttpCloseHandle(hSession);
-                        continue;
+                    bool eligible = (status_code == 401) ||
+                        streamable_http_client_impl::IsInsufficientScopeChallenge(
+                            www_auth_str);
+                    if (eligible) {
+                        auto new_auth = options_.auth_challenge_handler(www_auth_str);
+                        if (!new_auth.empty()) {
+                            auth_value = std::move(new_auth);
+                            WinHttpCloseHandle(hRequest);
+                            WinHttpCloseHandle(hConnect);
+                            WinHttpCloseHandle(hSession);
+                            continue;
+                        }
                     }
                 }
                 std::string err_body;
@@ -708,7 +784,8 @@ private:
                 if (status_code == 400 && attempt == 0 &&
                     streamable_http_client_impl::IsHeaderMismatchBody(err_body)) {
                     if (streamable_http_client_impl::RefreshToolAnnotations(
-                            options_.endpoint, CurrentSessionId(),
+                            options_.endpoint,
+                            options_.stateless ? std::string{} : CurrentSessionId(),
                             NegotiatedVersion(), auth_value,
                             options_.additional_headers, tool_annotations_)) {
                         WinHttpCloseHandle(hRequest);
@@ -849,6 +926,11 @@ private:
 
     void DispatchSseBlock(const std::string& block, bool learn_version) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
+        if (!parsed.event_id.empty()) {
+            std::lock_guard<std::mutex> lk(last_event_id_mutex_);
+            last_event_id_ = parsed.event_id;
+        }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -942,6 +1024,8 @@ private:
         streamable_http_client_impl::ListenState::Idle};
     std::mutex last_event_id_mutex_;
     std::string last_event_id_;
+    std::mutex retry_mutex_;
+    std::optional<uint64_t> retry_ms_;
     std::atomic<bool> listen_requested_{false};
     std::atomic<HINTERNET> listen_request_{nullptr};
 
@@ -1067,7 +1151,6 @@ private:
     void RunListenStream() {
         using streamable_http_client_impl::ListenState;
         int reconnects = 0;
-        auto delay = streamable_http_client_impl::kListenRetryInitialDelay;
         for (;;) {
             if (!running_) return;
             auto result = DoListenGet();
@@ -1075,13 +1158,19 @@ private:
                 listen_state_ = ListenState::Unsupported;
                 return;
             }
+            if (result == ListenState::GivenUp) {
+                listen_state_ = ListenState::GivenUp;
+                return;
+            }
             if (reconnects >= streamable_http_client_impl::kMaxListenReconnectAttempts) {
                 listen_state_ = ListenState::GivenUp;
                 return;
             }
             ++reconnects;
-            streamable_http_client_impl::SleepInterruptibly(running_, delay);
-            delay = (std::min)(delay * 2, streamable_http_client_impl::kListenRetryMaxDelay);
+            streamable_http_client_impl::SleepInterruptibly(
+                running_,
+                streamable_http_client_impl::ReconnectDelayForAttempt(
+                    reconnects, CurrentRetryMs()));
         }
     }
 
@@ -1097,12 +1186,12 @@ private:
             streamable_http_client_impl::EffectiveProtocolVersion(
                 NegotiatedVersion());
         auto listen_sid = CurrentSessionId();
-        if (!listen_sid.empty()) {
+        if (!options_.stateless && !listen_sid.empty()) {
             req.headers["Mcp-Session-Id"] = std::move(listen_sid);
         }
         {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
-            if (!last_event_id_.empty()) {
+            if (!options_.stateless && !last_event_id_.empty()) {
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
         }
@@ -1150,12 +1239,24 @@ private:
         return mapped;
     }
 
+    std::optional<uint64_t> CurrentRetryMs() {
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        return retry_ms_;
+    }
+
+    void StoreRetryMs(std::optional<uint64_t> retry_ms) {
+        if (!retry_ms.has_value()) return;
+        std::lock_guard<std::mutex> lk(retry_mutex_);
+        retry_ms_ = retry_ms;
+    }
+
     bool ProcessListenBlock(const std::string& block) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
         if (!parsed.event_id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return true;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -1185,6 +1286,7 @@ private:
     }
 
     void DoDelete() {
+        if (options_.stateless) return;
         auto sid = CurrentSessionId();
         if (sid.empty()) return;
         detail::net::HttpRequestSpec req;
@@ -1215,7 +1317,11 @@ private:
                 }
                 if (auto* p = jv.Find("params"); p && p->IsObject()) {
                     const auto& obj = p->GetObject();
-                    if (auto n = obj.find("name"); n != obj.end() && n->second.IsString())
+                    auto task_it = obj.find("taskId");
+                    if (streamable_http_client_impl::IsTaskNameMethod(method) &&
+                        task_it != obj.end() && task_it->second.IsString())
+                        headers["Mcp-Name"] = McpHeaderValue(task_it->second);
+                    else if (auto n = obj.find("name"); n != obj.end() && n->second.IsString())
                         headers["Mcp-Name"] = McpHeaderValue(n->second);
                     else if (auto u = obj.find("uri"); u != obj.end() && u->second.IsString())
                         headers["Mcp-Name"] = McpHeaderValue(u->second);
@@ -1230,9 +1336,11 @@ private:
             }
             bool is_initialize =
                 method == streamable_http_client_impl::kInitializeMethod;
-            if (auto sid = streamable_http_client_impl::SessionIdHeaderFor(
-                    method, CurrentSessionId())) {
-                headers["Mcp-Session-Id"] = *sid;
+            if (!options_.stateless) {
+                if (auto sid = streamable_http_client_impl::SessionIdHeaderFor(
+                        method, CurrentSessionId())) {
+                    headers["Mcp-Session-Id"] = *sid;
+                }
             }
             if (auto version = streamable_http_client_impl::ProtocolVersionHeaderFor(
                     method, NegotiatedVersion())) {
@@ -1287,16 +1395,22 @@ private:
                 if ((resp.status_code == 401 || resp.status_code == 403) &&
                     attempt == 0 && options_.auth_challenge_handler) {
                     auto www_auth = httpclient_posix_impl::GetHeader(resp, "WWW-Authenticate");
-                    auto new_auth = options_.auth_challenge_handler(www_auth);
-                    if (!new_auth.empty()) {
-                        auth_value = std::move(new_auth);
-                        continue;
+                    bool eligible = (resp.status_code == 401) ||
+                        streamable_http_client_impl::IsInsufficientScopeChallenge(
+                            www_auth);
+                    if (eligible) {
+                        auto new_auth = options_.auth_challenge_handler(www_auth);
+                        if (!new_auth.empty()) {
+                            auth_value = std::move(new_auth);
+                            continue;
+                        }
                     }
                 }
                 if (resp.status_code == 400 && attempt == 0 &&
                     streamable_http_client_impl::IsHeaderMismatchBody(full_body)) {
                     if (streamable_http_client_impl::RefreshToolAnnotations(
-                            options_.endpoint, CurrentSessionId(),
+                            options_.endpoint,
+                            options_.stateless ? std::string{} : CurrentSessionId(),
                             NegotiatedVersion(), auth_value,
                             options_.additional_headers, tool_annotations_)) {
                         continue;
@@ -1374,6 +1488,11 @@ private:
 
     void DispatchSseBlock(const std::string& block, bool learn_version) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
+        if (!parsed.event_id.empty()) {
+            std::lock_guard<std::mutex> lk(last_event_id_mutex_);
+            last_event_id_ = parsed.event_id;
+        }
+        StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
@@ -1430,6 +1549,8 @@ private:
         streamable_http_client_impl::ListenState::Idle};
     std::mutex last_event_id_mutex_;
     std::string last_event_id_;
+    std::mutex retry_mutex_;
+    std::optional<uint64_t> retry_ms_;
     std::atomic<bool> listen_requested_{false};
     detail::net::HttpClient* listen_client_ = nullptr;
 

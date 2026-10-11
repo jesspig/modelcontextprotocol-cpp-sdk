@@ -29,7 +29,7 @@ auto client = McpClient::Create(transport, opts);
 | `reinit_on_expired_session` | `bool` | 会话过期（404）时自动重新初始化并恰好重放一次失败请求（默认 `true`） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation 配置：`auto_fulfill=true`、`max_rounds=10`、`round_timeout=600s` |
 | `input_required_config.max_total_timeout` | `chrono::seconds` | 整个 MRTR 流程的硬预算（默认 `0` = 不限，`round_timeout` 按轮生效） |
-| `extensions` | `optional<JsonValue>` | 协议扩展声明 |
+| `extensions` | `optional<JsonValue>` | 协议扩展声明（2026 时代下接收任务结果前须含 `"io.modelcontextprotocol/tasks"`，否则抛 `HandlerError`） |
 
 ## 发起请求
 
@@ -82,10 +82,16 @@ client->UnsubscribeResource("file:///config.json");
 // 任务操作
 auto status = client->GetTask("task-123");
 client->UpdateTask("task-123", result_json);
+client->UpdateTask("task-123", std::nullopt, input_responses_json);  // 回应任务的输入请求（与 result 互斥）
 client->CancelTask("task-123", "不再需要");
 
 // 轮询任务直到完成（可配置间隔和超时）
 auto completed = client->PollTaskToCompletion("task-123");
+
+// 技能操作（2026 时代；列表支持游标，读取支持缓存选项）
+auto skills = client->ListSkills();
+auto skill = client->GetSkill("skill://conformance-weather/SKILL.md");
+auto dir = client->ReadDirectory("skill://conformance-weather");
 ```
 
 ## 服务端到客户端处理器

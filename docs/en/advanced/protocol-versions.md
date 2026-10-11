@@ -51,7 +51,11 @@ This enforces the stateless protocol design where `server/discover` is the only 
 
 `Rev2026Codec::ValidateResponse` validates outgoing responses:
 1. **`resultType` field**: Must be present on all responses. Returns `Invalid` if missing.
-2. **List methods**: For `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list`, the `resultType` must be `"complete"`. List results cannot be partial/input_required.
+2. **List methods**: For `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, and `skills/list`, the `resultType` must be `"complete"`. List results cannot be partial/input_required.
+
+### Task Header Validation
+
+`WireCodec::ValidateTaskHeaders(method, params, mcp_name)` only applies to `tasks/get`, `tasks/update`, and `tasks/cancel`: a missing/empty `params.taskId` → `InvalidParams`, an `Mcp-Name` header value differing from `taskId` → `HeaderMismatch` (`-32020`). The server invokes it in the 2026 era (when the request carries the header) and at the Streamable HTTP layer (where the header is mandatory, 400); the client sends the header from `params.taskId` for the three task methods.
 
 ### Notification Validation (2026-era)
 
@@ -97,9 +101,9 @@ The codec defines per-era method sets:
 |-----|---------|
 | Common (both eras) | `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `completion/complete` |
 | 2025-only | `initialize`, `ping`, `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel`, `roots/list`, `sampling/createMessage`, `elicitation/create`, `tasks/get`, `tasks/update`, `tasks/cancel`, `tasks/result`, `tasks/list` |
-| 2026-only | `server/discover`, `subscriptions/listen` |
+| 2026-only | `server/discover`, `subscriptions/listen`, `tasks/get`, `tasks/update`, `tasks/cancel`, `skills/list`, `skills/get`, `resources/directory/read` |
 
-Note that `ping`, `elicitation/create`, and all `tasks/*` methods are 2025-only: they are not available in the 2026 era (`server/extensions/list` is in no era's method set).
+Here `tasks/get`, `tasks/update`, and `tasks/cancel` form a dual-era intersection (in 2026, task notifications are suppressed and the `Mcp-Name` header is validated); `tasks/result` and `tasks/list` remain 2025-only; `skills/list`, `skills/get`, and `resources/directory/read` are 2026-only (the remaining 2025-only methods such as `ping` and `elicitation/create` are still unavailable in the 2026 era; `server/extensions/list` is in no era's method set).
 
 ### Era-Gated Notifications
 

@@ -100,6 +100,27 @@ EmptyCapability DeserializeEmptyCapability(const JsonValue&) {
     return EmptyCapability{};
 }
 
+JsonValue SerializeTasksExtensionSettings(const TasksExtensionSettings&) {
+    return JsonValue(JsonValue::object_tag);
+}
+
+TasksExtensionSettings DeserializeTasksExtensionSettings(const JsonValue&) {
+    return TasksExtensionSettings{};
+}
+
+JsonValue SerializeSkillsExtensionSettings(const SkillsExtensionSettings& v) {
+    JsonValue obj(JsonValue::object_tag);
+    if (v.directory_read) obj[detail::kDirectoryRead] = JsonValue(true);
+    return obj;
+}
+
+SkillsExtensionSettings DeserializeSkillsExtensionSettings(const JsonValue& j) {
+    SkillsExtensionSettings v;
+    auto* d = j.Find(detail::kDirectoryRead);
+    if (d && d->IsBool()) v.directory_read = d->GetBool();
+    return v;
+}
+
 JsonValue SerializeServerCapabilities(const ServerCapabilities& v) {
     JsonValue obj(JsonValue::object_tag);
     if (v.tools) obj[detail::kTools] = SerializeToolsCapability(*v.tools);

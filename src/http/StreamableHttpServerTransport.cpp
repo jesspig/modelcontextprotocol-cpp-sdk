@@ -9,6 +9,8 @@
 
 #include <transport/detail/net/NetIoUtil.hpp>
 
+#include <detail/JsonFields.hpp>
+
 #include "McpParamHeaders.hpp"
 
 #include <algorithm>
@@ -105,6 +107,13 @@ std::string MetadataPathFromUrl(const std::string& url) {
     return path.empty() ? std::string(kWellKnownMetadataPath) : path;
 }
 
+std::string NormalizeResourceUrl(std::string_view url) {
+    std::string out(url);
+    if (auto hash = out.find('#'); hash != std::string::npos) out.resize(hash);
+    if (out.size() > 1 && out.back() == '/') out.pop_back();
+    return out;
+}
+
 std::string ResourceUrlFromMetadataUrl(const std::string& metadata_url) {
     auto base = metadata_url;
     auto query = base.find('?');
@@ -159,9 +168,36 @@ void RespondHeaderMismatch(HttpResponse& resp, const std::string& message) {
     resp.headers["content-type"] = "application/json";
 }
 
+bool IsTaskMethod(std::string_view method) {
+    return method == methods::kGetTask || method == methods::kUpdateTask ||
+           method == methods::kCancelTask;
+}
+
 bool RequiresMcpNameHeader(std::string_view method) {
     return method == methods::kCallTool || method == methods::kReadResource ||
-           method == methods::kGetPrompt;
+           method == methods::kGetPrompt || IsTaskMethod(method);
+}
+
+bool IsSupportedProtocolVersion(std::string_view version) {
+    for (auto known : kProtocolVersions) {
+        if (version == known) return true;
+    }
+    return false;
+}
+
+void RespondUnsupportedVersion(HttpResponse& resp, const std::string& version) {
+    resp.status_code = 400;
+    resp.status_text = "Bad Request";
+    JsonValue::Object err_obj;
+    err_obj["jsonrpc"] = JsonValue("2.0");
+    {
+        JsonValue::Object err_err;
+        err_err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
+        err_err["message"] = JsonValue("Unsupported protocol version '" + version + "'");
+        err_obj["error"] = JsonValue(std::move(err_err));
+    }
+    resp.body = JsonValue(std::move(err_obj)).Dump();
+    resp.headers["content-type"] = "application/json";
 }
 } // namespace
 
@@ -188,14 +224,6 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
 
     session_id_ = "srv-" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count());
-
-    if (session_store_ && !options_.stateless) {
-        SessionRecord record;
-        record.protocol_version = std::string(kDefaultNegotiatedProtocolVersion);
-        record.created_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        session_store_->Save(session_id_, record);
-    }
 
     http_server_->SetHandler("POST", options_.endpoint,
         [this](const HttpRequest& req, HttpResponse& resp) {
@@ -272,6 +300,16 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
                             config.scopes_supported);
         return false;
     }
+    if (config.validate_token_resource && !config.expected_resource.empty()) {
+        bool audience_ok = result.resource && !result.resource->empty() &&
+            NormalizeResourceUrl(*result.resource) ==
+                NormalizeResourceUrl(config.expected_resource);
+        if (!audience_ok) {
+            RespondUnauthorized(resp, config.resource_metadata_url, true,
+                                config.scopes_supported);
+            return false;
+        }
+    }
     for (const auto& required : config.required_scopes) {
         if (std::find(result.scopes.begin(), result.scopes.end(), required)
             == result.scopes.end()) {
@@ -321,14 +359,12 @@ void StreamableHttpServerTransport::AdoptSession(const std::string& session_id) 
 bool StreamableHttpServerTransport::EnsureSession(
     const HttpRequest& req, HttpResponse& resp)
 {
-    if (options_.stateless || !session_store_) return true;
+    if (options_.stateless) return true;
+    if (!session_store_) return true;
     auto session_id = GetMcpHeader(req, "mcp-session-id");
     if (!session_id || session_id->empty()) return true;
-    if (*session_id == ActiveSessionId() && channel_ && channel_->IsOpen()) {
-        return true;
-    }
     if (session_store_->Load(*session_id)) {
-        AdoptSession(*session_id);
+        if (*session_id != ActiveSessionId()) AdoptSession(*session_id);
         return true;
     }
     resp.status_code = 404;
@@ -361,6 +397,23 @@ bool StreamableHttpServerTransport::ValidateMcpHeaders(
             effective_name = decoded->GetString();
         }
         auto* params = body.Find("params");
+        const JsonValue* params_obj =
+            (params && params->IsObject()) ? params : nullptr;
+        if (IsTaskMethod(body_method)) {
+            const JsonValue* task_id =
+                params_obj ? params_obj->Find(detail::kTaskId) : nullptr;
+            if (!task_id || !task_id->IsString() || task_id->GetString().empty()) {
+                error_out = "tasks request missing valid taskId";
+                return false;
+            }
+            if (task_id->GetString() != effective_name) {
+                error_out = "Mcp-Name header '" + effective_name +
+                            "' does not match body params taskId '" +
+                            task_id->GetString() + "'";
+                return false;
+            }
+            return true;
+        }
         std::string body_name;
         if (params && params->IsObject()) {
             if (auto* n = params->Find("name"); n && n->IsString()) body_name = n->GetString();
@@ -445,6 +498,11 @@ void StreamableHttpServerTransport::HandlePost(
     if (!EnsureSession(req, resp)) return;
 
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
+    if (proto_ver.has_value() && !proto_ver->empty() &&
+        !IsSupportedProtocolVersion(*proto_ver)) {
+        RespondUnsupportedVersion(resp, *proto_ver);
+        return;
+    }
     auto mcp_method = GetMcpHeader(req, "mcp-method");
     auto mcp_name = GetMcpHeader(req, "mcp-name");
 
@@ -499,8 +557,11 @@ void StreamableHttpServerTransport::HandlePost(
         return;
     }
 
-    if (proto_ver.has_value()) {
+    if (proto_ver.has_value() && !proto_ver->empty()) {
         resp.headers["mcp-protocol-version"] = proto_ver.value();
+    } else {
+        resp.headers["mcp-protocol-version"] =
+            std::string(kDefaultNegotiatedProtocolVersion);
     }
 
     if (mcp_method.has_value()) {
@@ -540,6 +601,20 @@ void StreamableHttpServerTransport::HandlePost(
         if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
             req_id = r->id;
             is_initialize = (r->method == methods::kInitialize);
+        }
+    }
+
+    if (is_initialize && session_store_ && !options_.stateless) {
+        SessionRecord record;
+        record.protocol_version = std::string(kDefaultNegotiatedProtocolVersion);
+        record.created_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (!session_store_->TrySave(ActiveSessionId(), record)) {
+            resp.status_code = 503;
+            resp.status_text = "Service Unavailable";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session store is full"}})";
+            resp.headers["content-type"] = "application/json";
+            return;
         }
     }
 
@@ -657,6 +732,19 @@ void StreamableHttpServerTransport::HandleGet(
 {
     if (!AuthorizeRequest(req, resp)) return;
     if (!EnsureSession(req, resp)) return;
+
+    auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
+    if (proto_ver.has_value() && !proto_ver->empty() &&
+        !IsSupportedProtocolVersion(*proto_ver)) {
+        RespondUnsupportedVersion(resp, *proto_ver);
+        return;
+    }
+    if (proto_ver.has_value() && !proto_ver->empty()) {
+        resp.headers["mcp-protocol-version"] = proto_ver.value();
+    } else {
+        resp.headers["mcp-protocol-version"] =
+            std::string(kDefaultNegotiatedProtocolVersion);
+    }
 
     resp.is_sse = true;
     resp.headers["content-type"] = "text/event-stream";

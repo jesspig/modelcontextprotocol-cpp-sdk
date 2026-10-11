@@ -20,7 +20,8 @@
 | `client_secret` | `optional<string>` | 客户端密钥（可选） |
 | `scopes` | `vector<string>` | 请求的 OAuth 作用域 |
 | `token_cache` | `shared_ptr<ITokenCache>` | 令牌持久化（默认：`InMemoryTokenCache`） |
-| `resource` | `optional<string>` | RFC 8707 资源指示符，随授权请求与令牌请求发送；缺省时回退到已发现元数据的 `resource`，再回退到 `server_url`；解析结果为空则完全不发送该参数 |
+| `resource` | `optional<string>` | RFC 8707 资源指示符，随授权请求与令牌请求发送；缺省时回退到已发现元数据的 `resource`，再回退到 `server_url`；解析结果为空则完全不发送该参数；落盘为令牌的 audience，指示符变化时已缓存令牌视为无效 |
+| `application_type` | `string` | 动态注册时发送的 `application_type`（默认 `"native"`） |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
 | `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码、授权服务器回显的 `state` 与可选的 `iss`（`AuthorizationCodeResult{code, state, iss}`），失败时返回 `nullopt` |
 
@@ -68,16 +69,19 @@ auto token = auth->GetAccessToken();
 ## 资源指示符与发行者校验
 
 - **RFC 8707 `resource`**：取值优先级为「显式 `options.resource` → 已发现元数据的 `resource` → `server_url`」，解析结果非空时注入授权 URL 以及三个令牌请求（`client_credentials`、授权码交换、`refresh_token`）。
+- **audience 绑定**：令牌响应落盘时一并记录当前资源指示符（`TokenContainer.resource`，`FileTokenCache` 同步持久化）；指示符变化后，`Authenticate` 会先清空失配缓存，`GetAccessToken` / `IsAuthenticated` / `HasToken` / `GetAuthorizationHeader` 均按无有效令牌处理。
 - **RFC 9207 `iss`**：令牌与刷新响应中的 `iss` 必须存在且与已发现元数据的 issuer 一致，否则拒绝；授权响应侧在 `state` 校验通过之后、换取令牌之前做同样比对——`AuthorizationCodeResult::iss` 有值且与 issuer 不一致即拒绝，未携带则不校验。
-- **CIMD（Client ID Metadata Document）**：`client_id` 为 URL 时按该 URL 拉取并解析客户端元数据，失败属 best-effort 回退（记录警告并使用已配置的值），不会中断授权流程。
+- **发行者绑定**：元数据发现响应缺 `issuer` 即失败（不再回退 `server_url`）；首次发现绑定 issuer，后续发现 issuer 变化时清空动态注册信息与本地令牌再重绑。
+- **CIMD（Client ID Metadata Document）**：`client_id` 为 URL 时按该 URL 拉取并解析客户端元数据（采纳其中的 `token_endpoint_auth_method`），失败属 best-effort 回退（记录警告并使用已配置的值），不会中断授权流程；动态注册发送 `application_type`（默认 `"native"`）。
+- **挑战加固**：`HandleAuthChallenge` 对超长/非法输入直接返回 false（不抛异常），非法 URL 与失配资源均拒绝合并。
 
 ## 与服务端 Bearer 鉴权集成
 
-SDK 服务端内置 RFC 6750/9728 Bearer 鉴权（`StreamableHttpServerOptions::bearer_auth`，配置详见[传输层](/zh/guide/transports)）：验证失败返回 401/403 挑战，`WWW-Authenticate` 头引用受保护资源元数据 URL，并可选在 `/.well-known/oauth-protected-resource` 公开元数据文档。
+SDK 服务端内置 RFC 6750/9728 Bearer 鉴权（`StreamableHttpServerOptions::bearer_auth`，配置详见[传输层](/zh/guide/transports)）：验证失败返回 401/403 挑战，`WWW-Authenticate` 头引用受保护资源元数据 URL，并可选在 `/.well-known/oauth-protected-resource` 公开元数据文档。`expected_resource` 非空时额外校验令牌 audience（失配 401 `invalid_token`，与 scope 缺口的 403 分流）。
 
 客户端有两个对接点：
 
-- `HttpClientTransportOptions::auth_challenge_handler`（见[传输层](/zh/guide/transports)）：收到 401/403 的 `WWW-Authenticate` 时回调；返回非空 `Authorization` 头则恰好重试一次。回调内可委托 `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` 解析挑战并获取新令牌。
+- `HttpClientTransportOptions::auth_challenge_handler`（见[传输层](/zh/guide/transports)）：401 必回调，`WWW-Authenticate` 含 `insufficient_scope` 的 403 才回调；返回非空 `Authorization` 头则恰好重试一次。回调内可委托 `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` 解析挑战并获取新令牌。
 - `HandleAuthChallenge(www_authenticate)`（返回 `bool`）：按 RFC 9728 解析挑战中的元数据 URL 以发现授权服务器，必要时重新走授权流程。
 
 ```cpp

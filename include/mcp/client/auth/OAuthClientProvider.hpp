@@ -25,6 +25,7 @@ struct OAuthClientOptions {
     std::vector<std::string> scopes;
     std::shared_ptr<ITokenCache> token_cache;
     std::optional<std::string> resource;
+    std::string application_type{"native"};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -63,6 +64,10 @@ private:
 
     bool ValidateTokenIssuer(const JsonValue& response) const;
 
+    bool TokenResourceMatches(const TokenContainer& tokens) const;
+
+    void EnforceIssuerBinding();
+
     std::string ResolveResourceIndicator() const;
 
     bool FetchClientMetadataDocument();
@@ -76,6 +81,7 @@ private:
 
     std::optional<OAuthMetadata> metadata_;
     std::optional<ClientRegistrationInfo> registration_;
+    std::optional<std::string> bound_issuer_;
 
     std::string code_verifier_;
     std::string code_challenge_;

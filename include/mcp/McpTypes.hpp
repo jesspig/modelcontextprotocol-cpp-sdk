@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace mcp {
@@ -95,7 +96,10 @@ struct Pagination {
     std::optional<std::string> next_cursor;
 };
 
-enum class ResultType { Complete, InputRequired };
+enum class ResultType { Complete, InputRequired, Task };
+
+JsonValue SerializeResultType(ResultType v);
+ResultType DeserializeResultType(const JsonValue& j);
 
 struct Result {
     std::optional<JsonValue> meta;
@@ -344,12 +348,24 @@ struct GetTaskResult {
     std::optional<std::string> error_message;
     std::optional<JsonValue> input_required;
     std::optional<JsonValue> meta;
+    std::optional<std::string> status_message;
+    std::optional<std::string> created_at;
+    std::optional<std::string> last_updated_at;
+    std::optional<int64_t> ttl_ms;
+    std::optional<int64_t> poll_interval_ms;
+    std::optional<InputRequests> input_requests;
+    std::optional<JsonValue> error;
 };
 
 struct CreateTaskResult : Result {
     std::string task_id;
     std::string status;
     std::string created_at;
+    std::optional<std::string> status_message;
+    std::optional<std::string> last_updated_at;
+    std::optional<int64_t> ttl_ms;
+    std::optional<int64_t> poll_interval_ms;
+    std::optional<InputRequests> input_requests;
 };
 
 using UpdateTaskResult = EmptyResult;
@@ -362,6 +378,7 @@ struct GetTaskRequestParams {
 struct UpdateTaskRequestParams {
     std::string task_id;
     std::optional<JsonValue> result;
+    std::optional<JsonValue> input_responses;
 };
 
 struct CancelTaskRequestParams {
@@ -372,6 +389,61 @@ struct CancelTaskRequestParams {
 struct TaskStatusNotificationParams {
     std::string task_id;
     std::string status;
+};
+
+using ListSkillsRequestParams = PaginatedRequestParams;
+
+struct SkillsGetRequestParams {
+    std::string uri;
+    std::optional<RequestMeta> meta;
+};
+
+struct ReadDirectoryRequestParams {
+    std::string uri;
+    std::optional<std::string> cursor;
+    std::optional<RequestMeta> meta;
+};
+
+struct SkillResource {
+    std::string uri;
+    std::string digest;
+    int64_t size{0};
+};
+
+using SkillResources = std::variant<std::vector<SkillResource>, std::string>;
+
+struct Skill {
+    std::string uri;
+    JsonValue frontmatter;
+    SkillResources resources;
+    std::optional<JsonValue> meta;
+};
+
+struct SkillsListResult : Result {
+    std::vector<Skill> skills;
+    std::optional<std::string> next_cursor;
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
+};
+
+struct SkillsGetResult : Result {
+    Skill skill;
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
+};
+
+struct DirectoryChild {
+    std::string uri;
+    std::string name;
+    std::optional<std::string> mime_type;
+    std::optional<JsonValue> meta;
+};
+
+struct ReadDirectoryResult : Result {
+    std::vector<DirectoryChild> resources;
+    std::optional<std::string> next_cursor;
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
 };
 
 struct ToolOptions {
@@ -523,5 +595,24 @@ UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j);
 JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v);
 CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j);
 JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v);
+
+JsonValue SerializeSkillResource(const SkillResource& v);
+SkillResource DeserializeSkillResource(const JsonValue& j);
+JsonValue SerializeSkillResources(const SkillResources& v);
+SkillResources DeserializeSkillResources(const JsonValue& j);
+JsonValue SerializeSkill(const Skill& v);
+Skill DeserializeSkill(const JsonValue& j);
+JsonValue SerializeSkillsListResult(const SkillsListResult& v);
+SkillsListResult DeserializeSkillsListResult(const JsonValue& j);
+JsonValue SerializeSkillsGetResult(const SkillsGetResult& v);
+SkillsGetResult DeserializeSkillsGetResult(const JsonValue& j);
+JsonValue SerializeSkillsGetRequestParams(const SkillsGetRequestParams& v);
+SkillsGetRequestParams DeserializeSkillsGetRequestParams(const JsonValue& j);
+JsonValue SerializeDirectoryChild(const DirectoryChild& v);
+DirectoryChild DeserializeDirectoryChild(const JsonValue& j);
+JsonValue SerializeReadDirectoryResult(const ReadDirectoryResult& v);
+ReadDirectoryResult DeserializeReadDirectoryResult(const JsonValue& j);
+JsonValue SerializeReadDirectoryRequestParams(const ReadDirectoryRequestParams& v);
+ReadDirectoryRequestParams DeserializeReadDirectoryRequestParams(const JsonValue& j);
 
 } // namespace mcp

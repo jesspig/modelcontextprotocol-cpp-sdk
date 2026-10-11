@@ -26,6 +26,7 @@ inline constexpr uint16_t kDefaultPort = 3001;
 struct AuthResult {
     bool ok{false};
     std::vector<std::string> scopes;
+    std::optional<std::string> resource;
 };
 
 using McpParamAnnotationInfo = detail::McpParamAnnotation;
@@ -36,7 +37,7 @@ struct StreamableHttpServerOptions {
 
     bool stateless{true};
 
-    bool enable_legacy_sse{true};
+    bool enable_legacy_sse{false};
 
     int sse_keep_alive_ms{15000};
 
@@ -56,6 +57,8 @@ struct StreamableHttpServerOptions {
         std::vector<std::string> required_scopes;
         std::vector<std::string> authorization_servers;
         bool serve_metadata_endpoint{true};
+        std::string expected_resource;
+        bool validate_token_resource{true};
     };
     std::optional<BearerAuthConfig> bearer_auth;
 

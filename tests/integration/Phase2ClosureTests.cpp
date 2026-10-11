@@ -525,6 +525,7 @@ struct Phase2HttpElicitFixture : mcp::test::TestCase {
         StreamableHttpServerOptions topts;
         topts.port = port;
         topts.endpoint = "/mcp";
+        topts.enable_legacy_sse = true;
         server_transport = std::make_shared<StreamableHttpServerTransport>(topts);
 
         auto initialized_flag = server_initialized;

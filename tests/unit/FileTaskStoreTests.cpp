@@ -138,3 +138,103 @@ TEST_F(FileTaskStoreTest, CorruptFileDoesNotThrow) {
     EXPECT_TRUE(store.GetAllTasks().empty());
     EXPECT_FALSE(store.GetTask("task-1").has_value());
 }
+
+TEST_F(FileTaskStoreTest, AdvanceTaskWithInput) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+    ASSERT_TRUE(store.SetTaskStatus("task-1", TaskStatus::InputRequired));
+
+    JsonValue responses(JsonValue::object_tag);
+    responses["name"] = JsonValue("Alice");
+    EXPECT_TRUE(store.AdvanceTaskWithInput("task-1", responses));
+
+    auto task = store.GetTask("task-1");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_EQ(task->status, TaskStatus::Working);
+    ASSERT_TRUE(task->input_responses.has_value());
+    auto* name_entry = task->input_responses->Find("name");
+    ASSERT_NE(name_entry, nullptr);
+    EXPECT_EQ(name_entry->GetString(), "Alice");
+    ASSERT_TRUE(task->last_updated_at.has_value());
+
+    EXPECT_FALSE(store.AdvanceTaskWithInput("task-1", responses));
+    EXPECT_FALSE(store.AdvanceTaskWithInput("missing", responses));
+}
+
+TEST_F(FileTaskStoreTest, TaskStoreOldFileCompat) {
+    {
+        std::ofstream ofs(store_path);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << R"({"tasks":{"task-old":{"task_id":"task-old","status":1,)"
+               R"("result":{"answer":7},"progress":0.0,"created_at":"1700000000000"}}})";
+    }
+
+    {
+        FileTaskStore store(store_path);
+        auto task = store.GetTask("task-old");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_EQ(task->task_id, "task-old");
+        EXPECT_EQ(task->status, TaskStatus::Working);
+        ASSERT_TRUE(task->result.has_value());
+        EXPECT_EQ(task->result->At("answer").GetInt(), 7);
+        EXPECT_FALSE(task->status_message.has_value());
+        EXPECT_FALSE(task->last_updated_at.has_value());
+        EXPECT_FALSE(task->ttl_ms.has_value());
+        EXPECT_FALSE(task->poll_interval_ms.has_value());
+        EXPECT_FALSE(task->input_requests.has_value());
+        EXPECT_FALSE(task->input_responses.has_value());
+    }
+
+    {
+        std::ofstream ofs(store_path, std::ios::trunc);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << R"({"tasks":{"task-new":{"task_id":"task-new","status":5,)"
+               R"("progress":0.0,"created_at":"1700000000000",)"
+               R"("statusMessage":"waiting","lastUpdatedAt":"1700000001000",)"
+               R"("ttlMs":3000,"pollIntervalMs":250,)"
+               R"("inputRequests":{"name":{"method":"elicitation/create",)"
+               R"("params":{"message":"hi"}}},)"
+               R"("inputResponses":{"name":"Alice"}}}})";
+    }
+
+    {
+        FileTaskStore store(store_path);
+        auto task = store.GetTask("task-new");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_EQ(task->status, TaskStatus::InputRequired);
+        ASSERT_TRUE(task->status_message.has_value());
+        EXPECT_EQ(*task->status_message, "waiting");
+        ASSERT_TRUE(task->last_updated_at.has_value());
+        EXPECT_EQ(*task->last_updated_at, "1700000001000");
+        ASSERT_TRUE(task->ttl_ms.has_value());
+        EXPECT_EQ(*task->ttl_ms, 3000);
+        ASSERT_TRUE(task->poll_interval_ms.has_value());
+        EXPECT_EQ(*task->poll_interval_ms, 250);
+        ASSERT_TRUE(task->input_requests.has_value());
+        auto it = task->input_requests->find("name");
+        ASSERT_TRUE(it != task->input_requests->end());
+        EXPECT_EQ(it->second.method, "elicitation/create");
+        ASSERT_TRUE(task->input_responses.has_value());
+        EXPECT_EQ(task->input_responses->Find("name")->GetString(), "Alice");
+
+        store.CreateTask("task-other");
+    }
+
+    {
+        FileTaskStore restored(store_path);
+        auto task = restored.GetTask("task-new");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_EQ(task->status, TaskStatus::InputRequired);
+        ASSERT_TRUE(task->status_message.has_value());
+        EXPECT_EQ(*task->status_message, "waiting");
+        ASSERT_TRUE(task->ttl_ms.has_value());
+        EXPECT_EQ(*task->ttl_ms, 3000);
+        ASSERT_TRUE(task->poll_interval_ms.has_value());
+        EXPECT_EQ(*task->poll_interval_ms, 250);
+        ASSERT_TRUE(task->input_requests.has_value());
+        EXPECT_TRUE(task->input_requests->count("name") > 0u);
+        ASSERT_TRUE(task->input_responses.has_value());
+        EXPECT_EQ(task->input_responses->Find("name")->GetString(), "Alice");
+        EXPECT_TRUE(restored.GetTask("task-other").has_value());
+    }
+}

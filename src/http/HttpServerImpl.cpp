@@ -119,8 +119,8 @@ inline void AppendCorsHeaders(std::string& out) {
     out += "Access-Control-Allow-Origin: *\r\n";
     out += "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n";
     out += "Access-Control-Allow-Headers: Content-Type, Authorization, Mcp-Method, "
-           "Mcp-Param-*, Mcp-Name, Last-Event-ID, If-None-Match\r\n";
-    out += "Access-Control-Expose-Headers: Mcp-Session-Id, WWW-Authenticate\r\n";
+           "Mcp-Param-*, Mcp-Name, Mcp-Protocol-Version, Last-Event-ID, If-None-Match\r\n";
+    out += "Access-Control-Expose-Headers: Mcp-Session-Id, Mcp-Protocol-Version, WWW-Authenticate\r\n";
 }
 
 Impl::~Impl() {

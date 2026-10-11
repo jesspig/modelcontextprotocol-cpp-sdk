@@ -24,7 +24,7 @@ public:
 
     virtual void Clear(std::string_view session_id);
 
-    static constexpr size_t kMaxEventsPerSession = 1024;
+    static constexpr size_t kMaxEventsPerSession = 10000;
 
 private:
     struct StoredEvent {

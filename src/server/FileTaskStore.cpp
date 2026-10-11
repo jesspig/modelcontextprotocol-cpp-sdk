@@ -3,12 +3,19 @@
 #include <mcp/detail/AtomicJsonFile.hpp>
 #include <detail/JsonFields.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <stdexcept>
 
 namespace mcp {
 
 namespace {
+
+std::string MakeMillisNow() {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return std::to_string(now_ms);
+}
 
 JsonValue SerializeTaskState(const TaskState& state) {
     JsonValue::Object obj;
@@ -20,6 +27,12 @@ JsonValue SerializeTaskState(const TaskState& state) {
     obj["progress"] = JsonValue(state.progress);
     if (state.progress_total) obj["progress_total"] = JsonValue(*state.progress_total);
     obj["created_at"] = JsonValue(state.created_at);
+    if (state.status_message) obj[detail::kStatusMessage] = JsonValue(*state.status_message);
+    if (state.last_updated_at) obj[detail::kLastUpdatedAt] = JsonValue(*state.last_updated_at);
+    if (state.ttl_ms) obj[detail::kTTLMs] = JsonValue(*state.ttl_ms);
+    if (state.poll_interval_ms) obj[detail::kPollIntervalMs] = JsonValue(*state.poll_interval_ms);
+    if (state.input_requests) obj[detail::kInputRequests] = SerializeInputRequests(*state.input_requests);
+    if (state.input_responses) obj[detail::kInputResponses] = *state.input_responses;
     return JsonValue(std::move(obj));
 }
 
@@ -37,6 +50,18 @@ TaskState DeserializeTaskState(const JsonValue& j) {
     if (auto* v = j.Find("progress_total"); v && !v->IsNull())
         state.progress_total = v->GetDouble();
     if (auto* v = j.Find("created_at")) state.created_at = v->GetString();
+    if (auto* v = j.Find(detail::kStatusMessage); v && v->IsString())
+        state.status_message = v->GetString();
+    if (auto* v = j.Find(detail::kLastUpdatedAt); v && v->IsString())
+        state.last_updated_at = v->GetString();
+    if (auto* v = j.Find(detail::kTTLMs); v && v->IsInt())
+        state.ttl_ms = v->GetInt();
+    if (auto* v = j.Find(detail::kPollIntervalMs); v && v->IsInt())
+        state.poll_interval_ms = v->GetInt();
+    if (auto* v = j.Find(detail::kInputRequests); v && v->IsObject())
+        state.input_requests = DeserializeInputRequests(*v);
+    if (auto* v = j.Find(detail::kInputResponses); v && !v->IsNull())
+        state.input_responses = *v;
     return state;
 }
 
@@ -81,13 +106,12 @@ FileTaskStore::~FileTaskStore() {
 
 TaskState FileTaskStore::CreateTask(const std::string& task_id) {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
     TaskState state;
     state.task_id = task_id;
     state.status = TaskStatus::Pending;
     state.progress = 0;
-    state.created_at = std::to_string(now_ms);
+    state.created_at = MakeMillisNow();
+    state.last_updated_at = state.created_at;
     std::unordered_map<std::string, TaskState> snapshot;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
@@ -126,6 +150,7 @@ bool FileTaskStore::UpdateTask(
         original = it->second;
         it->second.result = result;
         it->second.status = result ? TaskStatus::Completed : TaskStatus::Working;
+        it->second.last_updated_at = MakeMillisNow();
         snapshot = tasks_;
     }
     if (!PersistTasks(snapshot)) {
@@ -151,6 +176,7 @@ bool FileTaskStore::CancelTask(
         original = it->second;
         it->second.status = TaskStatus::Cancelled;
         it->second.error_message = reason;
+        it->second.last_updated_at = MakeMillisNow();
         snapshot = tasks_;
     }
     if (!PersistTasks(snapshot)) {
@@ -172,6 +198,34 @@ bool FileTaskStore::SetTaskStatus(const std::string& task_id, TaskStatus status)
         if (it == tasks_.end()) return false;
         original = it->second;
         it->second.status = status;
+        it->second.last_updated_at = MakeMillisNow();
+        snapshot = tasks_;
+    }
+    if (!PersistTasks(snapshot)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::AdvanceTaskWithInput(
+    const std::string& task_id,
+    const JsonValue& input_responses)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    std::unordered_map<std::string, TaskState> snapshot;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        if (it->second.status != TaskStatus::InputRequired) return false;
+        original = it->second;
+        it->second.input_responses = input_responses;
+        it->second.status = TaskStatus::Working;
+        it->second.last_updated_at = MakeMillisNow();
         snapshot = tasks_;
     }
     if (!PersistTasks(snapshot)) {

@@ -126,3 +126,24 @@ return result;  // the server auto-signs requestState (requires request_state_ke
 ```
 
 Once `ServerOptions::request_state_key` is configured, the server automatically signs `request_state` on `input_required` results before returning them; tampered or expired states are rejected on retry before reaching the handler (-32602, `data.reason="invalid_request_state"`). See [MRTR](/en/advanced/mrtr) for the full protocol flow.
+
+## Task Execution
+
+Declaring a tool in task mode makes `tools/call` return a task handle (`taskId`) immediately while execution continues in the background; the client follows up with `GetTask` / `PollTaskToCompletion` (available in both the 2025 and 2026 eras; in the 2026 era task status notifications are suppressed, so the client polls for the terminal state):
+
+```cpp
+ToolExecution execution;
+execution.mode = ToolExecutionMode::Task;
+
+ToolOptions opts;
+opts.execution = execution;
+opts.description = "A long-running computation";
+
+server->RegisterTool("slow_compute", opts,
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // Poll ctx.IsCancellationRequested() for cooperative cancellation
+        // ...
+    });
+```
+
+This requires `ServerOptions::task_store` to be configured (the task persistence backend). `tasks/update` accepts `inputResponses` to answer input requests raised mid-execution (mutually exclusive with `result`). See [Extensions](/en/server/extensions) for extension declarations and wire semantics.

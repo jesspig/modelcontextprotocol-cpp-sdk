@@ -32,6 +32,11 @@ public:
         JsonValue& request_body,
         const RequestMeta& meta) const = 0;
 
+    virtual void ValidateTaskHeaders(
+        std::string_view method,
+        const JsonValue& params,
+        std::string_view mcp_name) const;
+
     virtual std::optional<RequestMeta> ExtractIncomingMeta(
         const JsonValue&) const { return std::nullopt; }
 

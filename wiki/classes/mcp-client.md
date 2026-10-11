@@ -1,9 +1,9 @@
 ---
 type: Class
 title: McpClient
-description: MCP 客户端门面：创建即协商、请求/通知 API、任务化工具调用、404 会话自愈、progress 回调、MRTR、响应缓存与翻页聚合。
-tags: [client, 门面, 协商, mrt, progress, tasks]
-timestamp: 2026-09-20T19:09:31+08:00
+description: MCP 客户端门面：创建即协商、请求/通知 API、任务化工具调用（含 tasks 扩展声明守卫与 inputResponses）、技能三方法与缓存、404 会话自愈、progress 回调、MRTR、响应缓存与翻页聚合。
+tags: [client, 门面, 协商, mrt, progress, tasks, skills]
+timestamp: 2026-10-11T16:35:00+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -35,9 +35,12 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:296](../../src/client/M
 - 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），读取 `GetAny` 双分区查（public 优先）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint` 顶层 `ttlMs`/`cacheScope` 优先回退嵌套 `cacheHint`，而 `CacheIfHinted` 顺序**相反**（嵌套优先、顶层兜底，[McpClient.cpp:964](../../src/client/McpClient.cpp)）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
 - MRTR：`SendRequestWithMrtr` 包装 `SendRequestWithMrtrOnce`（后者循环处理 `input_required`）——**仅当 `ClientOptions::input_required_config` 显式配置**（`auto_fulfill` 默认开）时启用，未配置 `max_rounds=0` 仅 1 轮；配置时 `max_rounds`（默认 10）超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout；`TryFulfillInputRequired` 遍历 `input_requests`（服务端键 → `{method, params}`）逐项按 `method` 分派（`elicitation/create` → `ElicitationHandler`、`sampling/createMessage` → `SamplingHandler`、`roots/list` → `RootsHandler`），handler 未注册或 `method` 未知 → `MethodNotFound`；回发 `inputResponses` 用服务端原键、值为裸结果（elicitation 经 `MakeInputResponseFromElicitResult` 只写 `action`+`content`）；无请求项时 state-only 退避（50ms ×2、封顶 250ms，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
 - 自动翻页：`ListPages` 上限 `kMaxListPages = 64` 页，不收敛抛 `McpError(ProtocolViolation)`（修复原静默截断）；聚合入口 `ListToolsAll/ListResourcesAll/ListResourceTemplatesAll/ListPromptsAll` 自带 cursor 循环（同样 64 页上限，返回时 `next_cursor` 为空）
-- 任务客户端流：`CallToolAsTask(name, arguments?, options?)` 发起任务化 tools/call——对端返回 `resultType=="task"` 时立即得到 `GetTaskResult`（任务句柄），后续 `GetTask`/`PollTaskToCompletion`（500ms 间隔 / 300s 超时，超时抛 `InternalError`）轮询至终态，`CancelTask` 请求取消
+- 任务客户端流：`CallToolAsTask(name, arguments?, options?)` 发起任务化 tools/call——对端返回 `resultType=="task"` 时立即得到 `GetTaskResult`（任务句柄），后续 `GetTask`/`PollTaskToCompletion`（500ms 间隔 / 300s 超时，超时抛 `InternalError`）轮询至终态，`CancelTask` 请求取消；`UpdateTask(task_id, result?, input_responses?)` 新增第三参——`inputResponses` 用于回应服务端的 `InputRequired`（与 `result` 互斥，服务端同带时拒绝）；`CallTool`/`GetPrompt` 收到 `resultType=="task"` 的结果同样经 `ResolveTaskResult` 走任务载荷提取（`tasks/result` 仍仅 legacy 可用，见 [/concepts/tasks-extension.md](../concepts/tasks-extension.md)）
+- **tasks 扩展声明守卫（modern era）**：`DeclaresTasksExtension(options)` 判定客户端是否声明 `io.modelcontextprotocol/tasks`（`options.capabilities->extensions` 含该键，或 `options.extensions` JsonValue 含该键）；modern 协商版本下收到 `resultType=="task"`（`CallTool`/`GetPrompt` 的 `ResolveTaskResult` 与 `CallToolAsTask` 的 task 分支）而未声明扩展时，抛 `McpError(HandlerError, "received task result without declaring tasks extension io.modelcontextprotocol/tasks")`；legacy era 不检查
+- **技能三方法（2026-only，SEP-2640）**：`ListSkills(cursor?)`（翻页聚合 + `CacheIfHinted`，缓存键 `skills/list\x1F<cursor>`；嵌套 `cacheHint` 扁平回填顶层 `ttlMs`/`cacheScope` 后再缓存）、`GetSkill(uri, options?)`（`CacheableRequestOptions`：`cache_mode use/bypass/refresh` + `max_age_ms`，键 `skills/get\x1F<uri>`）、`ReadDirectory(uri, cursor?, options?)`（键 `resources/directory/read\x1F<uri>[\x1F<cursor>]`，同为 cache_mode + max_age）；三者 TTL/分区语义与既有列表/读资源缓存一致（`ttlMs > 0` 才缓存，钳制 24h，public/private 双分区），详见 [/concepts/skills-extension.md](../concepts/skills-extension.md)
 - 404 会话自愈：`SessionExpired(-32009)` 且 `reinit_on_expired_session`（默认 true）时，`SendRequestWithMrtr` 捕获后调 `RecoverExpiredSession()`——`session_generation_` 原子世代计数 + `reinit_mutex_` 串行化重协商，持锁前先读世代、并发等待者见世代已变则跳过；随后原请求**恰一次重放**（`SendRequestWithMrtrOnce` 不再捕获，避免二次重放）
 - 总量超时：构造时 `SetMaxTotalTimeout(options_.max_total_timeout)` 接线至会话引擎（默认 0 禁用），progress 续命不可越过每请求绝对截止（见 [/classes/mcp-session-handler.md](mcp-session-handler.md)）；MRTR 循环自身的总预算仍取 `input_required_config->max_total_timeout`
+- **audience（资源绑定）透传**：OAuth 令牌现携带 `resource`（audience），`Authenticate` 在指示符变化时清缓存、`GetAccessToken`/`IsAuthenticated`/`HasToken`/`GetAuthorizationHeader` 在失配时按无 token 处理——客户端无需改调用，行为详见 [/concepts/oauth.md](../concepts/oauth.md)
 - URL elicitation：`SetUrlElicitationHandler` 注册 url 模式处理器——收到 `mode=="url"` 的 `elicitation/create` 时调用（缺 `elicitationId` 直接回 `InvalidParams`），返回后 SDK 自动回 `action="accept"` 并发送 `notifications/elicitation/complete`；处理器抛异常则异常回传服务端
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）
 - `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.5"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`span_handler` 为空

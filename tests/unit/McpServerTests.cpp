@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -1828,4 +1829,756 @@ TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
 
     ctx.server->Close();
     ctx.client->Close();
+}
+
+namespace {
+
+struct ModernTaskEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+    std::shared_ptr<FileTaskStore> store;
+    std::filesystem::path store_path;
+};
+
+ModernTaskEnv MakeModernTaskEnv() {
+    ModernTaskEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    env.store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(env.store_path, ec);
+    env.store = std::make_shared<FileTaskStore>(env.store_path);
+    sopts.task_store = env.store;
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+void CloseModernTaskEnv(ModernTaskEnv& env) {
+    env.server->Close();
+    env.client->Close();
+    std::error_code ec;
+    std::filesystem::remove(env.store_path, ec);
+}
+
+RequestMeta MetaWithMcpName(std::string_view name) {
+    RequestMeta meta;
+    JsonValue ext(JsonValue::object_tag);
+    ext["Mcp-Name"] = JsonValue(std::string(name));
+    meta.extensions = std::move(ext);
+    return meta;
+}
+
+} // namespace
+
+TEST(McpServerTest, UnsolicitedTaskCreation) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("quick_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "modern-done"});
+            return r;
+        });
+
+    auto caps = env.server->GetCapabilities();
+    ASSERT_TRUE(caps.extensions.has_value());
+    EXPECT_TRUE(caps.extensions->find(std::string(kTasksExtensionId))
+                != caps.extensions->end());
+
+    DiscoverRequestParams discover_params;
+    auto discover_future = env.client->SendRequest(methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(discover_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto discover_resp = discover_future.get();
+    ASSERT_FALSE(discover_resp.Contains("code"));
+    auto discovered = DeserializeDiscoverResult(discover_resp);
+    ASSERT_TRUE(discovered.capabilities.extensions.has_value());
+    EXPECT_TRUE(discovered.capabilities.extensions->find(std::string(kTasksExtensionId))
+                != discovered.capabilities.extensions->end());
+
+    std::atomic<bool> legacy_notif_seen{false};
+    const std::string_view kLegacyTaskNotifs[] = {
+        notifications::kTaskStatus, notifications::kTaskWorking,
+        notifications::kTaskCompleted, notifications::kTaskFailed,
+        notifications::kTaskCancelled, notifications::kTaskInputRequired,
+    };
+    for (auto method : kLegacyTaskNotifs) {
+        env.client->SetNotificationHandler(method,
+            [&](const JsonRpcNotification&) { legacy_notif_seen.store(true); });
+    }
+
+    CallToolRequestParams params;
+    params.name = "quick_task";
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    ASSERT_TRUE(resp.Contains("resultType"));
+    EXPECT_EQ(resp["resultType"].GetString(), "task");
+    auto created = DeserializeCreateTaskResult(resp);
+    EXPECT_EQ(created.status, "working");
+    EXPECT_FALSE(created.task_id.empty());
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    std::optional<GetTaskResult> final_task;
+    for (int i = 0; i < 200; ++i) {
+        auto get_future = env.client->SendRequest(methods::kGetTask,
+            SerializeGetTaskRequestParams(get_params), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        auto get_resp = get_future.get();
+        ASSERT_FALSE(get_resp.Contains("code"));
+        auto got = DeserializeGetTaskResult(get_resp);
+        if (got.status == "completed") {
+            final_task = got;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    ASSERT_TRUE(final_task.has_value());
+    EXPECT_EQ(final_task->task_id, created.task_id);
+    ASSERT_TRUE(final_task->result.has_value());
+    EXPECT_TRUE(final_task->result->Contains("content"));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_FALSE(legacy_notif_seen.load());
+
+    GetTaskRequestParams payload_params;
+    payload_params.task_id = created.task_id;
+    auto payload_future = env.client->SendRequest(methods::kGetTaskPayload,
+        SerializeGetTaskRequestParams(payload_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(payload_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto payload_resp = payload_future.get();
+    ASSERT_TRUE(payload_resp.Contains("code"));
+    EXPECT_EQ(payload_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksUpdateWithInputResponses) {
+    auto env = MakeModernTaskEnv();
+
+    env.store->CreateTask("task-input");
+    ASSERT_TRUE(env.store->SetTaskStatus("task-input", TaskStatus::InputRequired));
+
+    UpdateTaskRequestParams up;
+    up.task_id = "task-input";
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue name_resp(JsonValue::object_tag);
+    name_resp["user_name"] = JsonValue("Alice");
+    responses["name"] = std::move(name_resp);
+    up.input_responses = std::move(responses);
+    auto up_future = env.client->SendRequest(methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(up), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(up_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto up_resp = up_future.get();
+    ASSERT_FALSE(up_resp.Contains("code"));
+
+    auto advanced = env.store->GetTask("task-input");
+    ASSERT_TRUE(advanced.has_value());
+    EXPECT_EQ(advanced->status, TaskStatus::Working);
+    ASSERT_TRUE(advanced->input_responses.has_value());
+    auto* name_entry = advanced->input_responses->Find("name");
+    ASSERT_NE(name_entry, nullptr);
+    auto* user_name = name_entry->Find("user_name");
+    ASSERT_NE(user_name, nullptr);
+    EXPECT_EQ(user_name->GetString(), "Alice");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = "task-input";
+    auto get_future = env.client->SendRequest(methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithMcpName("task-input"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto get_resp = get_future.get();
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(DeserializeGetTaskResult(get_resp).status, "working");
+
+    auto mismatch_future = env.client->SendRequest(methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithMcpName("other-task"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(mismatch_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto mismatch_resp = mismatch_future.get();
+    ASSERT_TRUE(mismatch_resp.Contains("code"));
+    EXPECT_EQ(mismatch_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::HeaderMismatch));
+
+    UpdateTaskRequestParams repeat;
+    repeat.task_id = "task-input";
+    JsonValue again(JsonValue::object_tag);
+    again["name"] = JsonValue("Bob");
+    repeat.input_responses = std::move(again);
+    auto repeat_future = env.client->SendRequest(methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(repeat), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(repeat_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto repeat_resp = repeat_future.get();
+    ASSERT_TRUE(repeat_resp.Contains("code"));
+    EXPECT_EQ(repeat_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CloseModernTaskEnv(env);
+}
+
+namespace {
+
+struct SkillsEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+SkillsEnv MakeSkillsEnv(bool directory_read) {
+    SkillsEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.server->RegisterResource("code-review-skill", "skill://code-review/SKILL.md",
+        ResourceOptions{}.MimeType("text/markdown"),
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "# Code Review";
+            trc.mime_type = "text/markdown";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+    Skill review;
+    review.uri = "skill://code-review/SKILL.md";
+    JsonValue fm(JsonValue::object_tag);
+    fm["name"] = JsonValue("code-review");
+    fm["description"] = JsonValue("Review code.");
+    review.frontmatter = fm;
+    review.resources = SkillResources{std::vector<SkillResource>{
+        SkillResource{"skill://code-review/SKILL.md", "sha256:aaa", int64_t(128)},
+        SkillResource{"skill://code-review/references/checklist.md", "sha256:bbb", int64_t(64)},
+        SkillResource{"skill://code-review/references/deep/guide.md", "sha256:ccc", int64_t(32)},
+        SkillResource{"skill://code-review/scripts/run.py", "sha256:ddd", int64_t(16)},
+    }};
+    env.server->RegisterSkill(review);
+    if (directory_read) env.server->SetSkillsDirectoryRead(true);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    NegotiateModernVersion(env.server);
+    return env;
+}
+
+void CloseSkillsEnv(SkillsEnv& env) {
+    env.server->Close();
+    env.client->Close();
+}
+
+JsonValue SendSkillsRequest(
+    const std::shared_ptr<McpSessionHandler>& client,
+    std::string_view method,
+    JsonValue params)
+{
+    auto future = client->SendRequest(method, std::move(params), {},
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        JsonValue err(JsonValue::object_tag);
+        err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
+        return err;
+    }
+    return future.get();
+}
+
+} // namespace
+
+TEST(McpServerTest, SkillsListGetDirectory) {
+    auto env = MakeSkillsEnv(true);
+
+    EXPECT_TRUE(env.server->GetCapabilities().extensions.has_value());
+    ASSERT_TRUE(env.server->GetCapabilities().extensions->find(
+        std::string(kSkillsExtensionId)) !=
+        env.server->GetCapabilities().extensions->end());
+
+    auto list_resp = SendSkillsRequest(env.client, methods::kListSkills,
+        SerializePaginatedRequestParams(PaginatedRequestParams{}));
+    ASSERT_FALSE(list_resp.Contains("code"));
+    EXPECT_EQ(list_resp["resultType"].GetString(), "complete");
+    auto* skills_arr = list_resp.Find("skills");
+    ASSERT_NE(skills_arr, nullptr);
+    ASSERT_TRUE(skills_arr->IsArray());
+    ASSERT_EQ(skills_arr->Size(), 1u);
+    const auto& entry = (*skills_arr)[0];
+    EXPECT_EQ(entry.Find("uri")->GetString(), "skill://code-review/SKILL.md");
+    EXPECT_EQ(entry.Find("frontmatter")->Find("name")->GetString(), "code-review");
+    EXPECT_EQ(entry.Find("frontmatter")->Find("description")->GetString(), "Review code.");
+    auto* manifest = entry.Find("resources");
+    ASSERT_NE(manifest, nullptr);
+    ASSERT_TRUE(manifest->IsArray());
+    ASSERT_EQ(manifest->Size(), 4u);
+    EXPECT_EQ((*manifest)[0].Find("digest")->GetString(), "sha256:aaa");
+
+    PaginatedRequestParams second_page;
+    second_page.cursor = "1";
+    auto page_resp = SendSkillsRequest(env.client, methods::kListSkills,
+        SerializePaginatedRequestParams(second_page));
+    ASSERT_FALSE(page_resp.Contains("code"));
+    ASSERT_TRUE(page_resp.Find("skills")->IsArray());
+    EXPECT_EQ(page_resp.Find("skills")->Size(), 0u);
+    EXPECT_FALSE(page_resp.Contains("nextCursor"));
+
+    SkillsGetRequestParams get_params;
+    get_params.uri = "skill://code-review/SKILL.md";
+    auto get_resp = SendSkillsRequest(env.client, methods::kGetSkill,
+        SerializeSkillsGetRequestParams(get_params));
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["resultType"].GetString(), "complete");
+    auto got = DeserializeSkillsGetResult(get_resp);
+    EXPECT_EQ(got.skill.uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(got.skill.frontmatter.Find("name")->GetString(), "code-review");
+    ASSERT_TRUE(std::holds_alternative<std::vector<SkillResource>>(got.skill.resources));
+    EXPECT_EQ(std::get<std::vector<SkillResource>>(got.skill.resources).size(), 4u);
+
+    SkillsGetRequestParams missing_params;
+    missing_params.uri = "skill://nope/SKILL.md";
+    auto missing_resp = SendSkillsRequest(env.client, methods::kGetSkill,
+        SerializeSkillsGetRequestParams(missing_params));
+    ASSERT_TRUE(missing_resp.Contains("code"));
+    EXPECT_EQ(missing_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    ReadDirectoryRequestParams root_params;
+    root_params.uri = "skill://code-review";
+    auto root_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(root_params));
+    ASSERT_FALSE(root_resp.Contains("code"));
+    auto root = DeserializeReadDirectoryResult(root_resp);
+    ASSERT_EQ(root.resources.size(), 3u);
+    EXPECT_EQ(root.resources[0].uri, "skill://code-review/SKILL.md");
+    EXPECT_EQ(root.resources[0].name, "SKILL.md");
+    EXPECT_FALSE(root.resources[0].mime_type.has_value());
+    EXPECT_EQ(root.resources[1].uri, "skill://code-review/references");
+    EXPECT_EQ(root.resources[1].name, "references");
+    ASSERT_TRUE(root.resources[1].mime_type.has_value());
+    EXPECT_EQ(*root.resources[1].mime_type, "inode/directory");
+    EXPECT_EQ(root.resources[2].uri, "skill://code-review/scripts");
+    EXPECT_EQ(root.resources[2].name, "scripts");
+    ASSERT_TRUE(root.resources[2].mime_type.has_value());
+    EXPECT_EQ(*root.resources[2].mime_type, "inode/directory");
+    EXPECT_FALSE(root.next_cursor.has_value());
+
+    ReadDirectoryRequestParams sub_params;
+    sub_params.uri = "skill://code-review/references";
+    auto sub_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(sub_params));
+    ASSERT_FALSE(sub_resp.Contains("code"));
+    auto sub = DeserializeReadDirectoryResult(sub_resp);
+    ASSERT_EQ(sub.resources.size(), 2u);
+    EXPECT_EQ(sub.resources[0].uri, "skill://code-review/references/checklist.md");
+    EXPECT_EQ(sub.resources[0].name, "checklist.md");
+    EXPECT_EQ(sub.resources[1].uri, "skill://code-review/references/deep");
+    ASSERT_TRUE(sub.resources[1].mime_type.has_value());
+    EXPECT_EQ(*sub.resources[1].mime_type, "inode/directory");
+
+    ReadDirectoryRequestParams slash_params;
+    slash_params.uri = "skill://code-review/";
+    auto slash_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(slash_params));
+    ASSERT_FALSE(slash_resp.Contains("code"));
+    EXPECT_EQ(DeserializeReadDirectoryResult(slash_resp).resources.size(), 3u);
+
+    ReadDirectoryRequestParams file_params;
+    file_params.uri = "skill://code-review/SKILL.md";
+    auto file_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(file_params));
+    ASSERT_TRUE(file_resp.Contains("code"));
+    EXPECT_EQ(file_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    ReadDirectoryRequestParams unknown_params;
+    unknown_params.uri = "skill://code-review/nope";
+    auto unknown_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(unknown_params));
+    ASSERT_TRUE(unknown_resp.Contains("code"));
+    EXPECT_EQ(unknown_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    ResourceRequestParams read_params;
+    read_params.uri = "skill://code-review/SKILL.md";
+    auto read_resp = SendSkillsRequest(env.client, methods::kReadResource,
+        SerializeResourceRequestParams(read_params));
+    ASSERT_FALSE(read_resp.Contains("code"));
+    auto* contents = read_resp.Find("contents");
+    ASSERT_NE(contents, nullptr);
+    ASSERT_EQ(contents->Size(), 1u);
+    EXPECT_EQ((*contents)[0].Find("text")->GetString(), "# Code Review");
+
+    Skill bad_scheme;
+    bad_scheme.uri = "https://example.com/code-review/SKILL.md";
+    EXPECT_THROW(env.server->RegisterSkill(bad_scheme), mcp::McpError);
+    Skill bad_shape;
+    bad_shape.uri = "skill://code-review/other.md";
+    EXPECT_THROW(env.server->RegisterSkill(bad_shape), mcp::McpError);
+
+    CloseSkillsEnv(env);
+}
+
+TEST(McpServerTest, SkillsDirectoryPagination) {
+    auto env = MakeSkillsEnv(true);
+
+    Skill bulk;
+    bulk.uri = "skill://bulk/SKILL.md";
+    bulk.frontmatter = JsonValue(JsonValue::object_tag);
+    std::vector<SkillResource> files;
+    files.push_back(SkillResource{"skill://bulk/SKILL.md", "sha256:root", int64_t(8)});
+    for (int i = 0; i < 105; ++i) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "skill://bulk/file-%03d.md", i);
+        files.push_back(SkillResource{std::string(name), "sha256:x", int64_t(8)});
+    }
+    bulk.resources = SkillResources{std::move(files)};
+    env.server->RegisterSkill(bulk);
+
+    ReadDirectoryRequestParams first_params;
+    first_params.uri = "skill://bulk";
+    auto first_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(first_params));
+    ASSERT_FALSE(first_resp.Contains("code"));
+    auto first = DeserializeReadDirectoryResult(first_resp);
+    ASSERT_EQ(first.resources.size(), 100u);
+    ASSERT_TRUE(first.next_cursor.has_value());
+    EXPECT_EQ(*first.next_cursor, "100");
+    EXPECT_EQ(first.resources[0].uri, "skill://bulk/SKILL.md");
+
+    ReadDirectoryRequestParams second_params;
+    second_params.uri = "skill://bulk";
+    second_params.cursor = first.next_cursor;
+    auto second_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(second_params));
+    ASSERT_FALSE(second_resp.Contains("code"));
+    auto second = DeserializeReadDirectoryResult(second_resp);
+    EXPECT_EQ(second.resources.size(), 6u);
+    EXPECT_FALSE(second.next_cursor.has_value());
+
+    std::vector<std::string> union_uris;
+    for (const auto& c : first.resources) union_uris.push_back(c.uri);
+    for (const auto& c : second.resources) union_uris.push_back(c.uri);
+    std::sort(union_uris.begin(), union_uris.end());
+    union_uris.erase(std::unique(union_uris.begin(), union_uris.end()), union_uris.end());
+    EXPECT_EQ(union_uris.size(), 106u);
+    EXPECT_EQ(union_uris.front(), "skill://bulk/SKILL.md");
+    EXPECT_EQ(union_uris.back(), "skill://bulk/file-104.md");
+
+    CloseSkillsEnv(env);
+}
+
+TEST(McpServerTest, DirectoryReadRequiresDeclaration) {
+    auto env = MakeSkillsEnv(false);
+
+    ReadDirectoryRequestParams params;
+    params.uri = "skill://code-review";
+    auto denied_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(params));
+    ASSERT_TRUE(denied_resp.Contains("code"));
+    EXPECT_EQ(denied_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    DiscoverRequestParams discover_params;
+    auto discover_resp = SendSkillsRequest(env.client, methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params));
+    ASSERT_FALSE(discover_resp.Contains("code"));
+    auto* caps = discover_resp.Find("capabilities");
+    ASSERT_NE(caps, nullptr);
+    auto* exts = caps->Find("extensions");
+    ASSERT_NE(exts, nullptr);
+    auto* skills_ext = exts->Find(std::string(kSkillsExtensionId));
+    ASSERT_NE(skills_ext, nullptr);
+    EXPECT_TRUE(skills_ext->IsObject());
+    EXPECT_TRUE(skills_ext->Empty());
+
+    env.server->SetSkillsDirectoryRead(true);
+
+    auto allowed_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(params));
+    ASSERT_FALSE(allowed_resp.Contains("code"));
+    EXPECT_EQ(DeserializeReadDirectoryResult(allowed_resp).resources.size(), 3u);
+
+    auto rediscover_resp = SendSkillsRequest(env.client, methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params));
+    ASSERT_FALSE(rediscover_resp.Contains("code"));
+    auto* rediscover_exts = rediscover_resp.Find("capabilities")->Find("extensions");
+    ASSERT_NE(rediscover_exts, nullptr);
+    auto* rediscover_skills = rediscover_exts->Find(std::string(kSkillsExtensionId));
+    ASSERT_NE(rediscover_skills, nullptr);
+    ASSERT_TRUE(rediscover_skills->Find("directoryRead") != nullptr);
+    EXPECT_TRUE(rediscover_skills->Find("directoryRead")->GetBool());
+
+    CloseSkillsEnv(env);
+}
+
+TEST(McpServerTest, DynamicSkillPassthrough) {
+    auto env = MakeSkillsEnv(true);
+
+    Skill dynamic_skill;
+    dynamic_skill.uri = "skill://gen/SKILL.md";
+    JsonValue fm(JsonValue::object_tag);
+    fm["name"] = JsonValue("gen");
+    fm["description"] = JsonValue("Generated skill.");
+    dynamic_skill.frontmatter = fm;
+    dynamic_skill.resources = SkillResources{std::string("dynamic")};
+    env.server->RegisterSkill(dynamic_skill);
+
+    auto list_resp = SendSkillsRequest(env.client, methods::kListSkills,
+        SerializePaginatedRequestParams(PaginatedRequestParams{}));
+    ASSERT_FALSE(list_resp.Contains("code"));
+    auto listed = DeserializeSkillsListResult(list_resp);
+    ASSERT_EQ(listed.skills.size(), 2u);
+    EXPECT_EQ(listed.skills[1].uri, "skill://gen/SKILL.md");
+    EXPECT_EQ(listed.skills[1].frontmatter.Find("description")->GetString(), "Generated skill.");
+    ASSERT_TRUE(std::holds_alternative<std::string>(listed.skills[1].resources));
+    EXPECT_EQ(std::get<std::string>(listed.skills[1].resources), "dynamic");
+
+    SkillsGetRequestParams get_params;
+    get_params.uri = "skill://gen/SKILL.md";
+    auto get_resp = SendSkillsRequest(env.client, methods::kGetSkill,
+        SerializeSkillsGetRequestParams(get_params));
+    ASSERT_FALSE(get_resp.Contains("code"));
+    auto got = DeserializeSkillsGetResult(get_resp);
+    EXPECT_EQ(got.skill.uri, "skill://gen/SKILL.md");
+    ASSERT_TRUE(std::holds_alternative<std::string>(got.skill.resources));
+    EXPECT_EQ(std::get<std::string>(got.skill.resources), "dynamic");
+
+    ReadDirectoryRequestParams dir_params;
+    dir_params.uri = "skill://gen";
+    auto dir_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(dir_params));
+    ASSERT_FALSE(dir_resp.Contains("code"));
+    auto dir = DeserializeReadDirectoryResult(dir_resp);
+    EXPECT_TRUE(dir.resources.empty());
+    EXPECT_FALSE(dir.next_cursor.has_value());
+
+    CloseSkillsEnv(env);
+}
+
+TEST(McpServerTest, SkillsDiscoverIncludesExtensionsAndCache) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    CacheHint discover_hint;
+    discover_hint.ttl_ms = int64_t(60000);
+    discover_hint.cache_scope = "public";
+    sopts.cache_hints = std::map<std::string, CacheHint, std::less<>>{
+        {"server/discover", discover_hint}};
+    auto store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(store_path, ec);
+    sopts.task_store = std::make_shared<FileTaskStore>(store_path);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterResource("code-review-skill", "skill://code-review/SKILL.md",
+        ResourceOptions{},
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "skill";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+    Skill review;
+    review.uri = "skill://code-review/SKILL.md";
+    review.frontmatter = JsonValue(JsonValue::object_tag);
+    review.resources = SkillResources{std::string("dynamic")};
+    server->RegisterSkill(review);
+    server->SetSkillsDirectoryRead(true);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    DiscoverRequestParams discover_params;
+    auto future = client->SendRequest(methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto discovered = DeserializeDiscoverResult(resp);
+    std::vector<std::string> expected_versions;
+    for (auto v : kProtocolVersions) expected_versions.emplace_back(v);
+    EXPECT_EQ(discovered.supported_versions, expected_versions);
+    EXPECT_EQ(discovered.server_info.name, "test-server");
+    ASSERT_TRUE(discovered.capabilities.extensions.has_value());
+    EXPECT_TRUE(discovered.capabilities.extensions->find(std::string(kTasksExtensionId)) !=
+        discovered.capabilities.extensions->end());
+    auto skills_it = discovered.capabilities.extensions->find(std::string(kSkillsExtensionId));
+    ASSERT_TRUE(skills_it != discovered.capabilities.extensions->end());
+    EXPECT_TRUE(DeserializeSkillsExtensionSettings(skills_it->second).directory_read);
+    EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t(60000));
+    EXPECT_EQ(resp["cacheScope"].GetString(), "public");
+
+    server->Close();
+    client->Close();
+    std::filesystem::remove(store_path, ec);
+}
+
+TEST(McpServerTest, SkillsListChangedSubscriptionGating) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::promise<JsonRpcNotification> ack_first;
+    auto ack_first_future = ack_first.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_first](const JsonRpcNotification& n) {
+            ack_first.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams tools_only;
+    tools_only.notifications.tools_list_changed = true;
+    auto listen_future = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(tools_only),
+        MetaWithSubscriptionId("sub-tools"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(listen_future.get().Contains("code"));
+    ASSERT_EQ(ack_first_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+
+    std::promise<JsonRpcNotification> prompt_skipped;
+    auto prompt_skipped_future = prompt_skipped.get_future();
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&prompt_skipped](const JsonRpcNotification& n) {
+            prompt_skipped.set_value(n);
+        });
+    ctx.server->SendPromptListChanged();
+    EXPECT_EQ(prompt_skipped_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    std::promise<JsonRpcNotification> tools_received;
+    auto tools_future = tools_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&tools_received](const JsonRpcNotification& n) {
+            tools_received.set_value(n);
+        });
+    ctx.server->SendToolListChanged();
+    ASSERT_EQ(tools_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto tools_notif = tools_future.get();
+    ASSERT_TRUE(tools_notif.meta.has_value());
+    auto* tools_sid = tools_notif.meta->Find("io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(tools_sid, nullptr);
+    EXPECT_EQ(tools_sid->GetString(), "sub-tools");
+
+    std::promise<JsonRpcNotification> ack_second;
+    auto ack_second_future = ack_second.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_second](const JsonRpcNotification& n) {
+            ack_second.set_value(n);
+        });
+    SubscriptionsListenRequestParams prompts_and_resources;
+    prompts_and_resources.notifications.prompts_list_changed = true;
+    prompts_and_resources.notifications.resources_list_changed = true;
+    auto listen2_future = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(prompts_and_resources),
+        MetaWithSubscriptionId("sub-pr"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(listen2_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(ack_second_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto ack2 = ack_second_future.get();
+    auto* ack2_sid = ack2.meta->Find("io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(ack2_sid, nullptr);
+    EXPECT_EQ(ack2_sid->GetString(), "sub-pr");
+
+    std::promise<JsonRpcNotification> prompt_received;
+    auto prompt_future = prompt_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&prompt_received](const JsonRpcNotification& n) {
+            prompt_received.set_value(n);
+        });
+    ctx.server->SendPromptListChanged();
+    ASSERT_EQ(prompt_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto prompt_notif = prompt_future.get();
+    ASSERT_TRUE(prompt_notif.meta.has_value());
+    auto* prompt_sid = prompt_notif.meta->Find("io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(prompt_sid, nullptr);
+    EXPECT_EQ(prompt_sid->GetString(), "sub-pr");
+
+    std::promise<JsonRpcNotification> resources_received;
+    auto resources_future = resources_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&resources_received](const JsonRpcNotification& n) {
+            resources_received.set_value(n);
+        });
+    ctx.server->SendResourceListChanged();
+    ASSERT_EQ(resources_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resources_notif = resources_future.get();
+    ASSERT_TRUE(resources_notif.meta.has_value());
+    auto* resources_sid = resources_notif.meta->Find("io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(resources_sid, nullptr);
+    EXPECT_EQ(resources_sid->GetString(), "sub-pr");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, SkillsMethodsRejectLegacyEra) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLegacyProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterResource("code-review-skill", "skill://code-review/SKILL.md",
+        ResourceOptions{},
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "skill";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+    Skill review;
+    review.uri = "skill://code-review/SKILL.md";
+    review.frontmatter = JsonValue(JsonValue::object_tag);
+    review.resources = SkillResources{std::string("dynamic")};
+    server->RegisterSkill(review);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    InitializeRequestParams iparams;
+    iparams.protocol_version = std::string(kLegacyProtocolVersion);
+    iparams.client_info = Implementation{"test-client", "1.0"};
+    auto init_future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(iparams), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(init_future.get().Contains("code"));
+    client->SendNotification(notifications::kInitialized);
+
+    auto future = client->SendRequest(methods::kListSkills,
+        SerializePaginatedRequestParams(PaginatedRequestParams{}), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    server->Close();
+    client->Close();
 }

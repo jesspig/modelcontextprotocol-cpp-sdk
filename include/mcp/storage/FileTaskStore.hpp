@@ -23,6 +23,8 @@ public:
     bool CancelTask(const std::string& task_id,
                     const std::optional<std::string>& reason) override;
     bool SetTaskStatus(const std::string& task_id, TaskStatus status) override;
+    bool AdvanceTaskWithInput(const std::string& task_id,
+                              const JsonValue& input_responses) override;
     std::vector<TaskState> GetAllTasks() override;
 
 private:

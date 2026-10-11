@@ -79,6 +79,19 @@ inline constexpr char kTheme[] = "theme";inline constexpr char kRequiredCapabili
 inline constexpr char kTraceparent[] = "traceparent";
 inline constexpr char kTracestate[] = "tracestate";
 inline constexpr char kBaggage[] = "baggage";
+inline constexpr char kTask[] = "task";
+inline constexpr char kCreatedAt[] = "createdAt";
+inline constexpr char kLastUpdatedAt[] = "lastUpdatedAt";
+inline constexpr char kPollIntervalMs[] = "pollIntervalMs";
+inline constexpr char kStatusMessage[] = "statusMessage";
+inline constexpr char kDirectoryRead[] = "directoryRead";
+inline constexpr char kSkills[] = "skills";
+inline constexpr char kSkill[] = "skill";
+inline constexpr char kFrontmatter[] = "frontmatter";
+inline constexpr char kDigest[] = "digest";
+inline constexpr char kSize[] = "size";
+inline constexpr char kCursor[] = "cursor";
+inline constexpr char kDynamic[] = "dynamic";
 
 inline constexpr char kMetaProtocolVersionKey[] = "io.modelcontextprotocol/protocolVersion";
 inline constexpr char kMetaClientInfoKey[] = "io.modelcontextprotocol/clientInfo";
@@ -89,6 +102,7 @@ inline constexpr char kMetaServerInfoKey[] = "io.modelcontextprotocol/serverInfo
 
 inline constexpr char kInputRequiredValue[] = "input_required";
 inline constexpr char kCompleteValue[] = "complete";
+inline constexpr char kTaskValue[] = "task";
 
 } // namespace detail
 } // namespace mcp

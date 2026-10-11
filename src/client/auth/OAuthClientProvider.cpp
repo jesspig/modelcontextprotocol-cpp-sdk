@@ -47,6 +47,25 @@ std::string UrlEncode(std::string_view input) {
 
 using NetResponse = mcp::detail::net::HttpResponseInfo;
 
+std::string NormalizeResourceUrl(std::string_view url) {
+    std::string out(url);
+    if (auto hash = out.find('#'); hash != std::string::npos) out.resize(hash);
+    if (out.size() > 1 && out.back() == '/') out.pop_back();
+    return out;
+}
+
+bool IsSafeHttpUrl(std::string_view url) {
+    if (url.empty() || url.size() > 2048) return false;
+    bool http = url.size() >= 7 && url.substr(0, 7) == "http://";
+    bool https = url.size() >= 8 && url.substr(0, 8) == "https://";
+    if (!http && !https) return false;
+    for (char c : url) {
+        unsigned char u = static_cast<unsigned char>(c);
+        if (u <= 0x20 || u == 0x7f) return false;
+    }
+    return true;
+}
+
 std::optional<NetResponse> HttpGetUrl(const std::string& url) {
     try {
         mcp::detail::net::HttpClient client;
@@ -119,11 +138,13 @@ void VerifyResourceMatch(const std::string& requested_url,
                          const std::optional<std::string>& resource)
 {
     if (!resource || resource->empty()) return;
-    if (*resource == requested_url) return;
+    if (NormalizeResourceUrl(*resource) == NormalizeResourceUrl(requested_url)) return;
     auto scheme_end = requested_url.find("://");
     if (scheme_end != std::string::npos) {
         auto host_end = requested_url.find_first_of("/?#", scheme_end + 3);
-        if (*resource == requested_url.substr(0, host_end)) return;
+        std::string host_root = host_end == std::string::npos
+            ? requested_url : requested_url.substr(0, host_end);
+        if (NormalizeResourceUrl(*resource) == NormalizeResourceUrl(host_root)) return;
     }
     throw McpError(McpErrorCode::InternalError,
         "OAuth resource_metadata resource does not match the request URL");
@@ -236,6 +257,10 @@ bool OAuthClientProvider::Authenticate() {
     }
 
     auto cached = token_cache_->GetTokens();
+    if (cached && !TokenResourceMatches(*cached)) {
+        token_cache_->ClearTokens();
+        cached.reset();
+    }
     if (cached && !cached->IsExpired()) return true;
     if (cached && cached->refresh_token.size() > 0) return RefreshTokens();
 
@@ -270,8 +295,12 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
 
 bool OAuthClientProvider::DiscoverMetadata() {
     if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
+        if (discovered->issuer.empty()) {
+            MCP_LOG(Error, "OAuth metadata discovery response missing required 'issuer'");
+            return false;
+        }
         metadata_ = std::move(discovered);
-        if (metadata_->issuer.empty()) metadata_->issuer = options_.server_url;
+        EnforceIssuerBinding();
         return true;
     }
 
@@ -285,7 +314,27 @@ bool OAuthClientProvider::DiscoverMetadata() {
     meta.authorization_endpoint = options_.server_url + "/authorize";
     meta.token_endpoint = options_.server_url + "/token";
     metadata_ = std::move(meta);
+    EnforceIssuerBinding();
     return true;
+}
+
+bool OAuthClientProvider::TokenResourceMatches(const TokenContainer& tokens) const {
+    if (!tokens.resource || tokens.resource->empty()) return true;
+    return NormalizeResourceUrl(*tokens.resource) ==
+        NormalizeResourceUrl(ResolveResourceIndicator());
+}
+
+void OAuthClientProvider::EnforceIssuerBinding() {
+    if (!metadata_ || metadata_->issuer.empty()) return;
+    if (!bound_issuer_) {
+        bound_issuer_ = metadata_->issuer;
+        return;
+    }
+    if (*bound_issuer_ != metadata_->issuer) {
+        registration_.reset();
+        if (token_cache_) token_cache_->ClearTokens();
+        bound_issuer_ = metadata_->issuer;
+    }
 }
 
 bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
@@ -329,6 +378,10 @@ bool OAuthClientProvider::FetchClientMetadataDocument() {
 
     ClientRegistrationInfo info;
     info.client_id = *options_.client_id;
+    if (auto* v = json.Find("token_endpoint_auth_method")) {
+        if (v->IsString() && !v->GetString().empty())
+            info.token_endpoint_auth_method = v->GetString();
+    }
     if (auto* v = json.Find("grant_types")) {
         if (v->IsArray()) {
             for (const auto& item : v->GetArray())
@@ -347,9 +400,12 @@ bool OAuthClientProvider::FetchClientMetadataDocument() {
 
 bool OAuthClientProvider::RegisterClient() {
     if (!metadata_->registration_endpoint) return false;
+    std::string_view application_type = options_.application_type.empty()
+        ? std::string_view{"native"}
+        : std::string_view{options_.application_type};
     auto info = ClientRegistrationInfo::Register(
         *metadata_->registration_endpoint,
-        options_.redirect_uri, "mcp-cpp-client");
+        options_.redirect_uri, "mcp-cpp-client", application_type);
     if (!info) return false;
     registration_ = std::move(info);
     return true;
@@ -417,6 +473,19 @@ bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
     if (auto* v = json.Find("access_token")) tokens.access_token = v->GetString();
     if (auto* v = json.Find("refresh_token")) tokens.refresh_token = v->GetString();
     if (auto* v = json.Find("token_type")) tokens.token_type = v->GetString();
+    if (auto* v = json.Find("scope"); v && v->IsString()) {
+        const auto& scope_str = v->GetString();
+        size_t pos = 0;
+        while (pos < scope_str.size()) {
+            while (pos < scope_str.size() && scope_str[pos] == ' ') ++pos;
+            size_t end = pos;
+            while (end < scope_str.size() && scope_str[end] != ' ') ++end;
+            if (end > pos) tokens.scopes.emplace_back(scope_str.substr(pos, end - pos));
+            pos = end;
+        }
+    }
+    if (auto indicator = ResolveResourceIndicator(); !indicator.empty())
+        tokens.resource = std::move(indicator);
     auto expires_in = json.Find("expires_in") ? json.Find("expires_in")->GetInt() : 3600;
     tokens.expires_at =
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -448,6 +517,23 @@ bool OAuthClientProvider::RefreshTokens() {
     if (auto* v = json.Find("access_token")) tokens.access_token = v->GetString();
     tokens.refresh_token = json.Find("refresh_token") ? json.Find("refresh_token")->GetString() : cached->refresh_token;
     if (auto* v = json.Find("token_type")) tokens.token_type = v->GetString();
+    if (auto* v = json.Find("scope"); v && v->IsString()) {
+        const auto& scope_str = v->GetString();
+        size_t pos = 0;
+        while (pos < scope_str.size()) {
+            while (pos < scope_str.size() && scope_str[pos] == ' ') ++pos;
+            size_t end = pos;
+            while (end < scope_str.size() && scope_str[end] != ' ') ++end;
+            if (end > pos) tokens.scopes.emplace_back(scope_str.substr(pos, end - pos));
+            pos = end;
+        }
+    } else {
+        tokens.scopes = cached->scopes;
+    }
+    if (auto indicator = ResolveResourceIndicator(); !indicator.empty())
+        tokens.resource = std::move(indicator);
+    else
+        tokens.resource = cached->resource;
     auto expires_in = json.Find("expires_in") ? json.Find("expires_in")->GetInt() : 3600;
     tokens.expires_at =
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -466,6 +552,7 @@ std::string OAuthClientProvider::GetAccessToken() {
     std::lock_guard<std::mutex> lock(refresh_mutex_);
     auto tokens = token_cache_->GetTokens();
     if (!tokens) return {};
+    if (!TokenResourceMatches(*tokens)) return {};
     if (tokens->WillExpireSoon()) {
         if (!tokens->refresh_token.empty()) {
             if (!RefreshTokens()) {
@@ -490,15 +577,16 @@ void OAuthClientProvider::Revoke() {
 }
 bool OAuthClientProvider::IsAuthenticated() const {
     auto tokens = token_cache_->GetTokens();
-    return tokens.has_value() && !tokens->IsExpired();
+    return tokens.has_value() && !tokens->IsExpired() && TokenResourceMatches(*tokens);
 }
 bool OAuthClientProvider::HasToken() const {
     auto tokens = token_cache_->GetTokens();
-    return tokens.has_value() && !tokens->access_token.empty();
+    return tokens.has_value() && !tokens->access_token.empty() && TokenResourceMatches(*tokens);
 }
 std::string OAuthClientProvider::GetAuthorizationHeader() const {
     auto tokens = token_cache_->GetTokens();
     if (!tokens || tokens->access_token.empty()) return {};
+    if (!TokenResourceMatches(*tokens)) return {};
     return "Bearer " + tokens->access_token;
 }
 
@@ -516,38 +604,71 @@ bool OAuthClientProvider::StepUpAuthorization(
 }
 
 bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate) {
-    auto header = std::string(www_authenticate);
-    auto pos = header.find("resource_metadata=");
-    if (pos == std::string::npos) return false;
-    pos = header.find('"', pos);
-    if (pos == std::string::npos) return false;
-    auto end = header.find('"', pos + 1);
-    if (end == std::string::npos) return false;
-    auto metadata_url = header.substr(pos + 1, end - pos - 1);
+    try {
+        if (www_authenticate.size() > 4096) return false;
+        auto header = std::string(www_authenticate);
+        auto pos = header.find("resource_metadata=");
+        if (pos == std::string::npos) return false;
+        pos = header.find('"', pos);
+        if (pos == std::string::npos) return false;
+        auto end = header.find('"', pos + 1);
+        if (end == std::string::npos || end == pos + 1 || end - pos - 1 > 2048)
+            return false;
+        auto metadata_url = header.substr(pos + 1, end - pos - 1);
+        if (!IsSafeHttpUrl(metadata_url)) return false;
 
-    auto resp = HttpGetUrl(metadata_url);
-    if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
-    auto json = JsonValue::Parse(resp->body);
-    if (!json.IsObject()) return false;
+        auto resp = HttpGetUrl(metadata_url);
+        if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
+        if (resp->body.size() > 65536) return false;
+        JsonValue json;
+        try {
+            json = JsonValue::Parse(resp->body);
+        } catch (...) {
+            return false;
+        }
+        if (!json.IsObject()) return false;
 
-    auto meta = ParseMetadataJson(json);
-    if (meta.issuer.empty() && meta.authorization_endpoint.empty() &&
-        meta.token_endpoint.empty()) {
+        auto meta = ParseMetadataJson(json);
+        if (meta.issuer.empty() && meta.authorization_endpoint.empty() &&
+            meta.token_endpoint.empty()) {
+            return false;
+        }
+        if (!meta.issuer.empty() && !IsSafeHttpUrl(meta.issuer)) return false;
+        if (!meta.authorization_endpoint.empty() &&
+            !IsSafeHttpUrl(meta.authorization_endpoint)) {
+            return false;
+        }
+        if (!meta.token_endpoint.empty() && !IsSafeHttpUrl(meta.token_endpoint))
+            return false;
+        try {
+            VerifyResourceMatch(options_.server_url, meta.resource);
+        } catch (...) {
+            return false;
+        }
+        if (!metadata_) metadata_ = OAuthMetadata{};
+        if (!meta.issuer.empty()) metadata_->issuer = meta.issuer;
+        if (!meta.authorization_endpoint.empty()) metadata_->authorization_endpoint = meta.authorization_endpoint;
+        if (!meta.token_endpoint.empty()) metadata_->token_endpoint = meta.token_endpoint;
+        if (meta.revocation_endpoint && IsSafeHttpUrl(*meta.revocation_endpoint))
+            metadata_->revocation_endpoint = meta.revocation_endpoint;
+        if (meta.registration_endpoint && IsSafeHttpUrl(*meta.registration_endpoint))
+            metadata_->registration_endpoint = meta.registration_endpoint;
+        if (meta.jwks_uri && IsSafeHttpUrl(*meta.jwks_uri))
+            metadata_->jwks_uri = meta.jwks_uri;
+        if (!meta.scopes_supported.empty() && meta.scopes_supported.size() <= 128)
+            metadata_->scopes_supported = meta.scopes_supported;
+        if (!meta.response_types_supported.empty() && meta.response_types_supported.size() <= 128)
+            metadata_->response_types_supported = meta.response_types_supported;
+        if (!meta.grant_types_supported.empty() && meta.grant_types_supported.size() <= 128)
+            metadata_->grant_types_supported = meta.grant_types_supported;
+        if (!meta.code_challenge_methods_supported.empty() &&
+            meta.code_challenge_methods_supported.size() <= 8)
+            metadata_->code_challenge_methods_supported = meta.code_challenge_methods_supported;
+        EnforceIssuerBinding();
+        return true;
+    } catch (...) {
         return false;
     }
-    VerifyResourceMatch(options_.server_url, meta.resource);
-    if (!metadata_) metadata_ = OAuthMetadata{};
-    if (!meta.issuer.empty()) metadata_->issuer = meta.issuer;
-    if (!meta.authorization_endpoint.empty()) metadata_->authorization_endpoint = meta.authorization_endpoint;
-    if (!meta.token_endpoint.empty()) metadata_->token_endpoint = meta.token_endpoint;
-    if (meta.revocation_endpoint) metadata_->revocation_endpoint = meta.revocation_endpoint;
-    if (meta.registration_endpoint) metadata_->registration_endpoint = meta.registration_endpoint;
-    if (meta.jwks_uri) metadata_->jwks_uri = meta.jwks_uri;
-    if (!meta.scopes_supported.empty()) metadata_->scopes_supported = meta.scopes_supported;
-    if (!meta.response_types_supported.empty()) metadata_->response_types_supported = meta.response_types_supported;
-    if (!meta.grant_types_supported.empty()) metadata_->grant_types_supported = meta.grant_types_supported;
-    if (!meta.code_challenge_methods_supported.empty()) metadata_->code_challenge_methods_supported = meta.code_challenge_methods_supported;
-    return true;
 }
 
 std::optional<OAuthMetadata> OAuthMetadata::Discover(
@@ -571,7 +692,8 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
 std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
     std::string_view registration_endpoint,
     std::string_view redirect_uri,
-    std::string_view client_name)
+    std::string_view client_name,
+    std::string_view application_type)
 {
     JsonValue obj(JsonValue::object_tag);
     {
@@ -580,6 +702,8 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
         obj["redirect_uris"] = JsonValue(std::move(uris));
     }
     obj["client_name"] = JsonValue(std::string(client_name));
+    obj["application_type"] = JsonValue(
+        std::string(application_type.empty() ? "native" : application_type));
 
     auto body = JsonValue(std::move(obj)).Dump();
 
@@ -598,6 +722,10 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
         info.client_id = v->GetString();
     if (auto* v = json.Find("client_secret"))
         info.client_secret = v->GetString();
+    if (auto* v = json.Find("token_endpoint_auth_method")) {
+        if (v->IsString() && !v->GetString().empty())
+            info.token_endpoint_auth_method = v->GetString();
+    }
     if (auto* v = json.Find("grant_types")) {
         if (v->IsArray()) {
             for (const auto& item : v->GetArray())

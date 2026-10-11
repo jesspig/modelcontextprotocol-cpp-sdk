@@ -3,6 +3,7 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
 
@@ -32,6 +33,8 @@ inline const std::unordered_set<std::string_view> k2025OnlyRequestMethods = {
 inline const std::unordered_set<std::string_view> k2026OnlyRequestMethods = {
     "server/discover",
     "subscriptions/listen",
+    "tasks/get", "tasks/update", "tasks/cancel",
+    "skills/list", "skills/get", "resources/directory/read",
 };
 
 inline const std::unordered_set<std::string_view> kCommonNotifMethods = {
@@ -66,6 +69,11 @@ inline std::unordered_set<std::string_view> MakeEraMethods(
     auto set = common;
     set.insert(only.begin(), only.end());
     return set;
+}
+
+inline bool IsTaskNameCheckedMethod(std::string_view method) {
+    return method == "tasks/get" || method == "tasks/update" ||
+        method == "tasks/cancel";
 }
 
 class Rev2025Codec : public WireCodec {
@@ -162,7 +170,7 @@ public:
         }
         static const std::unordered_set<std::string_view> kListMethods = {
             "tools/list", "resources/list", "resources/templates/list",
-            "prompts/list",
+            "prompts/list", "skills/list",
         };
         if (kListMethods.count(method) > 0) {
             auto* rt = raw.Find(detail::kResultType);
@@ -236,6 +244,23 @@ public:
 };
 
 } // anonymous namespace
+
+void WireCodec::ValidateTaskHeaders(
+    std::string_view method,
+    const JsonValue& params,
+    std::string_view mcp_name) const {
+    if (!IsTaskNameCheckedMethod(method)) {
+        return;
+    }
+    const JsonValue* task_id =
+        params.IsObject() ? params.Find(detail::kTaskId) : nullptr;
+    if (!task_id || !task_id->IsString() || task_id->GetString().empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "tasks request missing valid taskId");
+    }
+    if (std::string_view(task_id->GetString()) != mcp_name) {
+        throw McpError(McpErrorCode::HeaderMismatch, "Mcp-Name header does not match body params taskId");
+    }
+}
 
 std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version) {
     if (protocol_version >= kLatestProtocolVersion) {

@@ -9,7 +9,7 @@ PORT="${PORT:-3010}"
 BUILD_PRESET="${BUILD_PRESET:-debug}"
 CONFORMANCE_SPEC_VERSION="${CONFORMANCE_SPEC_VERSION:-2025-11-25}"
 BASELINE="tests/conformance/baseline.yaml"
-CONFORMANCE_PKG="@modelcontextprotocol/conformance@0.2.0-alpha.11"
+CONFORMANCE_PKG="@modelcontextprotocol/conformance@0.2.0-alpha.12"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -59,8 +59,18 @@ server)
         exit 1
     fi
 
+    if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
+        SERVER_ARGS="--stateless"
+        SPEC_ARGS="--requirements 2026-07-28"
+        PROBE_BODY='{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{}}'
+    else
+        SERVER_ARGS=""
+        SPEC_ARGS="--spec-version ${CONFORMANCE_SPEC_VERSION}"
+        PROBE_BODY='{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"'${CONFORMANCE_SPEC_VERSION}'","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}'
+    fi
+
     echo "Starting conformance test server on port ${PORT}..."
-    "${SERVER_BIN}" --port "${PORT}" &
+    "${SERVER_BIN}" --port "${PORT}" ${SERVER_ARGS} &
     SERVER_PID=$!
 
     cleanup() {
@@ -77,7 +87,7 @@ server)
         curl -s --max-time 2 -X POST "${SERVER_URL}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
-            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"'${CONFORMANCE_SPEC_VERSION}'","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
+            -d "${PROBE_BODY}" \
             > /dev/null 2>&1
     }
     while ! probe_ready; do
@@ -94,8 +104,9 @@ server)
     done
 
     echo "Server is ready. Running conformance tests..."
+    # shellcheck disable=SC2086
     run_referee server --url "${SERVER_URL}" \
-        --spec-version "${CONFORMANCE_SPEC_VERSION}" \
+        ${SPEC_ARGS} \
         --expected-failures "${BASELINE}" \
         "$@"
     ;;
@@ -105,11 +116,19 @@ client)
         echo "Error: ${CLIENT_BIN} not found. Build first (see AGENTS.md)."
         exit 1
     fi
-    run_referee client --command "${CLIENT_BIN}" \
-        --suite core \
-        --spec-version "${CONFORMANCE_SPEC_VERSION}" \
-        --expected-failures "${BASELINE}" \
-        "$@"
+    if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
+        # shellcheck disable=SC2086
+        run_referee client --command "${CLIENT_BIN}" \
+            --requirements 2026-07-28 \
+            --expected-failures "${BASELINE}" \
+            "$@"
+    else
+        run_referee client --command "${CLIENT_BIN}" \
+            --suite core \
+            --spec-version "${CONFORMANCE_SPEC_VERSION}" \
+            --expected-failures "${BASELINE}" \
+            "$@"
+    fi
     ;;
 *)
     echo "Usage: $0 [server|client] [extra conformance args...]"

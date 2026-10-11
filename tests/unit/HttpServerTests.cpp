@@ -1,6 +1,7 @@
 #include <mcp/Methods.hpp>
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
@@ -360,6 +361,58 @@ TEST(EventStoreTest, MaxCapacity) {
 
     auto events = store.GetEventsSince("sess1", 0);
     EXPECT_LE(events.size(), mcp::EventStore::kMaxEventsPerSession);
+}
+
+TEST(EventStoreTest, MaxCapacityIs10000) {
+    EXPECT_EQ(mcp::EventStore::kMaxEventsPerSession, size_t{10000});
+}
+
+TEST(HttpServerTest, OversizedContentLengthReturns413) {
+    auto port = PickFreePort(kTestBasePort + 990);
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/echo", [](const MCP_Request& req, MCP_Response& resp) {
+        resp.body = req.body;
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string first_line;
+#ifdef _WIN32
+    WSADATA wsa;
+    ASSERT_EQ(WSAStartup(MAKEWORD(2, 2), &wsa), 0);
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_NE(sock, INVALID_SOCKET);
+#else
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(sock, 0);
+#endif
+    struct sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    int connected = connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+    ASSERT_EQ(connected, 0);
+
+    std::string req = "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: " +
+        std::to_string(mcp::detail::kMaxHttpBodyBytes + 1) + "\r\n\r\n";
+    int sent = send(sock, req.c_str(), static_cast<int>(req.size()), 0);
+    ASSERT_GT(sent, 0);
+
+    char buf[1024];
+    int n = recv(sock, buf, sizeof(buf) - 1, 0);
+    if (n > 0) {
+        buf[n] = '\0';
+        first_line = std::string(buf, static_cast<size_t>(n));
+    }
+#ifdef _WIN32
+    closesocket(sock);
+    WSACleanup();
+#else
+    close(sock);
+#endif
+    ASSERT_FALSE(first_line.empty());
+    EXPECT_NE(first_line.find("413"), std::string::npos);
+    server.Stop();
 }
 
 TEST(StreamableHttpTest, McpHeadersValidation) {

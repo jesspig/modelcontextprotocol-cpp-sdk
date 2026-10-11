@@ -80,16 +80,31 @@ TEST_F(FileEventStoreTest, SessionsAreIsolated) {
 
 TEST_F(FileEventStoreTest, MaxCapacityTrimsOldest) {
     FileEventStore store(store_dir);
-    constexpr int kExtra = 10;
-    for (int i = 0; i < static_cast<int>(EventStore::kMaxEventsPerSession) + kExtra; ++i) {
-        store.Append("sess1", "data-" + std::to_string(i));
+    constexpr int kPrefill = static_cast<int>(EventStore::kMaxEventsPerSession) + 10;
+    constexpr int kAppends = 10;
+    {
+        std::ofstream file(store_dir / "sess-sess1.jsonl", std::ios::binary);
+        ASSERT_TRUE(file.is_open());
+        for (int i = 0; i < kPrefill; ++i) {
+            file << "{\"id\":" << (i + 1) << ",\"data\":\"data-" << i << "\"}\n";
+        }
+    }
+    for (int i = 0; i < kAppends; ++i) {
+        store.Append("sess1", "data-" + std::to_string(kPrefill + i));
     }
 
     auto events = store.GetEventsSince("sess1", 0);
-    EXPECT_EQ(events.size(), EventStore::kMaxEventsPerSession);
-    EXPECT_EQ(events.front().second, "data-" + std::to_string(kExtra));
+    ASSERT_EQ(events.size(), EventStore::kMaxEventsPerSession);
+    EXPECT_EQ(events.front().first, static_cast<uint64_t>(kAppends + 11));
+    EXPECT_EQ(events.front().second, "data-" + std::to_string(kAppends + 10));
+    EXPECT_EQ(events.back().first,
+              static_cast<uint64_t>(kPrefill + kAppends));
     EXPECT_EQ(events.back().second,
-              "data-" + std::to_string(static_cast<int>(EventStore::kMaxEventsPerSession) + kExtra - 1));
+              "data-" + std::to_string(kPrefill + kAppends - 1));
+}
+
+TEST_F(FileEventStoreTest, MaxCapacityMatches10000) {
+    EXPECT_EQ(EventStore::kMaxEventsPerSession, size_t{10000});
 }
 
 TEST_F(FileEventStoreTest, PersistsAcrossInstances) {

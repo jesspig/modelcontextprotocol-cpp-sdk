@@ -27,6 +27,7 @@ JsonValue SerializeResultType(ResultType v) {
     switch (v) {
         case ResultType::Complete:     return JsonValue(detail::kCompleteValue);
         case ResultType::InputRequired: return JsonValue(detail::kInputRequiredValue);
+        case ResultType::Task:          return JsonValue(detail::kTaskValue);
         default:
             throw McpError(McpErrorCode::InvalidParams,
                 "SerializeResultType: unknown value: " + std::to_string(static_cast<int>(v)));
@@ -36,6 +37,7 @@ JsonValue SerializeResultType(ResultType v) {
 ResultType DeserializeResultType(const JsonValue& j) {
     auto s = j.GetString();
     if (s == detail::kInputRequiredValue) return ResultType::InputRequired;
+    if (s == detail::kTaskValue) return ResultType::Task;
     if (s == detail::kCompleteValue) return ResultType::Complete;
     throw McpError(McpErrorCode::InvalidParams,
         std::string("DeserializeResultType: unknown string: '") + s + "'");
@@ -57,7 +59,11 @@ void WriteListResultCommon(JsonValue& obj,
                            const std::optional<JsonValue>& meta,
                            ResultType result_type) {
     detail::SerializeOptional(obj, detail::kNextCursor, next_cursor);
-    if (cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
+    if (cache_hint) {
+        obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
+        detail::SerializeOptional(obj, detail::kTTLMs, cache_hint->ttl_ms);
+        detail::SerializeOptional(obj, detail::kCacheScope, cache_hint->cache_scope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, meta);
     obj[detail::kResultType] = SerializeResultType(result_type);
 }
@@ -286,7 +292,11 @@ JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
     obj[detail::kCapabilities] = SerializeServerCapabilities(v.capabilities);
     obj[detail::kServerInfo] = SerializeImplementation(v.server_info);
     detail::SerializeOptional(obj, detail::kInstructions, v.instructions);
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
+    if (v.cache_hint) {
+        obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
+        detail::SerializeOptional(obj, detail::kTTLMs, v.cache_hint->ttl_ms);
+        detail::SerializeOptional(obj, detail::kCacheScope, v.cache_hint->cache_scope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;

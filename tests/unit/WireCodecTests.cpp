@@ -291,6 +291,108 @@ TEST(WireCodecTest, JsonRpcRequestWithoutParamsSynthesizesParamsForMeta) {
     EXPECT_TRUE(req2.params->GetObject().empty());
 }
 
+TEST(WireCodecTest, Rev2026RejectsLegacyTasks) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    const std::string_view kMethods[] = {
+        "tasks/result", "tasks/list",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        EXPECT_FALSE(modern->HasRequestMethod(method));
+        JsonValue raw(JsonValue::object_tag);
+        JsonValue params(JsonValue::object_tag);
+        params["_meta"] = JsonValue(JsonValue::object_tag);
+        raw["params"] = std::move(params);
+        EXPECT_EQ(modern->ValidateRequest(method, raw), WireValidation::NotInEra);
+        EXPECT_TRUE(legacy->HasRequestMethod(method));
+        EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::Ok);
+    }
+}
+
+TEST(WireCodecTest, Rev2026AcceptsTaskExtensionMethods) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    const std::string_view kMethods[] = {
+        "tasks/get", "tasks/update", "tasks/cancel",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        EXPECT_TRUE(modern->HasRequestMethod(method));
+        EXPECT_TRUE(legacy->HasRequestMethod(method));
+        JsonValue raw(JsonValue::object_tag);
+        JsonValue params(JsonValue::object_tag);
+        params["_meta"] = JsonValue(JsonValue::object_tag);
+        raw["params"] = std::move(params);
+        EXPECT_EQ(modern->ValidateRequest(method, raw), WireValidation::Ok);
+        EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::Ok);
+    }
+    JsonValue bare(JsonValue::object_tag);
+    bare["params"] = JsonValue(JsonValue::object_tag);
+    EXPECT_EQ(modern->ValidateRequest("tasks/get", bare), WireValidation::Invalid);
+}
+
+TEST(WireCodecTest, Rev2026RejectsPing) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    const std::string_view kMethods[] = {
+        "ping", "logging/setLevel", "resources/subscribe", "resources/unsubscribe",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        EXPECT_FALSE(modern->HasRequestMethod(method));
+        JsonValue raw(JsonValue::object_tag);
+        JsonValue params(JsonValue::object_tag);
+        params["_meta"] = JsonValue(JsonValue::object_tag);
+        raw["params"] = std::move(params);
+        EXPECT_EQ(modern->ValidateRequest(method, raw), WireValidation::NotInEra);
+        EXPECT_TRUE(legacy->HasRequestMethod(method));
+        EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::Ok);
+    }
+}
+
+TEST(WireCodecTest, TasksMcpNameMustEqualTaskId) {
+    auto legacy = MakeWireCodec("2025-11-25");
+    auto modern = MakeWireCodec("2026-07-28");
+    const std::string_view kMethods[] = {
+        "tasks/get", "tasks/update", "tasks/cancel",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        JsonValue params(JsonValue::object_tag);
+        params["taskId"] = JsonValue("task-1");
+        EXPECT_NO_THROW(legacy->ValidateTaskHeaders(method, params, "task-1"));
+        EXPECT_NO_THROW(modern->ValidateTaskHeaders(method, params, "task-1"));
+        try {
+            legacy->ValidateTaskHeaders(method, params, "other");
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(static_cast<int32_t>(e.Code()),
+                      static_cast<int32_t>(McpErrorCode::HeaderMismatch));
+        }
+        try {
+            legacy->ValidateTaskHeaders(method, params, "");
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(static_cast<int32_t>(e.Code()),
+                      static_cast<int32_t>(McpErrorCode::HeaderMismatch));
+        }
+        JsonValue missing(JsonValue::object_tag);
+        try {
+            legacy->ValidateTaskHeaders(method, missing, "task-1");
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(static_cast<int32_t>(e.Code()),
+                      static_cast<int32_t>(McpErrorCode::InvalidParams));
+        }
+    }
+    JsonValue params(JsonValue::object_tag);
+    params["taskId"] = JsonValue("task-1");
+    EXPECT_NO_THROW(legacy->ValidateTaskHeaders("tools/call", params, "other"));
+    EXPECT_NO_THROW(
+        legacy->ValidateTaskHeaders("tools/call", JsonValue(JsonValue::object_tag), ""));
+}
+
 TEST(WireCodecTest, JsonRpcNotificationWithMetaRoundTrip) {
     JsonRpcNotification notif;
     notif.method = "notifications/message";

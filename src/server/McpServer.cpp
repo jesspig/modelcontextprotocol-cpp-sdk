@@ -30,6 +30,9 @@ namespace {
 
     constexpr std::string_view kDefaultLoggerName = "mcp-server";
 
+    constexpr std::string_view kMcpNameHeader = "Mcp-Name";
+    constexpr std::string_view kMcpNameHeaderLower = "mcp-name";
+
     size_t ParseCursor(const std::optional<std::string>& cursor) {
         if (!cursor || cursor->empty()) return 0;
         try {
@@ -41,6 +44,71 @@ namespace {
 
     std::string MakeNextCursor(size_t next_index) {
         return std::to_string(next_index);
+    }
+
+    constexpr std::string_view kSkillSchemePrefix = "skill://";
+    constexpr std::string_view kSkillFileSuffix = "/SKILL.md";
+    constexpr std::string_view kDirectoryMimeType = "inode/directory";
+
+    bool IsSkillEntryUri(std::string_view uri) {
+        if (uri.size() <= kSkillSchemePrefix.size() + kSkillFileSuffix.size()) return false;
+        if (uri.compare(0, kSkillSchemePrefix.size(), kSkillSchemePrefix) != 0) return false;
+        if (uri.compare(uri.size() - kSkillFileSuffix.size(),
+                kSkillFileSuffix.size(), kSkillFileSuffix) != 0) return false;
+        return true;
+    }
+
+    std::string SkillRootFromEntryUri(const std::string& uri) {
+        return uri.substr(0, uri.size() - kSkillFileSuffix.size());
+    }
+
+    std::string NormalizeDirectoryUri(const std::string& uri) {
+        std::string out = uri;
+        while (out.size() > 1 && out.back() == '/') out.pop_back();
+        return out;
+    }
+
+    struct SkillDirectoryView {
+        bool is_directory{false};
+        std::vector<DirectoryChild> children;
+    };
+
+    SkillDirectoryView CollectDirectoryChildren(
+        const std::vector<Skill>& skills, const std::string& dir)
+    {
+        SkillDirectoryView view;
+        std::set<std::string> seen;
+        for (const auto& skill : skills) {
+            if (!IsSkillEntryUri(skill.uri)) continue;
+            if (dir == SkillRootFromEntryUri(skill.uri)) view.is_directory = true;
+            auto* manifest = std::get_if<std::vector<SkillResource>>(&skill.resources);
+            if (!manifest) continue;
+            for (const auto& res : *manifest) {
+                const std::string& uri = res.uri;
+                if (uri == dir) continue;
+                if (uri.size() <= dir.size() + 1) continue;
+                if (uri.compare(0, dir.size(), dir) != 0 || uri[dir.size()] != '/') continue;
+                view.is_directory = true;
+                std::string rest = uri.substr(dir.size() + 1);
+                auto slash = rest.find('/');
+                DirectoryChild child;
+                if (slash == std::string::npos) {
+                    if (rest.empty()) continue;
+                    child.uri = uri;
+                    child.name = rest;
+                } else {
+                    std::string seg = rest.substr(0, slash);
+                    if (seg.empty()) continue;
+                    child.uri = dir + "/" + seg;
+                    child.name = seg;
+                    child.mime_type = std::string(kDirectoryMimeType);
+                }
+                if (seen.insert(child.uri).second) view.children.push_back(std::move(child));
+            }
+        }
+        std::sort(view.children.begin(), view.children.end(),
+            [](const DirectoryChild& a, const DirectoryChild& b) { return a.uri < b.uri; });
+        return view;
     }
 
     template <typename Entry, typename Fn, typename IncludeFn = std::nullptr_t>
@@ -60,7 +128,7 @@ namespace {
             }
             if (index++ < cursor_val) continue;
             if (sent >= page_size) {
-                next_index = index;
+                next_index = index - 1;
                 return true;
             }
             emit(entry);
@@ -130,7 +198,22 @@ namespace {
             r.error_message = task.error_message;
             r.input_required = task.input_required;
         }
+        r.status_message = task.status_message;
+        if (!task.created_at.empty()) r.created_at = task.created_at;
+        r.last_updated_at = task.last_updated_at;
+        r.ttl_ms = task.ttl_ms;
+        r.poll_interval_ms = task.poll_interval_ms;
+        r.input_requests = task.input_requests;
         return SerializeGetTaskResult(r);
+    }
+
+    std::optional<std::string> TryGetMcpName(const JsonRpcRequest& req) {
+        if (!req.meta || !req.meta->IsObject()) return std::nullopt;
+        if (auto* v = req.meta->Find(kMcpNameHeader); v && v->IsString())
+            return v->GetString();
+        if (auto* v = req.meta->Find(kMcpNameHeaderLower); v && v->IsString())
+            return v->GetString();
+        return std::nullopt;
     }
 }
 
@@ -348,6 +431,30 @@ void McpServer::RegisterPrompt(
     DeriveCapabilities();
 }
 
+void McpServer::RegisterSkill(Skill skill) {
+    if (!IsSkillEntryUri(skill.uri)) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "invalid skill uri: " + skill.uri);
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        auto it = skills_.begin();
+        while (it != skills_.end() && it->uri != skill.uri) ++it;
+        if (it != skills_.end()) *it = std::move(skill);
+        else skills_.push_back(std::move(skill));
+    }
+    WireHandlers();
+    DeriveCapabilities();
+}
+
+void McpServer::SetSkillsDirectoryRead(bool enabled) {
+    {
+        std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        skills_directory_read_ = enabled;
+    }
+    DeriveCapabilities();
+}
+
 void McpServer::SendToolListChanged() {
     SendListChangedNotification(notifications::kToolListChanged);
 }
@@ -396,6 +503,7 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, st
 }
 
 void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) return;
     SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status);
 }
 
@@ -543,6 +651,7 @@ void McpServer::WireHandlers() {
     WireCoreHandlers();
     WireExtensionHandlers();
     WireTaskHandlers();
+    WireSkillHandlers();
     WireSubscriptionHandlers();
 }
 
@@ -739,10 +848,18 @@ void McpServer::WireTaskHandlers() {
         handler_->SetRequestHandler(methods::kGetTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
-                    p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::MethodNotFound,
-                            "tasks/get is only available in 2025 and earlier protocol versions")));
-                    return;
+                    if (auto mcp_name = TryGetMcpName(req)) {
+                        try {
+                            auto codec = MakeWireCodec(handler_->NegotiatedProtocolVersion());
+                            JsonValue params = req.params
+                                ? *req.params
+                                : JsonValue(JsonValue::object_tag);
+                            codec->ValidateTaskHeaders(req.method, params, *mcp_name);
+                        } catch (...) {
+                            p.set_exception(std::current_exception());
+                            return;
+                        }
+                    }
                 }
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
@@ -758,14 +875,66 @@ void McpServer::WireTaskHandlers() {
 
         handler_->SetRequestHandler(methods::kUpdateTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
-                    p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::MethodNotFound,
-                            "tasks/update is only available in 2025 and earlier protocol versions")));
-                    return;
+                const bool modern =
+                    IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+                if (modern) {
+                    if (auto mcp_name = TryGetMcpName(req)) {
+                        try {
+                            auto codec = MakeWireCodec(handler_->NegotiatedProtocolVersion());
+                            JsonValue params = req.params
+                                ? *req.params
+                                : JsonValue(JsonValue::object_tag);
+                            codec->ValidateTaskHeaders(req.method, params, *mcp_name);
+                        } catch (...) {
+                            p.set_exception(std::current_exception());
+                            return;
+                        }
+                    }
                 }
                 UpdateTaskRequestParams params;
                 if (req.params) params = DeserializeUpdateTaskRequestParams(*req.params);
+                if (params.input_responses) {
+                    if (params.result) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InvalidParams,
+                                     "tasks/update must not carry both result and inputResponses")));
+                        return;
+                    }
+                    auto existing = store->GetTask(params.task_id);
+                    if (!existing) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InvalidParams,
+                                     "task not found: " + params.task_id)));
+                        return;
+                    }
+                    if (existing->status != TaskStatus::InputRequired) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InvalidParams,
+                                     "task is not waiting for input: " + params.task_id)));
+                        return;
+                    }
+                    try {
+                        if (!store->AdvanceTaskWithInput(params.task_id, *params.input_responses)) {
+                            p.set_exception(std::make_exception_ptr(
+                                McpError(McpErrorCode::InvalidParams,
+                                         "task not found: " + params.task_id)));
+                            return;
+                        }
+                    } catch (const std::exception& e) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::InternalError,
+                                     std::string("task persist failed: ") + e.what())));
+                        return;
+                    }
+                    if (!modern) {
+                        SendTaskNotification(*handler_,
+                            notifications::kTaskWorking,
+                            params.task_id, TaskStatus::Working);
+                    }
+                    UpdateTaskResult r;
+                    p.set_value(SerializeEmptyResult(r));
+                    return;
+                }
                 try {
                     if (!store->UpdateTask(params.task_id, params.result)) {
                         p.set_exception(std::make_exception_ptr(
@@ -779,21 +948,33 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
-                SendTaskNotification(*handler_,
-                    params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
-                    params.task_id,
-                    params.result ? TaskStatus::Completed : TaskStatus::Working);
+                if (!modern) {
+                    SendTaskNotification(*handler_,
+                        params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
+                        params.task_id,
+                        params.result ? TaskStatus::Completed : TaskStatus::Working);
+                }
                 UpdateTaskResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
 
         handler_->SetRequestHandler(methods::kCancelTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
-                    p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::MethodNotFound,
-                            "tasks/cancel is only available in 2025 and earlier protocol versions")));
-                    return;
+                const bool modern =
+                    IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+                if (modern) {
+                    if (auto mcp_name = TryGetMcpName(req)) {
+                        try {
+                            auto codec = MakeWireCodec(handler_->NegotiatedProtocolVersion());
+                            JsonValue params = req.params
+                                ? *req.params
+                                : JsonValue(JsonValue::object_tag);
+                            codec->ValidateTaskHeaders(req.method, params, *mcp_name);
+                        } catch (...) {
+                            p.set_exception(std::current_exception());
+                            return;
+                        }
+                    }
                 }
                 CancelTaskRequestParams params;
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
@@ -833,8 +1014,10 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
-                SendTaskNotification(*handler_, notifications::kTaskCancelled,
-                    params.task_id, TaskStatus::Cancelled);
+                if (!modern) {
+                    SendTaskNotification(*handler_, notifications::kTaskCancelled,
+                        params.task_id, TaskStatus::Cancelled);
+                }
                 CancelTaskResult r;
                 p.set_value(SerializeEmptyResult(r));
             });
@@ -884,6 +1067,22 @@ void McpServer::WireTaskHandlers() {
     }
 }
 
+void McpServer::WireSkillHandlers() {
+    if (skills_.empty()) return;
+    handler_->SetRequestHandler(methods::kListSkills,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleListSkills(req, std::move(p));
+        });
+    handler_->SetRequestHandler(methods::kGetSkill,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleGetSkill(req, std::move(p));
+        });
+    handler_->SetRequestHandler(methods::kReadDirectory,
+        [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            HandleReadDirectory(req, std::move(p));
+        });
+}
+
 void McpServer::WireSubscriptionHandlers() {
     handler_->SetRequestHandler(methods::kSubscribe,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -913,7 +1112,18 @@ void McpServer::DeriveCapabilities() {
         capabilities_.completions = CompletionsCapability{};
     }
     if (options_.task_store) {
-        capabilities_.extensions = std::map<std::string, JsonValue>{};
+        if (!capabilities_.extensions)
+            capabilities_.extensions = std::map<std::string, JsonValue>{};
+        (*capabilities_.extensions)[std::string(kTasksExtensionId)] =
+            SerializeTasksExtensionSettings(TasksExtensionSettings{});
+    }
+    if (!skills_.empty() && capabilities_.resources) {
+        if (!capabilities_.extensions)
+            capabilities_.extensions = std::map<std::string, JsonValue>{};
+        SkillsExtensionSettings skills_settings;
+        skills_settings.directory_read = skills_directory_read_;
+        (*capabilities_.extensions)[std::string(kSkillsExtensionId)] =
+            SerializeSkillsExtensionSettings(skills_settings);
     }
 }
 
@@ -994,12 +1204,8 @@ void McpServer::HandleCallTool(
         && tool_def.execution->mode == ToolExecutionMode::Task;
 
     if (task_declared && options_.task_store) {
-        if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
-            promise.set_exception(std::make_exception_ptr(
-                McpError(McpErrorCode::MethodNotFound,
-                    "tools/call with task execution is only available in 2025 and earlier protocol versions")));
-            return;
-        }
+        const bool modern =
+            IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
 
         auto store = options_.task_store;
         const std::string task_id = "task-" + std::to_string(next_task_id_++);
@@ -1009,8 +1215,10 @@ void McpServer::HandleCallTool(
         }
         store->CreateTask(task_id);
         store->SetTaskStatus(task_id, TaskStatus::Working);
-        SendTaskNotification(*handler_, notifications::kTaskStatus,
-            task_id, TaskStatus::Working);
+        if (!modern) {
+            SendTaskNotification(*handler_, notifications::kTaskStatus,
+                task_id, TaskStatus::Working);
+        }
 
         CreateTaskResult created;
         created.task_id = task_id;
@@ -1019,14 +1227,14 @@ void McpServer::HandleCallTool(
         promise.set_value(SerializeCreateTaskResult(created));
 
         auto fut = std::async(std::launch::async,
-            [this, tool, ctx = std::move(ctx), store, task_id, cancel_flag]() mutable {
+            [this, tool, ctx = std::move(ctx), store, task_id, cancel_flag, modern]() mutable {
                 auto retire_task = [this, &task_id]() {
                     std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
                     running_task_cancel_flags_.erase(task_id);
                 };
                 auto finish = [&](TaskStatus status, bool notify) {
                     store->SetTaskStatus(task_id, status);
-                    if (notify) {
+                    if (notify && !modern) {
                         SendTaskNotification(*handler_, notifications::kTaskStatus,
                             task_id, status);
                     }
@@ -1290,6 +1498,127 @@ void McpServer::HandleGetPrompt(
     promise.set_exception(std::make_exception_ptr(
         McpError(McpErrorCode::InvalidParams,
                  "prompt not found: " + params.name)));
+}
+
+void McpServer::HandleListSkills(
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills/list is only available in 2026 and later protocol versions")));
+        return;
+    }
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (!capabilities_.resources) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "skills/list requires the resources capability")));
+        return;
+    }
+    SkillsListResult result;
+    size_t cursor_val = 0;
+    if (req.params) {
+        cursor_val = ParseCursor(DeserializePaginatedRequestParams(*req.params).cursor);
+    }
+    size_t next_index = 0;
+    if (PaginateEntries(skills_, cursor_val, kDefaultPageSize, next_index,
+            [&result](const Skill& skill) {
+                result.skills.push_back(skill);
+            })) {
+        result.next_cursor = MakeNextCursor(next_index);
+    }
+    auto hint = GetCacheHint(options_.cache_hints, "skills/list");
+    result.ttl_ms = hint.ttl_ms;
+    result.cache_scope = hint.cache_scope;
+    promise.set_value(SerializeSkillsListResult(result));
+}
+
+void McpServer::HandleGetSkill(
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills/get is only available in 2026 and later protocol versions")));
+        return;
+    }
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (!capabilities_.resources) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "skills/get requires the resources capability")));
+        return;
+    }
+    SkillsGetRequestParams params;
+    if (req.params) {
+        params = DeserializeSkillsGetRequestParams(*req.params);
+    }
+    for (const auto& skill : skills_) {
+        if (skill.uri == params.uri) {
+            SkillsGetResult result;
+            result.skill = skill;
+            auto hint = GetCacheHint(options_.cache_hints, "skills/get");
+            result.ttl_ms = hint.ttl_ms;
+            result.cache_scope = hint.cache_scope;
+            promise.set_value(SerializeSkillsGetResult(result));
+            return;
+        }
+    }
+    promise.set_exception(std::make_exception_ptr(
+        McpError(McpErrorCode::InvalidParams,
+                 "skill not found: " + params.uri)));
+}
+
+void McpServer::HandleReadDirectory(
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
+{
+    if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "resources/directory/read is only available in 2026 and later protocol versions")));
+        return;
+    }
+    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+    if (!capabilities_.resources) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "resources/directory/read requires the resources capability")));
+        return;
+    }
+    if (!skills_directory_read_) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "resources/directory/read requires directoryRead to be declared")));
+        return;
+    }
+    ReadDirectoryRequestParams params;
+    if (req.params) {
+        params = DeserializeReadDirectoryRequestParams(*req.params);
+    }
+    auto view = CollectDirectoryChildren(skills_, NormalizeDirectoryUri(params.uri));
+    if (!view.is_directory) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "directory not found: " + params.uri)));
+        return;
+    }
+    ReadDirectoryResult result;
+    size_t cursor_val = ParseCursor(params.cursor);
+    size_t next_index = 0;
+    if (PaginateEntries(view.children, cursor_val, kDefaultPageSize, next_index,
+            [&result](const DirectoryChild& child) {
+                result.resources.push_back(child);
+            })) {
+        result.next_cursor = MakeNextCursor(next_index);
+    }
+    auto hint = GetCacheHint(options_.cache_hints, "resources/directory/read");
+    result.ttl_ms = hint.ttl_ms;
+    result.cache_scope = hint.cache_scope;
+    promise.set_value(SerializeReadDirectoryResult(result));
 }
 
 void McpServer::SetCompletionHandler(CompletionHandler handler) {
