@@ -144,6 +144,20 @@ namespace {
                std::strstr(type_name, "StdioClientSessionTransport") != nullptr;
     }
 
+    static bool DeclaresTasksExtension(const ClientOptions& options)
+    {
+        if (options.capabilities && options.capabilities->extensions) {
+            if (options.capabilities->extensions->count(
+                    std::string(kTasksExtensionId)) > 0)
+                return true;
+        }
+        if (options.extensions && options.extensions->IsObject()) {
+            if (options.extensions->Contains(kTasksExtensionId))
+                return true;
+        }
+        return false;
+    }
+
     static std::optional<std::vector<std::string>> ExtractSupportedVersions(
         const JsonValue& result)
     {
@@ -908,10 +922,16 @@ ListToolsResult McpClient::ListToolsAll() {
 }
 
 static std::optional<JsonValue> ResolveTaskResult(
-    McpClient& client, const JsonValue& result_json)
+    McpClient& client, const ClientOptions& options, const JsonValue& result_json)
 {
     auto* rt = result_json.Find("resultType");
     if (!rt || rt->GetString() != "task") return std::nullopt;
+
+    if (!DeclaresTasksExtension(options) &&
+        IsModernProtocolVersion(client.GetNegotiatedProtocolVersion())) {
+        throw McpError(McpErrorCode::HandlerError,
+            "received task result without declaring tasks extension io.modelcontextprotocol/tasks");
+    }
 
     auto* tid = result_json.Find(detail::kTaskId);
     if (!tid || !tid->IsString()) {
@@ -962,7 +982,7 @@ CallToolResult McpClient::CallTool(
     auto result_json = SendRequestWithMrtr(
         methods::kCallTool, std::move(req_json), meta, round_timeout);
 
-    if (auto task_payload = ResolveTaskResult(*this, result_json)) {
+    if (auto task_payload = ResolveTaskResult(*this, options_, result_json)) {
         return task_payload->IsNull()
             ? CallToolResult{}
             : DeserializeCallToolResult(*task_payload);
@@ -1131,7 +1151,7 @@ GetPromptResult McpClient::GetPrompt(
     auto result_json = SendRequestWithMrtr(
         methods::kGetPrompt, std::move(req_json), meta, timeout);
 
-    if (auto task_payload = ResolveTaskResult(*this, result_json)) {
+    if (auto task_payload = ResolveTaskResult(*this, options_, result_json)) {
         return task_payload->IsNull()
             ? GetPromptResult{}
             : DeserializeGetPromptResult(*task_payload);
@@ -1171,6 +1191,11 @@ GetTaskResult McpClient::CallToolAsTask(
     auto* result_type = result_json.Find(detail::kResultType);
     if (result_type && result_type->IsString() &&
         result_type->GetString() == "task") {
+        if (!DeclaresTasksExtension(options_) &&
+            IsModernProtocolVersion(GetNegotiatedProtocolVersion())) {
+            throw McpError(McpErrorCode::HandlerError,
+                "received task result without declaring tasks extension io.modelcontextprotocol/tasks");
+        }
         auto* task = result_json.Find("task");
         if (!task || !task->IsObject()) {
             throw McpError(McpErrorCode::InvalidParams,
@@ -1207,11 +1232,13 @@ GetTaskResult McpClient::GetTask(std::string_view task_id) {
 
 UpdateTaskResult McpClient::UpdateTask(
     std::string_view task_id,
-    std::optional<JsonValue> result)
+    std::optional<JsonValue> result,
+    std::optional<JsonValue> input_responses)
 {
     UpdateTaskRequestParams params;
     params.task_id = std::string(task_id);
     params.result = std::move(result);
+    params.input_responses = std::move(input_responses);
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto res = DoSendRequest(*handler_, methods::kUpdateTask,
         SerializeUpdateTaskRequestParams(params), meta, kTaskRequestTimeout);

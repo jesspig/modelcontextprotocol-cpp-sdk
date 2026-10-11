@@ -1781,6 +1781,9 @@ TEST(McpClientTest, CallToolAsTaskReturnsTaskHandle) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    JsonValue task_ext(JsonValue::object_tag);
+    task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    opts.extensions = std::move(task_ext);
     auto client = McpClient::Create(std::move(pair.client), opts);
 
     auto handle = client->CallToolAsTask("long-tool");
@@ -2175,6 +2178,136 @@ TEST(McpClientTest, NonSessionExpiredErrorDoesNotReinit) {
     }
     EXPECT_TRUE(threw);
     EXPECT_EQ(initialize_calls.load(), 1);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, PollTaskViaTasksGet) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+    std::atomic<int> get_calls{0};
+    std::atomic<int> result_calls{0};
+    server_handler->SetRequestHandler(methods::kGetTask,
+        [&get_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            int n = get_calls.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            result["taskId"] = JsonValue("t-poll");
+            result["status"] = JsonValue(n == 0 ? "working" : "completed");
+            result["resultType"] = JsonValue("task");
+            if (n > 0) {
+                JsonValue payload(JsonValue::object_tag);
+                JsonValue content(JsonValue::object_tag);
+                content["type"] = JsonValue("text");
+                content["text"] = JsonValue("done");
+                JsonValue arr(JsonValue::array_tag);
+                arr.PushBack(std::move(content));
+                payload["content"] = JsonValue(std::move(arr));
+                result["result"] = std::move(payload);
+            }
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kGetTaskPayload,
+        [&result_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            result_calls.fetch_add(1);
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    JsonValue task_ext(JsonValue::object_tag);
+    task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    opts.extensions = std::move(task_ext);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto done = client->PollTaskToCompletion("t-poll",
+        std::chrono::milliseconds(10), std::chrono::seconds(10));
+    EXPECT_EQ(done.task_id, "t-poll");
+    EXPECT_EQ(done.status, "completed");
+    ASSERT_TRUE(done.result.has_value());
+    EXPECT_GE(get_calls.load(), 2);
+    EXPECT_EQ(result_calls.load(), 0);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, UpdateTaskCarriesInputResponses) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+    std::atomic<bool> saw_input_responses{false};
+    server_handler->SetRequestHandler(methods::kUpdateTask,
+        [&saw_input_responses](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (req.params && req.params->IsObject()) {
+                auto* tid = req.params->Find("taskId");
+                auto* ir = req.params->Find("inputResponses");
+                saw_input_responses.store(tid && tid->IsString() &&
+                    tid->GetString() == "t-input" && ir && ir->IsObject() &&
+                    ir->Contains("q"));
+            }
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue answer(JsonValue::object_tag);
+    answer["answer"] = JsonValue("yes");
+    responses["q"] = std::move(answer);
+    EXPECT_NO_THROW(client->UpdateTask("t-input", std::nullopt, std::move(responses)));
+    EXPECT_TRUE(saw_input_responses.load());
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, UndeclaredExtensionReceivesTaskThrows) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue task(JsonValue::object_tag);
+            task["taskId"] = JsonValue("t-undeclared");
+            task["status"] = JsonValue("working");
+            task["createdAt"] = JsonValue("2026-01-01T00:00:00Z");
+            JsonValue result(JsonValue::object_tag);
+            result["resultType"] = JsonValue("task");
+            result["task"] = std::move(task);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    bool call_threw = false;
+    try {
+        client->CallTool("long-tool", JsonValue(JsonValue::object_tag));
+    } catch (const McpError& e) {
+        call_threw = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::HandlerError);
+    }
+    EXPECT_TRUE(call_threw);
+
+    bool as_task_threw = false;
+    try {
+        client->CallToolAsTask("long-tool");
+    } catch (const McpError& e) {
+        as_task_threw = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::HandlerError);
+    }
+    EXPECT_TRUE(as_task_threw);
 
     client->Close();
     server_handler->Close();
