@@ -126,6 +126,8 @@ client->SetLoggingHandler(
 
 已弃用（SEP-2577）：`SetSamplingHandler` 与 `SetRootsHandler` 不再可用（`sampling/createMessage`、`roots/list` 仅存在于 2025 时代），请改用 `SetElicitationHandler`。
 
+在客户端能力（`ClientOptions::capabilities` 的 elicitation 声明）中启用 `applyDefaults` 后，`accept` 且内容为对象时，空缺字段按请求 schema 的 `default` 自动回填（递归处理嵌套对象与 `anyOf`/`oneOf` 变体）。
+
 ## 订阅
 
 ```cpp

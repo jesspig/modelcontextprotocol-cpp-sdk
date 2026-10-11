@@ -58,3 +58,7 @@ p.arguments = {arg};
 ::: note
 `PromptOptions` 中的字段（`description`、`title`、`icons`、`arguments`）会传播到通过 `prompts/list` 返回的协议级 `Prompt` 结构中。
 :::
+
+## 输入请求（input_required）
+
+提示处理程序也可返回 `input_required`（`GetPromptResult::input_required`），向客户端发起多轮输入收集；客户端携带 `inputResponses` + `requestState` 重试获取（与工具调用的 MRTR 闭环一致，`request_state_key` 配置时自动签名）。

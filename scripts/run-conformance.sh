@@ -117,6 +117,10 @@ client)
         echo "Error: ${CLIENT_BIN} not found. Build first (see AGENTS.md)."
         exit 1
     fi
+    case "${CLIENT_BIN}" in
+    /*|?:*) ;;
+    *) CLIENT_BIN="${REPO_ROOT}/${CLIENT_BIN}" ;;
+    esac
     if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
         # shellcheck disable=SC2086
         run_referee client --command "${CLIENT_BIN}" \

@@ -56,3 +56,7 @@ server->SendResourceListChanged();
 
 - **2026-07-28 及以后**：订阅经 `subscriptions/listen` 携带显式过滤器，通知只投递给过滤器匹配的订阅者。
 - **2025 及更早**：`resources/subscribe` 没有过滤器可参照，通知按广播语义投递。
+
+## 输入请求（input_required）
+
+资源处理程序也可返回 `input_required`（`ReadResourceResult::input_required`），向客户端发起多轮输入收集；客户端携带 `inputResponses` + `requestState` 重试读取（与工具调用的 MRTR 闭环一致，`request_state_key` 配置时自动签名）。

@@ -147,4 +147,4 @@ server->RegisterTool("slow_compute", opts,
     });
 ```
 
-前提是 `ServerOptions::task_store` 已配置（任务持久化后端）。`tasks/update` 支持携带 `inputResponses` 回应任务执行中的输入请求（与 `result` 互斥）。扩展声明与 wire 语义见 [扩展](/zh/server/extensions)。
+前提是 `ServerOptions::task_store` 已配置（任务持久化后端）。`tasks/update` 支持携带 `inputResponses` 回应任务执行中的输入请求（与 `result` 互斥）。任务句柄形态按时代区分：2026 时代扁平直写顶层 `taskId`/`status`，2025 时代保留嵌套 `task` 对象兼容（客户端双形态接受）。后台落终态语义：处理程序正常返回（含 `is_error` 结果）落 `Completed`，抛异常落 `Failed` 并以内联 `error` 透传错误载荷。扩展声明与 wire 语义见 [扩展](/zh/server/extensions)。

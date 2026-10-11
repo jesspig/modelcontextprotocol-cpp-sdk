@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-12T01:00:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -28,7 +28,7 @@ resource: src/server/McpServer.cpp
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）、`notifications/elicitation/complete`（唤醒 URL elicitation 等待）
 - **WireExtensionHandlers**：`server/extensions/list`
-- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:775](../../src/server/McpServer.cpp)）
+- **WireTaskHandlers**：`tasks/get|update|cancel`（2025 与 2026 双时代均可用，modern 下头校验 + 通知抑制）与 `tasks/result|list`（仅 2025，modern 回 `MethodNotFound`）——仅 `options_.task_store` 存在时注册；语义见 [/classes/mcp-server.md](../classes/mcp-server.md)（任务分流）与 [/concepts/tasks-extension.md](../concepts/tasks-extension.md)
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
 `initialized_` 守卫经 `RequireInitialized(initialized, modern_era, promise)` 统一判定：**modern era（2026-07-28）直接放行**（Pin-to-2026/纯 modern 客户端无 initialize 握手也可调用），legacy era 未初始化才回 `InvalidRequest "Server not initialized"`；`initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 不经此守卫。
@@ -36,9 +36,9 @@ resource: src/server/McpServer.cpp
 ## 任务化 tools/call（[McpServer.cpp](../../src/server/McpServer.cpp)）
 
 - 声明：`ToolOptions::execution`（`ToolExecution`，`mode == ToolExecutionMode::Task`）经 `RegisterTool` 写入工具定义的 `execution` 字段
-- 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径仅 **2025 及更早时代**可用（modern era 回 `MethodNotFound`）
-- 立即返回：登记取消标志 → `CreateTask` + 置 `Working` → 发 `notifications/tasks/status` → 同步返回 `CreateTaskResult`（wire `task.taskId/task.status/createdAt`，`resultType` 落 `"task"`）
-- 后台执行：`std::async` 调用工具 handler，完成后结果写入 store 并发 `notifications/tasks/status`（Working→Completed/Failed；取消判定优先于 Failed，Cancelled 静默收尾不发通知）；失败任务把首个文本 content 作为 `error` 写入 store
+- 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径 2025 与 2026 双时代均放行（modern 下任务状态通知抑制，客户端靠轮询取终态）
+- 立即返回：登记取消标志 → `CreateTask` + 置 `Working`（`last_updated_at = created_at`）→ legacy 下发 `notifications/tasks/status`（modern 抑制）→ 同步返回 `CreateTaskResult`（`resultType` 落 `"task"`；2026 扁平只写顶层字段，2025 保留嵌套 `task` 兼容）
+- 后台执行：`std::async` 调用工具 handler——正常返回（含 `is_error` 结果）序列化入库并落 `Completed`；抛 `McpError` 按原码/消息/data 以错误载荷入库落 `Failed`（`GetTaskResult` 以内联 `error` 透传），其他异常按 `InternalError` 落 `Failed`；取消判定优先于 Failed，`Cancelled` 静默收尾不发通知
 - 协作取消：`RequestContext::IsCancellationRequested()` 读共享取消标志（`shared_ptr<const std::atomic<bool>>`，handler 轮询自愿退出）；`tasks/cancel` 置位标志并落 `Cancelled` 终态，**终态不迁移**（已终态直接返回空结果）；**协议级 `notifications/cancelled` 与任务级取消共用同一标志**，标志在派发前由 `GetIncomingCancellationFlag(req.id)` 注入，故普通（非任务）工具 handler 同样能感知
 - future 进 `pending_async_futures_`（顺带清理已完成项），`Close()` 全部等待
 

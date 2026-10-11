@@ -108,6 +108,8 @@ client->SetLoggingHandler(
 
 Deprecated (SEP-2577): `SetSamplingHandler` and `SetRootsHandler` are no longer available (`sampling/createMessage` and `roots/list` only exist in the 2025 era); use `SetElicitationHandler` instead.
 
+Enabling `applyDefaults` in the client capabilities (`ClientOptions::capabilities` elicitation declaration) makes missing fields auto-filled from the request schema's `default` values when the result is `accept` with object content (recursing into nested objects and `anyOf`/`oneOf` variants).
+
 ## Subscriptions
 
 ```cpp
