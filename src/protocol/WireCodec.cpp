@@ -33,6 +33,7 @@ inline const std::unordered_set<std::string_view> k2025OnlyRequestMethods = {
 inline const std::unordered_set<std::string_view> k2026OnlyRequestMethods = {
     "server/discover",
     "subscriptions/listen",
+    "tasks/get", "tasks/update", "tasks/cancel",
 };
 
 inline const std::unordered_set<std::string_view> kCommonNotifMethods = {

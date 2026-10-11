@@ -1829,3 +1829,210 @@ TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
     ctx.server->Close();
     ctx.client->Close();
 }
+
+namespace {
+
+struct ModernTaskEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+    std::shared_ptr<FileTaskStore> store;
+    std::filesystem::path store_path;
+};
+
+ModernTaskEnv MakeModernTaskEnv() {
+    ModernTaskEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    env.store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(env.store_path, ec);
+    env.store = std::make_shared<FileTaskStore>(env.store_path);
+    sopts.task_store = env.store;
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+void CloseModernTaskEnv(ModernTaskEnv& env) {
+    env.server->Close();
+    env.client->Close();
+    std::error_code ec;
+    std::filesystem::remove(env.store_path, ec);
+}
+
+RequestMeta MetaWithMcpName(std::string_view name) {
+    RequestMeta meta;
+    JsonValue ext(JsonValue::object_tag);
+    ext["Mcp-Name"] = JsonValue(std::string(name));
+    meta.extensions = std::move(ext);
+    return meta;
+}
+
+} // namespace
+
+TEST(McpServerTest, UnsolicitedTaskCreation) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("quick_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "modern-done"});
+            return r;
+        });
+
+    auto caps = env.server->GetCapabilities();
+    ASSERT_TRUE(caps.extensions.has_value());
+    EXPECT_TRUE(caps.extensions->find(std::string(kTasksExtensionId))
+                != caps.extensions->end());
+
+    DiscoverRequestParams discover_params;
+    auto discover_future = env.client->SendRequest(methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(discover_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto discover_resp = discover_future.get();
+    ASSERT_FALSE(discover_resp.Contains("code"));
+    auto discovered = DeserializeDiscoverResult(discover_resp);
+    ASSERT_TRUE(discovered.capabilities.extensions.has_value());
+    EXPECT_TRUE(discovered.capabilities.extensions->find(std::string(kTasksExtensionId))
+                != discovered.capabilities.extensions->end());
+
+    std::atomic<bool> legacy_notif_seen{false};
+    const std::string_view kLegacyTaskNotifs[] = {
+        notifications::kTaskStatus, notifications::kTaskWorking,
+        notifications::kTaskCompleted, notifications::kTaskFailed,
+        notifications::kTaskCancelled, notifications::kTaskInputRequired,
+    };
+    for (auto method : kLegacyTaskNotifs) {
+        env.client->SetNotificationHandler(method,
+            [&](const JsonRpcNotification&) { legacy_notif_seen.store(true); });
+    }
+
+    CallToolRequestParams params;
+    params.name = "quick_task";
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    ASSERT_TRUE(resp.Contains("resultType"));
+    EXPECT_EQ(resp["resultType"].GetString(), "task");
+    auto created = DeserializeCreateTaskResult(resp);
+    EXPECT_EQ(created.status, "working");
+    EXPECT_FALSE(created.task_id.empty());
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    std::optional<GetTaskResult> final_task;
+    for (int i = 0; i < 200; ++i) {
+        auto get_future = env.client->SendRequest(methods::kGetTask,
+            SerializeGetTaskRequestParams(get_params), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        auto get_resp = get_future.get();
+        ASSERT_FALSE(get_resp.Contains("code"));
+        auto got = DeserializeGetTaskResult(get_resp);
+        if (got.status == "completed") {
+            final_task = got;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    ASSERT_TRUE(final_task.has_value());
+    EXPECT_EQ(final_task->task_id, created.task_id);
+    ASSERT_TRUE(final_task->result.has_value());
+    EXPECT_TRUE(final_task->result->Contains("content"));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_FALSE(legacy_notif_seen.load());
+
+    GetTaskRequestParams payload_params;
+    payload_params.task_id = created.task_id;
+    auto payload_future = env.client->SendRequest(methods::kGetTaskPayload,
+        SerializeGetTaskRequestParams(payload_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(payload_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto payload_resp = payload_future.get();
+    ASSERT_TRUE(payload_resp.Contains("code"));
+    EXPECT_EQ(payload_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksUpdateWithInputResponses) {
+    auto env = MakeModernTaskEnv();
+
+    env.store->CreateTask("task-input");
+    ASSERT_TRUE(env.store->SetTaskStatus("task-input", TaskStatus::InputRequired));
+
+    UpdateTaskRequestParams up;
+    up.task_id = "task-input";
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue name_resp(JsonValue::object_tag);
+    name_resp["user_name"] = JsonValue("Alice");
+    responses["name"] = std::move(name_resp);
+    up.input_responses = std::move(responses);
+    auto up_future = env.client->SendRequest(methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(up), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(up_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto up_resp = up_future.get();
+    ASSERT_FALSE(up_resp.Contains("code"));
+
+    auto advanced = env.store->GetTask("task-input");
+    ASSERT_TRUE(advanced.has_value());
+    EXPECT_EQ(advanced->status, TaskStatus::Working);
+    ASSERT_TRUE(advanced->input_responses.has_value());
+    auto* name_entry = advanced->input_responses->Find("name");
+    ASSERT_NE(name_entry, nullptr);
+    auto* user_name = name_entry->Find("user_name");
+    ASSERT_NE(user_name, nullptr);
+    EXPECT_EQ(user_name->GetString(), "Alice");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = "task-input";
+    auto get_future = env.client->SendRequest(methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithMcpName("task-input"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto get_resp = get_future.get();
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(DeserializeGetTaskResult(get_resp).status, "working");
+
+    auto mismatch_future = env.client->SendRequest(methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithMcpName("other-task"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(mismatch_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto mismatch_resp = mismatch_future.get();
+    ASSERT_TRUE(mismatch_resp.Contains("code"));
+    EXPECT_EQ(mismatch_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::HeaderMismatch));
+
+    UpdateTaskRequestParams repeat;
+    repeat.task_id = "task-input";
+    JsonValue again(JsonValue::object_tag);
+    again["name"] = JsonValue("Bob");
+    repeat.input_responses = std::move(again);
+    auto repeat_future = env.client->SendRequest(methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(repeat), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(repeat_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto repeat_resp = repeat_future.get();
+    ASSERT_TRUE(repeat_resp.Contains("code"));
+    EXPECT_EQ(repeat_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CloseModernTaskEnv(env);
+}

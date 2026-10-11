@@ -295,7 +295,6 @@ TEST(WireCodecTest, Rev2026RejectsLegacyTasks) {
     auto modern = MakeWireCodec("2026-07-28");
     auto legacy = MakeWireCodec("2025-11-25");
     const std::string_view kMethods[] = {
-        "tasks/get", "tasks/update", "tasks/cancel",
         "tasks/result", "tasks/list",
     };
     for (auto method : kMethods) {
@@ -309,6 +308,28 @@ TEST(WireCodecTest, Rev2026RejectsLegacyTasks) {
         EXPECT_TRUE(legacy->HasRequestMethod(method));
         EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::Ok);
     }
+}
+
+TEST(WireCodecTest, Rev2026AcceptsTaskExtensionMethods) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    const std::string_view kMethods[] = {
+        "tasks/get", "tasks/update", "tasks/cancel",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        EXPECT_TRUE(modern->HasRequestMethod(method));
+        EXPECT_TRUE(legacy->HasRequestMethod(method));
+        JsonValue raw(JsonValue::object_tag);
+        JsonValue params(JsonValue::object_tag);
+        params["_meta"] = JsonValue(JsonValue::object_tag);
+        raw["params"] = std::move(params);
+        EXPECT_EQ(modern->ValidateRequest(method, raw), WireValidation::Ok);
+        EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::Ok);
+    }
+    JsonValue bare(JsonValue::object_tag);
+    bare["params"] = JsonValue(JsonValue::object_tag);
+    EXPECT_EQ(modern->ValidateRequest("tasks/get", bare), WireValidation::Invalid);
 }
 
 TEST(WireCodecTest, Rev2026RejectsPing) {
