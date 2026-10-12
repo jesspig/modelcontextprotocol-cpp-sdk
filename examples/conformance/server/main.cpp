@@ -139,6 +139,7 @@ int main(int argc, char** argv)
     transport_options.endpoint = "/mcp";
     transport_options.stateless = stateless;
     transport_options.enable_legacy_sse = true;
+    if (stateless) transport_options.listen_hold_open = true;
     transport_options.event_store = std::make_shared<EventStore>();
     transport_options.session_store = nullptr;
     transport_options.server_name = "mcp-conformance-test-server";

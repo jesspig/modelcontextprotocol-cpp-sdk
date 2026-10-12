@@ -6,9 +6,12 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mcp::ext {
+
+inline constexpr std::string_view kServerCardExtensionId = "io.modelcontextprotocol/server-card";
 
 struct ServerCardEndpoint {
     std::string url;

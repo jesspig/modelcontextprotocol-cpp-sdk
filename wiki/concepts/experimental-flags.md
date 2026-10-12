@@ -1,15 +1,15 @@
 ---
 type: Concept
 title: 实验开关
-description: 服务端 10 开关与客户端 4 开关（默认全关）：tasks/skills 双端门控语义、tasks 隐式兼容过渡与 Warning、etag/渐进发现/文件输入/触发器/dpop 已实现默认关语义与构造期同步、interceptor 为无门控别名。
-tags: [experimental, 实验开关, tasks, skills, 兼容]
-timestamp: 2026-10-12T18:55:34+08:00
+description: 服务端 10 开关与客户端 4 开关（默认全关）：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器/dpop 已实现默认关语义与构造期同步、interceptor 为无门控别名。
+tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容]
+timestamp: 2026-10-13T02:02:21+08:00
 resource: include/mcp/server/ServerOptions.hpp
 ---
 
 # 实验开关
 
-`ad547f9` 起 Tier1 对齐引入的实验能力默认全部关闭，须显式开启。服务端 10 开关（[ServerOptions.hpp:80-89](../../include/mcp/server/ServerOptions.hpp)），客户端 4 开关（[ClientOptions.hpp:51-54](../../include/mcp/client/ClientOptions.hpp)），默认值均为 `false`。其中 tasks/skills 为最早接线的一批；etag/渐进发现/文件输入/触发器/dpop 五开关在后续批次全部接线（默认关实现），`enable_interceptor_alias` 为无门控的纯别名；仅 apps/server_card 两开关仍为保留未接线。
+`ad547f9` 起 Tier1 对齐引入的实验能力默认全部关闭，须显式开启。服务端 10 开关（[ServerOptions.hpp:81-91](../../include/mcp/server/ServerOptions.hpp)），客户端 4 开关（[ClientOptions.hpp:51-54](../../include/mcp/client/ClientOptions.hpp)），默认值均为 `false`。其中 tasks/skills 为最早接线的一批；etag/渐进发现/文件输入/触发器/dpop 五开关在后续批次全部接线（默认关实现），`enable_interceptor_alias` 为无门控的纯别名；apps/server_card 两开关在本轮接线（能力声明 + 请求门控，见下）。
 
 ## 开关表
 
@@ -19,8 +19,8 @@ resource: include/mcp/server/ServerOptions.hpp
 |------|----------|----------|
 | `enable_tasks_extension` | 声明 tasks 扩展；`tasks/get\|update\|cancel` 与任务化 `tools/call` 生效 | 无 `task_store` 时对应方法 `MethodNotFound`（`tasks extension is disabled`）；仅设 `task_store` 时走隐式兼容（见下） |
 | `enable_skills_extension` | 已注册技能且具 resources 能力时声明 skills 扩展；`skills/list\|get` 与 `directory/read` 生效 | 三方法一律 `MethodNotFound`（`skills extension is disabled`），即使已注册技能；无隐式路径 |
-| `enable_apps_extension` | 保留：已声明、默认 `false`，暂无门控接线（apps 校验见 [Apps.hpp](../../include/mcp/ext/Apps.hpp)，独立于开关） | 同左 |
-| `enable_server_card` | 保留：已声明、默认 `false`，暂无门控接线（校验见 [ServerCard.hpp](../../include/mcp/ext/ServerCard.hpp)，独立于开关） | 同左 |
+| `enable_apps_extension` | 声明 `io.modelcontextprotocol/ui` 扩展（[Apps.hpp:11](../../include/mcp/ext/Apps.hpp) 的 `kAppsExtensionId`，对标 C# `McpApps.ExtensionId`）；开时 `ui://` 资源读走正常路径并经 `ValidateUiMeta` 校验 | 关时 `ui://` 的 `resources/read` 一律 `HandlerError`（`apps extension is disabled`），非 `ui://` 资源不受影响 |
+| `enable_server_card` | 声明 `io.modelcontextprotocol/server-card` 扩展（[ServerCard.hpp:14](../../include/mcp/ext/ServerCard.hpp) 的 `kServerCardExtensionId`，SEP-2127）；开时 `GetServerCard()` 返回显式卡（`server_card`，[ServerOptions.hpp:85](../../include/mcp/server/ServerOptions.hpp)）或由 `server_info` + 支持版本构建的默认卡，均经 `ValidateCard` 校验 | 关时 `GetServerCard()` 抛 `HandlerError`（`server card is disabled`）；HTTP `GET /server-card` 仍由传输侧同名开关独立门控 |
 | `enable_etag_cache` | 列表类结果序列化附内容哈希 `etag`（载荷超 `kEtagMaxBytes` 8MB 跳过不附；TTL 语义不动）；客户端 8 读取路径经 meta 扩展附 `ifNoneMatch` 条件发送，服务端回 `notModified` 时以存表回退 | 全局关闭：结果不附 `etag`，客户端存取表短路（`GetStoredEtag`/`StoreEtagBody` 直接返回），无条件发送 |
 | `enable_progressive_discovery` | `tools/list` 支持 `query` 子串过滤 + `pageSize`（1–100）翻页，不再走缓存全量；`subscriptions/listen` 即刷并持开，`list_changed` 按订阅缓冲 | 原路：`tools/list` 走缓存全量返回；`listen` 与 `list_changed` 走原广播路径 |
 | `enable_file_input` | `tools/call` 的 `arguments` 内 `file://`/`resource://` 引用对象按范围切片并内联小文件；`http(s)://` 只透传；越界与超限回错误结果 | 参数原样透传，不做任何引用解析 |
@@ -37,7 +37,7 @@ resource: include/mcp/server/ServerOptions.hpp
 | `enable_apps_extension` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
 | `enable_progressive_discovery` | `SearchTools` 翻页请求附 `query`/`pageSize` | 翻页聚合仍可用，但不附 `query`/`pageSize`（服务端按缺省分页返回） |
 
-门控位置：服务端任务守卫（[McpServer.cpp:1124、1168、1397](../../src/server/McpServer.cpp)）、能力推导（[McpServer.cpp:1565-1574](../../src/server/McpServer.cpp)）、任务化调用（[McpServer.cpp:1732-1733](../../src/server/McpServer.cpp)）、技能三方法（[McpServer.cpp:2288、2329、2372](../../src/server/McpServer.cpp)）；客户端声明判定（[McpClient.cpp:150](../../src/client/McpClient.cpp)）、技能三调用（[McpClient.cpp:1244、1270、1303](../../src/client/McpClient.cpp)）、任务两调用（[McpClient.cpp:1408、1439](../../src/client/McpClient.cpp)）。六开关接线位置：etag 构造期同步（[McpServer.cpp:505](../../src/server/McpServer.cpp)）+ 结果附哈希（[McpTypesResults.cpp:104-109](../../src/core/McpTypesResults.cpp)）+ 客户端 8 读取路径条件发送与回退（[McpClient.cpp:981-1451](../../src/client/McpClient.cpp)）；渐进发现服务端（[McpServer.cpp:1685](../../src/server/McpServer.cpp)）与客户端（[McpClient.cpp:1056](../../src/client/McpClient.cpp)）；文件输入（[McpServer.cpp:1819](../../src/server/McpServer.cpp)）；触发器发射门（[McpServer.cpp:827](../../src/server/McpServer.cpp)）；dpop 服务端校验（[StreamableHttpServerTransport.cpp:454](../../src/http/StreamableHttpServerTransport.cpp)）与客户端签发（[OAuthClientProvider.cpp:234、604、612](../../src/client/auth/OAuthClientProvider.cpp)）；拦截器别名（[MessageFilter.hpp:21、39](../../include/mcp/protocol/MessageFilter.hpp)）。
+门控位置：服务端任务守卫（[McpServer.cpp:1205、1246、1472](../../src/server/McpServer.cpp)）、能力推导（[McpServer.cpp:1637、1643、1649](../../src/server/McpServer.cpp)）、任务化调用（[McpServer.cpp:2018](../../src/server/McpServer.cpp)）、技能三方法（[McpServer.cpp:2587、2628、2671](../../src/server/McpServer.cpp)）、apps 资源读门（[McpServer.cpp:2431](../../src/server/McpServer.cpp)）、卡片获取（[McpServer.cpp:2916](../../src/server/McpServer.cpp)）；客户端声明判定（[McpClient.cpp:150](../../src/client/McpClient.cpp)）、技能三调用（[McpClient.cpp:1244、1270、1303](../../src/client/McpClient.cpp)）、任务两调用（[McpClient.cpp:1408、1439](../../src/client/McpClient.cpp)）。六开关接线位置：etag 构造期同步（[McpServer.cpp:505](../../src/server/McpServer.cpp)）+ 结果附哈希（[McpTypesResults.cpp:104-109](../../src/core/McpTypesResults.cpp)）+ 客户端 8 读取路径条件发送与回退（[McpClient.cpp:981-1451](../../src/client/McpClient.cpp)）；渐进发现服务端（[McpServer.cpp:1685](../../src/server/McpServer.cpp)）与客户端（[McpClient.cpp:1056](../../src/client/McpClient.cpp)）；文件输入（[McpServer.cpp:1819](../../src/server/McpServer.cpp)）；触发器发射门（[McpServer.cpp:827](../../src/server/McpServer.cpp)）；dpop 服务端校验（[StreamableHttpServerTransport.cpp:454](../../src/http/StreamableHttpServerTransport.cpp)）与客户端签发（[OAuthClientProvider.cpp:234、604、612](../../src/client/auth/OAuthClientProvider.cpp)）；拦截器别名（[MessageFilter.hpp:21、39](../../include/mcp/protocol/MessageFilter.hpp)）。
 
 ## 构造期同步
 
@@ -47,12 +47,13 @@ resource: include/mcp/server/ServerOptions.hpp
 
 ## Tasks/Skills 兼容期（0.3.5 → 0.3.8，本次任务给定口径）
 
-- Tasks：仅设 `task_store` 而未显式开 `enable_tasks_extension` 时仍隐式启用（[ServerOptions.hpp:91-93](../../include/mcp/server/ServerOptions.hpp) 的 `TasksImplicitlyEnabled()`），但每次经过能力推导与任务路径均记 `Warning` 日志（[McpServer.cpp:51](../../src/server/McpServer.cpp) 的 `kTasksImplicitWarning` 文本）。该辅助标记 `[[deprecated("set enable_tasks_extension=true explicitly")]]`，0.3.8 起计划移除隐式路径，届时只设 `task_store` 不再声明 tasks 扩展。注：0.3.8 为任务口径，代码内无版本标记；现版本为 0.3.5。
-- Skills：`SkillsImplicitlyEnabled()`（[ServerOptions.hpp:94-96](../../include/mcp/server/ServerOptions.hpp)）同样标记 deprecated，但实现只返回开关本身、无隐式路径——技能自 `ad547f9` 起必须显式开 `enable_skills_extension=true`，否则能力不声明、三方法 `MethodNotFound`。
+- Tasks：隐式路径已移除——仅设 `task_store` 不再声明 tasks 扩展、不再记 `Warning`，必须显式开 `enable_tasks_extension=true`（能力推导 [McpServer.cpp:1637](../../src/server/McpServer.cpp)、任务三方法守卫 `1205、1246、1472`、任务化调用 `2018` 均只认显式开关）。`TasksImplicitlyEnabled()`（[ServerOptions.hpp:93-95](../../include/mcp/server/ServerOptions.hpp)）仍保留 `[[deprecated]]` 标记作公开 API 兼容，但服务端已不再调用。注：0.3.8 为任务口径，代码内无版本标记；现版本为 0.3.5。
+- Skills：`SkillsImplicitlyEnabled()`（[ServerOptions.hpp:96-98](../../include/mcp/server/ServerOptions.hpp)）同样标记 deprecated，但实现只返回开关本身、无隐式路径——技能自 `ad547f9` 起必须显式开 `enable_skills_extension=true`，否则能力不声明、三方法 `MethodNotFound`。
 
 ## 关/开两态语义
 
-- 关：对应方法返回/抛出 `MethodNotFound`（服务端与客户端文案均为 `tasks extension is disabled` / `skills extension is disabled`），能力映射不声明对应扩展键。
-- 上条仅 tasks/skills：etag/渐进/文件输入/触发器/dpop 关态不报 `MethodNotFound`，而是走原路（无 etag、全量列表、参数透传、事件丢弃、原 Bearer）；interceptor 为别名，开/关无差异。
-- 开：恢复既有行为——前置条件满足即声明扩展键并放行方法：tasks 需设 `task_store`（服务端）/ 扩展映射含任务键（客户端），skills 需已注册技能且具 resources 能力（服务端）。tasks 与 skills 行为细节见 [/concepts/tasks-extension.md](/concepts/tasks-extension.md) 与 [/concepts/skills-extension.md](/concepts/skills-extension.md)。
+- 关：tasks/skills 对应方法返回/抛出 `MethodNotFound`（服务端与客户端文案均为 `tasks extension is disabled` / `skills extension is disabled`），能力映射不声明对应扩展键；apps 关时 `ui://` 资源读抛 `HandlerError`（`apps extension is disabled`），server_card 关时 `GetServerCard()` 抛 `HandlerError`（`server card is disabled`），能力映射不声明对应扩展键。
+- 上条中仅 tasks/skills 报 `MethodNotFound`，apps/server-card 报 `HandlerError`；etag/渐进/文件输入/触发器/dpop 关态不报错，而是走原路（无 etag、全量列表、参数透传、事件丢弃、原 Bearer）；interceptor 为别名，开/关无差异。
+- 开：恢复既有行为——前置条件满足即声明扩展键并放行方法：tasks 需显式开开关（服务端，`task_store` 仍为任务持久化前置）/ 扩展映射含任务键（客户端），skills 需已注册技能且具 resources 能力（服务端），apps 开即声明 `ui` 键并放行 `ui://` 资源读，server_card 开即声明卡片键并开放 `GetServerCard()`。tasks 与 skills 行为细节见 [/concepts/tasks-extension.md](/concepts/tasks-extension.md) 与 [/concepts/skills-extension.md](/concepts/skills-extension.md)。
 - 技能守卫先于时代守卫：开关关闭时无论 modern/legacy 时代均报 `skills extension is disabled`，优先于时代拒绝。
+- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：stateless 客户端 `enable_listen_stream` 默认仍为 true（GET 长连接监听须显式关，仓库内零用例覆盖客户端 stateless=true），是否纳入单连接强制待裁决。

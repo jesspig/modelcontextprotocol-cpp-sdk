@@ -827,3 +827,286 @@ TEST(McpTypesTest, NoHintEmitsZeroPrivate) {
         EXPECT_EQ(jv["cacheScope"].GetString(), "private");
     }
 }
+
+TEST(McpTypesTest, ToolSchemaRemoteRefPreservedVerbatim) {
+    auto wire = JsonValue::Parse(
+        R"({"name":"remote_ref_tool",)"
+        R"("inputSchema":{"$ref":"https://example.com/schemas/address.json",)"
+        R"("type":"object"}})");
+    Tool tool = DeserializeTool(wire);
+    ASSERT_TRUE(tool.input_schema.Contains("$ref"));
+    EXPECT_EQ(tool.input_schema["$ref"].GetString(),
+        "https://example.com/schemas/address.json");
+    JsonValue round_tripped = SerializeTool(tool);
+    EXPECT_EQ(round_tripped["inputSchema"], wire["inputSchema"]);
+}
+
+TEST(McpTypesTest, ToolSchemaLocalRefPreservedVerbatim) {
+    auto wire = JsonValue::Parse(
+        R"({"name":"local_ref_tool",)"
+        R"("inputSchema":{"$defs":{"address":{"type":"object"}},)"
+        R"("properties":{"address":{"$ref":"#/$defs/address"}}}})");
+    Tool tool = DeserializeTool(wire);
+    EXPECT_EQ(tool.input_schema, wire["inputSchema"]);
+    JsonValue round_tripped = SerializeTool(tool);
+    EXPECT_EQ(round_tripped["inputSchema"], wire["inputSchema"]);
+}
+
+TEST(McpTypesTest, ValidatorRejectsRemoteRefWithoutDereferencing) {
+    auto schema = JsonValue::Parse(
+        R"({"$ref":"https://example.com/schemas/address.json"})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue(JsonValue::object_tag), schema, err));
+    EXPECT_NE(err.find("remote"), std::string::npos);
+    EXPECT_NE(err.find("$ref"), std::string::npos);
+}
+
+TEST(McpTypesTest, ValidatorRejectsNestedRemoteRef) {
+    auto schema = JsonValue::Parse(
+        R"({"type":"object",)"
+        R"("properties":{"address":{"$ref":"https://example.com/a.json"}}})");
+    auto instance = JsonValue::Parse(R"({"address":{}})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(instance, schema, err));
+    EXPECT_NE(err.find("remote"), std::string::npos);
+}
+
+TEST(McpTypesTest, ValidatorRejectsUnresolvableLocalRef) {
+    auto schema = JsonValue::Parse(R"({"$ref":"#/$defs/missing"})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue(JsonValue::object_tag), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorResolvesLocalRef) {
+    auto schema = JsonValue::Parse(
+        R"({"$defs":{"address":{"type":"object",)"
+        R"("properties":{"city":{"type":"string"}},"required":["city"]}},)"
+        R"("properties":{"address":{"$ref":"#/$defs/address"}}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"address":{"city":"x"}})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"address":{}})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorExclusiveMinMaxNumeric) {
+    auto schema = JsonValue::Parse(
+        R"({"type":"number","exclusiveMinimum":5,"exclusiveMaximum":10})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(7.0), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(5.0), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(10.0), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorExclusiveMinMaxBooleanLegacy) {
+    auto schema = JsonValue::Parse(
+        R"({"type":"number","minimum":5,"maximum":10,)"
+        R"("exclusiveMinimum":true,"exclusiveMaximum":true})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(7.0), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(5.0), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(10.0), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorMultipleOf) {
+    auto schema = JsonValue::Parse(R"({"multipleOf":3})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(int64_t(9)), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(int64_t(10)), schema, err));
+    auto dbl = JsonValue::Parse(R"({"multipleOf":0.5})");
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(1.5), dbl, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(1.6), dbl, err));
+}
+
+TEST(McpTypesTest, ValidatorPatternAndFormatIgnored) {
+    auto schema = JsonValue::Parse(
+        R"({"type":"string","pattern":"^a+$","format":"email"})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue("aaa"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue("b"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorInvalidPatternIgnored) {
+    auto schema = JsonValue::Parse(R"({"type":"string","pattern":"([invalid"})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue("anything"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorMinMaxProperties) {
+    auto schema = JsonValue::Parse(R"({"minProperties":1,"maxProperties":2})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue(JsonValue::object_tag), schema, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1,"b":2,"c":3})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorPropertyNames) {
+    auto schema = JsonValue::Parse(R"({"propertyNames":{"pattern":"^[a-z]+$"}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"abc":1})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"ABC":1})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorPatternProperties) {
+    auto schema = JsonValue::Parse(
+        R"({"patternProperties":{"^x-":{"type":"string"}}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"x-a":"s"})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"x-a":1})"), schema, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"other":1})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorAdditionalSkipsPatternCovered) {
+    auto schema = JsonValue::Parse(
+        R"({"patternProperties":{"^x-":{}},"additionalProperties":false})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"x-a":1})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"other":1})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorDependentRequired) {
+    auto schema = JsonValue::Parse(
+        R"({"dependentRequired":{"credit_card":["billing_address"]}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"credit_card":1,"billing_address":2})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"credit_card":1})"), schema, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"other":1})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorDependentSchemas) {
+    auto schema = JsonValue::Parse(
+        R"({"dependentSchemas":{"a":{"required":["b"]}}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1,"b":2})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorDependenciesCompat) {
+    auto schema = JsonValue::Parse(
+        R"({"dependencies":{"a":["b"],"c":{"required":["d"]}}})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"c":1})"), schema, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1,"b":2,"c":1,"d":2})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorContainsMinMax) {
+    auto schema = JsonValue::Parse(
+        R"({"contains":{"type":"integer"},"minContains":2,"maxContains":3})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"([1,"a"])"), schema, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"([1,2,"a"])"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"([1,2,3,4])"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorUniqueItems) {
+    auto schema = JsonValue::Parse(R"({"uniqueItems":true})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"([1,2,3])"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"([1,2,1])"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorPrefixItems) {
+    auto schema = JsonValue::Parse(
+        R"({"prefixItems":[{"type":"string"},{"type":"integer"}],)"
+        R"("items":false})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"(["a",1])"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"(["a","b"])"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"(["a",1,"extra"])"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorIntegerAcceptsIntegralDouble) {
+    auto schema = JsonValue::Parse(R"({"type":"integer"})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(3.0), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(3.5), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorMinLengthCountsCodePoints) {
+    auto schema = JsonValue::Parse(R"({"minLength":2,"maxLength":2})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse("\"h\xC3\xA9\""), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue("a"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorDynamicRefLocal) {
+    auto schema = JsonValue::Parse(
+        R"({"$defs":{"name":{"type":"string"}},)"
+        R"("properties":{"n":{"$dynamicRef":"#/$defs/name"}}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"n":"x"})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"n":1})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorDynamicRefRemoteRejected) {
+    auto schema = JsonValue::Parse(
+        R"({"$dynamicRef":"https://example.com/s.json"})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue(JsonValue::object_tag), schema, err));
+    EXPECT_NE(err.find("remote"), std::string::npos);
+}
+
+TEST(McpTypesTest, ValidatorAnchorRef) {
+    auto schema = JsonValue::Parse(
+        R"({"$defs":{"target":{"$anchor":"tgt","type":"string"}},)"
+        R"("properties":{"n":{"$ref":"#tgt"}}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"n":"x"})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"n":1})"), schema, err));
+}
+
+TEST(McpTypesTest, CallToolResultStructuredContentArbitraryPassthrough) {
+    CallToolResult r;
+    JsonValue arr(JsonValue::array_tag);
+    arr.PushBack(JsonValue(int64_t(1)));
+    arr.PushBack(JsonValue("two"));
+    r.structured_content = arr;
+    auto jv = SerializeCallToolResult(r);
+    ASSERT_TRUE(jv["structuredContent"].IsArray());
+    EXPECT_EQ(jv["structuredContent"].Size(), size_t{2});
+    auto r2 = DeserializeCallToolResult(jv);
+    ASSERT_TRUE(r2.structured_content.has_value());
+    EXPECT_EQ(*r2.structured_content, arr);
+
+    CallToolResult rs;
+    rs.structured_content = JsonValue("plain");
+    auto jvs = SerializeCallToolResult(rs);
+    auto rs2 = DeserializeCallToolResult(jvs);
+    ASSERT_TRUE(rs2.structured_content.has_value());
+    EXPECT_EQ(rs2.structured_content->GetString(), "plain");
+}

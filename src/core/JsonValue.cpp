@@ -201,6 +201,54 @@ JsonValue JsonValue::Parse(std::string_view json) {
     return detail::json::ParseDocument(json);
 }
 
+std::string JsonValue::SanitizeUtf8(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    size_t i = 0;
+    while (i < text.size()) {
+        unsigned char b0 = static_cast<unsigned char>(text[i]);
+        if (b0 < 0x80) {
+            out.push_back(static_cast<char>(b0));
+            ++i;
+            continue;
+        }
+        size_t cont = 0;
+        unsigned char lo = 0x80;
+        unsigned char hi = 0xBF;
+        bool lead_ok = true;
+        if (b0 >= 0xC2 && b0 <= 0xDF) {
+            cont = 1;
+        } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+            cont = 2;
+            if (b0 == 0xE0) lo = 0xA0;
+            else if (b0 == 0xED) hi = 0x9F;
+        } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+            cont = 3;
+            if (b0 == 0xF0) lo = 0x90;
+            else if (b0 == 0xF4) hi = 0x8F;
+        } else {
+            lead_ok = false;
+        }
+        bool seq_ok = lead_ok && i + cont < text.size();
+        if (seq_ok) {
+            unsigned char b1 = static_cast<unsigned char>(text[i + 1]);
+            seq_ok = b1 >= lo && b1 <= hi;
+            for (size_t k = 2; seq_ok && k <= cont; ++k) {
+                unsigned char c = static_cast<unsigned char>(text[i + k]);
+                seq_ok = (c & 0xC0) == 0x80;
+            }
+        }
+        if (seq_ok) {
+            out.append(text.data() + i, cont + 1);
+            i += cont + 1;
+        } else {
+            out += "\xEF\xBF\xBD";
+            ++i;
+        }
+    }
+    return out;
+}
+
 std::string JsonValue::Dump(int indent) const {
     std::string out;
     out.reserve(detail::EstimateSize(*this, indent));

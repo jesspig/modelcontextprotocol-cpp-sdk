@@ -185,3 +185,54 @@ TEST(SpanHookTest, RejectedRequestClosesFailedSpan) {
         EXPECT_TRUE(end->failed);
     });
 }
+
+TEST(SpanHookTest, ServerRequestEndCarriesTraceContext) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        SpanRecorder recorder;
+        SessionPair sp;
+        sp.server->SetSpanHandler(recorder.Handler());
+        RegisterEchoHandler(sp.server, methods::kCallTool);
+
+        auto meta = ModernMeta();
+        meta.traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        meta.tracestate = "vendor=value";
+        meta.baggage = "userId=42";
+        (void)CallServer(sp, meta);
+
+        auto begin = recorder.Find(SpanKind::ServerRequest, SpanPhase::Begin);
+        ASSERT_TRUE(begin.has_value());
+        auto end = recorder.Find(SpanKind::ServerRequest, SpanPhase::End);
+        ASSERT_TRUE(end.has_value());
+        EXPECT_EQ(end->request_id, begin->request_id);
+        EXPECT_FALSE(end->failed);
+        EXPECT_EQ(end->traceparent, *meta.traceparent);
+        EXPECT_EQ(end->tracestate, *meta.tracestate);
+        EXPECT_EQ(end->baggage, *meta.baggage);
+    });
+}
+
+TEST(SpanHookTest, RejectedRequestEndPairsWithTraceContext) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        SpanRecorder recorder;
+        SessionPair sp;
+        sp.server->SetSpanHandler(recorder.Handler());
+
+        auto meta = ModernMeta();
+        meta.traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        meta.tracestate = "vendor=value";
+        meta.baggage = "userId=42";
+        auto result = CallServer(sp, meta);
+        ASSERT_TRUE(result.Contains("code"));
+
+        EXPECT_EQ(recorder.Count(SpanKind::ServerRequest, SpanPhase::Begin),
+                  std::size_t{1});
+        EXPECT_EQ(recorder.Count(SpanKind::ServerRequest, SpanPhase::End),
+                  std::size_t{1});
+        auto end = recorder.Find(SpanKind::ServerRequest, SpanPhase::End);
+        ASSERT_TRUE(end.has_value());
+        EXPECT_TRUE(end->failed);
+        EXPECT_EQ(end->traceparent, *meta.traceparent);
+        EXPECT_EQ(end->tracestate, *meta.tracestate);
+        EXPECT_EQ(end->baggage, *meta.baggage);
+    });
+}

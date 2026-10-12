@@ -1,6 +1,8 @@
 #include <mcp/server/McpServer.hpp>
 #include <mcp/server/RequestState.hpp>
 #include <mcp/client/McpClient.hpp>
+#include <mcp/ext/Apps.hpp>
+#include <mcp/ext/ServerCard.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/storage/FileTaskStore.hpp>
 
@@ -867,6 +869,7 @@ TEST(McpServerTest, UpdateTaskSendsCompletedNotification) {
     std::filesystem::remove(store_path, ec);
     auto store = std::make_shared<FileTaskStore>(store_path);
     sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
     auto server = McpServer::Create(std::move(pair.server), sopts);
 
     auto client = std::make_shared<McpSessionHandler>(
@@ -915,6 +918,7 @@ TEST(McpServerTest, UpdateTaskSendsWorkingNotification) {
     std::filesystem::remove(store_path, ec);
     auto store = std::make_shared<FileTaskStore>(store_path);
     sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
     auto server = McpServer::Create(std::move(pair.server), sopts);
 
     auto client = std::make_shared<McpSessionHandler>(
@@ -963,6 +967,7 @@ TEST(McpServerTest, CancelTaskSendsCancelledNotification) {
     std::filesystem::remove(store_path, ec);
     auto store = std::make_shared<FileTaskStore>(store_path);
     sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
     auto server = McpServer::Create(std::move(pair.server), sopts);
 
     auto client = std::make_shared<McpSessionHandler>(
@@ -1277,6 +1282,7 @@ TaskEraEnv MakeTaskEraEnv() {
     std::filesystem::remove(env.store_path, ec);
     env.store = std::make_shared<FileTaskStore>(env.store_path);
     sopts.task_store = env.store;
+    sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
@@ -2271,6 +2277,7 @@ ModernTaskEnv MakeModernTaskEnv() {
     std::filesystem::remove(env.store_path, ec);
     env.store = std::make_shared<FileTaskStore>(env.store_path);
     sopts.task_store = env.store;
+    sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
@@ -2306,6 +2313,7 @@ ModernTaskEnv MakeBareModernTaskEnv() {
     std::filesystem::remove(env.store_path, ec);
     env.store = std::make_shared<FileTaskStore>(env.store_path);
     sopts.task_store = env.store;
+    sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
@@ -2325,6 +2333,11 @@ RequestMeta MetaWithMcpName(std::string_view name) {
     JsonValue ext(JsonValue::object_tag);
     ext["Mcp-Name"] = JsonValue(std::string(name));
     meta.extensions = std::move(ext);
+    ClientCapabilities caps;
+    std::map<std::string, JsonValue> task_ext;
+    task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    caps.extensions = std::move(task_ext);
+    meta.client_capabilities = std::move(caps);
     return meta;
 }
 
@@ -2423,7 +2436,7 @@ TEST(McpServerTest, UnsolicitedTaskCreation) {
     CallToolRequestParams params;
     params.name = "quick_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2440,7 +2453,7 @@ TEST(McpServerTest, UnsolicitedTaskCreation) {
     std::optional<GetTaskResult> final_task;
     for (int i = 0; i < 200; ++i) {
         auto get_future = env.client->SendRequest(methods::kGetTask,
-            SerializeGetTaskRequestParams(get_params), {},
+            SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
             std::chrono::milliseconds(2000));
         ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
                   std::future_status::ready);
@@ -2489,7 +2502,7 @@ TEST(McpServerTest, CreateTaskResultFlatNoNested) {
     CallToolRequestParams params;
     params.name = "flat_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2526,7 +2539,7 @@ TEST(McpServerTest, TaskTimestampsPopulated) {
     CallToolRequestParams params;
     params.name = "timed_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2540,7 +2553,7 @@ TEST(McpServerTest, TaskTimestampsPopulated) {
     std::optional<GetTaskResult> final_task;
     for (int i = 0; i < 200; ++i) {
         auto get_future = env.client->SendRequest(methods::kGetTask,
-            SerializeGetTaskRequestParams(get_params), {},
+            SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
             std::chrono::milliseconds(2000));
         ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
                   std::future_status::ready);
@@ -2574,7 +2587,7 @@ TEST(McpServerTest, ToolErrorMapsToCompleted) {
     CallToolRequestParams params;
     params.name = "err_tool";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2586,7 +2599,7 @@ TEST(McpServerTest, ToolErrorMapsToCompleted) {
     std::optional<GetTaskResult> final_task;
     for (int i = 0; i < 200; ++i) {
         auto get_future = env.client->SendRequest(methods::kGetTask,
-            SerializeGetTaskRequestParams(get_params), {},
+            SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
             std::chrono::milliseconds(2000));
         ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
                   std::future_status::ready);
@@ -2622,7 +2635,7 @@ TEST(McpServerTest, ProtocolErrorMapsToFailedWithError) {
     CallToolRequestParams params;
     params.name = "boom_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2636,7 +2649,7 @@ TEST(McpServerTest, ProtocolErrorMapsToFailedWithError) {
     EXPECT_EQ(failed->status, TaskStatus::Failed);
 
     auto get_future = env.client->SendRequest(methods::kGetTask,
-        SerializeGetTaskRequestParams(get_params), {},
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
     ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
@@ -2668,7 +2681,7 @@ TEST(McpServerTest, TasksUpdateWithInputResponses) {
     responses["name"] = std::move(name_resp);
     up.input_responses = std::move(responses);
     auto up_future = env.client->SendRequest(methods::kUpdateTask,
-        SerializeUpdateTaskRequestParams(up), {},
+        SerializeUpdateTaskRequestParams(up), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
     ASSERT_EQ(up_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto up_resp = up_future.get();
@@ -2710,7 +2723,7 @@ TEST(McpServerTest, TasksUpdateWithInputResponses) {
     again["name"] = JsonValue("Bob");
     repeat.input_responses = std::move(again);
     auto repeat_future = env.client->SendRequest(methods::kUpdateTask,
-        SerializeUpdateTaskRequestParams(repeat), {},
+        SerializeUpdateTaskRequestParams(repeat), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
     ASSERT_EQ(repeat_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
@@ -4458,4 +4471,205 @@ TEST(McpServerTest, TriggerEmitDisabledByDefault) {
               std::future_status::timeout);
 
     CloseTriggerEmitEnv(env);
+}
+
+TEST(McpServerTest, ListChangedDropsWithoutSubscription) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed;
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&observed_mutex, &observed](const JsonRpcNotification& n) {
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed.push_back(n.method);
+        });
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&observed_mutex, &observed](const JsonRpcNotification& n) {
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed.push_back(n.method);
+        });
+
+    ctx.server->SendToolListChanged();
+    ctx.server->SendPromptListChanged();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::lock_guard<std::mutex> lock(observed_mutex);
+    EXPECT_TRUE(observed.empty());
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+namespace {
+
+struct AppsCardEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+AppsCardEnv MakeAppsCardEnv(bool apps, bool card,
+    std::optional<ext::ServerCard> explicit_card = std::nullopt) {
+    AppsCardEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.enable_apps_extension = apps;
+    sopts.enable_server_card = card;
+    if (explicit_card) sopts.server_card = std::move(*explicit_card);
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.server->RegisterResource("app-view", "ui://app/view",
+        ResourceOptions{}.MimeType("text/html;profile=mcp-app"),
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = uri;
+            trc.text = "<html></html>";
+            trc.mime_type = "text/html;profile=mcp-app";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+void CloseAppsCardEnv(AppsCardEnv& env) {
+    env.server->Close();
+    env.client->Close();
+}
+
+bool CapabilityDeclares(const ServerCapabilities& caps, std::string_view id) {
+    if (!caps.extensions) return false;
+    return caps.extensions->find(std::string(id)) != caps.extensions->end();
+}
+
+JsonValue ReadUiView(const std::shared_ptr<McpSessionHandler>& client) {
+    ResourceRequestParams params;
+    params.uri = "ui://app/view";
+    return SendBareRequest(client, methods::kReadResource,
+        SerializeResourceRequestParams(params));
+}
+
+ext::ServerCard MakeExplicitCard() {
+    ext::ServerCard card;
+    card.name = "custom-card";
+    card.version = "9.9.9";
+    ext::ServerCardEndpoint endpoint;
+    endpoint.url = "https://example.com/mcp";
+    card.endpoints.push_back(std::move(endpoint));
+    card.supported_protocol_versions = {std::string(kLatestProtocolVersion)};
+    return card;
+}
+
+void ExpectServerCardDisabled(McpServer& server) {
+    try {
+        server.GetServerCard();
+        EXPECT_TRUE(false);
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::HandlerError);
+    }
+}
+
+} // namespace
+
+TEST(McpServerTest, AppsAndServerCardGatesMatrix) {
+    {
+        auto env = MakeAppsCardEnv(false, false);
+        EXPECT_FALSE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kAppsExtensionId));
+        EXPECT_FALSE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kServerCardExtensionId));
+        auto resp = ReadUiView(env.client);
+        ASSERT_TRUE(resp.Contains("code"));
+        EXPECT_EQ(resp["code"].GetInt(),
+                  static_cast<int64_t>(McpErrorCode::HandlerError));
+        ExpectServerCardDisabled(*env.server);
+        CloseAppsCardEnv(env);
+    }
+    {
+        auto env = MakeAppsCardEnv(true, false);
+        EXPECT_TRUE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kAppsExtensionId));
+        EXPECT_FALSE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kServerCardExtensionId));
+        auto resp = ReadUiView(env.client);
+        ASSERT_FALSE(resp.Contains("code"));
+        auto* contents = resp.Find("contents");
+        ASSERT_NE(contents, nullptr);
+        ASSERT_TRUE(contents->IsArray());
+        ASSERT_EQ(contents->Size(), 1u);
+        auto* text = (*contents)[0].Find("text");
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(text->GetString(), "<html></html>");
+        ExpectServerCardDisabled(*env.server);
+        CloseAppsCardEnv(env);
+    }
+    {
+        auto env = MakeAppsCardEnv(false, true, MakeExplicitCard());
+        EXPECT_FALSE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kAppsExtensionId));
+        EXPECT_TRUE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kServerCardExtensionId));
+        auto resp = ReadUiView(env.client);
+        ASSERT_TRUE(resp.Contains("code"));
+        EXPECT_EQ(resp["code"].GetInt(),
+                  static_cast<int64_t>(McpErrorCode::HandlerError));
+        auto card = env.server->GetServerCard();
+        EXPECT_EQ(card.name, "custom-card");
+        EXPECT_EQ(card.version, "9.9.9");
+        ASSERT_EQ(card.endpoints.size(), 1u);
+        EXPECT_EQ(card.endpoints[0].url, "https://example.com/mcp");
+        CloseAppsCardEnv(env);
+    }
+    {
+        auto env = MakeAppsCardEnv(true, true);
+        EXPECT_TRUE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kAppsExtensionId));
+        EXPECT_TRUE(CapabilityDeclares(
+            env.server->GetCapabilities(), ext::kServerCardExtensionId));
+        auto resp = ReadUiView(env.client);
+        ASSERT_FALSE(resp.Contains("code"));
+        auto card = env.server->GetServerCard();
+        EXPECT_EQ(card.name, "test-server");
+        EXPECT_EQ(card.version, "1.0.0");
+        EXPECT_FALSE(card.endpoints.empty());
+        EXPECT_FALSE(card.supported_protocol_versions.empty());
+        CloseAppsCardEnv(env);
+    }
+}
+
+TEST(McpServerTest, TasksRequireExplicitExtensionFlag) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(store_path, ec);
+    auto store = std::make_shared<FileTaskStore>(store_path);
+    sopts.task_store = store;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    EXPECT_FALSE(CapabilityDeclares(
+        server->GetCapabilities(), std::string_view(kTasksExtensionId)));
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = "explicit-gate";
+    auto resp = SendBareRequest(client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+    ASSERT_TRUE(resp.Contains("message"));
+    EXPECT_EQ(resp["message"].GetString(), "tasks extension is disabled");
+
+    server->Close();
+    client->Close();
+    std::filesystem::remove(store_path, ec);
 }

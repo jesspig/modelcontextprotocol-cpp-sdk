@@ -479,7 +479,7 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
             }
             auto id = AddSseClient([conn](std::string_view data) {
                 conn->Write(data.data(), data.size());
-            });
+            }, resp.sse_client_tag);
             if (options_.on_connect) {
                 try {
                     options_.on_connect();
@@ -736,13 +736,54 @@ bool Impl::IsRequestAllowed(const HttpRequest& req, const HttpServerOptions& opt
         return false;
 
     auto origin_it = req.headers.find("origin");
-    if (origin_it == req.headers.end() || options.allowed_origins.empty())
+    if (origin_it == req.headers.end())
         return true;
-    for (const auto& allowed : options.allowed_origins) {
-        if (origin_it->second == allowed)
-            return true;
+    if (!options.allowed_origins.empty()) {
+        for (const auto& allowed : options.allowed_origins) {
+            if (origin_it->second == allowed)
+                return true;
+        }
+        return false;
     }
-    return false;
+    return IsOriginAllowedForHost(origin_it->second, host_it->second);
+}
+
+bool Impl::IsLoopbackName(const std::string& host) {
+    std::string lower = host;
+    ToLowerInPlace(lower);
+    return lower == "localhost" || lower == "127.0.0.1" || lower == "::1";
+}
+
+std::string Impl::StripPort(std::string_view host_with_port) {
+    std::string h(host_with_port);
+    auto colon = h.rfind(':');
+    if (colon != std::string::npos) {
+        if (h.front() == '[' && h.back() == ']') {
+            h = h.substr(1, h.size() - 2);
+        } else if (h.front() == '[') {
+            auto close = h.find(']');
+            if (close != std::string::npos)
+                h = h.substr(1, close - 1);
+        } else {
+            h = h.substr(0, colon);
+        }
+    }
+    return h;
+}
+
+bool Impl::IsOriginAllowedForHost(const std::string& origin,
+                                  const std::string& host_with_port) {
+    auto scheme_end = origin.find("://");
+    if (scheme_end == std::string::npos) return false;
+    std::string rest = origin.substr(scheme_end + 3);
+    auto slash = rest.find('/');
+    std::string origin_host = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+    std::string want = StripPort(host_with_port);
+    std::string got = StripPort(origin_host);
+    ToLowerInPlace(want);
+    ToLowerInPlace(got);
+    if (!got.empty() && got == want) return true;
+    return !got.empty() && IsLoopbackName(got) && IsLoopbackName(want);
 }
 
 bool Impl::IsLocalhostHost(const std::string& host_with_port) {
@@ -763,8 +804,14 @@ bool Impl::IsLocalhostHost(const std::string& host_with_port) {
 }
 
 uint64_t Impl::AddSseClient(std::function<void(std::string_view)> send_fn) {
+    return AddSseClient(std::move(send_fn), std::string{});
+}
+
+uint64_t Impl::AddSseClient(std::function<void(std::string_view)> send_fn,
+                            std::string tag) {
     auto entry = std::make_shared<SseClientEntry>();
     entry->send_fn = std::move(send_fn);
+    entry->tag = std::move(tag);
     std::lock_guard<std::mutex> lock(sse_mutex_);
     auto id = next_sse_id_++;
     sse_clients_[id] = std::move(entry);
@@ -814,17 +861,35 @@ void Impl::RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry) {
 }
 
 void Impl::BroadcastSse(std::string_view event) {
+    BroadcastSse(event, [](const std::string&) { return true; });
+}
+
+void Impl::BroadcastSse(std::string_view event,
+                        const std::function<bool(const std::string&)>& accept) {
+    std::string capped;
+    std::string_view view = event;
+    if (view.size() > mcp::detail::kMaxSseEventBytes) {
+        capped.assign(view.data(), mcp::detail::kMaxSseEventBytes);
+        view = capped;
+    }
     std::vector<std::shared_ptr<SseClientEntry>> entries;
     {
         std::lock_guard<std::mutex> lock(sse_mutex_);
         entries.reserve(sse_clients_.size());
-        for (auto& [id, entry] : sse_clients_)
-            entries.push_back(entry);
+        for (auto& [id, entry] : sse_clients_) {
+            bool wanted = false;
+            try {
+                wanted = accept(entry->tag);
+            } catch (...) {
+                wanted = true;
+            }
+            if (wanted) entries.push_back(entry);
+        }
     }
     for (auto& entry : entries) {
         try {
             std::lock_guard<std::mutex> write_lock(entry->write_mutex);
-            entry->send_fn(event);
+            entry->send_fn(view);
         } catch (const std::exception& e) {
             MCP_LOG(Warning, std::string("SSE send failed: ") + e.what());
             RemoveSseClientEntry(entry);

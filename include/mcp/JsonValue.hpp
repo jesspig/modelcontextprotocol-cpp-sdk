@@ -45,6 +45,8 @@ public:
 
     static JsonValue Parse(std::string_view json);
 
+    static std::string SanitizeUtf8(std::string_view text);
+
     std::string Dump(int indent = -1) const;
 
     bool IsNull()   const { return std::holds_alternative<std::nullptr_t>(data_); }

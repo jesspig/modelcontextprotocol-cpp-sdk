@@ -17,6 +17,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -1148,6 +1149,51 @@ TEST(StreamableHttpTransportTest, BearerAuthAudienceNormalizedMatch) {
     server.Close();
 }
 
+TEST(StreamableHttpTransportTest, BearerAuthMissingAudienceRejected) {
+    auto port = PickFreePort(kTestBasePort + 1860);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->expected_resource =
+        "http://127.0.0.1:" + std::to_string(port);
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        return result;
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer test-token");
+
+    EXPECT_EQ(resp.status_code, 401);
+    EXPECT_NE(HeaderOf(resp, "WWW-Authenticate").find("invalid_token"),
+              std::string::npos);
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, BearerAuthAudienceCheckDisabled) {
+    auto port = PickFreePort(kTestBasePort + 1880);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->expected_resource = "https://other.example/resource";
+    opts.bearer_auth->validate_token_resource = false;
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        result.resource = "https://other.example/resource";
+        return result;
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer test-token");
+
+    EXPECT_EQ(resp.status_code, 202);
+    server.Close();
+}
+
 TEST(StreamableHttpTransportTest, BearerAuthForbiddenWithoutInsufficientScopeNoRetry) {
     auto port = PickFreePort(kTestBasePort + 1840);
     mcp::HttpServer mock(port);
@@ -1593,6 +1639,51 @@ void RespondWithResult(StreamableHttpServerTransport& server,
     server.SendMessageAsync(JsonRpcMessage(std::move(resp)));
     if (done) done->set_value();
 }
+
+struct SseStreamReader {
+    mcp::detail::net::HttpClient client;
+    std::string chunks;
+    std::promise<void> done;
+    std::thread worker;
+    ~SseStreamReader() {
+        client.Close();
+        if (worker.joinable()) worker.join();
+    }
+    void Start(uint16_t port, const std::string& body,
+               const std::unordered_map<std::string, std::string>& extra_headers,
+               size_t want_frames) {
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "POST";
+        req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        req.body = body;
+        req.headers["Content-Type"] = "application/json";
+        req.headers["Accept"] = "application/json, text/event-stream";
+        for (const auto& [key, value] : extra_headers) req.headers[key] = value;
+        req.timeout = std::chrono::seconds(5);
+        worker = std::thread([this, req, want_frames] {
+            try {
+                client.Request(req, [&](std::string_view chunk) {
+                    chunks.append(chunk.data(), chunk.size());
+                    if (CountSseFrames(chunks) >= want_frames) {
+                        try {
+                            done.set_value();
+                        } catch (...) {
+                        }
+                    }
+                });
+            } catch (...) {
+            }
+            try {
+                done.set_value();
+            } catch (...) {
+            }
+        });
+    }
+    void Stop() {
+        client.Close();
+        if (worker.joinable()) worker.join();
+    }
+};
 
 } // namespace
 
@@ -2154,6 +2245,370 @@ TEST(StreamableHttpTransportTest, StatelessSubscriptionAckBufferedFirst) {
     EXPECT_NE(result_pos, std::string::npos);
     EXPECT_LT(ack_pos, result_pos);
     EXPECT_NE(resp.body.find("sub-1"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenHoldOpenBuffersListChangedIntoListenStream) {
+    auto port = PickFreePort(kTestBasePort + 2110);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                JsonRpcNotification changed;
+                changed.method = "notifications/tools/list_changed";
+                changed.params = JsonValue(JsonValue::object_tag);
+                server.SendMessageAsync(JsonRpcMessage(std::move(changed)));
+                JsonRpcNotification ack;
+                ack.method = "notifications/subscriptions/acknowledged";
+                JsonValue ack_params(JsonValue::object_tag);
+                JsonValue ack_meta(JsonValue::object_tag);
+                ack_meta["io.modelcontextprotocol/subscriptionId"] =
+                    JsonValue("sub-hold");
+                ack_params["_meta"] = std::move(ack_meta);
+                ack.params = std::move(ack_params);
+                server.SendMessageAsync(JsonRpcMessage(std::move(ack)));
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":710,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"toolsListChanged":true}}})";
+    SseStreamReader stream;
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 3);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    stream.Stop();
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{3});
+    auto changed_pos = stream.chunks.find("notifications/tools/list_changed");
+    auto ack_pos = stream.chunks.find("notifications/subscriptions/acknowledged");
+    auto result_pos = stream.chunks.find("\"ok\":true");
+    EXPECT_NE(changed_pos, std::string::npos);
+    EXPECT_NE(ack_pos, std::string::npos);
+    EXPECT_NE(result_pos, std::string::npos);
+    EXPECT_LT(changed_pos, ack_pos);
+    EXPECT_LT(ack_pos, result_pos);
+    EXPECT_NE(stream.chunks.find("sub-hold"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenHoldOpenSkipsUnmatchedListChanged) {
+    auto port = PickFreePort(kTestBasePort + 2112);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                JsonRpcNotification changed;
+                changed.method = "notifications/tools/list_changed";
+                changed.params = JsonValue(JsonValue::object_tag);
+                server.SendMessageAsync(JsonRpcMessage(std::move(changed)));
+                JsonRpcNotification ack;
+                ack.method = "notifications/subscriptions/acknowledged";
+                JsonValue ack_params(JsonValue::object_tag);
+                JsonValue ack_meta(JsonValue::object_tag);
+                ack_meta["io.modelcontextprotocol/subscriptionId"] =
+                    JsonValue("sub-skip");
+                ack_params["_meta"] = std::move(ack_meta);
+                ack.params = std::move(ack_params);
+                server.SendMessageAsync(JsonRpcMessage(std::move(ack)));
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":711,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"promptsListChanged":true}}})";
+    SseStreamReader stream;
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    stream.Stop();
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{2});
+    EXPECT_EQ(stream.chunks.find("notifications/tools/list_changed"),
+              std::string::npos);
+    EXPECT_NE(stream.chunks.find("notifications/subscriptions/acknowledged"),
+              std::string::npos);
+    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+    EXPECT_NE(stream.chunks.find("sub-skip"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenBroadcastSkipsForeignToolsChangedOnPromptsStream) {
+    auto port = PickFreePort(kTestBasePort + 2118);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":712,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"promptsListChanged":true}}})";
+    SseStreamReader stream;
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    JsonRpcNotification foreign;
+    foreign.method = "notifications/tools/list_changed";
+    foreign.params = JsonValue(JsonValue::object_tag);
+    JsonValue foreign_meta(JsonValue::object_tag);
+    foreign_meta["io.modelcontextprotocol/subscriptionId"] = JsonValue("1");
+    foreign.meta = std::move(foreign_meta);
+    server.SendMessageAsync(JsonRpcMessage(std::move(foreign)));
+
+    EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::milliseconds(800)),
+              std::future_status::timeout);
+    stream.Stop();
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{1});
+    EXPECT_EQ(stream.chunks.find("notifications/tools/list_changed"),
+              std::string::npos);
+    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenBroadcastSkipsForeignPromptsChangedOnToolsStream) {
+    auto port = PickFreePort(kTestBasePort + 2122);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":713,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"toolsListChanged":true}}})";
+    SseStreamReader stream;
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    JsonRpcNotification foreign;
+    foreign.method = "notifications/prompts/list_changed";
+    foreign.params = JsonValue(JsonValue::object_tag);
+    JsonValue foreign_meta(JsonValue::object_tag);
+    foreign_meta["io.modelcontextprotocol/subscriptionId"] = JsonValue("2");
+    foreign.meta = std::move(foreign_meta);
+    server.SendMessageAsync(JsonRpcMessage(std::move(foreign)));
+
+    EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::milliseconds(800)),
+              std::future_status::timeout);
+    stream.Stop();
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{1});
+    EXPECT_EQ(stream.chunks.find("notifications/prompts/list_changed"),
+              std::string::npos);
+    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenBroadcastDeliversMatchingToolsChangedToOpenStream) {
+    auto port = PickFreePort(kTestBasePort + 2124);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":714,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"toolsListChanged":true}}})";
+    SseStreamReader stream;
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    JsonRpcNotification changed;
+    changed.method = "notifications/tools/list_changed";
+    changed.params = JsonValue(JsonValue::object_tag);
+    JsonValue changed_meta(JsonValue::object_tag);
+    changed_meta["io.modelcontextprotocol/subscriptionId"] = JsonValue("7");
+    changed.meta = std::move(changed_meta);
+    server.SendMessageAsync(JsonRpcMessage(std::move(changed)));
+
+    EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    stream.Stop();
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{2});
+    EXPECT_NE(stream.chunks.find("notifications/tools/list_changed"),
+              std::string::npos);
+    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, StatelessSingleConnectionDefaults) {
+    StreamableHttpServerOptions server_opts;
+    EXPECT_TRUE(server_opts.stateless);
+    EXPECT_FALSE(server_opts.enable_legacy_sse);
+    EXPECT_FALSE(server_opts.listen_hold_open);
+
+    HttpClientTransportOptions client_opts;
+    EXPECT_FALSE(client_opts.stateless);
+    EXPECT_TRUE(client_opts.enable_listen_stream);
+}
+
+TEST(StreamableHttpTransportTest, StatelessDeleteIsRejected) {
+    auto port = PickFreePort(kTestBasePort + 2114);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "DELETE";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.timeout = std::chrono::seconds(5);
+    auto resp = client.Request(req);
+
+    EXPECT_EQ(resp.status_code, 405);
+    EXPECT_EQ(ErrorCodeOf(resp.body),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, StatelessRequestsAreIndependentConnections) {
+    auto port = PickFreePort(kTestBasePort + 2116);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::atomic<int> seen{0};
+    std::thread consumer([&] {
+        for (int i = 0; i < 2; ++i) {
+            std::promise<void> one;
+            auto one_future = one.get_future();
+            server.GetMessageChannel().AsyncReceive(
+                [&](std::error_code ec, JsonRpcMessage msg) {
+                    if (!ec) {
+                        auto* req = AsRequest(msg);
+                        if (req) RespondWithResult(server, req->id, nullptr);
+                        seen.fetch_add(1);
+                    }
+                    try {
+                        one.set_value();
+                    } catch (...) {
+                    }
+                });
+            one_future.wait();
+        }
+        try {
+            consumed.set_value();
+        } catch (...) {
+        }
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    for (int64_t rpc_id = 801; rpc_id <= 802; ++rpc_id) {
+        std::string body = std::string(R"({"jsonrpc":"2.0","id":)") +
+                           std::to_string(rpc_id) +
+                           R"(,"method":"tools/call",)" +
+                           R"("params":{"name":"echo","arguments":{}}})";
+        auto resp = HoldOpenPost(port, body, {});
+        EXPECT_EQ(resp.status_code, 200);
+        EXPECT_EQ(CountSseFrames(resp.body), size_t{1});
+        EXPECT_NE(resp.body.find("\"ok\":true"), std::string::npos);
+        EXPECT_TRUE(HeaderOf(resp, "Mcp-Session-Id").empty());
+    }
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(seen.load(), 2);
 
     server.Close();
     consumer.join();

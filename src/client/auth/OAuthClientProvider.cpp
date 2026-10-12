@@ -152,8 +152,9 @@ void VerifyResourceMatch(const std::string& requested_url,
 }
 
 bool IsClientIdMetadataDocumentUrl(std::string_view client_id) {
-    auto scheme_end = client_id.find("://");
-    return scheme_end != std::string_view::npos && scheme_end > 0;
+    bool http = client_id.size() >= 7 && client_id.substr(0, 7) == "http://";
+    bool https = client_id.size() >= 8 && client_id.substr(0, 8) == "https://";
+    return http || https;
 }
 
 } // anonymous namespace
@@ -355,6 +356,23 @@ bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     return true;
 }
 
+bool OAuthClientProvider::CodeChallengeS256Supported() const {
+    if (!metadata_) return true;
+    if (metadata_->code_challenge_methods_supported.empty()) return true;
+    return std::find(metadata_->code_challenge_methods_supported.begin(),
+        metadata_->code_challenge_methods_supported.end(), "S256")
+        != metadata_->code_challenge_methods_supported.end();
+}
+
+void OAuthClientProvider::NotifyTokenUpdate(const TokenContainer& tokens) const {
+    auto handler = options_.token_update_handler;
+    if (!handler) return;
+    try {
+        handler(tokens);
+    } catch (...) {
+    }
+}
+
 std::string OAuthClientProvider::ResolveResourceIndicator() const {
     if (options_.resource && !options_.resource->empty()) return *options_.resource;
     if (metadata_ && metadata_->resource && !metadata_->resource->empty())
@@ -369,6 +387,10 @@ std::vector<std::string> OAuthClientProvider::ResolveScopes() const {
 
 bool OAuthClientProvider::FetchClientMetadataDocument() {
     if (!options_.client_id) return false;
+    if (!IsSafeHttpUrl(*options_.client_id)) {
+        MCP_LOG(Warning, "CIMD: client_id is not a safe http URL; using configured client_id");
+        return false;
+    }
 
     auto resp = HttpGetUrl(*options_.client_id);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) {
@@ -399,12 +421,26 @@ bool OAuthClientProvider::FetchClientMetadataDocument() {
         if (v->IsArray()) {
             for (const auto& item : v->GetArray())
                 if (item.IsString()) info.grant_types.push_back(item.GetString());
+            if (info.grant_types.size() > 128) {
+                MCP_LOG(Warning, "CIMD: client metadata document lists too many grant_types; using configured client_id");
+                return false;
+            }
         }
     }
     if (auto* v = json.Find("redirect_uris")) {
         if (v->IsArray()) {
             for (const auto& item : v->GetArray())
                 if (item.IsString()) info.redirect_uris.push_back(item.GetString());
+            if (info.redirect_uris.size() > 128) {
+                MCP_LOG(Warning, "CIMD: client metadata document lists too many redirect_uris; using configured client_id");
+                return false;
+            }
+            if (!options_.redirect_uri.empty() && !info.redirect_uris.empty() &&
+                std::find(info.redirect_uris.begin(), info.redirect_uris.end(),
+                    options_.redirect_uri) == info.redirect_uris.end()) {
+                MCP_LOG(Error, "CIMD: configured redirect_uri is not listed by the client metadata document");
+                return false;
+            }
         }
     }
     registration_ = std::move(info);
@@ -425,6 +461,7 @@ bool OAuthClientProvider::RegisterClient() {
 }
 
 bool OAuthClientProvider::StartAuthorizationFlow() {
+    if (!CodeChallengeS256Supported()) return false;
     code_verifier_ = pkce::GenerateCodeVerifier();
     code_challenge_ = pkce::ComputeCodeChallenge(code_verifier_);
     state_ = pkce::GenerateCodeVerifier();
@@ -466,6 +503,7 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
 bool OAuthClientProvider::ExchangeCodeForToken(
     std::string_view code, std::string_view code_verifier)
 {
+    if (code.empty() || code_verifier.empty()) return false;
     std::map<std::string, std::string> form;
     form["grant_type"] = "authorization_code";
     form["code"] = std::string(code);
@@ -508,6 +546,7 @@ bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
 
     if (tokens.access_token.empty()) return false;
     token_cache_->StoreTokens(tokens);
+    NotifyTokenUpdate(tokens);
     return true;
 }
 
@@ -559,6 +598,7 @@ bool OAuthClientProvider::RefreshTokens() {
         return false;
     }
     token_cache_->StoreTokens(tokens);
+    NotifyTokenUpdate(tokens);
     return true;
 }
 

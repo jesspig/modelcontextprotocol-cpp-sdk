@@ -357,7 +357,8 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         view_params[detail::kMeta] = *req.meta;
     }
     auto validation = codec->ValidateRequest(req.method, validation_view);
-    if (validation == WireValidation::NotInEra && req.method != methods::kInitialize) {
+    if (validation == WireValidation::NotInEra &&
+        (req.method != methods::kInitialize || IsJuly2026OrLater())) {
         SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }

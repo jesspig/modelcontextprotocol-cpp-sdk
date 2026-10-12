@@ -6,6 +6,7 @@
 #include <mcp/detail/McpParamAnnotations.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/ext/Triggers.hpp>
+#include <mcp/ext/ServerCard.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
@@ -103,6 +104,7 @@ public:
     std::shared_ptr<const Implementation> GetClientInfo() const;
     std::string GetNegotiatedProtocolVersion() const;
     const ServerCapabilities& GetCapabilities() const;
+    ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
 
     McpSessionHandler& GetSessionHandler() { return *handler_; }

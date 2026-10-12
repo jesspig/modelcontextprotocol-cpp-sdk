@@ -56,7 +56,12 @@ struct StreamableHttpServerOptions {
 
     std::string host;
 
+    std::vector<std::string> allowed_hosts;
+
+    std::vector<std::string> allowed_origins;
+
     std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
+    std::optional<std::size_t> max_sse_event_bytes = detail::kMaxSseEventBytes;
     struct BearerAuthConfig {
         std::function<AuthResult(const std::string& token)> verify;
         std::string resource_metadata_url;
@@ -111,6 +116,7 @@ private:
     std::optional<std::string> GetMcpHeader(const HttpRequest& req,
                                             std::string_view header_name) const;
 
+    std::size_t SseEventLimit() const;
     bool ValidateMcpHeaders(const HttpRequest& req, const JsonRpcRequest& request,
                             std::string& error_out);
 
@@ -135,6 +141,11 @@ private:
         std::vector<std::string> resource_uris;
     };
     static ListenFilter ParseListenFilter(const JsonRpcRequest& req);
+    static std::string EncodeListenTag(const ListenFilter& filter);
+    static bool IsListenFilteredNotification(const std::string& method);
+    static bool ListenTagAccepts(const std::string& tag,
+                                 const std::string& method,
+                                 const std::optional<std::string>& resource_uri);
 
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;

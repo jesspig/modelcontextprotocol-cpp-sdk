@@ -64,6 +64,13 @@ HttpServer::SseClientId HttpServer::AddSseClient(
     return impl ? impl->AddSseClient(std::move(send_fn)) : 0;
 }
 
+HttpServer::SseClientId HttpServer::AddSseClient(
+    std::function<void(std::string_view)> send_fn, std::string tag)
+{
+    auto impl = std::atomic_load(&impl_);
+    return impl ? impl->AddSseClient(std::move(send_fn), std::move(tag)) : 0;
+}
+
 void HttpServer::RemoveSseClient(SseClientId id) {
     auto impl = std::atomic_load(&impl_);
     if (impl) impl->RemoveSseClient(id);
@@ -72,6 +79,13 @@ void HttpServer::RemoveSseClient(SseClientId id) {
 void HttpServer::BroadcastSse(std::string_view event) {
     auto impl = std::atomic_load(&impl_);
     if (impl) impl->BroadcastSse(event);
+}
+
+void HttpServer::BroadcastSse(
+    std::string_view event,
+    const std::function<bool(const std::string&)>& accept) {
+    auto impl = std::atomic_load(&impl_);
+    if (impl) impl->BroadcastSse(event, accept);
 }
 
 std::size_t HttpServer::SseClientCount() const {

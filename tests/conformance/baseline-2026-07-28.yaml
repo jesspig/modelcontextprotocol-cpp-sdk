@@ -18,16 +18,6 @@ server:
     - server-stateless
 
 client:
-    # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
-    # fixture 有对应场景注册且逻辑正确（列工具→按 context 逐个调用），
-    # 但 Windows 下 MCP_CONFORMANCE_CONTEXT 经 getenv 取回时非 ASCII
-    # （世界）与字面控制字符致 JsonValue::Parse 报 invalid UTF-8，
-    # client 退出 1。CI Linux（UTF-8 locale）下预期通过；若 CI modern
-    # invocation 报本条目 stale，即为变绿证据，届时删除。
-    # 旧“fetch-shim/注入点依赖”归因错误：context 系经环境变量下发，
-    # C++ fixture 可读，无需 TS fetch shim。
-    - http-custom-headers
-
     # --- auth/*（C++ client 无 OAuth 表面，全部 untestable）---
     # 注意旧注释“core 不选择 auth”已证伪：core/active 逐个运行 auth
     # 场景，client 以 Unknown scenario 退出 1，靠本基线放行。

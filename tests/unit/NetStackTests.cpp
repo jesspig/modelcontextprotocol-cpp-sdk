@@ -528,3 +528,22 @@ TEST(HttpClientTest, BodyTooLargeThrows) {
     req.url = "http://127.0.0.1:" + std::to_string(server.Port()) + "/";
     EXPECT_THROW(client.Request(req), mcp::McpError);
 }
+
+TEST(HttpClientTest, ChunkedBodyTooLargeThrows) {
+    TcpTestServer server([](int fd) {
+        RecvLine(fd);
+        for (;;) {
+            std::string h = RecvLine(fd);
+            if (h == "\r\n" || h == "\n" || h.empty()) break;
+        }
+        SendRaw(fd, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                    "20\r\n0123456789abcdef0123456789abcdef\r\n"
+                    "20\r\n0123456789abcdef0123456789abcdef\r\n0\r\n\r\n");
+    });
+    net::HttpClient client;
+    net::HttpRequestSpec req;
+    req.method = "GET";
+    req.url = "http://127.0.0.1:" + std::to_string(server.Port()) + "/";
+    req.max_response_bytes = 32;
+    EXPECT_THROW(client.Request(req), mcp::McpError);
+}

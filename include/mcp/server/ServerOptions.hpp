@@ -6,6 +6,7 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/McpTypes.hpp>
 #include <mcp/SpanHooks.hpp>
+#include <mcp/ext/ServerCard.hpp>
 
 #include <mcp/server/McpTaskStore.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
@@ -81,6 +82,7 @@ struct MCP_API ServerOptions {
     bool enable_skills_extension{false};
     bool enable_apps_extension{false};
     bool enable_server_card{false};
+    std::optional<ext::ServerCard> server_card;
     bool enable_etag_cache{false};
     bool enable_progressive_discovery{false};
     bool enable_file_input{false};

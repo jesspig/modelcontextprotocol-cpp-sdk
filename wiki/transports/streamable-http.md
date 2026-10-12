@@ -3,7 +3,7 @@ type: Transport
 title: Streamable HTTP 传输
 description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战与 audience 校验、外部 SessionStore 会话接管（含容量上限与闲置过期）、任务头校验、版本头主动校验、x-mcp-header 参数头、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 503/504 语义。
 tags: [transport, http, streamable, stateless, winhttp, sse, bearer, audience]
-timestamp: 2026-10-11T16:35:00+08:00
+timestamp: 2026-10-13T02:09:29+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -30,6 +30,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 - **DELETE**：stateless → 405 `-32601`；否则关 channel、`SetDisconnected()`、200 `{}`
 - `SendMessageAsync`：**无条件**先查 `pending_responses_`（响应/错误响应按 id 匹配则 set promise 并返回，不广播）；未匹配的消息中**仅 `IsRequest`（`JsonRpcRequest`）在快照为空时有界等待监听者**——`http_server_->SseClientCount() == 0` 时以 50ms 步长（`kSseListenerWaitStep`）轮询至多 2s（`kSseListenerWaitBudget`），期间 `TransportState::Disconnected` 可中断退出，超时记 Warning（`server-initiated request '<method>' broadcast with no SSE listener`）后仍走广播路径；**Notification 不等待、保持 fire-and-forget**（此前的"快照为空即经 `BroadcastSse` 静默丢弃"已不适用于请求）；之后经 `BuildSseEvent(std::move(message))`（`SerializeMessage(std::move)`）生成 `event: message`，非 stateless 时 Append 到 EventStore 并带 `id:` 前缀，最后 `BroadcastSse`（零监听者时仍是空操作）
 - `Close()`：停 HttpServer、非 stateless 清 EventStore、关通道、SetDisconnected
+- **单连接强制语义（stateless 默认，对齐 TS 2.3.0 每请求新建）**：默认三元组 `stateless=true` + `enable_legacy_sse=false` + `listen_hold_open=false` 即单连接——每 POST 独立、无连接亲和：成功响应写完即关（`sse_close_after_write=true`，仅 `listen_hold_open` 下的 `subscriptions/listen` 持开为例外）；DELETE 一律 405；GET 流默认不注册；客户端 `stateless=true` 时不发 `Mcp-Session-Id`/`Last-Event-ID`、不发 DELETE、不做会话接管。`StatelessSingleConnectionDefaults`、`StatelessDeleteIsRejected`、`StatelessRequestsAreIndependentConnections`、`PlainRequestKeepsSingleWriteAndClose` 四用例锁定
 
 ## 客户端
 

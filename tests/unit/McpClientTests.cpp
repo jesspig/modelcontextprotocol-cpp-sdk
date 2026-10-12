@@ -704,11 +704,60 @@ TEST(McpClientTest, MrtrUnknownInputRequestMethodThrows) {
         client->CallTool("echo", JsonValue(JsonValue::object_tag));
         FAIL();
     } catch (const McpError& e) {
-        EXPECT_EQ(e.Code(), McpErrorCode::MethodNotFound);
+        EXPECT_EQ(e.Code(), McpErrorCode::HandlerError);
         EXPECT_NE(std::string(e.what()).find("unsupported input request method"),
             std::string::npos);
     }
     EXPECT_EQ(calls.load(), 1);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrForgedRequestStateRejectionCarriesReason) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            if (calls.fetch_add(1) == 0) {
+                JsonValue ir(JsonValue::object_tag);
+                ir["resultType"] = JsonValue("input_required");
+                ir["requestState"] = JsonValue("forged-state-token");
+                p.set_value(std::move(ir));
+                return;
+            }
+            JsonValue err(JsonValue::object_tag);
+            err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::InvalidParams));
+            err["message"] = JsonValue("invalid requestState");
+            JsonValue data(JsonValue::object_tag);
+            data["reason"] = JsonValue("invalid_request_state");
+            err["data"] = std::move(data);
+            p.set_value(std::move(err));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    try {
+        client->CallTool("echo", JsonValue(JsonValue::object_tag));
+        FAIL();
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::InvalidParams);
+        EXPECT_NE(std::string(e.what()).find("invalid requestState"),
+            std::string::npos);
+        ASSERT_TRUE(e.Data().has_value());
+        ASSERT_TRUE(e.Data()->IsObject());
+        auto* reason = e.Data()->Find("reason");
+        ASSERT_NE(reason, nullptr);
+        EXPECT_EQ(reason->GetString(), "invalid_request_state");
+    }
+    EXPECT_EQ(calls.load(), 2);
 
     client->Close();
     server_handler->Close();

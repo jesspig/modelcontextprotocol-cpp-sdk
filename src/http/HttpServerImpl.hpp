@@ -25,6 +25,7 @@ namespace mcp { namespace detail { namespace http_server_impl {
 struct SseClientEntry {
     std::mutex write_mutex;
     std::function<void(std::string_view)> send_fn;
+    std::string tag;
 };
 
 struct ConnEntry {
@@ -45,8 +46,12 @@ public:
     void Stop();
 
     uint64_t AddSseClient(std::function<void(std::string_view)> send_fn);
+    uint64_t AddSseClient(std::function<void(std::string_view)> send_fn,
+                          std::string tag);
     bool RemoveSseClient(uint64_t id);
     void BroadcastSse(std::string_view event);
+    void BroadcastSse(std::string_view event,
+                      const std::function<bool(const std::string&)>& accept);
     std::size_t SseClientCount() const;
 
 private:
@@ -83,6 +88,10 @@ private:
 
     static bool IsRequestAllowed(const HttpRequest& req, const HttpServerOptions& options);
     static bool IsLocalhostHost(const std::string& host_with_port);
+    static bool IsLoopbackName(const std::string& host);
+    static std::string StripPort(std::string_view host_with_port);
+    static bool IsOriginAllowedForHost(const std::string& origin,
+                                       const std::string& host_with_port);
 
     HttpServerOptions options_;
     std::atomic<bool> running_{false};
