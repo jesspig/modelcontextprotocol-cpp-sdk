@@ -358,6 +358,63 @@ StreamableHttpServerTransport::ParseListenFilter(const JsonRpcRequest& req) {
     return filter;
 }
 
+std::string StreamableHttpServerTransport::EncodeListenTag(
+    const ListenFilter& filter) {
+    JsonValue::Object tag;
+    tag["toolsListChanged"] = JsonValue(filter.tools);
+    tag["promptsListChanged"] = JsonValue(filter.prompts);
+    tag["resourcesListChanged"] = JsonValue(filter.resources);
+    if (!filter.resource_uris.empty()) {
+        JsonValue::Array uris;
+        for (const auto& uri : filter.resource_uris)
+            uris.push_back(JsonValue(uri));
+        tag["resourceSubscriptions"] = JsonValue(std::move(uris));
+    }
+    return JsonValue(std::move(tag)).Dump();
+}
+
+bool StreamableHttpServerTransport::IsListenFilteredNotification(
+    const std::string& method) {
+    return method == notifications::kToolListChanged ||
+           method == notifications::kPromptListChanged ||
+           method == notifications::kResourceListChanged ||
+           method == notifications::kResourceUpdated;
+}
+
+bool StreamableHttpServerTransport::ListenTagAccepts(
+    const std::string& tag, const std::string& method,
+    const std::optional<std::string>& resource_uri) {
+    if (tag.empty()) return true;
+    JsonValue tag_doc;
+    try {
+        tag_doc = JsonValue::Parse(tag);
+    } catch (...) {
+        return true;
+    }
+    if (!tag_doc.IsObject()) return true;
+    auto flag = [&tag_doc](const char* key) {
+        auto* value = tag_doc.Find(key);
+        return value && value->IsBool() && value->GetBool();
+    };
+    if (method == notifications::kToolListChanged)
+        return flag("toolsListChanged");
+    if (method == notifications::kPromptListChanged)
+        return flag("promptsListChanged");
+    if (method == notifications::kResourceListChanged)
+        return flag("resourcesListChanged");
+    if (method == notifications::kResourceUpdated) {
+        if (!resource_uri) return false;
+        auto* subs = tag_doc.Find("resourceSubscriptions");
+        if (!subs || !subs->IsArray()) return false;
+        for (const auto& entry : subs->GetArray()) {
+            if (entry.IsString() && entry.GetString() == *resource_uri)
+                return true;
+        }
+        return false;
+    }
+    return true;
+}
+
 StreamableHttpServerTransport::StreamableHttpServerTransport(
     StreamableHttpServerOptions options)
     : TransportBase()
@@ -968,11 +1025,13 @@ void StreamableHttpServerTransport::HandlePost(
         }
         bool hold_listen = false;
         ListenFilter listen_filter;
+        std::string listen_tag;
         if (hold_open && options_.listen_hold_open) {
             if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg)) {
                 if (hold_req->method == methods::kSubscribe) {
                     hold_listen = true;
                     listen_filter = ParseListenFilter(*hold_req);
+                    listen_tag = EncodeListenTag(listen_filter);
                 }
             }
         }
@@ -1075,6 +1134,7 @@ void StreamableHttpServerTransport::HandlePost(
         resp.status_text = "OK";
         resp.is_sse = true;
         resp.sse_close_after_write = !hold_listen;
+        resp.sse_client_tag = std::move(listen_tag);
         resp.headers["content-type"] = "text/event-stream";
         resp.headers["cache-control"] = "no-cache";
         resp.headers["x-accel-buffering"] = "no";
@@ -1183,6 +1243,13 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
         }
     }
 
+    std::string broadcast_method;
+    std::optional<std::string> broadcast_resource;
+    if (const auto* outgoing = AsNotification(message)) {
+        broadcast_method = outgoing->method;
+        if (broadcast_method == notifications::kResourceUpdated)
+            broadcast_resource = UpdatedResourceUri(*outgoing);
+    }
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
         auto event_id = event_store_->Append(ActiveSessionId(), event_data);
@@ -1190,7 +1257,16 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
         if (event_data.size() > SseEventLimit()) event_data.resize(SseEventLimit());
     }
     if (http_server_) {
-        http_server_->BroadcastSse(event_data);
+        if (!broadcast_method.empty() &&
+            IsListenFilteredNotification(broadcast_method)) {
+            http_server_->BroadcastSse(event_data,
+                [method = broadcast_method, resource = broadcast_resource](
+                    const std::string& tag) {
+                    return ListenTagAccepts(tag, method, resource);
+                });
+        } else {
+            http_server_->BroadcastSse(event_data);
+        }
     }
 }
 

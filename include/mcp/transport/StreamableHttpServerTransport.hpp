@@ -141,6 +141,11 @@ private:
         std::vector<std::string> resource_uris;
     };
     static ListenFilter ParseListenFilter(const JsonRpcRequest& req);
+    static std::string EncodeListenTag(const ListenFilter& filter);
+    static bool IsListenFilteredNotification(const std::string& method);
+    static bool ListenTagAccepts(const std::string& tag,
+                                 const std::string& method,
+                                 const std::optional<std::string>& resource_uri);
 
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;

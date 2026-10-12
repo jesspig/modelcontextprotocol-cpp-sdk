@@ -479,7 +479,7 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
             }
             auto id = AddSseClient([conn](std::string_view data) {
                 conn->Write(data.data(), data.size());
-            });
+            }, resp.sse_client_tag);
             if (options_.on_connect) {
                 try {
                     options_.on_connect();
@@ -804,8 +804,14 @@ bool Impl::IsLocalhostHost(const std::string& host_with_port) {
 }
 
 uint64_t Impl::AddSseClient(std::function<void(std::string_view)> send_fn) {
+    return AddSseClient(std::move(send_fn), std::string{});
+}
+
+uint64_t Impl::AddSseClient(std::function<void(std::string_view)> send_fn,
+                            std::string tag) {
     auto entry = std::make_shared<SseClientEntry>();
     entry->send_fn = std::move(send_fn);
+    entry->tag = std::move(tag);
     std::lock_guard<std::mutex> lock(sse_mutex_);
     auto id = next_sse_id_++;
     sse_clients_[id] = std::move(entry);
@@ -855,6 +861,11 @@ void Impl::RemoveSseClientEntry(const std::shared_ptr<SseClientEntry>& entry) {
 }
 
 void Impl::BroadcastSse(std::string_view event) {
+    BroadcastSse(event, [](const std::string&) { return true; });
+}
+
+void Impl::BroadcastSse(std::string_view event,
+                        const std::function<bool(const std::string&)>& accept) {
     std::string capped;
     std::string_view view = event;
     if (view.size() > mcp::detail::kMaxSseEventBytes) {
@@ -865,8 +876,15 @@ void Impl::BroadcastSse(std::string_view event) {
     {
         std::lock_guard<std::mutex> lock(sse_mutex_);
         entries.reserve(sse_clients_.size());
-        for (auto& [id, entry] : sse_clients_)
-            entries.push_back(entry);
+        for (auto& [id, entry] : sse_clients_) {
+            bool wanted = false;
+            try {
+                wanted = accept(entry->tag);
+            } catch (...) {
+                wanted = true;
+            }
+            if (wanted) entries.push_back(entry);
+        }
     }
     for (auto& entry : entries) {
         try {

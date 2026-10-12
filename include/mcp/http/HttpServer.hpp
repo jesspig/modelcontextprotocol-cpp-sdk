@@ -31,6 +31,7 @@ struct HttpResponse {
     std::string body;
     bool is_sse{false};
     bool sse_close_after_write{false};
+    std::string sse_client_tag;
 };
 
 using HttpHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
@@ -70,8 +71,12 @@ public:
 
     using SseClientId = uint64_t;
     SseClientId AddSseClient(std::function<void(std::string_view)> send_fn);
+    SseClientId AddSseClient(std::function<void(std::string_view)> send_fn,
+                             std::string tag);
     void RemoveSseClient(SseClientId id);
     void BroadcastSse(std::string_view event);
+    void BroadcastSse(std::string_view event,
+                      const std::function<bool(const std::string&)>& accept);
     std::size_t SseClientCount() const;
 
 private:
