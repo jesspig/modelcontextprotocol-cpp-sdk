@@ -9,6 +9,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpVersion.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
+#include <mcp/ext/ServerCard.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -69,6 +70,9 @@ struct StreamableHttpServerOptions {
     std::function<std::vector<McpParamAnnotationInfo>(const std::string& method,
                                                       const std::string& name)>
         resolve_param_annotations;
+
+    bool enable_server_card{false};
+    std::optional<ext::ServerCard> server_card;
 };
 
 class StreamableHttpServerTransport : public TransportBase {
@@ -96,6 +100,8 @@ private:
 
     bool AuthorizeRequest(const HttpRequest& req, HttpResponse& resp);
     void HandleMetadataRequest(HttpResponse& resp);
+    void HandleServerCardRequest(HttpResponse& resp);
+    ext::ServerCard BuildDefaultServerCard() const;
 
     std::string BuildSseEvent(JsonRpcMessage msg);
 

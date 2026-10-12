@@ -321,6 +321,13 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
                 HandleMetadataRequest(resp);
             });
     }
+
+    if (options_.enable_server_card) {
+        http_server_->SetHandler("GET", "/server-card",
+            [this](const HttpRequest&, HttpResponse& resp) {
+                HandleServerCardRequest(resp);
+            });
+    }
 }
 
 StreamableHttpServerTransport::~StreamableHttpServerTransport() {
@@ -403,6 +410,39 @@ void StreamableHttpServerTransport::HandleMetadataRequest(HttpResponse& resp) {
     resp.status_text = "OK";
     resp.body = JsonValue(std::move(doc)).Dump();
     resp.headers["content-type"] = "application/json";
+}
+
+ext::ServerCard StreamableHttpServerTransport::BuildDefaultServerCard() const {
+    ext::ServerCard card;
+    card.name = options_.server_name;
+    card.version = options_.server_version;
+    ext::ServerCardEndpoint endpoint;
+    endpoint.url = "http://" + (options_.host.empty() ? std::string("localhost") : options_.host) +
+        ":" + std::to_string(options_.port) + options_.endpoint;
+    card.endpoints.push_back(std::move(endpoint));
+    for (auto version : kProtocolVersions) {
+        card.supported_protocol_versions.emplace_back(version);
+    }
+    return card;
+}
+
+void StreamableHttpServerTransport::HandleServerCardRequest(HttpResponse& resp) {
+    try {
+        ext::ServerCard card = options_.server_card.value_or(BuildDefaultServerCard());
+        resp.status_code = 200;
+        resp.status_text = "OK";
+        resp.body = ext::SerializeCard(card).Dump();
+    } catch (const McpError& e) {
+        resp.status_code = 400;
+        resp.status_text = "Bad Request";
+        JsonValue::Object err;
+        err["code"] = JsonValue(static_cast<int64_t>(e.Code()));
+        err["message"] = JsonValue(std::string(e.ErrorMessage()));
+        resp.body = JsonValue(std::move(err)).Dump();
+    }
+    resp.headers["content-type"] = "application/json";
+    resp.headers["access-control-allow-origin"] = "*";
+    resp.headers["cache-control"] = "public,max-age=60";
 }
 
 std::string StreamableHttpServerTransport::ActiveSessionId() const {

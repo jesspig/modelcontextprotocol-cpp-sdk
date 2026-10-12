@@ -35,4 +35,6 @@ struct ServerCard {
 
 void ValidateCard(const ServerCard& card);
 
+JsonValue SerializeCard(const ServerCard& card);
+
 } // namespace mcp::ext
