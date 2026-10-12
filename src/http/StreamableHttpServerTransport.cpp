@@ -364,11 +364,15 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     , options_(std::move(options))
     , http_server_(std::make_unique<HttpServer>(options_.port,
           [keep_alive_ms = options_.sse_keep_alive_ms, host = options_.host,
-           max_body = options_.max_request_body_bytes] {
+            max_body = options_.max_request_body_bytes,
+            allowed_hosts = options_.allowed_hosts,
+            allowed_origins = options_.allowed_origins] {
               HttpServerOptions http_options;
               http_options.sse_keep_alive_ms = keep_alive_ms;
               http_options.bind_host = host;
               http_options.max_request_body_bytes = max_body;
+              http_options.allowed_hosts = allowed_hosts;
+              http_options.allowed_origins = allowed_origins;
               return http_options;
           }()))
     , event_store_(options_.event_store
@@ -1078,6 +1082,7 @@ void StreamableHttpServerTransport::HandlePost(
         for (auto& hold_frame : hold_frames) resp.body += hold_frame;
         resp.body += "event: message\ndata: " +
                     SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
+        if (resp.body.size() > SseEventLimit()) resp.body.resize(SseEventLimit());
     } else {
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
             resp.status_code = 503;
@@ -1182,6 +1187,7 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     if (!options_.stateless) {
         auto event_id = event_store_->Append(ActiveSessionId(), event_data);
         event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
+        if (event_data.size() > SseEventLimit()) event_data.resize(SseEventLimit());
     }
     if (http_server_) {
         http_server_->BroadcastSse(event_data);
@@ -1199,7 +1205,12 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
     JsonRpcMessage msg)
 {
     std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(std::move(msg))) + "\n\n";
+    if (data.size() > SseEventLimit()) data.resize(SseEventLimit());
     return data;
+}
+
+std::size_t StreamableHttpServerTransport::SseEventLimit() const {
+    return options_.max_sse_event_bytes.value_or(detail::kMaxSseEventBytes);
 }
 
 std::optional<std::string> StreamableHttpServerTransport::RequestTokenKey(

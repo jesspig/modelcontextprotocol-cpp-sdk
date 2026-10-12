@@ -83,6 +83,10 @@ private:
 
     static bool IsRequestAllowed(const HttpRequest& req, const HttpServerOptions& options);
     static bool IsLocalhostHost(const std::string& host_with_port);
+    static bool IsLoopbackName(const std::string& host);
+    static std::string StripPort(std::string_view host_with_port);
+    static bool IsOriginAllowedForHost(const std::string& origin,
+                                       const std::string& host_with_port);
 
     HttpServerOptions options_;
     std::atomic<bool> running_{false};

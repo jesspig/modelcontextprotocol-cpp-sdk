@@ -7,7 +7,6 @@
 
 #include <atomic>
 #include <exception>
-#include <limits>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -28,7 +27,7 @@ public:
         , stdin_pipe_(std::move(stdin_pipe))
         , stdout_pipe_(std::move(stdout_pipe))
         , max_frame_bytes_(max_frame_bytes.value_or(
-            (std::numeric_limits<std::size_t>::max)()))
+            detail::kMaxStdioFrameBytes))
     {
     }
 

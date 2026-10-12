@@ -1,5 +1,7 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
+#include <mcp/transport/StdioClientTransport.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/test/McpTest.hpp>
@@ -426,4 +428,11 @@ TEST(SseClientRetryTest, ReconnectCarriesLastEventId) {
                           state.second_arrival - state.first_close)
                           .count();
     EXPECT_GE(elapsed_ms, 400);
+}
+
+TEST(TransportTest, StdioFrameBoundDefaultsToLimit) {
+    StdioClientTransportOptions opts;
+    opts.command = "cat";
+    ASSERT_TRUE(opts.max_frame_bytes.has_value());
+    EXPECT_EQ(*opts.max_frame_bytes, mcp::detail::kMaxStdioFrameBytes);
 }

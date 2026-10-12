@@ -1285,3 +1285,112 @@ TEST(StreamableHttpTest, ClientMirrorsAnnotatedToolArguments) {
     if (reader.joinable()) reader.join();
     mock.Stop();
 }
+
+TEST(HttpServerTest, OriginValidationRejectsForeignOrigin) {
+    auto port = PickFreePort(kTestBasePort + 1400);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto base = "http://127.0.0.1:" + std::to_string(port);
+    std::unordered_map<std::string, std::string> evil;
+    evil["Origin"] = "http://evil.example.com";
+    auto rejected = HttpGet(base + "/ping", evil);
+    ASSERT_NE(rejected, std::nullopt);
+    EXPECT_EQ(rejected->status_code, 403);
+
+    std::unordered_map<std::string, std::string> same_origin;
+    same_origin["Origin"] = base;
+    auto ok = HttpGet(base + "/ping", same_origin);
+    ASSERT_NE(ok, std::nullopt);
+    EXPECT_EQ(ok->status_code, 200);
+
+    std::unordered_map<std::string, std::string> loopback;
+    loopback["Origin"] = "http://localhost";
+    auto loopback_ok = HttpGet(base + "/ping", loopback);
+    ASSERT_NE(loopback_ok, std::nullopt);
+    EXPECT_EQ(loopback_ok->status_code, 200);
+    server.Stop();
+}
+
+TEST(StreamableHttpTest, ServerRejectsOversizedBody) {
+    auto port = PickFreePort(kTestBasePort + 1410);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = true;
+    opts.max_request_body_bytes = 32;
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto r = HttpPost(
+        "http://127.0.0.1:" + std::to_string(port) + "/mcp",
+        R"({"jsonrpc":"2.0","method":"notifications/initialized","params":{"pad":"0123456789abcdef"}})",
+        {});
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 413);
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, ServerRejectsDeeplyNestedBody) {
+    auto port = PickFreePort(kTestBasePort + 1420);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = true;
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string nest(1001, '[');
+    nest.append(1001, ']');
+    std::string body =
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"nest":)" +
+        nest + "}}";
+    auto r = HttpPost(
+        "http://127.0.0.1:" + std::to_string(port) + "/mcp", body, {});
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 400);
+    EXPECT_NE(r->body.find("-32700"), std::string::npos);
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, SseEventCapTruncatesResponse) {
+    auto port = PickFreePort(kTestBasePort + 1430);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = true;
+    opts.enable_legacy_sse = false;
+    opts.max_sse_event_bytes = 256;
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            mcp::JsonValue result(mcp::JsonValue::object_tag);
+            result["text"] = mcp::JsonValue(std::string(2000, 'x'));
+            p.set_value(std::move(result));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::unordered_map<std::string, std::string> hdrs;
+    hdrs["Content-Type"] = "application/json";
+    hdrs["Mcp-Method"] = "tools/call";
+    auto r = HttpPost(
+        "http://127.0.0.1:" + std::to_string(port) + "/mcp",
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})",
+        hdrs);
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 200);
+    EXPECT_LE(r->body.size(), 256u);
+
+    handler->Close();
+    transport->Close();
+}
