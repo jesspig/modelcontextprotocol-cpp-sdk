@@ -1725,3 +1725,289 @@ TEST(StreamableHttpTransportTest, RequestStreamHoldOpenDeliversMessageBeforeResu
     server.Close();
     consumer.join();
 }
+
+namespace {
+
+const char* kStatelessMetaFull =
+    R"("_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",)"
+    R"("io.modelcontextprotocol/clientInfo":{"name":"conformance-client","version":"1.0.0"},)"
+    R"("io.modelcontextprotocol/clientCapabilities":{}})";
+
+std::unordered_map<std::string, std::string> StatelessModernHeaders(
+    const std::string& method) {
+    std::unordered_map<std::string, std::string> headers;
+    headers["Mcp-Protocol-Version"] = "2026-07-28";
+    headers["Mcp-Method"] = method;
+    return headers;
+}
+
+int64_t ErrorCodeOf(const std::string& body) {
+    auto doc = JsonValue::Parse(body);
+    auto* err = doc.Find("error");
+    if (!err || !err->IsObject()) return 0;
+    auto* code = err->Find("code");
+    if (!code || !code->IsInt()) return 0;
+    return code->GetInt();
+}
+
+int64_t IdOf(const std::string& body) {
+    auto doc = JsonValue::Parse(body);
+    auto* id = doc.Find("id");
+    if (!id || !id->IsInt()) return -1;
+    return id->GetInt();
+}
+
+} // namespace
+
+TEST(StreamableHttpTransportTest, StatelessModernDiscoverMissingMetaRejected) {
+    auto port = PickFreePort(kTestBasePort + 2080);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    const std::string bodies[] = {
+        R"({"jsonrpc":"2.0","id":101,"method":"server/discover","params":{}})",
+        std::string(R"({"jsonrpc":"2.0","id":102,"method":"server/discover","params":{"_meta":{)") +
+            std::string(R"("io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},)") +
+            std::string(R"("io.modelcontextprotocol/clientCapabilities":{}}}})"),
+        std::string(R"({"jsonrpc":"2.0","id":104,"method":"server/discover","params":{"_meta":{)") +
+            std::string(R"("io.modelcontextprotocol/protocolVersion":"2026-07-28",)") +
+            std::string(R"("io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"}}}})"),
+    };
+    const int64_t ids[] = {101, 102, 104};
+    for (size_t i = 0; i < 3; ++i) {
+        auto resp = HoldOpenPost(port, bodies[i],
+                                 StatelessModernHeaders("server/discover"));
+        EXPECT_EQ(resp.status_code, 400);
+        EXPECT_EQ(ErrorCodeOf(resp.body),
+                  static_cast<int64_t>(McpErrorCode::InvalidParams));
+        EXPECT_EQ(IdOf(resp.body), ids[i]);
+    }
+
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, StatelessModernDiscoverClientInfoOptionalServed) {
+    auto port = PickFreePort(kTestBasePort + 2082);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":105,"method":"server/discover","params":{)") +
+        R"("_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",)" +
+        R"("io.modelcontextprotocol/clientCapabilities":{}}}})";
+    auto resp = HoldOpenPost(port, body,
+                             StatelessModernHeaders("server/discover"));
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(resp.status_code, 200);
+    EXPECT_NE(resp.body.find("\"ok\":true"), std::string::npos);
+    EXPECT_EQ(CountSseFrames(resp.body), size_t{1});
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, StatelessModernVersionMismatchRejected) {
+    auto port = PickFreePort(kTestBasePort + 2084);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":302,"method":"server/discover","params":{)") +
+        std::string(kStatelessMetaFull) + "}}";
+    auto dot = body.find("\"2026-07-28\"");
+    ASSERT_NE(dot, std::string::npos);
+    body.replace(dot, std::string("\"2026-07-28\"").size(), "\"v999.0.0\"");
+    auto resp = HoldOpenPost(port, body,
+                             StatelessModernHeaders("server/discover"));
+
+    EXPECT_EQ(resp.status_code, 400);
+    EXPECT_EQ(ErrorCodeOf(resp.body),
+              static_cast<int64_t>(McpErrorCode::HeaderMismatch));
+    EXPECT_EQ(IdOf(resp.body), 302);
+
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, StatelessUnsupportedVersionCarriesDataAndId) {
+    auto port = PickFreePort(kTestBasePort + 2086);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":301,"method":"server/discover","params":{)") +
+        std::string(kStatelessMetaFull) + "}}";
+    auto dot = body.find("\"2026-07-28\"");
+    ASSERT_NE(dot, std::string::npos);
+    body.replace(dot, std::string("\"2026-07-28\"").size(), "\"v999.0.0\"");
+    std::unordered_map<std::string, std::string> headers;
+    headers["Mcp-Protocol-Version"] = "v999.0.0";
+    headers["Mcp-Method"] = "server/discover";
+    auto resp = HoldOpenPost(port, body, headers);
+
+    EXPECT_EQ(resp.status_code, 400);
+    EXPECT_EQ(ErrorCodeOf(resp.body),
+              static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
+    EXPECT_EQ(IdOf(resp.body), 301);
+    auto doc = JsonValue::Parse(resp.body);
+    auto* err = doc.Find("error");
+    ASSERT_TRUE(err != nullptr && err->IsObject());
+    auto* data = err->Find("data");
+    ASSERT_TRUE(data != nullptr && data->IsObject());
+    auto* supported = data->Find("supported");
+    ASSERT_TRUE(supported != nullptr && supported->IsArray());
+    ASSERT_FALSE(supported->GetArray().empty());
+    bool has_latest = false;
+    for (const auto& entry : supported->GetArray()) {
+        if (entry.IsString() && entry.GetString() == "2026-07-28") has_latest = true;
+    }
+    EXPECT_TRUE(has_latest);
+    auto* requested = data->Find("requested");
+    ASSERT_TRUE(requested != nullptr && requested->IsString());
+    EXPECT_EQ(requested->GetString(), "v999.0.0");
+
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, StatelessModernRemovedMethodsMapTo404) {
+    auto port = PickFreePort(kTestBasePort + 2088);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    const std::pair<const char*, int64_t> cases[] = {
+        {"initialize", 501},
+        {"ping", 502},
+        {"logging/setLevel", 503},
+    };
+    for (const auto& [method, rpc_id] : cases) {
+        std::string body = std::string(R"({"jsonrpc":"2.0","id":)") +
+                           std::to_string(rpc_id) +
+                           std::string(R"(,"method":")") + method +
+                           std::string(R"(","params":{)") +
+                           std::string(kStatelessMetaFull) + "}}";
+        auto resp = HoldOpenPost(port, body, StatelessModernHeaders(method));
+        EXPECT_EQ(resp.status_code, 404);
+        EXPECT_EQ(ErrorCodeOf(resp.body),
+                  static_cast<int64_t>(McpErrorCode::MethodNotFound));
+        EXPECT_EQ(IdOf(resp.body), rpc_id);
+    }
+
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, LegacyInitializeWithoutSignalsPassesThrough) {
+    auto port = PickFreePort(kTestBasePort + 2089);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HoldOpenPost(port,
+        R"({"jsonrpc":"2.0","id":601,"method":"initialize","params":{)"
+        R"("protocolVersion":"2025-03-26","capabilities":{},)"
+        R"("clientInfo":{"name":"c","version":"1"}}})",
+        {});
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_NE(resp.status_code, 404);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, StatelessSubscriptionAckBufferedFirst) {
+    auto port = PickFreePort(kTestBasePort + 2090);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                JsonRpcNotification ack;
+                ack.method = "notifications/subscriptions/acknowledged";
+                JsonValue ack_params(JsonValue::object_tag);
+                JsonValue ack_meta(JsonValue::object_tag);
+                ack_meta["io.modelcontextprotocol/subscriptionId"] =
+                    JsonValue("sub-1");
+                ack_params["_meta"] = std::move(ack_meta);
+                ack.params = std::move(ack_params);
+                server.SendMessageAsync(JsonRpcMessage(std::move(ack)));
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":700,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"toolsListChanged":true}}})";
+    auto resp = HoldOpenPost(port, body,
+                             StatelessModernHeaders("subscriptions/listen"));
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(resp.status_code, 200);
+    EXPECT_EQ(CountSseFrames(resp.body), size_t{2});
+    auto ack_pos = resp.body.find("notifications/subscriptions/acknowledged");
+    auto result_pos = resp.body.find("\"ok\":true");
+    EXPECT_NE(ack_pos, std::string::npos);
+    EXPECT_NE(result_pos, std::string::npos);
+    EXPECT_LT(ack_pos, result_pos);
+    EXPECT_NE(resp.body.find("sub-1"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
