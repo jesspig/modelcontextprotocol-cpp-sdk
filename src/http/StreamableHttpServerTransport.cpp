@@ -2,6 +2,7 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/ErrorCodes.hpp>
+#include <mcp/McpTypes.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
@@ -314,6 +315,25 @@ void RespondUnsupportedVersion(HttpResponse& resp, const std::string& version,
                           McpErrorCode::UnsupportedProtocolVersion,
                           "Unsupported protocol version '" + version + "'",
                           std::move(id), std::move(data));
+}
+
+std::string NormalizeEtagValue(std::string_view v) {
+    size_t b = 0;
+    while (b < v.size() && (v[b] == ' ' || v[b] == '\t')) ++b;
+    size_t e = v.size();
+    while (e > b && (v[e - 1] == ' ' || v[e - 1] == '\t')) --e;
+    std::string_view s = v.substr(b, e - b);
+    if (s.size() >= 2 && (s[0] == 'W' || s[0] == 'w') && s[1] == '/') s.remove_prefix(2);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') s = s.substr(1, s.size() - 2);
+    return std::string(s);
+}
+
+std::optional<std::string> ResultEtagValue(const JsonRpcMessage& message) {
+    const auto* r = std::get_if<JsonRpcResponse>(&message);
+    if (!r || !r->result.IsObject()) return std::nullopt;
+    auto* et = r->result.Find("etag");
+    if (!et || !et->IsString() || et->GetString().empty()) return std::nullopt;
+    return et->GetString();
 }
 } // namespace
 
@@ -1026,6 +1046,20 @@ void StreamableHttpServerTransport::HandlePost(
                             resp.headers["mcp-param-" + hk] =
                                 hv.IsString() ? hv.GetString() : hv.Dump();
                         }
+                    }
+                }
+            }
+        }
+        if (IsEtagCacheEnabled()) {
+            if (auto etag = ResultEtagValue(response)) {
+                resp.headers["etag"] = *etag;
+                if (auto inm = GetMcpHeader(req, "if-none-match")) {
+                    if (NormalizeEtagValue(*inm) == NormalizeEtagValue(*etag)) {
+                        resp.status_code = 304;
+                        resp.status_text = "Not Modified";
+                        resp.body.clear();
+                        resp.is_sse = false;
+                        return;
                     }
                 }
             }

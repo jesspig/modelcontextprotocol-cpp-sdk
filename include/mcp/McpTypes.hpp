@@ -231,6 +231,15 @@ struct InputRequiredResult {
 
 struct EmptyResult : Result {};
 
+struct CacheableResult : Result {
+    std::optional<std::string> etag;
+};
+
+void SetEtagCacheEnabled(bool enabled);
+bool IsEtagCacheEnabled();
+JsonValue SerializeCacheableResult(const CacheableResult& v);
+CacheableResult DeserializeCacheableResult(const JsonValue& j);
+
 struct CallToolResult : Result {
     std::vector<ContentVariant> content;
     std::optional<JsonValue> structured_content;

@@ -3256,3 +3256,164 @@ TEST(McpClientTest, SearchToolsAggregatesPages) {
     client->Close();
     server->Close();
 }
+
+TEST(McpClientTest, Etag304HitReturnsCachedBody) {
+    SetEtagCacheEnabled(true);
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    std::atomic<bool> saw_conditional{false};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, &saw_conditional](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            std::string inm;
+            if (req.meta && req.meta->IsObject()) {
+                if (auto* v = req.meta->Find("ifNoneMatch"); v && v->IsString())
+                    inm = v->GetString();
+            }
+            if (!inm.empty()) saw_conditional.store(true);
+            if (inm == "etag-v1") {
+                JsonValue result(JsonValue::object_tag);
+                result["notModified"] = JsonValue(true);
+                result["etag"] = JsonValue("etag-v1");
+                p.set_value(std::move(result));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue("uri-a");
+            c["text"] = JsonValue("v1-body");
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            result["etag"] = JsonValue("etag-v1");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    CacheableRequestOptions ropts;
+    ropts.cache_mode = "bypass";
+    auto r1 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r1.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 1);
+    auto r2 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_TRUE(saw_conditional.load());
+    auto* t1 = std::get_if<TextResourceContents>(&r1.contents[0]);
+    auto* t2 = std::get_if<TextResourceContents>(&r2.contents[0]);
+    ASSERT_NE(t1, nullptr);
+    ASSERT_NE(t2, nullptr);
+    EXPECT_EQ(t2->text, "v1-body");
+    EXPECT_EQ(t2->text, t1->text);
+
+    client->Close();
+    server_handler->Close();
+    SetEtagCacheEnabled(false);
+}
+
+TEST(McpClientTest, EtagMissPassesThroughNewBody) {
+    SetEtagCacheEnabled(true);
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    std::atomic<bool> saw_conditional{false};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, &saw_conditional](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            std::string inm;
+            if (req.meta && req.meta->IsObject()) {
+                if (auto* v = req.meta->Find("ifNoneMatch"); v && v->IsString())
+                    inm = v->GetString();
+            }
+            if (!inm.empty()) saw_conditional.store(true);
+            std::string body = "v1-body";
+            std::string etag = "etag-v1";
+            if (inm == "etag-v1") {
+                body = "v2-body";
+                etag = "etag-v2";
+            } else if (inm == "etag-v2") {
+                JsonValue result(JsonValue::object_tag);
+                result["notModified"] = JsonValue(true);
+                result["etag"] = JsonValue("etag-v2");
+                p.set_value(std::move(result));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue("uri-a");
+            c["text"] = JsonValue(body);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            result["etag"] = JsonValue(etag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    CacheableRequestOptions ropts;
+    ropts.cache_mode = "bypass";
+    auto r1 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r1.contents.size(), 1u);
+    auto r2 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_TRUE(saw_conditional.load());
+    auto* t2 = std::get_if<TextResourceContents>(&r2.contents[0]);
+    ASSERT_NE(t2, nullptr);
+    EXPECT_EQ(t2->text, "v2-body");
+    auto r3 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r3.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 3);
+    auto* t3 = std::get_if<TextResourceContents>(&r3.contents[0]);
+    ASSERT_NE(t3, nullptr);
+    EXPECT_EQ(t3->text, "v2-body");
+
+    client->Close();
+    server_handler->Close();
+    SetEtagCacheEnabled(false);
+}
+
+TEST(McpClientTest, EtagOversizeSkipsEtag) {
+    SetEtagCacheEnabled(true);
+    ListToolsResult big;
+    Tool t;
+    t.name = "big-tool";
+    t.description = std::string(9u * 1024u * 1024u, 'x');
+    t.input_schema = JsonValue(JsonValue::object_tag);
+    big.tools.push_back(std::move(t));
+    JsonValue j = SerializeListToolsResult(big);
+    EXPECT_TRUE(j.Find("etag") == nullptr);
+    SetEtagCacheEnabled(false);
+}
+
+TEST(McpClientTest, EtagDisabledWritesNoEtag) {
+    SetEtagCacheEnabled(false);
+    ListToolsResult small;
+    Tool t;
+    t.name = "small-tool";
+    t.input_schema = JsonValue(JsonValue::object_tag);
+    small.tools.push_back(std::move(t));
+    JsonValue j = SerializeListToolsResult(small);
+    EXPECT_TRUE(j.Find("etag") == nullptr);
+    CacheableResult cr;
+    cr.etag = "abc";
+    JsonValue cj = SerializeCacheableResult(cr);
+    ASSERT_NE(cj.Find("etag"), nullptr);
+    EXPECT_EQ(cj.Find("etag")->GetString(), "abc");
+    auto back = DeserializeCacheableResult(cj);
+    ASSERT_TRUE(back.etag.has_value());
+    EXPECT_EQ(*back.etag, "abc");
+}
