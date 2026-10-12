@@ -772,6 +772,209 @@ TEST(OAuthTest, AuthClosedLoopScopeInsufficientRetry) {
     server.Stop();
 }
 
+TEST(OAuthTest, CimdUnreachableDocumentFallsBackToAuthorizationFlow) {
+    auto port = PickFreePort(kTestBasePort + 1210);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\"}";
+        });
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"access_token\":\"cimd-fallback-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string seen_url;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.client_id = "http://127.0.0.1:9/unreachable-client";
+    opts.authorization_redirect_handler =
+        [&seen_url](std::string_view url) { seen_url = std::string(url); };
+    opts.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "cimd-code";
+            auto pos = seen_url.find("state=");
+            if (pos != std::string::npos) {
+                auto end = seen_url.find('&', pos);
+                auto len = (end == std::string::npos)
+                    ? std::string::npos : end - pos - 6;
+                result.state = seen_url.substr(pos + 6, len);
+            }
+            return result;
+        };
+    OAuthClientProvider provider(opts);
+    EXPECT_TRUE(provider.Authenticate());
+    EXPECT_EQ(provider.GetAccessToken(), "cimd-fallback-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, CimdDocumentClientIdMismatchFallsBack) {
+    auto port = PickFreePort(kTestBasePort + 1220);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\"}";
+        });
+    server.SetHandler("GET", "/client",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = R"({"client_id":"https://other.example/client",)"
+                        R"("token_endpoint_auth_method":"none",)"
+                        R"("redirect_uris":["http://localhost/callback"]})";
+        });
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"access_token\":\"cimd-mismatch-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string seen_url;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.client_id = issuer + "/client";
+    opts.authorization_redirect_handler =
+        [&seen_url](std::string_view url) { seen_url = std::string(url); };
+    opts.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "cimd-code";
+            auto pos = seen_url.find("state=");
+            if (pos != std::string::npos) {
+                auto end = seen_url.find('&', pos);
+                auto len = (end == std::string::npos)
+                    ? std::string::npos : end - pos - 6;
+                result.state = seen_url.substr(pos + 6, len);
+            }
+            return result;
+        };
+    OAuthClientProvider provider(opts);
+    EXPECT_TRUE(provider.Authenticate());
+    EXPECT_EQ(provider.GetAccessToken(), "cimd-mismatch-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, CimdRedirectUriMismatchFallsBack) {
+    auto port = PickFreePort(kTestBasePort + 1230);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\"}";
+        });
+    server.SetHandler("GET", "/client",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = R"({"redirect_uris":["http://localhost/other"]})";
+        });
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"access_token\":\"cimd-redirect-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string seen_url;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.client_id = issuer + "/client";
+    opts.authorization_redirect_handler =
+        [&seen_url](std::string_view url) { seen_url = std::string(url); };
+    opts.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "cimd-code";
+            auto pos = seen_url.find("state=");
+            if (pos != std::string::npos) {
+                auto end = seen_url.find('&', pos);
+                auto len = (end == std::string::npos)
+                    ? std::string::npos : end - pos - 6;
+                result.state = seen_url.substr(pos + 6, len);
+            }
+            return result;
+        };
+    OAuthClientProvider provider(opts);
+    EXPECT_TRUE(provider.Authenticate());
+    EXPECT_EQ(provider.GetAccessToken(), "cimd-redirect-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, AuthClosedLoopScopeInsufficientRetryCaseInsensitive) {
+    auto port = PickFreePort(kTestBasePort + 1240);
+    std::atomic<int> calls{0};
+    std::atomic<bool> handler_called{false};
+    std::string second_auth;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/mcp",
+        [&calls, &second_auth](const mcp::HttpRequest& req,
+                               mcp::HttpResponse& resp) {
+            if (calls.fetch_add(1) == 0) {
+                resp.status_code = 403;
+                resp.status_text = "Forbidden";
+                resp.headers["WWW-Authenticate"] =
+                    "Bearer error=\"INSUFFICIENT_SCOPE\", scope=\"extra-scope\"";
+                return;
+            }
+            auto it = req.headers.find("authorization");
+            if (it != req.headers.end()) second_auth = it->second;
+            resp.body = R"({"jsonrpc":"2.0","id":1,"result":{"resultType":"complete"}})";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.auth_challenge_handler =
+        [&handler_called](std::string_view www_auth) -> std::string {
+            handler_called.store(
+                www_auth.find("INSUFFICIENT_SCOPE") != std::string::npos);
+            return "Bearer upgraded-token";
+        };
+    auto transport = std::make_shared<mcp::StreamableHttpClientTransport>(opts);
+    auto session = transport->Connect();
+
+    mcp::JsonRpcRequest rpc;
+    rpc.id = mcp::RequestId{int64_t(1)};
+    rpc.method = "ping";
+    session->SendMessageAsync(mcp::JsonRpcMessage{rpc});
+
+    std::error_code ec;
+    mcp::JsonRpcMessage resp_msg;
+    session->GetMessageChannel().AsyncReceive(
+        [&ec, &resp_msg](std::error_code e, mcp::JsonRpcMessage m) {
+            ec = e; resp_msg = std::move(m);
+        });
+    ASSERT_FALSE(ec);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_TRUE(handler_called.load());
+    EXPECT_EQ(second_auth, "Bearer upgraded-token");
+
+    session->Close();
+    server.Stop();
+}
+
 TEST(OAuthTest, AuthChallengeForbiddenWithoutScopeSkipsRetry) {
     auto port = PickFreePort(kTestBasePort + 1200);
     std::atomic<int> calls{0};

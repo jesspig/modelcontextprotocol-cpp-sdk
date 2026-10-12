@@ -6,7 +6,7 @@
 
 1. **元数据发现**：RFC 9728 受保护资源元数据（`/.well-known/oauth-protected-resource`）优先，经 `authorization_servers[0]` 定位授权服务器后再取 RFC 8414 元数据（缺 `resource` 时沿用受保护资源文档的值）；逐级失败记警告并回退——先 RFC 8414 直连，最终回退 `server_url` 硬编码默认（`issuer=server_url`、`authorize`/`token` 后缀），全程不硬失败
 2. **授权码 + PKCE**，使用 S256 代码质询
-3. **客户端标识**：`client_id` 为 URL 时按 CIMD（Client ID Metadata Document）拉取并解析该文档；只有未配置 `client_id` 时才走**动态客户端注册**（DCR，HTTP POST 到注册端点）
+3. **客户端标识**：`client_id` 为 `http(s)://` 形态时按 CIMD（Client ID Metadata Document）拉取并解析该文档；只有未配置 `client_id` 时才走**动态客户端注册**（DCR，HTTP POST 到注册端点）
 4. **资源指示符**：授权请求与全部令牌请求按 RFC 8707 携带 `resource` 参数
 5. **令牌刷新**，通过预过期检查提前刷新（非 401 驱动）
 6. **令牌撤销**，通过手动调用 `Revoke()`（best-effort 调用 RFC 7009 撤销端点，失败不影响本地令牌清除）
@@ -76,7 +76,7 @@ auto token = auth->GetAccessToken();
 - **发行者绑定**：`issuer` 为必填字段，缺失的授权服务器实现应补齐；当前实现缺失时记警告并继续回退链（先 RFC 8414 直连，再 `server_url` 硬编码默认），未来版本将收紧为直接失败；首次发现绑定 issuer，后续发现 issuer 变化时清空动态注册信息与本地令牌再重绑。
 - **expectedResource 比对**：客户端 `VerifyResourceMatch` 要求发现元数据的 `resource` 与 `server_url` 精确相等或匹配其 scheme+host 前缀（字段缺失/空则放行）；服务端 audience 门（`validate_token_resource` 为 true 且 `expected_resource` 非空时生效）要求令牌 `resource` 非空且与 `expected_resource` 相等，否则 401 `invalid_token`；两端归一化一致（去 `#fragment`、去尾斜杠，见 `NormalizeResourceUrl`），但方向不对称——服务端缺 audience 即拒绝，客户端缺 `resource` 字段即放行。
 - **客户端认证方法**：发送侧仅支持 `none` 与 `client_secret_post`（`client_secret` 随表单发送）；`private_key_jwt` / `jwt-bearer`（client assertion，JWT 断言）暂不支持——`token_endpoint_auth_method` 仅做信息采纳（存入注册信息），不构造任何断言；需要此类方法的服务端请在 SDK 之外自行实现断言流程。
-- **CIMD（Client ID Metadata Document）**：`client_id` 为 URL 时按该 URL 拉取并解析客户端元数据（采纳其中的 `token_endpoint_auth_method`），失败属 best-effort 回退（记录警告并使用已配置的值），不会中断授权流程；动态注册发送 `application_type`（默认 `"native"`）。
+- **CIMD（Client ID Metadata Document）**：仅 `http(s)://` 形态的 `client_id` 按该 URL 拉取并解析客户端元数据（采纳其中的 `token_endpoint_auth_method`，`grant_types`/`redirect_uris` 超 128 项、所载 `client_id` 与请求 URL 不等、已配置 `redirect_uri` 不在文档 `redirect_uris` 之列时拒绝采纳），失败属 best-effort 回退（记录警告并使用已配置的值），不会中断授权流程；动态注册发送 `application_type`（默认 `"native"`）。
 - **挑战加固**：`HandleAuthChallenge` 对超长/非法输入直接返回 false（不抛异常），非法 URL 与失配资源均拒绝合并。
 
 ## 与服务端 Bearer 鉴权集成

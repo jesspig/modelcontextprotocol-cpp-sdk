@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符与 audience 绑定、RFC 9207 iss 强制校验与发行者绑定、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer, audience]
-timestamp: 2026-10-12T14:37:46+08:00
+timestamp: 2026-10-13T02:00:08+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -14,10 +14,10 @@ resource: src/client/auth/OAuthClientProvider.cpp
 ## 流程（`Authenticate()`）
 
 1. `DiscoverMetadata`：PRM-first——先 RFC 9728 `/.well-known/oauth-protected-resource`，经 `authorization_servers[0]` 定位授权服务器后再取其 RFC 8414 元数据（AS 文档缺 `resource` 时沿用 PRM 文档的值）；逐级失败记 Warning 回退（PRM→RFC 8414 直连→硬编码 `/authorize` + `/token` + issuer=server_url），全程不硬挂
-2. `client_id` 已配置时先 `FetchClientMetadataDocument`（**CIMD**：`client_id` 为 URL 则 GET 该文档并解析客户端元数据，失败仅记 Warning 并回退已配置值；文档中的 `token_endpoint_auth_method`（非空字符串）会被采纳进注册信息）；仅当**无** `client_id` 且 metadata 有 registration_endpoint 时才 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client", application_type}`，`application_type` 取 `OAuthClientOptions::application_type`，空时回退 `"native"`）
+2. `client_id` 已配置时先 `FetchClientMetadataDocument`（**CIMD**：仅 `http(s)://` 形态的 `client_id` 视为文档 URL（[OAuthClientProvider.cpp:154](../../src/client/auth/OAuthClientProvider.cpp)），先过 `IsSafeHttpUrl` 再 GET，文档超 1MB（`kMaxDcrBytes`）、非对象、所载 `client_id` 与请求 URL 不等、`grant_types`/`redirect_uris` 超 128 项、已配置 `redirect_uri` 非空却不在文档 `redirect_uris` 之列时一律记 Warning/Error 并回退已配置值、不中断授权流；文档中的 `token_endpoint_auth_method`（非空字符串）会被采纳进注册信息）；仅当**无** `client_id` 且 metadata 有 registration_endpoint 时才 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client", application_type}`，`application_type` 取 `OAuthClientOptions::application_type`，空时回退 `"native"`）
 3. 缓存 token 未过期直接成功（**先做 audience 检查**：缓存 `resource` 与当前 `ResolveResourceIndicator()` 失配时清空缓存并视为无 token）；过期但有 refresh_token → `RefreshTokens`；否则授权码流
 
-另提供 `AuthenticateClientCredentials()`（client_credentials grant）：要求 `client_id` + `client_secret`，POST `grant_type=client_credentials`，同样强制 `iss` 校验（[OAuthClientProvider.cpp:276](../../src/client/auth/OAuthClientProvider.cpp)）。
+另提供 `AuthenticateClientCredentials()`（client_credentials grant）：要求 `client_id` + `client_secret`，POST `grant_type=client_credentials`，同样强制 `iss` 校验（[OAuthClientProvider.cpp:275](../../src/client/auth/OAuthClientProvider.cpp)）。
 
 ## 授权码流
 
@@ -36,7 +36,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 - `DiscoverMetadata`：`issuer` 为必填字段（缺失的服务端实现应补齐），当前实现缺失时记 Warning 并继续回退链（未来收紧为直接失败）；成功后经 `EnforceIssuerBinding`——首次绑定 `bound_issuer_`，后续发现 issuer 变化时清空动态注册信息与本地令牌再重绑（防授权服务器迁移劫持）
 - `ScopeFilter`（`OAuthClientOptions::scope_filter`，空即原样发送）：返回值替换授权 URL（`StartAuthorizationFlow`）与 `client_credentials` 令牌请求中的 `scope`；刷新请求不带 `scope`（缺落盘值沿用旧值），提权（`StepUpAuthorization`）合并后同样经该钩子生效
-- `expectedResource` 比对（双端同归一化 `NormalizeResourceUrl`：去 `#fragment`、去尾斜杠）：客户端 `VerifyResourceMatch` 要求元数据 `resource` 与 `server_url` 精确相等或匹配 scheme+host 前缀（缺失/空放行）；服务端 audience 门（`validate_token_resource && expected_resource 非空`）要求令牌 `resource` 非空且相等（[StreamableHttpServerTransport.cpp:362](../../src/http/StreamableHttpServerTransport.cpp)），失配 401 `invalid_token`；方向不对称（服务端缺 audience 拒绝，客户端缺字段放行）
+- `expectedResource` 比对（双端同归一化 `NormalizeResourceUrl`：去 `#fragment`、去尾斜杠）：客户端 `VerifyResourceMatch` 要求元数据 `resource` 与 `server_url` 精确相等或匹配 scheme+host 前缀（缺失/空放行）；服务端 audience 门（`validate_token_resource && expected_resource 非空`）要求令牌 `resource` 非空且相等（[StreamableHttpServerTransport.cpp:542](../../src/http/StreamableHttpServerTransport.cpp)，DPoP 路径同门在 505 行），失配 401 `invalid_token`；方向不对称（服务端缺 audience 拒绝，客户端缺字段放行）
 - 客户端认证方法声明（仅文档层）：发送侧仅 `none`/`client_secret_post`；`private_key_jwt`/`jwt-bearer` 断言暂不支持，`token_endpoint_auth_method` 仅信息采纳不构造断言
 - `VerifyResourceMatch` 归一化后比较（`NormalizeResourceUrl`：去 `#fragment`、去尾斜杠）：`OAuthMetadata.resource` 字段须与 `options_.server_url` **精确相等**或匹配其 **scheme+host** 前缀；字段缺失/空则放行；不匹配抛 `McpError(InternalError)`
 - `HandleAuthChallenge`（RFC 9728）不再抛异常、失败一律返回 false：长度上限（整头 4096、metadata URL 2048、响应体 64KB）、`IsSafeHttpUrl`（http/https、≤2048 字符、无控制字符）卡住 metadata URL 与回填的 issuer/authorization_endpoint/token_endpoint（非法直接拒绝），`VerifyResourceMatch` 失败转 false，数组字段设上限（scopes/response_types/grant_types ≤128、code_challenge_methods ≤8），全程 try/catch 兜底

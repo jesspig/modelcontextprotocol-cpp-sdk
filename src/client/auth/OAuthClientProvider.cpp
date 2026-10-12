@@ -152,8 +152,9 @@ void VerifyResourceMatch(const std::string& requested_url,
 }
 
 bool IsClientIdMetadataDocumentUrl(std::string_view client_id) {
-    auto scheme_end = client_id.find("://");
-    return scheme_end != std::string_view::npos && scheme_end > 0;
+    bool http = client_id.size() >= 7 && client_id.substr(0, 7) == "http://";
+    bool https = client_id.size() >= 8 && client_id.substr(0, 8) == "https://";
+    return http || https;
 }
 
 } // anonymous namespace
@@ -386,6 +387,10 @@ std::vector<std::string> OAuthClientProvider::ResolveScopes() const {
 
 bool OAuthClientProvider::FetchClientMetadataDocument() {
     if (!options_.client_id) return false;
+    if (!IsSafeHttpUrl(*options_.client_id)) {
+        MCP_LOG(Warning, "CIMD: client_id is not a safe http URL; using configured client_id");
+        return false;
+    }
 
     auto resp = HttpGetUrl(*options_.client_id);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) {
@@ -416,12 +421,26 @@ bool OAuthClientProvider::FetchClientMetadataDocument() {
         if (v->IsArray()) {
             for (const auto& item : v->GetArray())
                 if (item.IsString()) info.grant_types.push_back(item.GetString());
+            if (info.grant_types.size() > 128) {
+                MCP_LOG(Warning, "CIMD: client metadata document lists too many grant_types; using configured client_id");
+                return false;
+            }
         }
     }
     if (auto* v = json.Find("redirect_uris")) {
         if (v->IsArray()) {
             for (const auto& item : v->GetArray())
                 if (item.IsString()) info.redirect_uris.push_back(item.GetString());
+            if (info.redirect_uris.size() > 128) {
+                MCP_LOG(Warning, "CIMD: client metadata document lists too many redirect_uris; using configured client_id");
+                return false;
+            }
+            if (!options_.redirect_uri.empty() && !info.redirect_uris.empty() &&
+                std::find(info.redirect_uris.begin(), info.redirect_uris.end(),
+                    options_.redirect_uri) == info.redirect_uris.end()) {
+                MCP_LOG(Error, "CIMD: configured redirect_uri is not listed by the client metadata document");
+                return false;
+            }
         }
     }
     registration_ = std::move(info);

@@ -1149,6 +1149,51 @@ TEST(StreamableHttpTransportTest, BearerAuthAudienceNormalizedMatch) {
     server.Close();
 }
 
+TEST(StreamableHttpTransportTest, BearerAuthMissingAudienceRejected) {
+    auto port = PickFreePort(kTestBasePort + 1860);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->expected_resource =
+        "http://127.0.0.1:" + std::to_string(port);
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        return result;
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer test-token");
+
+    EXPECT_EQ(resp.status_code, 401);
+    EXPECT_NE(HeaderOf(resp, "WWW-Authenticate").find("invalid_token"),
+              std::string::npos);
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, BearerAuthAudienceCheckDisabled) {
+    auto port = PickFreePort(kTestBasePort + 1880);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->expected_resource = "https://other.example/resource";
+    opts.bearer_auth->validate_token_resource = false;
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        result.resource = "https://other.example/resource";
+        return result;
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer test-token");
+
+    EXPECT_EQ(resp.status_code, 202);
+    server.Close();
+}
+
 TEST(StreamableHttpTransportTest, BearerAuthForbiddenWithoutInsufficientScopeNoRetry) {
     auto port = PickFreePort(kTestBasePort + 1840);
     mcp::HttpServer mock(port);
