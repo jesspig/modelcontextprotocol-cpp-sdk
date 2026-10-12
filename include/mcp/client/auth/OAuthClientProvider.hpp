@@ -34,6 +34,7 @@ struct OAuthClientOptions {
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
+    std::function<void(const TokenContainer&)> token_update_handler;
 };
 
 class OAuthClientProvider {
@@ -74,6 +75,10 @@ private:
     bool ParseAndStoreTokenResponse(const JsonValue& json);
 
     bool ValidateTokenIssuer(const JsonValue& response) const;
+
+    bool CodeChallengeS256Supported() const;
+
+    void NotifyTokenUpdate(const TokenContainer& tokens) const;
 
     bool TokenResourceMatches(const TokenContainer& tokens) const;
 

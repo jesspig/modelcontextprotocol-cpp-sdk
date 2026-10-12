@@ -355,6 +355,23 @@ bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     return true;
 }
 
+bool OAuthClientProvider::CodeChallengeS256Supported() const {
+    if (!metadata_) return true;
+    if (metadata_->code_challenge_methods_supported.empty()) return true;
+    return std::find(metadata_->code_challenge_methods_supported.begin(),
+        metadata_->code_challenge_methods_supported.end(), "S256")
+        != metadata_->code_challenge_methods_supported.end();
+}
+
+void OAuthClientProvider::NotifyTokenUpdate(const TokenContainer& tokens) const {
+    auto handler = options_.token_update_handler;
+    if (!handler) return;
+    try {
+        handler(tokens);
+    } catch (...) {
+    }
+}
+
 std::string OAuthClientProvider::ResolveResourceIndicator() const {
     if (options_.resource && !options_.resource->empty()) return *options_.resource;
     if (metadata_ && metadata_->resource && !metadata_->resource->empty())
@@ -425,6 +442,7 @@ bool OAuthClientProvider::RegisterClient() {
 }
 
 bool OAuthClientProvider::StartAuthorizationFlow() {
+    if (!CodeChallengeS256Supported()) return false;
     code_verifier_ = pkce::GenerateCodeVerifier();
     code_challenge_ = pkce::ComputeCodeChallenge(code_verifier_);
     state_ = pkce::GenerateCodeVerifier();
@@ -466,6 +484,7 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
 bool OAuthClientProvider::ExchangeCodeForToken(
     std::string_view code, std::string_view code_verifier)
 {
+    if (code.empty() || code_verifier.empty()) return false;
     std::map<std::string, std::string> form;
     form["grant_type"] = "authorization_code";
     form["code"] = std::string(code);
@@ -508,6 +527,7 @@ bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
 
     if (tokens.access_token.empty()) return false;
     token_cache_->StoreTokens(tokens);
+    NotifyTokenUpdate(tokens);
     return true;
 }
 
@@ -559,6 +579,7 @@ bool OAuthClientProvider::RefreshTokens() {
         return false;
     }
     token_cache_->StoreTokens(tokens);
+    NotifyTokenUpdate(tokens);
     return true;
 }
 
