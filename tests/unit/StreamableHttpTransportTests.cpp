@@ -2368,3 +2368,92 @@ TEST(StreamableHttpTransportTest, ListenHoldOpenSkipsUnmatchedListChanged) {
     server.Close();
     consumer.join();
 }
+
+TEST(StreamableHttpTransportTest, StatelessSingleConnectionDefaults) {
+    StreamableHttpServerOptions server_opts;
+    EXPECT_TRUE(server_opts.stateless);
+    EXPECT_FALSE(server_opts.enable_legacy_sse);
+    EXPECT_FALSE(server_opts.listen_hold_open);
+
+    HttpClientTransportOptions client_opts;
+    EXPECT_FALSE(client_opts.stateless);
+    EXPECT_TRUE(client_opts.enable_listen_stream);
+}
+
+TEST(StreamableHttpTransportTest, StatelessDeleteIsRejected) {
+    auto port = PickFreePort(kTestBasePort + 2114);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "DELETE";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.timeout = std::chrono::seconds(5);
+    auto resp = client.Request(req);
+
+    EXPECT_EQ(resp.status_code, 405);
+    EXPECT_EQ(ErrorCodeOf(resp.body),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, StatelessRequestsAreIndependentConnections) {
+    auto port = PickFreePort(kTestBasePort + 2116);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::atomic<int> seen{0};
+    std::thread consumer([&] {
+        for (int i = 0; i < 2; ++i) {
+            std::promise<void> one;
+            auto one_future = one.get_future();
+            server.GetMessageChannel().AsyncReceive(
+                [&](std::error_code ec, JsonRpcMessage msg) {
+                    if (!ec) {
+                        auto* req = AsRequest(msg);
+                        if (req) RespondWithResult(server, req->id, nullptr);
+                        seen.fetch_add(1);
+                    }
+                    try {
+                        one.set_value();
+                    } catch (...) {
+                    }
+                });
+            one_future.wait();
+        }
+        try {
+            consumed.set_value();
+        } catch (...) {
+        }
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    for (int64_t rpc_id = 801; rpc_id <= 802; ++rpc_id) {
+        std::string body = std::string(R"({"jsonrpc":"2.0","id":)") +
+                           std::to_string(rpc_id) +
+                           R"(,"method":"tools/call",)" +
+                           R"("params":{"name":"echo","arguments":{}}})";
+        auto resp = HoldOpenPost(port, body, {});
+        EXPECT_EQ(resp.status_code, 200);
+        EXPECT_EQ(CountSseFrames(resp.body), size_t{1});
+        EXPECT_NE(resp.body.find("\"ok\":true"), std::string::npos);
+        EXPECT_TRUE(HeaderOf(resp, "Mcp-Session-Id").empty());
+    }
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(seen.load(), 2);
+
+    server.Close();
+    consumer.join();
+}

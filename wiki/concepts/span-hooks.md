@@ -3,7 +3,7 @@ type: Concept
 title: Span 观测钩子
 description: 无 OpenTelemetry 依赖的同步 span 事件钩子，覆盖服务端请求、传输接收和传输发送边界。
 tags: [可观测性, span, traceparent, tracestate, baggage]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-13T02:09:29+08:00
 resource: include/mcp/SpanHooks.hpp
 ---
 
@@ -15,7 +15,7 @@ resource: include/mcp/SpanHooks.hpp
 
 - `SpanKind::ServerRequest` 表示入站请求处理；`TransportReceive` 和 `TransportSend` 分别表示消息接收与发送。
 - `SpanPhase::Begin` 与 `End` 按 `(kind, request_id)` 配对；结束事件的 `failed` 标记反映拒绝、异常或传输失败。
-- `SpanEvent` 携带 name、method、request_id，以及可选 `traceparent`、`tracestate`、`baggage`。服务端请求事件从入站 `_meta` 复制这些 trace context。
+- `SpanEvent` 携带 name、method、request_id，以及可选 `traceparent`、`tracestate`、`baggage`。服务端请求事件从入站 `_meta` 复制这些 trace context——Begin 与 End 携带同一份（End 经请求 `_meta` 原样回填，拒绝路径亦然）；拒绝、异常或传输失败的 End 置 `failed=true`，Begin 恒 `failed=false`。
 
 ## 接入与线程约束
 
@@ -25,7 +25,12 @@ resource: include/mcp/SpanHooks.hpp
 
 ## 验证
 
-`tests/unit/SpanHookTests.cpp` 当前包含 5 个用例，归入 `mcp-wire-codec-tests`，覆盖未注入回归、服务端请求边界、传输边界、trace context 传递和拒绝请求收尾。
+`tests/unit/SpanHookTests.cpp` 当前包含 7 个用例，归入 `mcp-wire-codec-tests`，覆盖未注入回归、服务端请求边界、传输边界、trace context 传递（含成功 End 回填）、拒绝请求收尾（含 Begin/End 配对计数与拒绝 End 的 trace 回填）。
+
+## OTel 差异说明
+
+- 本 SDK 默认不引入 OpenTelemetry 依赖：可观测只经同步 `SpanHandler` 钩子外发，span 的创建、上报与采样由调用方在外部完成（取事件中的 W3C `traceparent`、`tracestate`、`baggage` 桥接）。
+- 与 OTel 原生对端的互操作点仅为 `_meta` 明文字段：出站请求的追踪字段仅在 `RequestMeta` 显式设置时才序列化；入站追踪字段只复制到 span 事件，不做解析、校验或自动续接。
 
 ## 相关页面
 
