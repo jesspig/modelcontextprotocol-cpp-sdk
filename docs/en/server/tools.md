@@ -129,7 +129,7 @@ Once `ServerOptions::request_state_key` is configured, the server automatically 
 
 ## Task Execution
 
-Declaring a tool in task mode makes `tools/call` return a task handle (`taskId`) immediately while execution continues in the background; the client follows up with `GetTask` / `PollTaskToCompletion` (available in both the 2025 and 2026 eras; in the 2026 era task status notifications are suppressed, so the client polls for the terminal state):
+Declaring a tool in task mode makes `tools/call` return a task handle (`taskId`) immediately while execution continues in the background; the client follows up with `GetTask` / `PollTaskToCompletion` (available in both the 2025 and 2026 eras; in the 2026 era task status notifications are routed via subscriptions — dropped when there are no subscribers — so the client polls for the terminal state):
 
 ```cpp
 ToolExecution execution;

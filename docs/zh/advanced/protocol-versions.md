@@ -24,7 +24,7 @@ auto codec = MakeWireCodec("2026-07-28");
 
 `SetNegotiatedProtocolVersion(version)` 同时存储版本号并通过 `MakeWireCodec(version)` 重建 `WireCodec`，在 `Rev2025Codec`（无 `_meta` 信封）和 `Rev2026Codec`（每请求 `_meta`）之间切换。
 
-`HandleDiscover` 返回 `kProtocolVersions` 全表（5 个版本，2024-11-05 至 2026-07-28）并调用 `SetNegotiatedProtocolVersion` 设置协商版本（配置 `options_.protocol_version` 时取该值，否则 `kLatestProtocolVersion`）——现代客户端同时按需用 `_meta.protocolVersion` 驱动请求。
+`HandleDiscover` 返回 `EffectiveSupportedVersions()`（默认 `kProtocolVersions` 全表 5 个，2024-11-05 至 2026-07-28；`ServerOptions::supported_protocol_versions` 非空时窄化）并调用 `SetNegotiatedProtocolVersion` 设置协商版本（配置 `options_.protocol_version` 时取该值，否则 `kLatestProtocolVersion`）——现代客户端同时按需用 `_meta.protocolVersion` 驱动请求。
 
 ### 时代之间的关键差异
 
@@ -91,7 +91,7 @@ auto codec = MakeWireCodec("2026-07-28");
 服务端在派发前对入站 `_meta` 信封做两级校验：
 
 1. **字段类型**：`protocolVersion` 须为字符串；`progressToken` 须为字符串或整数；`clientInfo`、`clientCapabilities` 须为对象；`logLevel`、`traceparent`、`tracestate`、`baggage` 须为字符串。任一不符即拒绝，错误为 `InvalidParams`（`-32602`），消息为 `invalid _meta field: <键名>`。未识别的键不做校验，原样放行。
-2. **版本受支持性**：除 `initialize` 外的请求若 `_meta.protocolVersion` 不在支持表（`IsSupportedProtocolVersion`）内，返回 `UnsupportedProtocolVersion`（`-32022`），`data` 携带客户端请求的版本与服务端支持列表。
+2. **版本受支持性**：除 `initialize` 外的请求若 `_meta.protocolVersion` 不在服务端支持表内，返回 `UnsupportedProtocolVersion`（`-32022`），`data` 携带客户端请求的版本与服务端支持列表。支持表默认即 `kProtocolVersions` 全表，可经 `ServerOptions::supported_protocol_versions`（非空生效，同时窄化 discover 应答与 initialize 候选集）或 `McpSessionHandler::SetSupportedProtocolVersions`（空数组忽略）窄化。
 
 `initialize` 不参与上述 `_meta` 版本校验——它的版本声明位于 `params.protocolVersion`。
 
@@ -105,7 +105,7 @@ auto codec = MakeWireCodec("2026-07-28");
 | 仅 2025 | `initialize`、`ping`、`resources/subscribe`、`resources/unsubscribe`、`logging/setLevel`、`roots/list`、`sampling/createMessage`、`elicitation/create`、`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` |
 | 仅 2026 | `server/discover`、`subscriptions/listen`、`tasks/get`、`tasks/update`、`tasks/cancel`、`skills/list`、`skills/get`、`resources/directory/read` |
 
-其中 `tasks/get`、`tasks/update`、`tasks/cancel` 为双时代交集（2026 下任务通知抑制 + `Mcp-Name` 头校验）；`tasks/result`、`tasks/list` 仍仅 2025；`skills/list`、`skills/get`、`resources/directory/read` 仅 2026（`ping`、`elicitation/create` 等其余 2025-only 方法在 2026 时代仍不可用；`server/extensions/list` 不属于任何时代集合）。
+其中 `tasks/get`、`tasks/update`、`tasks/cancel` 为双时代交集（2026 下任务通知按订阅路由、`_meta` 带 `subscriptionId` + `Mcp-Name` 头校验）；`tasks/result`、`tasks/list` 仍仅 2025；`skills/list`、`skills/get`、`resources/directory/read` 仅 2026（`ping`、`elicitation/create` 等其余 2025-only 方法在 2026 时代仍不可用；`server/extensions/list` 不属于任何时代集合）。
 
 ### 按时代划分的通知
 
@@ -130,7 +130,7 @@ struct SubscriptionFilter {
 };
 ```
 
-客户端通过 `subscriptions/listen` 发送过滤器；服务端通过 `AddSubscription`/`AddSubscriptionEntry` 跟踪订阅条目，并通过 `NotifySubscribers` 分发通知，根据每个订阅的过滤器匹配通知类型。通知的 `_meta` 中包含 `io.modelcontextprotocol/subscriptionId`。
+客户端通过 `subscriptions/listen` 发送过滤器；服务端通过 `AddSubscription`/`AddSubscriptionEntry` 跟踪订阅条目，并通过 `NotifySubscribers` 分发通知，根据每个订阅的过滤器匹配通知类型。通知的 `_meta` 中包含 `io.modelcontextprotocol/subscriptionId`（`listen` 请求自带 ID 则回显，否则用服务端自增 ID）。任务类通知（`tasks/status|working|completed|failed|cancelled|input_required`）投递给全部现存订阅者（不过滤器）。`ServerOptions::subscriptions_enabled` 为总开关（默认 `true`，关闭则 `subscriptions/listen` 回 `MethodNotFound`）。
 
 ### 语义辅助函数
 

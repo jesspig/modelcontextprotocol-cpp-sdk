@@ -160,6 +160,7 @@ set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH
 add_library(mcp-client STATIC)
 target_sources(mcp-client PRIVATE
     src/client/McpClient.cpp
+    src/client/SkillVerify.cpp
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol)
@@ -188,7 +189,7 @@ target_sources(mcp-http PRIVATE src/http/FileEventStore.cpp)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC winhttp)
 endif()
-target_link_libraries(mcp-http PUBLIC mcp-transport)
+target_link_libraries(mcp-http PUBLIC mcp-transport mcp-ext)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC ws2_32)
 endif()
@@ -196,7 +197,16 @@ target_include_directories(mcp-http PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
-foreach(_t mcp-core mcp-transport mcp-protocol mcp-server mcp-client mcp-http)
+add_library(mcp-ext STATIC)
+target_sources(mcp-ext PRIVATE
+    src/ext/Apps.cpp
+    src/ext/ServerCard.cpp)
+target_link_libraries(mcp-ext PUBLIC mcp-core)
+target_include_directories(mcp-ext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set_property(TARGET mcp-ext PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
+set_property(TARGET mcp-ext PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
+
+foreach(_t mcp-core mcp-transport mcp-protocol mcp-server mcp-client mcp-http mcp-ext)
     mcp_enable_werror(${_t})
 endforeach()
 

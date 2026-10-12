@@ -24,9 +24,32 @@ auto server = McpServer::Create(transport, opts);
 
 客户端侧声明见 [客户端概述](/zh/client/overview)（`ClientOptions::capabilities.extensions` 或 `ClientOptions::extensions` 含任务扩展键）；2026 时代下未声明任务扩展却收到任务结果时客户端抛 `HandlerError`。
 
+## 任务通知路由
+
+2026 时代下任务状态通知（任务化 `tools/call` 的初始 Working 与终态、`tasks/update` 的 `tasks/completed`/`tasks/working`、`tasks/cancel` 的 `tasks/cancelled`）不再抑制，改经服务端订阅表按订阅路由：投递给全部现存订阅者（任务类通知不过滤器），每帧 `_meta` 携带 `io.modelcontextprotocol/subscriptionId`（`subscriptions/listen` 传入 ID 则回显，否则用服务端自增 ID）；尚无订阅者时直接丢弃，客户端靠 `PollTaskToCompletion` 轮询取终态（任务 `poll_interval_ms > 0` 时采用服务端指示间隔，上限 300s）。2025 时代保持广播（`notifications/tasks/*`）。
+
+## 技能 URI 形态与验签助手
+
+技能条目 `uri` 须为 `<scheme>://<名>/SKILL.md` 形态（scheme 无关：只要求非空 `://`、名段非空、`/SKILL.md` 结尾；`skill://` 仍为约定 scheme）。服务端只做形态放行，是否取用他源技能由客户端经 `mcp/client/SkillVerify.hpp` 五助手判定：`CheckSkillLimits`（manifest ≤ 512 文件、总量 ≤ 16 MB）、`VerifyFileBytes`（`size` 等长 + `sha256:` 摘要实算比对）、`VerifyFrontmatter`（两份一致且 `name` 等于 URI 名段）、`IsApprovalStillValid`（授权快照复核）、`ApprovalKey`（`"<host>\x1f<skill-uri>"` 授权键）。
+
 ## 扩展约定
 
 | 字段 | 说明 |
 |-------|-------------|
 | 键 | 反向 DNS 标识符（例如 `"io.modelcontextprotocol/tasks"`） |
 | 值 | 包含扩展配置的自由格式 JSON 对象 |
+
+## 实验开关
+
+`ServerOptions` 10 开关与 `ClientOptions` 3 开关默认全为 `false`，须显式置 `true`：
+
+| 端 | 开关 | 开 | 关 |
+|----|------|----|----|
+| 服务端 | `enable_tasks_extension` | 声明 tasks 扩展；`tasks/get\|update\|cancel` 与任务化 `tools/call` 生效 | 无 `task_store` 时对应方法 `MethodNotFound`（`tasks extension is disabled`）；仅设 `task_store` 时隐式启用并记 `Warning`（0.3.5→0.3.8 过渡，见下） |
+| 服务端 | `enable_skills_extension` | 已注册技能且具 resources 能力时声明 skills 扩展；`skills/list\|get` 与 `directory/read` 生效 | 三方法一律 `MethodNotFound`（`skills extension is disabled`），无隐式路径 |
+| 服务端 | `enable_apps_extension` / `enable_server_card` / `enable_etag_cache` / `enable_progressive_discovery` / `enable_file_input` / `enable_triggers_events` / `enable_dpop` / `enable_interceptor_alias` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
+| 客户端 | `enable_tasks_extension` | `extensions` 映射含任务键即声明；`UpdateTask`/`PollTaskToCompletion` 与任务句柄路径生效 | 上述调用抛 `MethodNotFound`（`tasks extension is disabled`） |
+| 客户端 | `enable_skills_extension` | `ListSkills`/`GetSkill`/`ReadDirectory` 生效 | 三调用抛 `MethodNotFound`（`skills extension is disabled`） |
+| 客户端 | `enable_apps_extension` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
+
+兼容过渡（0.3.5→0.3.8，本次任务给定口径）：`TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` 均标 `[[deprecated]]`，提示显式置开关；其中仅 tasks 有真实隐式路径（只设 `task_store` 即启用，伴 `Warning` 日志），skills 无隐式路径、必须显式开启。

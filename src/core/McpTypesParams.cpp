@@ -1,7 +1,10 @@
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
+
+#include <string_view>
 
 namespace mcp {
 
@@ -118,13 +121,19 @@ InitializeRequestParams DeserializeInitializeRequestParams(const JsonValue& j) {
 }
 
 JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v) {
+    return SerializeElicitRequestParams(v, std::string_view{});
+}
+
+JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v, std::string_view protocol_version) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kMessage] = JsonValue(v.message);
     detail::SerializeOptional(obj, detail::kRequestedSchema, v.requested_schema);
     if (v.mode != detail::kForm) {
         obj[detail::kMode] = JsonValue(v.mode);
         detail::SerializeOptional(obj, detail::kUrl, v.url);
-        detail::SerializeOptional(obj, "elicitationId", v.elicitation_id);
+        if (!IsModernProtocolVersion(protocol_version)) {
+            detail::SerializeOptional(obj, "elicitationId", v.elicitation_id);
+        }
     }
     return obj;
 }

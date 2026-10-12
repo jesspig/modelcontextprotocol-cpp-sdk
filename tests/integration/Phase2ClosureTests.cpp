@@ -113,6 +113,7 @@ struct Phase2InMemoryTaskFixture : mcp::test::TestCase {
         ServerOptions sopts;
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
         sopts.task_store = store;
+        sopts.enable_tasks_extension = true;
         server = McpServer::Create(pair.server, sopts);
 
         server->RegisterTool("task_worker", MakeTaskToolOptions(),
@@ -136,6 +137,7 @@ struct Phase2InMemoryTaskFixture : mcp::test::TestCase {
         ClientOptions cops;
         cops.client_info = Implementation{"TestClient", "1.0.0"};
         cops.connect_mode = ConnectMode::Legacy;
+        cops.enable_tasks_extension = true;
         client = McpClient::Create(pair.client, cops);
     }
 
@@ -316,6 +318,7 @@ struct Phase2HttpTaskFixture : mcp::test::TestCase {
         ServerOptions sopts;
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
         sopts.task_store = store;
+        sopts.enable_tasks_extension = true;
         sopts.on_initialized = [initialized_flag]() {
             initialized_flag->store(true);
         };
@@ -343,6 +346,7 @@ struct Phase2HttpTaskFixture : mcp::test::TestCase {
         ClientOptions cops;
         cops.client_info = Implementation{"TestClient", "1.0.0"};
         cops.connect_mode = ConnectMode::Legacy;
+        cops.enable_tasks_extension = true;
         client = McpClient::Create(client_transport, cops);
 
         ASSERT_TRUE(WaitFor([initialized_flag]() { return initialized_flag->load(); },

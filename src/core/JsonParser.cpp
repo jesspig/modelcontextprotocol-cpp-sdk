@@ -17,7 +17,7 @@ namespace mcp::detail::json {
 
 class Parser {
 public:
-    static constexpr int kMaxDepth = 512;
+    static constexpr int kMaxDepth = 1000;
 
     explicit Parser(std::string_view input) : input_(input) {}
 

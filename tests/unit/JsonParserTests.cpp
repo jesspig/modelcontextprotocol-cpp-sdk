@@ -354,15 +354,15 @@ TEST(JsonParserTest, TruncatedMultibyteUtf8ParseError) {
     ExpectParseError(std::string("\"\xE2\x82\""), McpErrorCode::ParseError);
 }
 
-TEST(JsonParserTest, DeepNesting512Succeeds) {
-    std::string json(512, '[');
-    json.append(512, ']');
+TEST(JsonParserTest, DeepNesting1000Succeeds) {
+    std::string json(1000, '[');
+    json.append(1000, ']');
     EXPECT_NO_THROW(JsonValue::Parse(json));
 }
 
-TEST(JsonParserTest, DeepNesting513Fails) {
-    std::string json(513, '[');
-    json.append(513, ']');
+TEST(JsonParserTest, DeepNesting1001Fails) {
+    std::string json(1001, '[');
+    json.append(1001, ']');
     ExpectParseError(json, McpErrorCode::ParseError);
 }
 

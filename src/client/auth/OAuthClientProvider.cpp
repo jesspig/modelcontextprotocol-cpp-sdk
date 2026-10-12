@@ -3,6 +3,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 #include <mcp/detail/Base64Url.hpp>
 #include <mcp/detail/sha256.hpp>
 
@@ -280,7 +281,7 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
     form["grant_type"] = "client_credentials";
     form["client_id"] = *options_.client_id;
     form["client_secret"] = *options_.client_secret;
-    for (auto& s : options_.scopes) {
+    for (auto& s : ResolveScopes()) {
         if (!form["scope"].empty()) form["scope"] += " ";
         form["scope"] += s;
     }
@@ -296,12 +297,12 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
 bool OAuthClientProvider::DiscoverMetadata() {
     if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
         if (discovered->issuer.empty()) {
-            MCP_LOG(Error, "OAuth metadata discovery response missing required 'issuer'");
-            return false;
+            MCP_LOG(Warning, "OAuth metadata discovery response missing required 'issuer'; falling back to server_url defaults");
+        } else {
+            metadata_ = std::move(discovered);
+            EnforceIssuerBinding();
+            return true;
         }
-        metadata_ = std::move(discovered);
-        EnforceIssuerBinding();
-        return true;
     }
 
     if (options_.server_url.empty()) {
@@ -358,12 +359,21 @@ std::string OAuthClientProvider::ResolveResourceIndicator() const {
     return options_.server_url;
 }
 
+std::vector<std::string> OAuthClientProvider::ResolveScopes() const {
+    if (!options_.scope_filter) return options_.scopes;
+    return options_.scope_filter(options_.scopes);
+}
+
 bool OAuthClientProvider::FetchClientMetadataDocument() {
     if (!options_.client_id) return false;
 
     auto resp = HttpGetUrl(*options_.client_id);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) {
         MCP_LOG(Warning, "CIMD: client metadata document unavailable; using configured client_id");
+        return false;
+    }
+    if (resp->body.size() > mcp::detail::kMaxDcrBytes) {
+        MCP_LOG(Warning, "CIMD: client metadata document exceeds size limit; using configured client_id");
         return false;
     }
     auto json = JsonValue::Parse(resp->body);
@@ -424,9 +434,10 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
     auth_url += "&code_challenge=" + code_challenge_;
     auth_url += "&code_challenge_method=S256";
     auth_url += "&state=" + UrlEncode(state_);
-    if (!options_.scopes.empty()) {
+    const auto scopes = ResolveScopes();
+    if (!scopes.empty()) {
         std::string scope_str;
-        for (auto& s : options_.scopes) {
+        for (auto& s : scopes) {
             if (!scope_str.empty()) scope_str += " ";
             scope_str += s;
         }
@@ -671,11 +682,70 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
     }
 }
 
+namespace {
+
+std::optional<JsonValue> FetchMetadataDocument(const std::string& url) {
+    if (!IsSafeHttpUrl(url)) return std::nullopt;
+    auto resp = HttpGetUrl(url);
+    if (!resp || resp->status_code < 200 || resp->status_code >= 300) return std::nullopt;
+    if (resp->body.size() > 65536) return std::nullopt;
+    try {
+        JsonValue json = JsonValue::Parse(resp->body);
+        if (!json.IsObject()) return std::nullopt;
+        return json;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<std::string> DiscoverAuthorizationServerUrl(const JsonValue& prm) {
+    auto* servers = prm.Find("authorization_servers");
+    if (!servers || !servers->IsArray()) return std::nullopt;
+    for (const auto& item : servers->GetArray()) {
+        if (item.IsString() && IsSafeHttpUrl(item.GetString()))
+            return item.GetString();
+    }
+    return std::nullopt;
+}
+
+} // anonymous namespace
+
 std::optional<OAuthMetadata> OAuthMetadata::Discover(
     std::string_view server_url)
 {
     std::string url(server_url);
     while (!url.empty() && url.back() == '/') url.pop_back();
+
+    if (auto prm = FetchMetadataDocument(url + "/.well-known/oauth-protected-resource")) {
+        if (auto as_url = DiscoverAuthorizationServerUrl(*prm)) {
+            std::string as_base(*as_url);
+            while (!as_base.empty() && as_base.back() == '/') as_base.pop_back();
+            const std::string suffix("/.well-known/oauth-authorization-server");
+            std::string as_doc_url = as_base.size() >= suffix.size() &&
+                as_base.compare(as_base.size() - suffix.size(), suffix.size(), suffix) == 0
+                ? as_base : as_base + suffix;
+            if (auto as_doc = FetchMetadataDocument(as_doc_url)) {
+                auto meta = ParseMetadataJson(*as_doc);
+                if (meta.issuer.empty() && meta.authorization_endpoint.empty() &&
+                    meta.token_endpoint.empty()) {
+                    MCP_LOG(Warning, "OAuth authorization server metadata resolved via protected-resource metadata is empty; falling back to RFC8414 discovery");
+                } else {
+                    if (!meta.resource || meta.resource->empty()) {
+                        if (auto* r = prm->Find("resource")) {
+                            if (r->IsString() && !r->GetString().empty())
+                                meta.resource = r->GetString();
+                        }
+                    }
+                    return meta;
+                }
+            } else {
+                MCP_LOG(Warning, "OAuth authorization server metadata unreachable via protected-resource metadata; falling back to RFC8414 discovery");
+            }
+        } else {
+            MCP_LOG(Warning, "OAuth protected-resource metadata lists no usable authorization_servers entry; falling back to RFC8414 discovery");
+        }
+    }
+
     std::string metadata_url = url + "/.well-known/oauth-authorization-server";
 
     auto resp = HttpGetUrl(metadata_url);
@@ -712,6 +782,8 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
 
     auto resp = HttpPostUrl(std::string(registration_endpoint), body, headers);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
+        return std::nullopt;
+    if (resp->body.size() > mcp::detail::kMaxDcrBytes)
         return std::nullopt;
 
     auto json = JsonValue::Parse(resp->body);

@@ -610,12 +610,13 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
     if (cl != headers.end()) {
         if (cl->second.empty())
             return HeaderResult::BadRequest;
+        std::size_t body_limit = options_.max_request_body_bytes.value_or(kMaxBodyBytes);
         std::size_t n = 0;
         for (char c : cl->second) {
             if (c < '0' || c > '9')
                 return HeaderResult::BadRequest;
             n = n * 10 + static_cast<std::size_t>(c - '0');
-            if (n > kMaxBodyBytes)
+            if (n > body_limit)
                 return HeaderResult::PayloadTooLarge;
         }
         content_length_out = n;

@@ -1,11 +1,14 @@
 #pragma once
 
 #include <transport/detail/net/TcpSocket.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -19,6 +22,9 @@ struct HttpRequestSpec {
     std::string body;
     std::chrono::milliseconds timeout{std::chrono::milliseconds(30000)};
     bool verify_tls{true};
+    std::optional<std::size_t> max_response_bytes = kMaxHttpResponseBytes;
+    HttpRedirectPolicy redirect_policy = HttpRedirectPolicy::SameOriginOnly;
+    int max_redirects = kMaxHttpRedirects;
 };
 
 struct HttpResponseInfo {
@@ -69,6 +75,7 @@ private:
     uint16_t port_ = 0;
     bool connected_ = false;
     bool closed_ = false;
+    std::size_t max_body_bytes_ = kMaxHttpResponseBytes;
 };
 
 }}} // namespace mcp::detail::net

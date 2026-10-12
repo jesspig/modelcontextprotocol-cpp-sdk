@@ -4,10 +4,19 @@
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
 
+#include <cstddef>
+#include <optional>
+
 namespace mcp {
 
 StdioServerTransport::StdioServerTransport()
     : TransportBase()
+{
+}
+
+StdioServerTransport::StdioServerTransport(std::optional<std::size_t> max_frame_bytes)
+    : TransportBase()
+    , max_frame_bytes_(max_frame_bytes.value_or(detail::kMaxStdioFrameBytes))
 {
 }
 
@@ -63,9 +72,9 @@ void StdioServerTransport::ReadLoop() {
         buf[bytes_read] = '\0';
         buffer.append(buf, bytes_read);
 
-        if (buffer.size() > detail::kMaxMessageSize) {
+        if (buffer.size() > max_frame_bytes_) {
             buffer.clear();
-            NotifyError("message size exceeds maximum allowed size");
+            NotifyError("stdio frame size exceeds maximum allowed size");
             break;
         }
 
@@ -76,8 +85,8 @@ void StdioServerTransport::ReadLoop() {
 
             if (line.empty()) continue;
 
-            if (line.size() > detail::kMaxMessageSize) {
-                NotifyError("message size exceeds maximum allowed size");
+            if (line.size() > max_frame_bytes_) {
+                NotifyError("stdio frame size exceeds maximum allowed size");
                 continue;
             }
 

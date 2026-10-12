@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 任务扩展
-description: SEP-2663 任务扩展：双时代 tasks/get|update|cancel、2025-only tasks/result|list、任务化 tools/call、inputResponses 推进、Mcp-Name 头校验与现代通知抑制。
+description: SEP-2663 任务扩展：双时代 tasks/get|update|cancel、2025-only tasks/result|list、任务化 tools/call、inputResponses 推进、Mcp-Name 头校验与现代订阅路由。
 tags: [tasks, 扩展, 双时代, 2026]
-timestamp: 2026-10-12T01:00:00+08:00
+timestamp: 2026-10-12T14:37:46+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -20,7 +20,7 @@ SEP-2663 任务扩展（扩展标识 `io.modelcontextprotocol/tasks`，[Capabili
 
 | 方法 | 2025 | 2026 |
 |------|------|------|
-| tasks/get、tasks/update、tasks/cancel | 可用 | 可用（头校验 + 通知抑制） |
+| tasks/get、tasks/update、tasks/cancel | 可用 | 可用（头校验 + 订阅路由） |
 | tasks/result、tasks/list | 可用 | `MethodNotFound`（`kLegacyGetTaskPayload`/`kLegacyListTasks`，服务端硬拒绝） |
 | tools/call（`ToolExecutionMode::Task` + task_store） | 立即返回 `CreateTaskResult` | 立即返回 `CreateTaskResult`（此前拒绝，现放行） |
 
@@ -28,13 +28,13 @@ wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../..
 
 ## 现代语义差异
 
-- **通知抑制**：modern 下任务状态通知一律不发——任务化 `tools/call` 的初始 Working、`finish` 的终态、`tasks/update` 的 `tasks/completed`/`tasks/working`、`tasks/cancel` 的 `tasks/cancelled` 均跳过；`SendTaskStatus` 直接返回。legacy 保持 `notifications/tasks/*` 全量语义
+- **通知路由**：modern 下任务状态通知不再抑制，改经 `McpSessionHandler::NotifySubscribers` 按订阅路由——任务化 `tools/call` 的初始 Working、终态 `finish`、`tasks/update` 的 `tasks/completed`/`tasks/working`、`tasks/cancel` 的 `tasks/cancelled` 均投递给**全部现存订阅者**（任务类通知不过滤器，`should_notify` 恒为 true）；每帧 `_meta` 携带 `io.modelcontextprotocol/subscriptionId`（`subscriptions/listen` 传入 id 则回显，否则用服务端自增 id）；无订阅者时直接丢弃（`subscriptions_` 为空即返回）。legacy 保持 `SendNotification` 广播全量语义（`notifications/tasks/*`）
 - **`Mcp-Name` 头校验**：modern 下 tasks 三处理器在请求 meta 携带 `Mcp-Name`（同时认 `mcp-name` 小写）时经 `WireCodec::ValidateTaskHeaders` 比对 `params.taskId`——缺失/空 taskId → `InvalidParams`，头值不等 → `HeaderMismatch`；无头时跳过。HTTP 层（`ValidateMcpHeaders`）对三方法**强制**要求该头（缺失/失配 → 400），客户端对三方法按 `params.taskId` 发送 `Mcp-Name`
 - **结果形态**：`CreateTaskResult` 按时代分形态——2026 时代扁平直写顶层 `taskId/status/createdAt`（+ 可选 statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs/inputRequests）并抹掉嵌套 `task` 对象，2025 时代保留嵌套 `task` 对象做兼容；反序列化顶层优先、嵌套兜底（`DeserializeCreateTaskResult` 双形态接受）。`ResultType` 新增 `Task` 枚举值（wire `"task"`），2026 `EncodeResult` 不改写 task 结果的 `resultType`
 
 ## tasks/update 的 inputResponses 分支
 
-`UpdateTaskRequestParams` 新增 `inputResponses`（与 `result` 互斥，同带回 `InvalidParams`）。带 `inputResponses` 时服务端要求任务存在且状态为 `InputRequired`，经 `IMcpTaskStore::AdvanceTaskWithInput`（`FileTaskStore` 实现：存 `input_responses`、状态 InputRequired→Working、刷新 `last_updated_at`、同快照回滚路径持久化）推进后回空结果；legacy 下补发 `tasks/working` 通知。客户端签名 `UpdateTask(task_id, result?, input_responses?)`，`PollTaskToCompletion`（500ms 间隔 / 300s 超时）轮询至终态。
+`UpdateTaskRequestParams` 新增 `inputResponses`（与 `result` 互斥，同带回 `InvalidParams`）。带 `inputResponses` 时服务端要求任务存在且状态为 `InputRequired`，经 `IMcpTaskStore::AdvanceTaskWithInput`（`FileTaskStore` 实现：存 `input_responses`、状态 InputRequired→Working、刷新 `last_updated_at`、同快照回滚路径持久化）推进后回空结果；modern 下经订阅路由补发 `tasks/working`（legacy 广播）。客户端签名 `UpdateTask(task_id, result?, input_responses?)`，`PollTaskToCompletion`（默认 500ms 间隔 / 300s 超时）轮询至终态——任务 `poll_interval_ms > 0` 时改用服务端指示间隔（钳制 300s 上限 `kMaxServerPollInterval`），临 deadline 前停轮询直接抛超时。
 
 ## 存储字段
 

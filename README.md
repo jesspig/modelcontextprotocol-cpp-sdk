@@ -22,6 +22,7 @@ C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 - [Conformance Tests](#conformance-tests)
 - [Examples](#examples)
 - [Related Projects](#related-projects)
+- [Unsupported Declarations](#unsupported-declarations)
 - [License](#license)
 
 </details>
@@ -242,10 +243,13 @@ This SDK was developed against the official MCP protocol specification and refer
 | Go         | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) | Tier 1 |
 | C#         | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) | Tier 1 |
 | Rust       | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) | Tier 1 |
-| Java       | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) | Tier 2 |
 | Ruby       | [modelcontextprotocol/ruby-sdk](https://github.com/modelcontextprotocol/ruby-sdk) | Tier 1 |
+| Java       | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) | Tier 2 |
+| Swift      | [modelcontextprotocol/swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) | Tier 3 |
+| PHP        | [modelcontextprotocol/php-sdk](https://github.com/modelcontextprotocol/php-sdk) | Tier 3 |
+| Kotlin     | [modelcontextprotocol/kotlin-sdk](https://github.com/modelcontextprotocol/kotlin-sdk) | Tier 3 |
 
-> Tiers follow the [official SDK list (2026-07-28 revision)](https://modelcontextprotocol.io/docs/2026-07-28/sdk): Java remains Tier 2 while Ruby is the newest Tier 1 member, so the original six-SDK scope is kept and a Ruby row is added. Tier rules: [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers) — protocol extensions such as Tasks are not required for any tier.
+> Tiers follow the [official SDK list (2026-07-28 revision)](https://modelcontextprotocol.io/docs/2026-07-28/sdk): 6 Tier 1 (TypeScript, Python, C#, Go, Rust, Ruby — Rust promoted to Tier 1 via [PR #3287](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3287) on 2026-08-21), Java is Tier 2, Swift/PHP/Kotlin are Tier 3. Tier rules: [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers) — experimental features and protocol extensions (such as Tasks and MCP Apps) are not required for any tier.
 
 ### Ruby SDK cross-check
 
@@ -261,6 +265,31 @@ Implementation notes on the official Ruby SDK (`mcp` gem, `main` branch as of 20
 | Auth | Full OAuth 2.1 client (DCR, PKCE, CIMD, `client_credentials`, `private_key_jwt`, `jwt-bearer`, RFC 9207 `iss`, PRM-first discovery; CHANGELOG §0.17.0–§1.6.0) + server resource-server protection ([README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)) | PKCE/DCR + `FileTokenCache`, server Bearer auth (see OAuth Support above) |
 | Tasks (SEP-2663) | Not implemented — "remains planned" ([ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md), [#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)) | `tasks/get\|update\|cancel` dual-era + `FileTaskStore` ([tasks-extension](wiki/concepts/tasks-extension.md)) |
 | Skills (SEP-2640) | Not implemented【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`, 2026-only ([skills-extension](wiki/concepts/skills-extension.md)) |
+
+## Unsupported Declarations
+
+The following items are explicitly declared unsupported in this round; when a peer sends them, this SDK degrades gracefully (ignores the unknown field or falls back to the baseline path) instead of failing the session.
+
+- **Apps UI rendering** — server-pushed UI components are not rendered and pass through as opaque data only.
+- **EMA** — EMA negotiation is not implemented and peers fall back to baseline capability negotiation.
+- **DPoP** — DPoP-bound tokens are neither sent nor validated, and the Bearer-token path in OAuth Support above remains the supported flow.
+- **jwt-bearer** — `jwt-bearer` / `private_key_jwt` client authentication is not supported, and the public-client PKCE/DCR flow remains the supported path.
+- **ETags** — `ETag` / `If-None-Match` validators are not stored or compared, and cached responses are governed by TTL only.
+- **Progressive discovery** — incremental capability discovery is not implemented, and the full `server/discover` (modern) / `initialize` (legacy) handshake is always used.
+- **File Uploads** — resumable file-upload primitives are not implemented, and file content moves through existing tool/resource payloads only.
+- **Server Cards** — server cards are not surfaced, and `serverInfo` from the handshake remains the identity source.
+
+### Breaking changes in this round
+
+Per the 2026-07-28 spec revision, each change is summarized in one sentence followed by its migration note.
+
+- **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
+- **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.
+- **Redirect tightening** — HTTP redirect handling is stricter than the legacy behavior. Migration: the default policy is `HttpRedirectPolicy::SameOriginOnly` (same scheme/host/port, with `http`→`https` upgrade allowed; cross-origin hops are rejected and strip the `Authorization` header, `301`/`302` POST flips to `GET`, `303` always flips to `GET`); opt out per call via `HttpRequestSpec::redirect_policy` (`FollowAll`/`NoFollow`) and `max_redirects` (default 5), or per transport via `SseClientTransportOptions` / `HttpClientTransportOptions`.
+- **Default upper limits** — built-in default caps apply when the peer omits the corresponding limits. Migration: HTTP responses 8 MB (`HttpRequestSpec::max_response_bytes`), SSE events 1 MB (`max_sse_event_bytes` on the SSE/Streamable-HTTP client options), CIMD documents 1 MB (hard cap, best-effort fallback), stdio frames 8 MB (`StdioClientTransportOptions::max_frame_bytes` / `StdioServerTransport` ctor arg), server request bodies 4 MB (`max_request_body_bytes`), tool arguments `ServerOptions::max_tool_input_elements` (over-budget calls return an `is_error` tool result, not a protocol error), skill manifests 512 files / 16 MB total (client-side `CheckSkillLimits`); raise the matching knob, or shard/page the payload, when a peer legitimately exceeds a default.
+- **Async cancellation** — `notifications/cancelled` delivery is asynchronous and unordered relative to the cancelled call. Migration: the pending-request callback now runs on a detached thread (inline only as a thread-spawn fallback), so callers must treat cancellation as eventually consistent — keep handlers idempotent and poll `RequestContext::IsCancellationRequested()` for cooperative exit instead of assuming the cancel lands before the response.
+
+> Sources: [official SDK list (2026-07-28 revision)](https://modelcontextprotocol.io/docs/2026-07-28/sdk); [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers) — experimental features and protocol extensions (such as Tasks and MCP Apps) are not required for any tier.
 
 ## License
 

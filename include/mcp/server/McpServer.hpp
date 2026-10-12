@@ -2,6 +2,7 @@
 
 #include <mcp/Export.hpp>
 #include <mcp/JsonValue.hpp>
+#include <mcp/Meta.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/server/McpServerTool.hpp>
@@ -11,10 +12,12 @@
 #include <condition_variable>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -84,6 +87,7 @@ public:
     void SendPromptListChanged();
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
+    void SetCacheable(std::function<std::optional<CacheHint>(std::string_view method)> resolver);
     void SendTaskStatus(std::string_view task_id, TaskStatus status);
     void SendProgress(const ProgressToken& token, double progress,
                       std::optional<double> total = std::nullopt,
@@ -115,6 +119,9 @@ private:
     void SendListChangedNotification(std::string_view method);
 
     JsonValue BuildToolsJson();
+    std::vector<std::string> EffectiveSupportedVersions() const;
+    CacheHint ResolveCacheHint(std::string_view method) const;
+    void EmitLoggingMessage(LoggingLevel level, std::string_view data);
     void HandleListTools(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleCallTool(
@@ -197,6 +204,9 @@ private:
 
     mutable std::mutex log_level_mutex_;
     std::optional<LoggingLevel> current_log_level_;
+
+    mutable std::mutex cache_hook_mutex_;
+    std::function<std::optional<CacheHint>(std::string_view)> cache_hint_hook_;
 
     bool is_stateless_{false};
 

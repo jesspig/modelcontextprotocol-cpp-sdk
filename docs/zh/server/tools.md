@@ -130,7 +130,7 @@ return result;  // 服务端自动签名 requestState（需配置 request_state_
 
 ## 任务化执行
 
-将工具声明为任务模式后，`tools/call` 立即返回任务句柄（`taskId`），后台异步执行，客户端用 `GetTask` / `PollTaskToCompletion` 跟进（2025 与 2026 时代均可；2026 时代下任务状态通知被抑制，客户端靠轮询取终态）：
+将工具声明为任务模式后，`tools/call` 立即返回任务句柄（`taskId`），后台异步执行，客户端用 `GetTask` / `PollTaskToCompletion` 跟进（2025 与 2026 时代均可；2026 时代下任务状态通知按订阅路由，无订阅者时丢弃，客户端靠轮询取终态）：
 
 ```cpp
 ToolExecution execution;

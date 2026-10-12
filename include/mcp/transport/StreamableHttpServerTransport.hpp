@@ -4,12 +4,15 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
 #include <mcp/http/SessionStore.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpVersion.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
+#include <mcp/ext/ServerCard.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <future>
 #include <memory>
@@ -51,6 +54,7 @@ struct StreamableHttpServerOptions {
 
     std::string host;
 
+    std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
     struct BearerAuthConfig {
         std::function<AuthResult(const std::string& token)> verify;
         std::string resource_metadata_url;
@@ -66,6 +70,9 @@ struct StreamableHttpServerOptions {
     std::function<std::vector<McpParamAnnotationInfo>(const std::string& method,
                                                       const std::string& name)>
         resolve_param_annotations;
+
+    bool enable_server_card{false};
+    std::optional<ext::ServerCard> server_card;
 };
 
 class StreamableHttpServerTransport : public TransportBase {
@@ -93,6 +100,8 @@ private:
 
     bool AuthorizeRequest(const HttpRequest& req, HttpResponse& resp);
     void HandleMetadataRequest(HttpResponse& resp);
+    void HandleServerCardRequest(HttpResponse& resp);
+    ext::ServerCard BuildDefaultServerCard() const;
 
     std::string BuildSseEvent(JsonRpcMessage msg);
 

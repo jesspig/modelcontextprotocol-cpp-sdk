@@ -23,6 +23,7 @@
 - [一致性测试](#一致性测试)
 - [示例](#示例)
 - [相关项目](#相关项目)
+- [不支持声明](#不支持声明)
 - [许可证](#许可证)
 
 </details>
@@ -262,6 +263,31 @@ build/debug/examples/EchoServer/EchoServer
 | 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/DCR + `FileTokenCache`，服务端 Bearer 鉴权（见上文 OAuth 支持） |
 | 任务（SEP-2663） | 未实现——“remains planned”（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，[#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)） | `tasks/get\|update\|cancel` 双时代 + `FileTaskStore`（[tasks-extension](wiki/concepts/tasks-extension.md)） |
 | 技能（SEP-2640） | 未实现【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`，仅 2026 时代（[skills-extension](wiki/concepts/skills-extension.md)） |
+
+## 不支持声明
+
+以下条目在本轮明确声明为不支持；当对端发送它们时，本 SDK 优雅降级（忽略未知字段或回退到基线路径），而不会中断会话。
+
+- **应用界面渲染**——服务器推送的 UI 组件不渲染，仅作不透明数据透传。
+- **EMA**——未实现 EMA 协商，对端回退到基线能力协商。
+- **DPoP**——DPoP 绑定令牌既不发送也不校验，上文 OAuth 支持中的 Bearer 令牌路径仍为受支持流程。
+- **jwt-bearer**——不支持 `jwt-bearer` / `private_key_jwt` 客户端认证，公开客户端 PKCE/DCR 流程仍为受支持路径。
+- **ETag**——不存储、不比对 `ETag` / `If-None-Match` 校验器，缓存响应仅按 TTL 治理。
+- **渐进式发现**——未实现增量能力发现，恒用完整 `server/discover`（现代）/ `initialize`（遗留）握手。
+- **文件上传**——未实现可续传文件上传原语，文件内容仅经现有工具/资源载荷流转。
+- **服务器卡片**——不呈现服务器卡片，握手中的 `serverInfo` 仍为身份来源。
+
+### 本轮破坏性变更
+
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。
+
+- **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
+- **`_meta` 省略**——空的每请求 `_meta` 改为线上了省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。
+- **重定向收紧**——HTTP 重定向处理比遗留行为更严格。迁移：默认策略 `HttpRedirectPolicy::SameOriginOnly`（同 scheme/host/port，允许 `http`→`https` 升级；跨源跳转被拒绝且剥离 `Authorization` 头，`301`/`302` POST 转 GET，`303` 一律转 GET）；经 `HttpRequestSpec::redirect_policy`（`FollowAll`/`NoFollow`）与 `max_redirects`（默认 5）逐调用覆盖，或经 `SseClientTransportOptions` / `HttpClientTransportOptions` 逐传输覆盖。
+- **默认上限**——对端省略对应限制时适用内置默认上限。迁移：HTTP 响应 8 MB（`HttpRequestSpec::max_response_bytes`）、SSE 事件 1 MB（SSE/Streamable HTTP 客户端选项的 `max_sse_event_bytes`）、CIMD 文档 1 MB（硬上限，best-effort 回退）、stdio 帧 8 MB（`StdioClientTransportOptions::max_frame_bytes` / `StdioServerTransport` 构造参数）、服务端请求体 4 MB（`max_request_body_bytes`）、工具参数 `ServerOptions::max_tool_input_elements`（超限返回 `is_error` 工具结果而非协议错误）、技能 manifest 512 文件 / 16 MB 总量（客户端 `CheckSkillLimits`）；对端确需超限时调大对应旋钮，或对载荷分片/分页。
+- **异步取消**——`notifications/cancelled` 投递异步，与被取消调用无序。迁移：待处理请求回调现跑在分离线程（仅线程创建失败时回退内联），调用方须按最终一致处理取消——handler 保持幂等并轮询 `RequestContext::IsCancellationRequested()` 协作退出，不得假设取消先于响应到达。
+
+> 来源：[官方 SDK 列表（2026-07-28 修订版）](https://modelcontextprotocol.io/docs/2026-07-28/sdk)；[SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers)——实验性功能与协议扩展（如 Tasks、MCP Apps）任何分级均不强制要求。
 
 ## 许可证
 

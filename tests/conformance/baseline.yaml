@@ -72,6 +72,14 @@ server:
     # 而单通道传输的 DELETE 关闭共享 channel 毒化后续全场景（生产缺口），
     # 故 stateful fixture 显式不设 session_store。
     - server-sse-multiple-streams
+    # --- server-stateless（modern leg 保绿，真源见 baseline-2026-07-28.yaml，本条目与之逐字一致）---
+    # 2026-10-12 referee 实测 28/28 通过但带 2 个 WARNING
+    # （ServerSendsPromptsListChangedOnSubscription 与
+    # ServerSendsToolsListChangedOnSubscription，均为 SHOULD 级：
+    # 诊断工具变更列表后 listen 流未收到 list_changed 推送），
+    # referee 将其判为 unexpected 致 modern server leg 退出 1。
+    # 待生产实现变更推送后 referee 会报 stale，届时删除本条目。
+    - server-stateless
 
 client:
     # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
