@@ -147,6 +147,7 @@ namespace {
 
     static bool DeclaresTasksExtension(const ClientOptions& options)
     {
+        if (!options.enable_tasks_extension) return false;
         if (options.capabilities && options.capabilities->extensions) {
             if (options.capabilities->extensions->count(
                     std::string(kTasksExtensionId)) > 0)
@@ -1240,6 +1241,9 @@ GetPromptResult McpClient::GetPrompt(
 SkillsListResult McpClient::ListSkills(
     std::optional<std::string> cursor)
 {
+    if (!options_.enable_skills_extension) {
+        throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
+    }
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListSkills,
         cursor ? std::string_view(*cursor) : std::string_view());
@@ -1263,6 +1267,9 @@ SkillsListResult McpClient::ListSkills(
 SkillsGetResult McpClient::GetSkill(
     std::string_view uri, const CacheableRequestOptions& options)
 {
+    if (!options_.enable_skills_extension) {
+        throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
+    }
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
@@ -1293,6 +1300,9 @@ ReadDirectoryResult McpClient::ReadDirectory(
     std::string_view uri, std::optional<std::string> cursor,
     const CacheableRequestOptions& options)
 {
+    if (!options_.enable_skills_extension) {
+        throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
+    }
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
@@ -1395,6 +1405,9 @@ UpdateTaskResult McpClient::UpdateTask(
     std::optional<JsonValue> result,
     std::optional<JsonValue> input_responses)
 {
+    if (!options_.enable_tasks_extension) {
+        throw McpError(McpErrorCode::MethodNotFound, "tasks extension is disabled");
+    }
     UpdateTaskRequestParams params;
     params.task_id = std::string(task_id);
     params.result = std::move(result);
@@ -1423,6 +1436,9 @@ GetTaskResult McpClient::PollTaskToCompletion(
     std::chrono::milliseconds poll_interval,
     std::chrono::seconds timeout)
 {
+    if (!options_.enable_tasks_extension) {
+        throw McpError(McpErrorCode::MethodNotFound, "tasks extension is disabled");
+    }
     auto deadline = std::chrono::steady_clock::now() + timeout;
     auto interval = poll_interval;
 

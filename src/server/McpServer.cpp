@@ -22,6 +22,13 @@
 #include <shared_mutex>
 #include <type_traits>
 
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#if defined(_MSC_VER)
+#pragma warning(disable : 4996)
+#endif
+
 namespace mcp {
 
 namespace {
@@ -40,6 +47,8 @@ namespace {
     };
 
     constexpr std::string_view kDefaultLoggerName = "mcp-server";
+    constexpr std::string_view kTasksImplicitWarning =
+        "task_store is set without enable_tasks_extension; tasks extension is implicitly enabled for compatibility";
 
     constexpr std::string_view kMcpNameHeader = "Mcp-Name";
     constexpr std::string_view kMcpNameHeaderLower = "mcp-name";
@@ -1112,6 +1121,15 @@ void McpServer::WireTaskHandlers() {
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                if (!options_.enable_tasks_extension && !options_.TasksImplicitlyEnabled()) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound,
+                                 "tasks extension is disabled")));
+                    return;
+                }
+                if (!options_.enable_tasks_extension) {
+                    MCP_LOG(Warning, std::string(kTasksImplicitWarning));
+                }
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
                 if (modern && !TasksExtensionDeclared(GetClientCapabilities(),
@@ -1147,6 +1165,15 @@ void McpServer::WireTaskHandlers() {
 
         handler_->SetRequestHandler(methods::kUpdateTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                if (!options_.enable_tasks_extension && !options_.TasksImplicitlyEnabled()) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound,
+                                 "tasks extension is disabled")));
+                    return;
+                }
+                if (!options_.enable_tasks_extension) {
+                    MCP_LOG(Warning, std::string(kTasksImplicitWarning));
+                }
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
                 if (modern && !TasksExtensionDeclared(GetClientCapabilities(),
@@ -1367,6 +1394,15 @@ void McpServer::WireTaskHandlers() {
 
         handler_->SetRequestHandler(methods::kCancelTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                if (!options_.enable_tasks_extension && !options_.TasksImplicitlyEnabled()) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound,
+                                 "tasks extension is disabled")));
+                    return;
+                }
+                if (!options_.enable_tasks_extension) {
+                    MCP_LOG(Warning, std::string(kTasksImplicitWarning));
+                }
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
                 if (modern && !TasksExtensionDeclared(GetClientCapabilities(),
@@ -1526,13 +1562,16 @@ void McpServer::DeriveCapabilities() {
     if (options_.declare_completions) {
         capabilities_.completions = CompletionsCapability{};
     }
-    if (options_.task_store) {
+    if (options_.enable_tasks_extension || options_.TasksImplicitlyEnabled()) {
+        if (!options_.enable_tasks_extension && options_.task_store) {
+            MCP_LOG(Warning, std::string(kTasksImplicitWarning));
+        }
         if (!capabilities_.extensions)
             capabilities_.extensions = std::map<std::string, JsonValue>{};
         (*capabilities_.extensions)[std::string(kTasksExtensionId)] =
             SerializeTasksExtensionSettings(TasksExtensionSettings{});
     }
-    if (!skills_.empty() && capabilities_.resources) {
+    if (options_.enable_skills_extension && !skills_.empty() && capabilities_.resources) {
         if (!capabilities_.extensions)
             capabilities_.extensions = std::map<std::string, JsonValue>{};
         SkillsExtensionSettings skills_settings;
@@ -1689,7 +1728,11 @@ void McpServer::HandleCallTool(
         throw MissingTasksExtensionError();
     }
 
-    if (task_declared && options_.task_store && tasks_declared) {
+    if (task_declared && options_.task_store && tasks_declared &&
+        (options_.enable_tasks_extension || options_.TasksImplicitlyEnabled())) {
+        if (!options_.enable_tasks_extension) {
+            MCP_LOG(Warning, std::string(kTasksImplicitWarning));
+        }
         const bool modern = modern_era;
         const bool required_task =
             tool_def.execution->task_support == TaskSupport::Required;
@@ -2242,6 +2285,12 @@ void McpServer::HandleListSkills(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!options_.enable_skills_extension) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills extension is disabled")));
+        return;
+    }
     if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
         promise.set_exception(std::make_exception_ptr(
             McpError(McpErrorCode::MethodNotFound,
@@ -2277,6 +2326,12 @@ void McpServer::HandleGetSkill(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!options_.enable_skills_extension) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills extension is disabled")));
+        return;
+    }
     if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
         promise.set_exception(std::make_exception_ptr(
             McpError(McpErrorCode::MethodNotFound,
@@ -2314,6 +2369,12 @@ void McpServer::HandleReadDirectory(
     const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!options_.enable_skills_extension) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "skills extension is disabled")));
+        return;
+    }
     if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
         promise.set_exception(std::make_exception_ptr(
             McpError(McpErrorCode::MethodNotFound,

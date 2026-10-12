@@ -1781,6 +1781,7 @@ TEST(McpClientTest, CallToolAsTaskReturnsTaskHandle) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    opts.enable_tasks_extension = true;
     JsonValue task_ext(JsonValue::object_tag);
     task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
     opts.extensions = std::move(task_ext);
@@ -1843,6 +1844,7 @@ TEST(McpClientTest, FlatTaskResultPreferredOverNested) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.enable_tasks_extension = true;
     JsonValue task_ext(JsonValue::object_tag);
     task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
     opts.extensions = std::move(task_ext);
@@ -2280,6 +2282,7 @@ TEST(McpClientTest, PollTaskViaTasksGet) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    opts.enable_tasks_extension = true;
     JsonValue task_ext(JsonValue::object_tag);
     task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
     opts.extensions = std::move(task_ext);
@@ -2318,6 +2321,7 @@ TEST(McpClientTest, UpdateTaskCarriesInputResponses) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    opts.enable_tasks_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
     JsonValue responses(JsonValue::object_tag);
@@ -2412,6 +2416,7 @@ TEST(McpClientTest, ListSkillsRoundTrip) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
     auto r1 = client->ListSkills();
@@ -2506,6 +2511,7 @@ TEST(McpClientTest, SkillDirectFetchWithoutList) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
     auto got = client->GetSkill("skill://code-review/SKILL.md");
@@ -2552,6 +2558,7 @@ TEST(McpClientTest, TtlExpiryRefetch) {
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
     opts.pin_protocol_version = std::string("2025-11-25");
+    opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
     auto r1 = client->GetSkill("skill://code-review/SKILL.md");

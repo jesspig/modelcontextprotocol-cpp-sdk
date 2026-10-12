@@ -48,6 +48,10 @@ struct MCP_API ClientOptions {
 
     SpanHandler span_handler;
 
+    bool enable_tasks_extension{false};
+    bool enable_skills_extension{false};
+    bool enable_apps_extension{false};
+
 };
 
 } // namespace mcp

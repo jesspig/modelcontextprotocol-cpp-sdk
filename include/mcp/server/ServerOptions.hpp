@@ -76,6 +76,24 @@ struct MCP_API ServerOptions {
     std::function<std::optional<CacheHint>(std::string_view method)> cache_hint_resolver;
 
     std::shared_ptr<class IMcpTaskStore> task_store;
+
+    bool enable_tasks_extension{false};
+    bool enable_skills_extension{false};
+    bool enable_apps_extension{false};
+    bool enable_server_card{false};
+    bool enable_etag_cache{false};
+    bool enable_progressive_discovery{false};
+    bool enable_file_input{false};
+    bool enable_triggers_events{false};
+    bool enable_dpop{false};
+    bool enable_interceptor_alias{false};
+
+    [[deprecated("set enable_tasks_extension=true explicitly")]] bool TasksImplicitlyEnabled() const {
+        return enable_tasks_extension || task_store != nullptr;
+    }
+    [[deprecated("set enable_skills_extension=true explicitly")]] bool SkillsImplicitlyEnabled() const {
+        return enable_skills_extension;
+    }
 };
 
 } // namespace mcp

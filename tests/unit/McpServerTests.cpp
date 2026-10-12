@@ -3054,6 +3054,7 @@ SkillsEnv MakeSkillsEnv(bool directory_read) {
     ServerOptions sopts;
     sopts.server_info = Implementation{"test-server", "1.0.0"};
     sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.enable_skills_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
     env.server->RegisterResource("code-review-skill", "skill://code-review/SKILL.md",
         ResourceOptions{}.MimeType("text/markdown"),
@@ -3457,6 +3458,8 @@ TEST(McpServerTest, SkillsDiscoverIncludesExtensionsAndCache) {
     ServerOptions sopts;
     sopts.server_info = Implementation{"test-server", "1.0.0"};
     sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.enable_skills_extension = true;
+    sopts.enable_tasks_extension = true;
     CacheHint discover_hint;
     discover_hint.ttl_ms = int64_t(60000);
     discover_hint.cache_scope = "public";
