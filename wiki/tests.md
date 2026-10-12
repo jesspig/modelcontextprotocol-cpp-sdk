@@ -3,7 +3,7 @@ type: Test Suite
 title: 测试体系
 description: 18 个测试目标（15 unit + integration/conformance/framework），748 个测试用例（ctest 注册口径，自研测试框架）；静态断言统计 3145；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-10-12T14:45:04+08:00
+timestamp: 2026-10-12T17:48:18+08:00
 resource: tests/CMakeLists.txt
 ---
 
@@ -55,6 +55,16 @@ resource: tests/CMakeLists.txt
 - 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 18 个测试目标和 748 个 ctest 用例
 - 本分支新增守护测试（均并入既有目标）：任务扩展——`WireCodec` 双时代集合与 `ValidateTaskHeaders` 缺 taskId/头失配、`McpServer` modern 头校验与通知抑制/`tasks/update` inputResponses 分支（互斥/状态门）/`tasks/result|list` 现代拒绝、任务存储新字段 roundtrip 与 `AdvanceTaskWithInput` 状态门、`McpClient` 未声明扩展收 task 抛 `HandlerError`/`UpdateTask` 第三参、`CreateTaskResult` 顶层/嵌套双形态；技能扩展——`Skill/SkillResources` 序列化 roundtrip、`RegisterSkill` 非法 uri 拒绝、目录视图派生与 `directoryRead` 门、客户端技能缓存（`use/bypass/refresh` + `max_age_ms`）；HTTP 加固——未知版本头 400 `-32022`、任务头 400、`initialize` 满存 503、会话闲置过期与 `SweepExpired`、EventStore 扫描追加与 10000 上限、监听流 5xx `GivenUp` 与 `retry:` 钳制（450–1000ms）、SSE `FlushSseBuffer` 尾块补派发；OAuth——`application_type` 注册透传、token `resource` 持久化与失配门、issuer 变更清注册/令牌、challenge 加固（超长/非法 URL 拒绝不抛）；服务端 audience 失配 401、客户端 403 仅 `insufficient_scope` 重试
 - 本批（G 系列冻结批）新增守护测试（均并入既有目标，无新目标）：服务端——`CreateTaskResultFlatNoNested`（2026 扁平无嵌套）/`TaskTimestampsPopulated`（创建即置双时间戳）/`ToolErrorMapsToCompleted`（`is_error` 结果入库落 Completed）/`ProtocolErrorMapsToFailedWithError`（`McpError` 按原码内联 error 落 Failed）/`PromptsGetInputRequired`/`ResourceReadInputRequired`（非工具 input_required + 自动签名）/`MetaReachesHandler`（顶层 `_meta` 合并进 params）；客户端——`FlatTaskResultPreferredOverNested`（双形态反序列化顶层优先）/`ElicitationApplyDefaults*`（`applyDefaults` 缺省回填：五字段/禁用透传/保留既有/拒绝忽略/嵌套与变体递归）/`MrtrElicitationApplyDefaultsFillsInputResponses`；传输——`RequestStreamHoldOpenDeliversProgressBeforeResult`/`RequestStreamHoldOpenDeliversMessageBeforeResult`（modern POST 常开按 token 路由缓冲）/`PlainRequestKeepsSingleWriteAndClose`（普通请求仍单写即关）
+- 实验开关门控矩阵（`ad547f9`，服务端 10 开关 / 客户端 3 开关默认全关，基线 748/3145 不动；详见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)）：
+
+| 端 | 开关 | 关：可观测行为 |
+|----|------|----------------|
+| 服务端 | `enable_tasks_extension` | `tasks/get\|update\|cancel` → `MethodNotFound`，不声明 tasks 键；仅设 `task_store` 时隐式启用 + `Warning` |
+| 服务端 | `enable_skills_extension` | `skills/list\|get` 与 `directory/read` → `MethodNotFound`，不声明 skills 键 |
+| 客户端 | `enable_tasks_extension` | `UpdateTask`/`PollTaskToCompletion` 抛 `MethodNotFound`，声明判定恒 false |
+| 客户端 | `enable_skills_extension` | `ListSkills`/`GetSkill`/`ReadDirectory` 抛 `MethodNotFound` |
+
+既有任务/技能用例的开关适配：客户端 7 处已显式置 flag（tasks 4 处：`CallToolAsTaskReturnsTaskHandle`/`FlatTaskResultPreferredOverNested`/`PollTaskViaTasksGet`/`UpdateTaskCarriesInputResponses`；skills 3 处：`ListSkillsRoundTrip`/`SkillDirectFetchWithoutList`/`TtlExpiryRefetch`）；服务端仅 2 处（`MakeSkillsEnv` 置 skills 开、`SkillsDiscoverIncludesExtensionsAndCache` 双开），其余服务端任务用例仍走 `task_store` 隐式兼容路径（伴 `Warning`，0.3.8 计划移除）
 
 ## 自研框架能力（P0+P1）
 

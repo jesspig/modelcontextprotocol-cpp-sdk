@@ -1,5 +1,7 @@
 # 更新摘要
 
+- 2026-10-12 — 实验开关文档补齐（ad547f9/cada606 遗留）：新建 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)（服务端 10 + 客户端 3 开关表、tasks 隐式兼容 + Warning + deprecated、关/开两态语义），tests.md 增开关矩阵、docs 中英 extensions.md 镜像开关表；只改 6 个 md，不碰代码与测试基线，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
+
 - 2026-10-12 — spec-20260728-tier1-parity 一次性对齐：T2 request_state/T3 schema/T5 错误面/T6 上限重定向/T7 头空载荷/T8 协商可观测/T9 PRM-first/T10 任务推送/T11 技能验签/T12 文档，748/748，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
 
 - 2026-10-12 — G 系列冻结批知识库收敛 + GATE1 文档收尾（GATE1）：生产只读（失败语义 failed+内联 error、2026 扁平/2025 嵌套、`_meta` 合并、非工具 input_required、请求流缓冲、applyDefaults），修正 mcp-server/tasks-extension/modules-server 三处 G4 过时描述；tests.md 重列 18 目标 **715 用例 / 2857 断言**（无新目标；全量 715/715 通过）；基线仅刷头部注释（33 条不动，input-required/sep-2164/progress-modern 已绿）；脚本修 client leg 相对路径 spawn（转绝对路径）；Windows 复跑 client 双 leg 均为红（2025 unexpected elicitation 0/5、2026 unexpected sep-2322 0/5 + json-schema 0/1，三项待主会话裁决），与前提不符以实测为准，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
@@ -11,6 +13,3 @@
 - 2026-09-20 — 版本号更新至 0.3.5：`include/mcp/McpVersion.hpp` 的 `kSdkVersion` `0.3.4` → `0.3.5`（唯一来源，`CMakeLists.txt` 自动提取，无需改 CMake；`client_info`/`server_version`/`server_info` 默认值随之更新）；在线文档中英 `client/overview.md` 与知识库 `classes/mcp-client.md` 默认客户端标识同步，详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)
 
 - 2026-09-20 — Streamable HTTP 服务端请求有界等待监听者：新增 `HttpServer::SseClientCount`（`sse_mutex_` 改 `mutable`），`StreamableHttpServerTransport::SendMessageAsync` 仅对 `IsRequest` 在零监听者时 50ms 步长轮询至多 2s（`Disconnected` 可中断，超时 Warning 后仍广播；Notification 保持 fire-and-forget）；5 文件 35 增 1 改，未碰 conformance 基线与 fixture；背景为 CI sampling 约 30s 超时 / sep1330 1 过 1 挂而本地复现全过（根因 GET 广播快照为空静默丢弃），修复后 66 passed 1 failed（仅基线内 progress）；wiki 3 页同步（streamable-http/http/http-server），详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)
-
-- 2026-09-20 — Windows `GetObject` 宏修复与 `NOGDI`：`cmake/CompilerOptions.cmake` 在 clang-cl/MSVC 两分支 `NOMINMAX` 后追加 `NOGDI`（排除 `wingdi.h` 的 `GetObject` 宏）；`JsonValue.hpp`/`McpParamAnnotations.hpp` 新增头侧 `#ifdef GetObject` 条件 `push_macro`/`undef`/尾部 `pop_macro` 隔离；`HttpServerImpl.cpp` 与 Streamable HTTP 双端三源文件 `push_macro` 移入 `#ifdef` 内并补尾部条件恢复（此前两文件无恢复、一文件 `push` 在 `#ifdef` 外）；6 文件 47 增 2 删，未碰 conformance 基线与 fixture；wiki 5 页同步（清除“仅 NOMINMAX”/“未定义 NOMINMAX 时”过时描述），详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)
-- 2026-09-20 — 知识库增量审计与源码同步：按最新实现将测试基线核实为 **18 目标 / 632 用例 / 2154 断言**；补入 SEP-2243 `x-mcp-header` 注解镜像与服务端校验、span 观测钩子、HTTP 8KB 响应头缓冲与 transport benchmark；新增 URI 模板、响应缓存、参数头、span hook 四个概念页；修订方法常量 41、MRTR 兼容时代、存储/OAuth/日志/并发失败语义，并维护 `AGENTS.md` 的 `## 项目知识库` 入口，详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)

@@ -38,3 +38,18 @@ auto server = McpServer::Create(transport, opts);
 |-------|-------------|
 | 键 | 反向 DNS 标识符（例如 `"io.modelcontextprotocol/tasks"`） |
 | 值 | 包含扩展配置的自由格式 JSON 对象 |
+
+## 实验开关
+
+`ServerOptions` 10 开关与 `ClientOptions` 3 开关默认全为 `false`，须显式置 `true`：
+
+| 端 | 开关 | 开 | 关 |
+|----|------|----|----|
+| 服务端 | `enable_tasks_extension` | 声明 tasks 扩展；`tasks/get\|update\|cancel` 与任务化 `tools/call` 生效 | 无 `task_store` 时对应方法 `MethodNotFound`（`tasks extension is disabled`）；仅设 `task_store` 时隐式启用并记 `Warning`（0.3.5→0.3.8 过渡，见下） |
+| 服务端 | `enable_skills_extension` | 已注册技能且具 resources 能力时声明 skills 扩展；`skills/list\|get` 与 `directory/read` 生效 | 三方法一律 `MethodNotFound`（`skills extension is disabled`），无隐式路径 |
+| 服务端 | `enable_apps_extension` / `enable_server_card` / `enable_etag_cache` / `enable_progressive_discovery` / `enable_file_input` / `enable_triggers_events` / `enable_dpop` / `enable_interceptor_alias` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
+| 客户端 | `enable_tasks_extension` | `extensions` 映射含任务键即声明；`UpdateTask`/`PollTaskToCompletion` 与任务句柄路径生效 | 上述调用抛 `MethodNotFound`（`tasks extension is disabled`） |
+| 客户端 | `enable_skills_extension` | `ListSkills`/`GetSkill`/`ReadDirectory` 生效 | 三调用抛 `MethodNotFound`（`skills extension is disabled`） |
+| 客户端 | `enable_apps_extension` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
+
+兼容过渡（0.3.5→0.3.8，本次任务给定口径）：`TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` 均标 `[[deprecated]]`，提示显式置开关；其中仅 tasks 有真实隐式路径（只设 `task_store` 即启用，伴 `Warning` 日志），skills 无隐式路径、必须显式开启。

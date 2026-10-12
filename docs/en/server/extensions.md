@@ -38,3 +38,18 @@ A skill entry `uri` must have the shape `<scheme>://<name>/SKILL.md` (scheme-agn
 |-------|-------------|
 | Key | Reverse-DNS identifier (e.g., `"io.modelcontextprotocol/tasks"`) |
 | Value | Free-form JSON object with the extension's configuration |
+
+## Experimental Flags
+
+The 10 `ServerOptions` flags and 3 `ClientOptions` flags all default to `false` and must be explicitly set to `true`:
+
+| Side | Flag | On | Off |
+|------|------|----|-----|
+| Server | `enable_tasks_extension` | Declares the tasks extension; `tasks/get\|update\|cancel` and taskified `tools/call` take effect | Without `task_store`, the corresponding methods return `MethodNotFound` (`tasks extension is disabled`); with only `task_store` set, implicitly enabled with a `Warning` (0.3.5→0.3.8 transition, see below) |
+| Server | `enable_skills_extension` | With at least one registered skill and the resources capability, declares the skills extension; `skills/list\|get` and `directory/read` take effect | All three methods return `MethodNotFound` (`skills extension is disabled`); no implicit path |
+| Server | `enable_apps_extension` / `enable_server_card` / `enable_etag_cache` / `enable_progressive_discovery` / `enable_file_input` / `enable_triggers_events` / `enable_dpop` / `enable_interceptor_alias` | Reserved: declared, default `false`, no gating wired yet | Same as left |
+| Client | `enable_tasks_extension` | Declared when the `extensions` map carries the tasks key; `UpdateTask`/`PollTaskToCompletion` and the task-handle path take effect | Those calls throw `MethodNotFound` (`tasks extension is disabled`) |
+| Client | `enable_skills_extension` | `ListSkills`/`GetSkill`/`ReadDirectory` take effect | All three calls throw `MethodNotFound` (`skills extension is disabled`) |
+| Client | `enable_apps_extension` | Reserved: declared, default `false`, no gating wired yet | Same as left |
+
+Compatibility transition (0.3.5→0.3.8, scope given by this task): `TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` are both marked `[[deprecated]]`, directing users to set the flags explicitly; only tasks has a real implicit path (setting just `task_store` enables it, accompanied by a `Warning` log), while skills has no implicit path and must be enabled explicitly.
