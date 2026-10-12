@@ -6,6 +6,8 @@
 #include <mcp/McpVersion.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/ext/Apps.hpp>
+#include <mcp/ext/ServerCard.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSchemaValidator.hpp>
 #include <detail/UriTemplate.hpp>
@@ -50,8 +52,6 @@ namespace {
     };
 
     constexpr std::string_view kDefaultLoggerName = "mcp-server";
-    constexpr std::string_view kTasksImplicitWarning =
-        "task_store is set without enable_tasks_extension; tasks extension is implicitly enabled for compatibility";
 
     constexpr std::string_view kMcpNameHeader = "Mcp-Name";
     constexpr std::string_view kMcpNameHeaderLower = "mcp-name";
@@ -206,6 +206,11 @@ namespace {
             if (it != parked->end()) pruned[key] = it->second;
         }
         return pruned;
+    }
+
+    bool HasAppsUriScheme(std::string_view uri) {
+        return uri.size() >= ext::kAppsUriScheme.size() &&
+            uri.compare(0, ext::kAppsUriScheme.size(), ext::kAppsUriScheme) == 0;
     }
 
     bool IsValidToolName(std::string_view name) {
@@ -1197,14 +1202,11 @@ void McpServer::WireTaskHandlers() {
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!options_.enable_tasks_extension && !options_.TasksImplicitlyEnabled()) {
+                if (!options_.enable_tasks_extension) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
                                  "tasks extension is disabled")));
                     return;
-                }
-                if (!options_.enable_tasks_extension) {
-                    MCP_LOG(Warning, std::string(kTasksImplicitWarning));
                 }
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
@@ -1241,14 +1243,11 @@ void McpServer::WireTaskHandlers() {
 
         handler_->SetRequestHandler(methods::kUpdateTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!options_.enable_tasks_extension && !options_.TasksImplicitlyEnabled()) {
+                if (!options_.enable_tasks_extension) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
                                  "tasks extension is disabled")));
                     return;
-                }
-                if (!options_.enable_tasks_extension) {
-                    MCP_LOG(Warning, std::string(kTasksImplicitWarning));
                 }
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
@@ -1470,14 +1469,11 @@ void McpServer::WireTaskHandlers() {
 
         handler_->SetRequestHandler(methods::kCancelTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (!options_.enable_tasks_extension && !options_.TasksImplicitlyEnabled()) {
+                if (!options_.enable_tasks_extension) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::MethodNotFound,
                                  "tasks extension is disabled")));
                     return;
-                }
-                if (!options_.enable_tasks_extension) {
-                    MCP_LOG(Warning, std::string(kTasksImplicitWarning));
                 }
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
@@ -1638,14 +1634,23 @@ void McpServer::DeriveCapabilities() {
     if (options_.declare_completions) {
         capabilities_.completions = CompletionsCapability{};
     }
-    if (options_.enable_tasks_extension || options_.TasksImplicitlyEnabled()) {
-        if (!options_.enable_tasks_extension && options_.task_store) {
-            MCP_LOG(Warning, std::string(kTasksImplicitWarning));
-        }
+    if (options_.enable_tasks_extension) {
         if (!capabilities_.extensions)
             capabilities_.extensions = std::map<std::string, JsonValue>{};
         (*capabilities_.extensions)[std::string(kTasksExtensionId)] =
             SerializeTasksExtensionSettings(TasksExtensionSettings{});
+    }
+    if (options_.enable_apps_extension) {
+        if (!capabilities_.extensions)
+            capabilities_.extensions = std::map<std::string, JsonValue>{};
+        (*capabilities_.extensions)[std::string(ext::kAppsExtensionId)] =
+            JsonValue(JsonValue::object_tag);
+    }
+    if (options_.enable_server_card) {
+        if (!capabilities_.extensions)
+            capabilities_.extensions = std::map<std::string, JsonValue>{};
+        (*capabilities_.extensions)[std::string(ext::kServerCardExtensionId)] =
+            JsonValue(JsonValue::object_tag);
     }
     if (options_.enable_skills_extension && !skills_.empty() && capabilities_.resources) {
         if (!capabilities_.extensions)
@@ -2010,10 +2015,7 @@ void McpServer::HandleCallTool(
     }
 
     if (task_declared && options_.task_store && tasks_declared &&
-        (options_.enable_tasks_extension || options_.TasksImplicitlyEnabled())) {
-        if (!options_.enable_tasks_extension) {
-            MCP_LOG(Warning, std::string(kTasksImplicitWarning));
-        }
+        options_.enable_tasks_extension) {
         const bool modern = modern_era;
         const bool required_task =
             tool_def.execution->task_support == TaskSupport::Required;
@@ -2425,6 +2427,22 @@ void McpServer::HandleReadResource(
     ReadResourceRequestParams params;
     if (req.params) {
         params = DeserializeResourceRequestParams(*req.params);
+    }
+    if (HasAppsUriScheme(params.uri)) {
+        if (!options_.enable_apps_extension) {
+            promise.set_exception(std::make_exception_ptr(
+                McpError(McpErrorCode::HandlerError,
+                         "apps extension is disabled")));
+            return;
+        }
+        try {
+            ext::UiMeta app_meta;
+            app_meta.resource_uri = params.uri;
+            ext::ValidateUiMeta(app_meta);
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+            return;
+        }
     }
 
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
@@ -2893,6 +2911,27 @@ std::string McpServer::GetNegotiatedProtocolVersion() const {
 const ServerCapabilities& McpServer::GetCapabilities() const {
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     return capabilities_;
+}
+
+ext::ServerCard McpServer::GetServerCard() const {
+    if (!options_.enable_server_card) {
+        throw McpError(McpErrorCode::HandlerError, "server card is disabled");
+    }
+    ext::ServerCard card;
+    if (options_.server_card) {
+        card = *options_.server_card;
+    } else {
+        card.name = options_.server_info ? options_.server_info->name : "mcp-server";
+        card.version = options_.server_info
+            ? options_.server_info->version
+            : std::string(kSdkVersion);
+        ext::ServerCardEndpoint endpoint;
+        endpoint.url = "http://localhost/";
+        card.endpoints.push_back(std::move(endpoint));
+        card.supported_protocol_versions = EffectiveSupportedVersions();
+    }
+    ext::ValidateCard(card);
+    return card;
 }
 
 bool McpServer::IsMrtrSupported() const {
