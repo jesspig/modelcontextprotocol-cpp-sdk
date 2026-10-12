@@ -3079,7 +3079,21 @@ TEST(McpClientTest, LegacyPingMetaNotModern) {
         opts.initialization_timeout = std::chrono::seconds(5);
         auto client = McpClient::Create(recorder, opts);
         ASSERT_FALSE(client->IsModernProtocol());
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(push))
+__pragma(warning(disable : 4996))
+#endif
         ASSERT_NO_THROW(client->Ping());
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic pop")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(pop))
+#endif
         ASSERT_TRUE(recorder->SawPing());
         std::string meta_version;
         if (auto meta = recorder->PingMeta(); meta && meta->IsObject()) {
@@ -3101,7 +3115,21 @@ TEST(McpClientTest, LegacyPingMetaNotModern) {
         opts.connect_mode = ConnectMode::Pin;
         auto client = McpClient::Create(recorder, opts);
         ASSERT_TRUE(client->IsModernProtocol());
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(push))
+__pragma(warning(disable : 4996))
+#endif
         EXPECT_THROW(client->Ping(), McpError);
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic pop")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(pop))
+#endif
         ASSERT_TRUE(recorder->SawPing());
         auto meta = recorder->PingMeta();
         ASSERT_TRUE(meta.has_value());
