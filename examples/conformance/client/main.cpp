@@ -1,5 +1,6 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/client/SkillVerify.hpp>
+#include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
 #include <cstdlib>
@@ -452,6 +453,100 @@ void RunSkillsVerifyClient(const std::string& server_url) {
     std::cout << "Connection closed successfully" << std::endl;
 }
 
+bool IsAuthScenario(std::string_view name) {
+    constexpr std::string_view kAuthPrefix = "auth/";
+    return name.size() >= kAuthPrefix.size() &&
+        name.substr(0, kAuthPrefix.size()) == kAuthPrefix;
+}
+
+std::string ExtractAuthState(std::string_view url) {
+    constexpr std::string_view kMarker = "state=";
+    size_t pos = url.find(kMarker);
+    if (pos == std::string_view::npos) return std::string();
+    pos += kMarker.size();
+    size_t end = url.find('&', pos);
+    std::string_view raw = url.substr(pos,
+        end == std::string_view::npos ? std::string_view::npos : end - pos);
+    std::string decoded;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '%' && i + 2 < raw.size()) {
+            unsigned int value = 0;
+            bool valid = true;
+            for (size_t j = 1; j <= 2; ++j) {
+                char c = raw[i + j];
+                value <<= 4;
+                if (c >= '0' && c <= '9') value += static_cast<unsigned int>(c - '0');
+                else if (c >= 'A' && c <= 'F') value += static_cast<unsigned int>(c - 'A' + 10);
+                else if (c >= 'a' && c <= 'f') value += static_cast<unsigned int>(c - 'a' + 10);
+                else valid = false;
+            }
+            if (valid) {
+                decoded.push_back(static_cast<char>(value));
+                i += 2;
+                continue;
+            }
+            decoded.push_back(raw[i]);
+        } else if (raw[i] == '+') {
+            decoded.push_back(' ');
+        } else {
+            decoded.push_back(raw[i]);
+        }
+    }
+    return decoded;
+}
+
+void RunAuthClient(const std::string& server_url, std::string_view scenario) {
+    std::string seen_url;
+    OAuthClientOptions oauth_options;
+    oauth_options.server_url = server_url;
+    oauth_options.redirect_uri = "http://localhost/callback";
+    oauth_options.authorization_redirect_handler =
+        [&seen_url, scenario](std::string_view url) {
+            seen_url = std::string(url);
+            std::cout << "Auth approval ready (" << scenario << ")"
+                      << std::endl;
+        };
+    oauth_options.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "conformance-test-code";
+            result.state = ExtractAuthState(seen_url);
+            return result;
+        };
+    oauth_options.token_update_handler = [](const TokenContainer&) {
+        std::cout << "Auth token refreshed" << std::endl;
+    };
+    auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
+    bool authenticated = provider->Authenticate();
+    std::cout << "OAuth authenticate "
+              << (authenticated ? "succeeded" : "did not complete")
+              << " (" << scenario << ")" << std::endl;
+
+    HttpClientTransportOptions transport_options;
+    transport_options.endpoint = server_url;
+    transport_options.auth_challenge_handler =
+        [provider](std::string_view www_authenticate) -> std::string {
+            if (!provider->HandleAuthChallenge(www_authenticate))
+                return std::string();
+            return provider->GetAuthorizationHeader();
+        };
+    StreamableHttpClientTransport http_transport(transport_options);
+    auto transport = http_transport.Connect();
+
+    ClientOptions options;
+    options.client_info = Implementation{std::string("test-client"), "1.0.0"};
+    options.connect_mode = ConnectMode::Auto;
+    options.capabilities = ClientCapabilities{};
+    options.enable_tasks_extension = true;
+    options.enable_skills_extension = true;
+    auto client = McpClient::Create(transport, options);
+    auto tools = client->ListTools();
+    std::cout << "Successfully listed tools (" << tools.tools.size() << ")"
+              << std::endl;
+    client->Close();
+    std::cout << "Connection closed successfully" << std::endl;
+}
+
 using ScenarioHandler = void (*)(const std::string&);
 
 const std::map<std::string, ScenarioHandler>& ScenarioRegistry() {
@@ -493,6 +588,17 @@ int main(int argc, char* argv[]) {
     if (!scenario_name || argc < 2) {
         PrintUsageAndScenarios(std::cerr);
         return 1;
+    }
+
+    std::string_view scenario_view(scenario_name);
+    if (IsAuthScenario(scenario_view)) {
+        try {
+            RunAuthClient(argv[1], scenario_view);
+            return 0;
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << std::endl;
+            return 1;
+        }
     }
 
     const auto& registry = ScenarioRegistry();
