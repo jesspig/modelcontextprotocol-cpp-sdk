@@ -851,6 +851,8 @@ void McpSessionHandler::NotifySubscribers(
                        notification_type == notifications::kTaskCancelled ||
                        notification_type == notifications::kTaskInputRequired) {
                 should_notify = true;
+            } else if (notification_type == notifications::kTriggersEvent) {
+                should_notify = true;
             }
 
             if (!should_notify) continue;

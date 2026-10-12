@@ -231,6 +231,9 @@ JsonValue OAuthClientProvider::HttpPost(
 
     std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/x-www-form-urlencoded";
+    if (options_.enable_dpop) {
+        headers["DPoP"] = BuildDPoPProof("POST", std::string(url_str));
+    }
 
     auto resp = HttpPostUrl(std::string(url_str), body, headers);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
@@ -598,7 +601,25 @@ std::string OAuthClientProvider::GetAuthorizationHeader() const {
     auto tokens = token_cache_->GetTokens();
     if (!tokens || tokens->access_token.empty()) return {};
     if (!TokenResourceMatches(*tokens)) return {};
+    if (options_.enable_dpop) return "DPoP " + tokens->access_token;
     return "Bearer " + tokens->access_token;
+}
+
+std::string OAuthClientProvider::BuildDPoPProof(
+    std::string_view htm,
+    std::string_view htu,
+    std::optional<std::string_view> access_token) {
+    if (!options_.enable_dpop) return {};
+    std::lock_guard<std::mutex> lock(dpop_mutex_);
+    if (!dpop_key_) dpop_key_ = ext::dpop::GenerateKey();
+    std::optional<std::string_view> nonce;
+    if (dpop_nonce_ && !dpop_nonce_->empty()) nonce = *dpop_nonce_;
+    return ext::dpop::CreateProof(*dpop_key_, htm, htu, access_token, nonce);
+}
+
+void OAuthClientProvider::SetDPoPNonce(std::string nonce) {
+    std::lock_guard<std::mutex> lock(dpop_mutex_);
+    dpop_nonce_ = std::move(nonce);
 }
 
 bool OAuthClientProvider::StepUpAuthorization(

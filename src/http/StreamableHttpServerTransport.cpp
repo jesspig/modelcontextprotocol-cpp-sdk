@@ -2,10 +2,12 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/ErrorCodes.hpp>
+#include <mcp/McpTypes.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
+#include <mcp/ext/DPoP.hpp>
 
 #include <transport/detail/net/NetIoUtil.hpp>
 
@@ -17,6 +19,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -203,6 +206,47 @@ void RespondInsufficientScope(HttpResponse& resp,
     resp.headers["content-type"] = "application/json";
 }
 
+constexpr size_t kDPoPSchemeLength = 5;
+
+bool IsDPoPAuthorization(const std::string& value) {
+    static constexpr const char* kScheme = "dpop ";
+    if (value.size() < kDPoPSchemeLength) return false;
+    for (size_t i = 0; i < kDPoPSchemeLength; ++i) {
+        if (std::tolower(static_cast<unsigned char>(value[i])) != kScheme[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+ext::dpop::JtiReplayCache& DPoPReplayCache() {
+    static ext::dpop::JtiReplayCache cache(300);
+    return cache;
+}
+
+std::mutex& DPoPServerNonceMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::string& DPoPServerNonceValue() {
+    static std::string nonce;
+    return nonce;
+}
+
+std::string DPoPCurrentServerNonce() {
+    std::lock_guard<std::mutex> lock(DPoPServerNonceMutex());
+    std::string& nonce = DPoPServerNonceValue();
+    if (nonce.empty()) nonce = ext::dpop::GenerateNonce();
+    return nonce;
+}
+
+void DPoPFailUnauthorized(HttpResponse& resp, const std::string& metadata_url,
+                          const std::vector<std::string>& scopes) {
+    RespondUnauthorized(resp, metadata_url, true, scopes);
+    resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
+}
+
 void RespondStatelessError(HttpResponse& resp, int status, const char* status_text,
                            McpErrorCode code, const std::string& message,
                            std::optional<RequestId> id, std::optional<JsonValue> data) {
@@ -232,6 +276,22 @@ bool IsTaskMethod(std::string_view method) {
            method == methods::kCancelTask;
 }
 
+bool IsTaskStreamNotification(std::string_view method) {
+    return method == notifications::kTaskStatus ||
+           method == notifications::kTaskWorking ||
+           method == notifications::kTaskCompleted ||
+           method == notifications::kTaskFailed ||
+           method == notifications::kTaskCancelled ||
+           method == notifications::kTaskInputRequired;
+}
+
+std::optional<std::string> UpdatedResourceUri(const JsonRpcNotification& notif) {
+    if (!notif.params || !notif.params->IsObject()) return std::nullopt;
+    auto* uri = notif.params->Find(detail::kUri);
+    if (!uri || !uri->IsString()) return std::nullopt;
+    return uri->GetString();
+}
+
 bool RequiresMcpNameHeader(std::string_view method) {
     return method == methods::kCallTool || method == methods::kReadResource ||
            method == methods::kGetPrompt || IsTaskMethod(method);
@@ -256,7 +316,47 @@ void RespondUnsupportedVersion(HttpResponse& resp, const std::string& version,
                           "Unsupported protocol version '" + version + "'",
                           std::move(id), std::move(data));
 }
+
+std::string NormalizeEtagValue(std::string_view v) {
+    size_t b = 0;
+    while (b < v.size() && (v[b] == ' ' || v[b] == '\t')) ++b;
+    size_t e = v.size();
+    while (e > b && (v[e - 1] == ' ' || v[e - 1] == '\t')) --e;
+    std::string_view s = v.substr(b, e - b);
+    if (s.size() >= 2 && (s[0] == 'W' || s[0] == 'w') && s[1] == '/') s.remove_prefix(2);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') s = s.substr(1, s.size() - 2);
+    return std::string(s);
+}
+
+std::optional<std::string> ResultEtagValue(const JsonRpcMessage& message) {
+    const auto* r = std::get_if<JsonRpcResponse>(&message);
+    if (!r || !r->result.IsObject()) return std::nullopt;
+    auto* et = r->result.Find("etag");
+    if (!et || !et->IsString() || et->GetString().empty()) return std::nullopt;
+    return et->GetString();
+}
 } // namespace
+
+StreamableHttpServerTransport::ListenFilter
+StreamableHttpServerTransport::ParseListenFilter(const JsonRpcRequest& req) {
+    ListenFilter filter;
+    if (!req.params || !req.params->IsObject()) return filter;
+    auto* section = req.params->Find(detail::kNotifications);
+    if (!section || !section->IsObject()) return filter;
+    auto* tools = section->Find("toolsListChanged");
+    filter.tools = tools && tools->IsBool() && tools->GetBool();
+    auto* prompts = section->Find("promptsListChanged");
+    filter.prompts = prompts && prompts->IsBool() && prompts->GetBool();
+    auto* resources = section->Find("resourcesListChanged");
+    filter.resources = resources && resources->IsBool() && resources->GetBool();
+    auto* subs = section->Find("resourceSubscriptions");
+    if (subs && subs->IsArray()) {
+        for (const auto& entry : subs->GetArray()) {
+            if (entry.IsString()) filter.resource_uris.push_back(entry.GetString());
+        }
+    }
+    return filter;
+}
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
     StreamableHttpServerOptions options)
@@ -350,6 +450,75 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
 {
     if (!options_.bearer_auth) return true;
     const auto& config = *options_.bearer_auth;
+
+    if (config.enable_dpop) {
+        auto dpop_auth = GetMcpHeader(req, "authorization");
+        if (!dpop_auth || !IsDPoPAuthorization(*dpop_auth)) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        auto token = dpop_auth->substr(kDPoPSchemeLength);
+        detail::net::TrimInPlace(token);
+        if (token.empty()) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        auto result = config.verify(token);
+        if (!result.ok) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        auto proof = GetMcpHeader(req, "dpop");
+        bool proof_ok = false;
+        if (proof && !proof->empty()) {
+            auto host = GetMcpHeader(req, "host");
+            std::string req_path = req.path;
+            if (auto query = req_path.find('?'); query != std::string::npos)
+                req_path.resize(query);
+            if (host && !host->empty() && !req_path.empty()) {
+                ext::dpop::DPoPVerifyOptions verify_options;
+                verify_options.htm = req.method;
+                verify_options.htu = "http://" + *host + req_path;
+                verify_options.alternate_htu = "https://" + *host + req_path;
+                verify_options.access_token = token;
+                verify_options.expected_nonce = DPoPCurrentServerNonce();
+                try {
+                    proof_ok = ext::dpop::VerifyProof(*proof, verify_options,
+                                                      DPoPReplayCache());
+                } catch (...) {
+                    proof_ok = false;
+                }
+            }
+        }
+        if (!proof_ok) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        if (config.validate_token_resource && !config.expected_resource.empty()) {
+            bool audience_ok = result.resource && !result.resource->empty() &&
+                NormalizeResourceUrl(*result.resource) ==
+                    NormalizeResourceUrl(config.expected_resource);
+            if (!audience_ok) {
+                DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                     config.scopes_supported);
+                return false;
+            }
+        }
+        for (const auto& required : config.required_scopes) {
+            if (std::find(result.scopes.begin(), result.scopes.end(), required)
+                == result.scopes.end()) {
+                RespondInsufficientScope(resp, config.required_scopes);
+                resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
+                return false;
+            }
+        }
+        resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
+        return true;
+    }
 
     auto authorization = GetMcpHeader(req, "authorization");
     if (!authorization || !IsBearerAuthorization(*authorization)) {
@@ -793,6 +962,16 @@ void StreamableHttpServerTransport::HandlePost(
             if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg))
                 hold_token = RequestTokenKey(*hold_req);
         }
+        bool hold_listen = false;
+        ListenFilter listen_filter;
+        if (hold_open && options_.listen_hold_open) {
+            if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg)) {
+                if (hold_req->method == methods::kSubscribe) {
+                    hold_listen = true;
+                    listen_filter = ParseListenFilter(*hold_req);
+                }
+            }
+        }
         auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
         auto future = promise->get_future();
         {
@@ -802,6 +981,7 @@ void StreamableHttpServerTransport::HandlePost(
                 hold_open_requests_.insert(id_str);
                 if (hold_token) progress_token_routes_[*hold_token] = id_str;
             }
+            if (hold_listen) listen_filters_[id_str] = std::move(listen_filter);
         }
         if (!channel_->TrySend(std::move(msg))) {
             {
@@ -870,13 +1050,27 @@ void StreamableHttpServerTransport::HandlePost(
                 }
             }
         }
+        if (IsEtagCacheEnabled()) {
+            if (auto etag = ResultEtagValue(response)) {
+                resp.headers["etag"] = *etag;
+                if (auto inm = GetMcpHeader(req, "if-none-match")) {
+                    if (NormalizeEtagValue(*inm) == NormalizeEtagValue(*etag)) {
+                        resp.status_code = 304;
+                        resp.status_text = "Not Modified";
+                        resp.body.clear();
+                        resp.is_sse = false;
+                        return;
+                    }
+                }
+            }
+        }
         if (is_initialize && session_store_ && !options_.stateless) {
             resp.headers["mcp-session-id"] = ActiveSessionId();
         }
         resp.status_code = 200;
         resp.status_text = "OK";
         resp.is_sse = true;
-        resp.sse_close_after_write = true;
+        resp.sse_close_after_write = !hold_listen;
         resp.headers["content-type"] = "text/event-stream";
         resp.headers["cache-control"] = "no-cache";
         resp.headers["x-accel-buffering"] = "no";
@@ -1034,6 +1228,7 @@ void StreamableHttpServerTransport::EraseRequestStreamStateLocked(
 {
     hold_open_requests_.erase(id_str);
     request_stream_frames_.erase(id_str);
+    listen_filters_.erase(id_str);
     for (auto it = progress_token_routes_.begin();
          it != progress_token_routes_.end();) {
         if (it->second == id_str) it = progress_token_routes_.erase(it);
@@ -1064,6 +1259,53 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
             request_stream_frames_[id_str].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));
         return true;
+    }
+    if (notif->method == notifications::kToolListChanged ||
+        notif->method == notifications::kPromptListChanged ||
+        notif->method == notifications::kResourceListChanged) {
+        bool buffered = false;
+        for (const auto& [id_str, filter] : listen_filters_) {
+            if (hold_open_requests_.count(id_str) == 0) continue;
+            bool match = false;
+            if (notif->method == notifications::kToolListChanged) match = filter.tools;
+            else if (notif->method == notifications::kPromptListChanged) match = filter.prompts;
+            else match = filter.resources;
+            if (!match) continue;
+            request_stream_frames_[id_str].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+            buffered = true;
+        }
+        return buffered;
+    }
+    if (notif->method == notifications::kResourceUpdated) {
+        auto uri = UpdatedResourceUri(*notif);
+        if (!uri) return false;
+        bool buffered = false;
+        for (const auto& [id_str, filter] : listen_filters_) {
+            if (hold_open_requests_.count(id_str) == 0) continue;
+            bool match = false;
+            for (const auto& candidate : filter.resource_uris) {
+                if (candidate == *uri) {
+                    match = true;
+                    break;
+                }
+            }
+            if (!match) continue;
+            request_stream_frames_[id_str].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+            buffered = true;
+        }
+        return buffered;
+    }
+    if (IsTaskStreamNotification(notif->method)) {
+        bool buffered = false;
+        for (const auto& entry : listen_filters_) {
+            if (hold_open_requests_.count(entry.first) == 0) continue;
+            request_stream_frames_[entry.first].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+            buffered = true;
+        }
+        return buffered;
     }
     return false;
 }

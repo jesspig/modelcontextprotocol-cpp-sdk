@@ -160,6 +160,8 @@ int main(int argc, char** argv)
     }
     server_options.declare_logging = true;
     server_options.declare_completions = true;
+    server_options.enable_tasks_extension = true;
+    server_options.enable_skills_extension = true;
     server_options.request_state_key = GenerateRequestStateKey();
     if (stateless) {
         server_options.task_store = MakeConformanceTaskStore();

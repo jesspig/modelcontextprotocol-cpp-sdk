@@ -1,7 +1,10 @@
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/detail/sha256.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
+
+#include <atomic>
 
 namespace mcp {
 
@@ -9,6 +12,24 @@ namespace {
 
 constexpr int64_t kDefaultTtlMs = 0;
 constexpr char kDefaultCacheScope[] = "private";
+constexpr char kEtagKey[] = "etag";
+constexpr size_t kEtagMaxBytes = 8u * 1024u * 1024u;
+
+std::atomic<bool>& EtagEnabledFlag() {
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+
+std::string EtagToHex(std::string_view raw) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(raw.size() * 2);
+    for (unsigned char c : raw) {
+        out.push_back(kHex[c >> 4]);
+        out.push_back(kHex[c & 0x0f]);
+    }
+    return out;
+}
 
 std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
     auto* ttl = j.Find(detail::kTTLMs);
@@ -25,6 +46,14 @@ std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
 }
 
 } // anonymous namespace
+
+void SetEtagCacheEnabled(bool enabled) {
+    EtagEnabledFlag().store(enabled);
+}
+
+bool IsEtagCacheEnabled() {
+    return EtagEnabledFlag().load();
+}
 
 JsonValue SerializeResultType(ResultType v) {
     switch (v) {
@@ -72,6 +101,12 @@ void WriteListResultCommon(JsonValue& obj,
     }
     detail::SerializeOptional(obj, detail::kMeta, meta);
     obj[detail::kResultType] = SerializeResultType(result_type);
+    if (IsEtagCacheEnabled()) {
+        std::string payload = obj.Dump();
+        if (payload.size() <= kEtagMaxBytes) {
+            obj[kEtagKey] = JsonValue(EtagToHex(detail::Sha256::Hash(payload)));
+        }
+    }
 }
 
 template <typename T, typename DeserializeFn>
@@ -110,6 +145,23 @@ EmptyResult DeserializeEmptyResult(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     auto* rt = j.Find(detail::kResultType);
     if (rt) v.result_type = DeserializeResultType(*rt);
+    return v;
+}
+
+JsonValue SerializeCacheableResult(const CacheableResult& v) {
+    JsonValue obj(JsonValue::object_tag);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
+    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    detail::SerializeOptional(obj, kEtagKey, v.etag);
+    return obj;
+}
+
+CacheableResult DeserializeCacheableResult(const JsonValue& j) {
+    CacheableResult v;
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
+    auto* rt = j.Find(detail::kResultType);
+    if (rt) v.result_type = DeserializeResultType(*rt);
+    detail::DeserializeOptional(j, kEtagKey, v.etag);
     return v;
 }
 

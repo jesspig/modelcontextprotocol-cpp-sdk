@@ -136,6 +136,34 @@ struct CallToolRequestParams {
     std::optional<std::string> request_state;
 };
 
+struct FileRef {
+    std::string uri;
+    int64_t offset{0};
+    int64_t length{0};
+};
+
+inline JsonValue SerializeFileRef(const FileRef& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj["uri"] = JsonValue(v.uri);
+    if (v.offset != 0) obj["offset"] = JsonValue(v.offset);
+    if (v.length != 0) obj["length"] = JsonValue(v.length);
+    return obj;
+}
+
+inline FileRef DeserializeFileRef(const JsonValue& j) {
+    FileRef v;
+    v.uri = j["uri"].GetString();
+    if (auto* o = j.Find("offset")) {
+        if (o->IsInt()) v.offset = o->GetInt();
+        else if (o->IsDouble()) v.offset = static_cast<int64_t>(o->GetDouble());
+    }
+    if (auto* l = j.Find("length")) {
+        if (l->IsInt()) v.length = l->GetInt();
+        else if (l->IsDouble()) v.length = static_cast<int64_t>(l->GetDouble());
+    }
+    return v;
+}
+
 struct GetPromptRequestParams {
     std::string name;
     std::optional<JsonValue> arguments;
@@ -202,6 +230,15 @@ struct InputRequiredResult {
 };
 
 struct EmptyResult : Result {};
+
+struct CacheableResult : Result {
+    std::optional<std::string> etag;
+};
+
+void SetEtagCacheEnabled(bool enabled);
+bool IsEtagCacheEnabled();
+JsonValue SerializeCacheableResult(const CacheableResult& v);
+CacheableResult DeserializeCacheableResult(const JsonValue& j);
 
 struct CallToolResult : Result {
     std::vector<ContentVariant> content;

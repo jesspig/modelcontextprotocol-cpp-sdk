@@ -51,6 +51,7 @@ struct MCP_API ClientOptions {
     bool enable_tasks_extension{false};
     bool enable_skills_extension{false};
     bool enable_apps_extension{false};
+    bool enable_progressive_discovery{false};
 
 };
 

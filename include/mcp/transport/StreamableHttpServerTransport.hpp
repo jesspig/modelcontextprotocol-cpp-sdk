@@ -43,6 +43,8 @@ struct StreamableHttpServerOptions {
 
     bool enable_legacy_sse{false};
 
+    bool listen_hold_open{false};
+
     int sse_keep_alive_ms{15000};
 
     std::shared_ptr<EventStore> event_store;
@@ -64,6 +66,7 @@ struct StreamableHttpServerOptions {
         bool serve_metadata_endpoint{true};
         std::string expected_resource;
         bool validate_token_resource{true};
+        bool enable_dpop{false};
     };
     std::optional<BearerAuthConfig> bearer_auth;
 
@@ -125,6 +128,14 @@ private:
     static std::optional<std::string> RequestTokenKey(const JsonRpcRequest& req);
     static std::optional<std::string> NotificationTokenKey(const JsonRpcNotification& notif);
 
+    struct ListenFilter {
+        bool tools{false};
+        bool prompts{false};
+        bool resources{false};
+        std::vector<std::string> resource_uris;
+    };
+    static ListenFilter ParseListenFilter(const JsonRpcRequest& req);
+
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;
     std::shared_ptr<EventStore> event_store_;
@@ -137,6 +148,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> request_stream_frames_;
     std::unordered_map<std::string, std::string> progress_token_routes_;
     std::unordered_set<std::string> hold_open_requests_;
+    std::unordered_map<std::string, ListenFilter> listen_filters_;
 };
 
 } // namespace mcp

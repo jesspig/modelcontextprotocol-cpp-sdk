@@ -52,6 +52,9 @@ public:
     ListToolsResult ListTools(
         std::optional<std::string> cursor = std::nullopt);
     ListToolsResult ListToolsAll();
+    ListToolsResult SearchTools(
+        std::optional<std::string> query = std::nullopt,
+        std::optional<int64_t> page_size = std::nullopt);
     CallToolResult CallTool(
         std::string_view name,
         std::optional<JsonValue> arguments = std::nullopt,
@@ -158,6 +161,17 @@ private:
     void RecoverExpiredSession();
 
     void CacheIfHinted(std::string_view key, const JsonValue& result);
+
+    struct EtagEntry {
+        std::string etag;
+        JsonValue body;
+    };
+    std::optional<std::string> GetStoredEtag(const std::string& key);
+    std::optional<JsonValue> GetStoredEtagBody(const std::string& key);
+    void StoreEtagBody(const std::string& key, const JsonValue& result);
+    void MaybeAttachEtag(const std::string& key, RequestMeta& meta);
+    std::unordered_map<std::string, EtagEntry> etag_entries_;
+    std::mutex etag_mutex_;
 
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;

@@ -1150,6 +1150,7 @@ TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
         MetaWithSubscriptionId("client-sub-1"),
         std::chrono::milliseconds(2000));
 
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto resp = future.get();
     ASSERT_FALSE(resp.Contains("code"));
@@ -1157,7 +1158,6 @@ TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
     ASSERT_TRUE(resp.Contains("resultType"));
     EXPECT_EQ(resp["resultType"], JsonValue("complete"));
 
-    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto ack = ack_future.get();
     EXPECT_EQ(ack.method, std::string(notifications::kSubscriptionsAcknowledged));
     ASSERT_TRUE(ack.meta.has_value());
@@ -1190,11 +1190,11 @@ TEST(McpServerTest, SubscriptionsListenAcknowledgesHonoredFilter) {
         MetaWithSubscriptionId("client-sub-2"),
         std::chrono::milliseconds(2000));
 
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto resp = future.get();
     ASSERT_FALSE(resp.Contains("code"));
 
-    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto ack = ack_future.get();
     ASSERT_TRUE(ack.params.has_value());
     auto honored = DeserializeSubscriptionsAcknowledgedNotificationParams(*ack.params);
@@ -2197,8 +2197,8 @@ TEST(McpServerTest, SendResourceUpdatedReachesSubscribedUri) {
         MetaWithSubscriptionId("client-sub-upd"),
         std::chrono::milliseconds(2000));
 
-    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
 
     ctx.server->SendResourceUpdated("resource://send/1");
 
@@ -2239,8 +2239,8 @@ TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
         MetaWithSubscriptionId("client-sub-other"),
         std::chrono::milliseconds(2000));
 
-    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
 
     ctx.server->SendResourceUpdated("resource://other/9");
 
@@ -3534,9 +3534,9 @@ TEST(McpServerTest, SkillsListChangedSubscriptionGating) {
         SerializeSubscriptionsListenRequestParams(tools_only),
         MetaWithSubscriptionId("sub-tools"),
         std::chrono::milliseconds(2000));
+    ASSERT_EQ(ack_first_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_FALSE(listen_future.get().Contains("code"));
-    ASSERT_EQ(ack_first_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
 
     std::promise<JsonRpcNotification> prompt_skipped;
     auto prompt_skipped_future = prompt_skipped.get_future();
@@ -3575,8 +3575,8 @@ TEST(McpServerTest, SkillsListChangedSubscriptionGating) {
         SerializeSubscriptionsListenRequestParams(prompts_and_resources),
         MetaWithSubscriptionId("sub-pr"),
         std::chrono::milliseconds(2000));
-    ASSERT_EQ(listen2_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(ack_second_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(listen2_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto ack2 = ack_second_future.get();
     auto* ack2_sid = ack2.meta->Find("io.modelcontextprotocol/subscriptionId");
     ASSERT_NE(ack2_sid, nullptr);
@@ -4105,4 +4105,357 @@ TEST(McpServerTest, MetaReachesHandler) {
 
     server->Close();
     client->Close();
+}
+
+namespace {
+
+std::string WriteFileInputTemp(
+    const std::string& name,
+    const std::string& data,
+    std::vector<std::filesystem::path>& tracked)
+{
+    auto path = std::filesystem::temp_directory_path() / name;
+    tracked.push_back(path);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    FILE* f = std::fopen(path.string().c_str(), "wb");
+    if (f) {
+        if (!data.empty()) std::fwrite(data.data(), 1, data.size(), f);
+        std::fclose(f);
+    }
+    return std::string("file://") + path.generic_string();
+}
+
+struct FileInputEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+    std::shared_ptr<std::optional<JsonValue>> captured;
+    std::vector<std::filesystem::path> files;
+};
+
+FileInputEnv MakeFileInputEnv(bool enabled) {
+    FileInputEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.enable_file_input = enabled;
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.captured = std::make_shared<std::optional<JsonValue>>();
+    auto captured = env.captured;
+    env.server->RegisterTool(McpServerTool::Create("file_probe",
+        std::function<CallToolResult(const Ctx&)>(
+            [captured](const Ctx& ctx) {
+                if (ctx.Params().arguments) {
+                    *captured = *ctx.Params().arguments;
+                } else {
+                    *captured = std::nullopt;
+                }
+                CallToolResult r;
+                r.content.push_back(TextContent{"text", "probed"});
+                return r;
+            }),
+        ToolOptions{}.Description("File input probe")));
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+JsonValue SendFileInputToolCall(
+    const std::shared_ptr<McpSessionHandler>& client, JsonValue args)
+{
+    CallToolRequestParams params;
+    params.name = "file_probe";
+    params.arguments = std::move(args);
+    auto future = client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+std::string FileInputErrorText(const CallToolResult& result) {
+    std::string text;
+    for (const auto& c : result.content) {
+        if (auto* t = std::get_if<TextContent>(&c)) text += t->text;
+    }
+    return text;
+}
+
+void CloseFileInputEnv(FileInputEnv& env) {
+    env.server->Close();
+    env.client->Close();
+    std::error_code ec;
+    for (const auto& p : env.files) std::filesystem::remove(p, ec);
+}
+
+} // namespace
+
+TEST(McpServerTest, FileInputRangeReadInlinesSlice) {
+    auto env = MakeFileInputEnv(true);
+    std::string uri = WriteFileInputTemp(
+        "mcp_file_input_range.txt", "0123456789abcdef", env.files);
+    env.server->RegisterResource("file-input-doc", "resource://file-input-doc",
+        ResourceOptions{},
+        [](const std::string& doc_uri) -> ReadResourceResult {
+            TextResourceContents trc;
+            trc.uri = doc_uri;
+            trc.text = "HelloWorld";
+            ReadResourceResult rr;
+            rr.contents = {mcp::ResourceContents{trc}};
+            return rr;
+        });
+
+    JsonValue args(JsonValue::object_tag);
+    JsonValue file_ref(JsonValue::object_tag);
+    file_ref["uri"] = JsonValue(uri);
+    file_ref["offset"] = JsonValue(int64_t(4));
+    file_ref["length"] = JsonValue(int64_t(4));
+    args["file"] = std::move(file_ref);
+    JsonValue doc_ref(JsonValue::object_tag);
+    doc_ref["uri"] = JsonValue("resource://file-input-doc");
+    doc_ref["offset"] = JsonValue(int64_t(5));
+    doc_ref["length"] = JsonValue(int64_t(5));
+    args["doc"] = std::move(doc_ref);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_FALSE(result.is_error);
+
+    ASSERT_TRUE(env.captured->has_value());
+    auto* file_arg = (*env.captured)->Find("file");
+    ASSERT_NE(file_arg, nullptr);
+    ASSERT_TRUE(file_arg->IsObject());
+    auto* file_content = file_arg->Find("content");
+    ASSERT_NE(file_content, nullptr);
+    EXPECT_EQ(file_content->GetString(), "4567");
+    auto* doc_arg = (*env.captured)->Find("doc");
+    ASSERT_NE(doc_arg, nullptr);
+    ASSERT_TRUE(doc_arg->IsObject());
+    auto* doc_content = doc_arg->Find("content");
+    ASSERT_NE(doc_content, nullptr);
+    EXPECT_EQ(doc_content->GetString(), "World");
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputOutOfRangeReturnsIsError) {
+    auto env = MakeFileInputEnv(true);
+    std::string uri = WriteFileInputTemp(
+        "mcp_file_input_range_oob.txt", "abc", env.files);
+
+    JsonValue args(JsonValue::object_tag);
+    JsonValue file_ref(JsonValue::object_tag);
+    file_ref["uri"] = JsonValue(uri);
+    file_ref["offset"] = JsonValue(int64_t(100));
+    args["file"] = std::move(file_ref);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("out of bounds"),
+              std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputOutsideWhitelistRejected) {
+    auto env = MakeFileInputEnv(true);
+    auto temp_base = std::filesystem::temp_directory_path();
+    if (temp_base.filename().empty()) temp_base = temp_base.parent_path();
+    auto outside = temp_base.parent_path() /
+        "mcp_file_input_outside_xyz" / "f.txt";
+    std::string uri = std::string("file://") + outside.generic_string();
+
+    JsonValue args(JsonValue::object_tag);
+    JsonValue file_ref(JsonValue::object_tag);
+    file_ref["uri"] = JsonValue(uri);
+    args["file"] = std::move(file_ref);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("not allowed"),
+              std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputHttpsPassthrough) {
+    auto env = MakeFileInputEnv(true);
+
+    JsonValue args(JsonValue::object_tag);
+    JsonValue link_ref(JsonValue::object_tag);
+    link_ref["uri"] = JsonValue("https://example.com/data");
+    args["link"] = std::move(link_ref);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_FALSE(result.is_error);
+
+    ASSERT_TRUE(env.captured->has_value());
+    auto* link_arg = (*env.captured)->Find("link");
+    ASSERT_NE(link_arg, nullptr);
+    ASSERT_TRUE(link_arg->IsObject());
+    auto* link_uri = link_arg->Find("uri");
+    ASSERT_NE(link_uri, nullptr);
+    EXPECT_EQ(link_uri->GetString(), "https://example.com/data");
+    EXPECT_FALSE(link_arg->Contains("content"));
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputDisabledByDefault) {
+    auto env = MakeFileInputEnv(false);
+    std::string uri = WriteFileInputTemp(
+        "mcp_file_input_disabled.txt", "hello", env.files);
+
+    JsonValue args(JsonValue::object_tag);
+    JsonValue file_ref(JsonValue::object_tag);
+    file_ref["uri"] = JsonValue(uri);
+    args["file"] = std::move(file_ref);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_FALSE(result.is_error);
+
+    ASSERT_TRUE(env.captured->has_value());
+    auto* file_arg = (*env.captured)->Find("file");
+    ASSERT_NE(file_arg, nullptr);
+    ASSERT_TRUE(file_arg->IsObject());
+    auto* file_uri = file_arg->Find("uri");
+    ASSERT_NE(file_uri, nullptr);
+    EXPECT_EQ(file_uri->GetString(), uri);
+    EXPECT_FALSE(file_arg->Contains("content"));
+
+    CloseFileInputEnv(env);
+}
+
+namespace {
+
+struct TriggerEmitEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+TriggerEmitEnv MakeTriggerEmitEnv(bool enabled) {
+    TriggerEmitEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.enable_triggers_events = enabled;
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+bool SubscribeTriggerStream(TriggerEmitEnv& env, std::string_view subscription_id) {
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    auto future = env.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(params),
+        MetaWithSubscriptionId(subscription_id),
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) return false;
+    return !future.get().Contains("code");
+}
+
+void CloseTriggerEmitEnv(TriggerEmitEnv& env) {
+    env.server->Close();
+    env.client->Close();
+}
+
+} // namespace
+
+TEST(McpServerTest, TriggerEmitDeliversToListeningSubscriber) {
+    auto env = MakeTriggerEmitEnv(true);
+    env.server->RegisterTrigger("trig-1", {"deploy.finished"}, "");
+    ASSERT_TRUE(SubscribeTriggerStream(env, "sub-trig-1"));
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    env.client->SetNotificationHandler(notifications::kTriggersEvent,
+        [&received](const JsonRpcNotification& n) {
+            received.set_value(n);
+        });
+
+    JsonValue data(JsonValue::object_tag);
+    data["status"] = JsonValue("ok");
+    env.server->EmitTriggerEvent("deploy.finished", std::move(data));
+
+    ASSERT_EQ(received_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto notif = received_future.get();
+    EXPECT_EQ(notif.method, std::string(notifications::kTriggersEvent));
+    ASSERT_TRUE(notif.params.has_value());
+    auto* type = notif.params->Find("type");
+    ASSERT_NE(type, nullptr);
+    EXPECT_EQ(type->GetString(), "deploy.finished");
+    auto* payload = notif.params->Find("data");
+    ASSERT_NE(payload, nullptr);
+    auto* status = payload->Find("status");
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(status->GetString(), "ok");
+    ASSERT_TRUE(notif.meta.has_value());
+    auto* sid = notif.meta->Find("io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(sid, nullptr);
+    EXPECT_EQ(sid->GetString(), "sub-trig-1");
+
+    CloseTriggerEmitEnv(env);
+}
+
+TEST(McpServerTest, TriggerEmitDropsWithoutSubscription) {
+    auto env = MakeTriggerEmitEnv(true);
+    env.server->RegisterTrigger("trig-1", {"deploy.finished"}, "");
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    env.client->SetNotificationHandler(notifications::kTriggersEvent,
+        [&received](const JsonRpcNotification& n) {
+            received.set_value(n);
+        });
+
+    JsonValue data(JsonValue::object_tag);
+    data["status"] = JsonValue("ok");
+    env.server->EmitTriggerEvent("deploy.finished", std::move(data));
+
+    EXPECT_EQ(received_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    CloseTriggerEmitEnv(env);
+}
+
+TEST(McpServerTest, TriggerEmitDisabledByDefault) {
+    auto env = MakeTriggerEmitEnv(false);
+    env.server->RegisterTrigger("trig-1", {"deploy.finished"}, "");
+    ASSERT_TRUE(SubscribeTriggerStream(env, "sub-trig-off"));
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    env.client->SetNotificationHandler(notifications::kTriggersEvent,
+        [&received](const JsonRpcNotification& n) {
+            received.set_value(n);
+        });
+
+    JsonValue data(JsonValue::object_tag);
+    data["status"] = JsonValue("ok");
+    env.server->EmitTriggerEvent("deploy.finished", std::move(data));
+
+    EXPECT_EQ(received_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    CloseTriggerEmitEnv(env);
 }

@@ -1,6 +1,10 @@
 #include <mcp/JsonRpc.hpp>
+#include <mcp/McpError.hpp>
+#include <mcp/ErrorCodes.hpp>
 #include <mcp/client/auth/OAuthClientProvider.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
+#include <mcp/detail/Base64Url.hpp>
+#include <mcp/ext/DPoP.hpp>
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include "TestServerUtil.hpp"
@@ -251,4 +255,71 @@ TEST(OAuthTest, AuthChallengeTriggersRetryWithAuthorization) {
 
     session->Close();
     server.Stop();
+}
+
+TEST(OAuthTest, DPoPDisabledByDefaultSkipsProof) {
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    EXPECT_FALSE(opts.enable_dpop);
+
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    opts.token_cache = cache;
+    TokenContainer tokens;
+    tokens.access_token = "plain-token";
+    tokens.expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() + 3600000;
+    cache->StoreTokens(tokens);
+
+    OAuthClientProvider provider(opts);
+    EXPECT_EQ(provider.GetAuthorizationHeader(), "Bearer plain-token");
+    EXPECT_TRUE(provider.BuildDPoPProof("GET", "http://localhost:8080/mcp").empty());
+}
+
+TEST(OAuthTest, DPoPEnabledBindsSchemeAndProof) {
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    TokenContainer tokens;
+    tokens.access_token = "bound-token";
+    tokens.expires_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() + 3600000;
+    cache->StoreTokens(tokens);
+
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.token_cache = cache;
+    opts.enable_dpop = true;
+
+    OAuthClientProvider provider(opts);
+    EXPECT_EQ(provider.GetAuthorizationHeader(), "DPoP bound-token");
+
+    try {
+        std::string proof = provider.BuildDPoPProof("POST", "https://resource.example/token");
+        EXPECT_FALSE(proof.empty());
+        auto first = proof.find('.');
+        ASSERT_TRUE(first != std::string::npos);
+        auto second = proof.find('.', first + 1);
+        EXPECT_TRUE(second != std::string::npos);
+        auto decoded = mcp::detail::Base64UrlDecode(proof.substr(0, first));
+        ASSERT_TRUE(decoded.has_value());
+        EXPECT_NE(decoded->find("dpop+jwt"), std::string::npos);
+        EXPECT_NE(decoded->find("ES256"), std::string::npos);
+    } catch (const McpError& e) {
+        EXPECT_TRUE(e.Code() == McpErrorCode::InternalError);
+    }
+
+    std::string first_print = mcp::ext::dpop::ComputeThumbprint("x-value", "y-value");
+    EXPECT_FALSE(first_print.empty());
+    EXPECT_EQ(first_print.find('='), std::string::npos);
+    EXPECT_EQ(mcp::ext::dpop::ComputeThumbprint("x-value", "y-value"), first_print);
+}
+
+TEST(OAuthTest, DPoPStaleProofRejectedByWindow) {
+    int64_t now = mcp::ext::dpop::NowSeconds();
+    EXPECT_TRUE(mcp::ext::dpop::IsNonceFresh(now, now));
+    EXPECT_TRUE(mcp::ext::dpop::IsNonceFresh(now - 299, now));
+    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now - 301, now));
+    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now - 3600, now));
+    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now + 60, now));
+    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now, now, -1));
 }

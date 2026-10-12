@@ -4,6 +4,7 @@
 #include <mcp/JsonRpc.hpp>
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/SessionStore.hpp>
+#include <mcp/ext/DPoP.hpp>
 #include <mcp/test/McpTest.hpp>
 #include "TestServerUtil.hpp"
 
@@ -970,6 +971,21 @@ mcp::detail::net::HttpResponseInfo HttpPost(uint16_t port, const std::string& pa
     return client.Request(req);
 }
 
+mcp::detail::net::HttpResponseInfo HttpPostDpop(uint16_t port, const std::string& path,
+                                                const std::string& body,
+                                                const std::string& authorization,
+                                                const std::string& proof) {
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "POST";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + path;
+    req.body = body;
+    req.timeout = std::chrono::seconds(5);
+    if (!authorization.empty()) req.headers["Authorization"] = authorization;
+    if (!proof.empty()) req.headers["DPoP"] = proof;
+    return client.Request(req);
+}
+
 mcp::detail::net::HttpResponseInfo HttpGet(uint16_t port, const std::string& path) {
     mcp::detail::net::HttpClient client;
     mcp::detail::net::HttpRequestSpec req;
@@ -1671,6 +1687,137 @@ TEST(StreamableHttpTransportTest, PlainRequestKeepsSingleWriteAndClose) {
 
     server.Close();
     consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, DPoPBoundTokenRequiresMatchingProof) {
+    auto port = PickFreePort(kTestBasePort + 2100);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        result.scopes = {"mcp:read"};
+        return result;
+    };
+    opts.bearer_auth->enable_dpop = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string htu = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    bool have_crypto = true;
+    std::string proof;
+    std::string wrong_htm_proof;
+    try {
+        auto key = mcp::ext::dpop::GenerateKey();
+        proof = mcp::ext::dpop::CreateProof(
+            key, "POST", htu, std::string_view("dpop-token"));
+        wrong_htm_proof = mcp::ext::dpop::CreateProof(
+            key, "GET", htu, std::string_view("dpop-token"));
+    } catch (const std::exception&) {
+        have_crypto = false;
+    }
+    if (have_crypto) {
+        auto ok_resp = HttpPostDpop(port, "/mcp", kNotificationBody,
+                                    "DPoP dpop-token", proof);
+        EXPECT_EQ(ok_resp.status_code, 202);
+        EXPECT_FALSE(HeaderOf(ok_resp, "DPoP-Nonce").empty());
+
+        auto wrong_token = HttpPostDpop(port, "/mcp", kNotificationBody,
+                                        "DPoP other-token", proof);
+        EXPECT_EQ(wrong_token.status_code, 401);
+        EXPECT_NE(HeaderOf(wrong_token, "WWW-Authenticate").find("invalid_token"),
+                  std::string::npos);
+        EXPECT_FALSE(HeaderOf(wrong_token, "DPoP-Nonce").empty());
+
+        auto wrong_htm = HttpPostDpop(port, "/mcp", kNotificationBody,
+                                      "DPoP dpop-token", wrong_htm_proof);
+        EXPECT_EQ(wrong_htm.status_code, 401);
+        EXPECT_NE(HeaderOf(wrong_htm, "WWW-Authenticate").find("invalid_token"),
+                  std::string::npos);
+    } else {
+        auto resp = HttpPostDpop(port, "/mcp", kNotificationBody,
+                                 "DPoP dpop-token", "invalid.proof.value");
+        EXPECT_EQ(resp.status_code, 401);
+        EXPECT_NE(HeaderOf(resp, "WWW-Authenticate").find("invalid_token"),
+                  std::string::npos);
+        EXPECT_FALSE(HeaderOf(resp, "DPoP-Nonce").empty());
+    }
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, DPoPProofReplayRejected) {
+    auto port = PickFreePort(kTestBasePort + 2110);
+    auto opts = BearerServerOptions(port);
+    opts.bearer_auth->verify = [](const std::string&) {
+        AuthResult result;
+        result.ok = true;
+        return result;
+    };
+    opts.bearer_auth->enable_dpop = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string htu = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    bool have_crypto = true;
+    std::string proof = "replay.probe.proof";
+    try {
+        auto key = mcp::ext::dpop::GenerateKey();
+        proof = mcp::ext::dpop::CreateProof(
+            key, "POST", htu, std::string_view("dpop-token"));
+    } catch (const std::exception&) {
+        have_crypto = false;
+    }
+    auto first = HttpPostDpop(port, "/mcp", kNotificationBody,
+                              "DPoP dpop-token", proof);
+    auto second = HttpPostDpop(port, "/mcp", kNotificationBody,
+                               "DPoP dpop-token", proof);
+    if (have_crypto) {
+        EXPECT_EQ(first.status_code, 202);
+        EXPECT_EQ(second.status_code, 401);
+        EXPECT_NE(HeaderOf(second, "WWW-Authenticate").find("invalid_token"),
+                  std::string::npos);
+    } else {
+        EXPECT_EQ(first.status_code, 401);
+        EXPECT_EQ(second.status_code, 401);
+    }
+
+    mcp::ext::dpop::JtiReplayCache cache(300);
+    int64_t now = mcp::ext::dpop::NowSeconds();
+    EXPECT_TRUE(cache.CheckAndStore("jti-first", now, now));
+    EXPECT_FALSE(cache.CheckAndStore("jti-first", now, now));
+    EXPECT_TRUE(cache.CheckAndStore("jti-stale", now - 1000, now));
+    EXPECT_TRUE(cache.CheckAndStore("jti-fresh", now, now));
+    EXPECT_TRUE(cache.CheckAndStore("jti-stale", now - 1000, now));
+    EXPECT_FALSE(cache.CheckAndStore("", now, now));
+    server.Close();
+}
+
+TEST(StreamableHttpTransportTest, DPoPDisabledSkipsProofChecks) {
+    auto port = PickFreePort(kTestBasePort + 2120);
+    auto opts = BearerServerOptions(port);
+    EXPECT_FALSE(opts.bearer_auth->enable_dpop);
+    opts.bearer_auth->verify = [](const std::string& token) {
+        AuthResult result;
+        result.ok = (token == "plain-token");
+        return result;
+    };
+    opts.bearer_auth->enable_dpop = false;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto ok_resp = HttpPost(port, "/mcp", kNotificationBody, "Bearer plain-token");
+    EXPECT_EQ(ok_resp.status_code, 202);
+    EXPECT_TRUE(HeaderOf(ok_resp, "DPoP-Nonce").empty());
+
+    auto dpop_scheme = HttpPostDpop(port, "/mcp", kNotificationBody,
+                                    "DPoP plain-token", "any.proof.value");
+    EXPECT_EQ(dpop_scheme.status_code, 401);
+    EXPECT_EQ(HeaderOf(dpop_scheme, "WWW-Authenticate"),
+        "Bearer resource_metadata=\"" + MetadataUrlFor(port) + "\"");
+    EXPECT_TRUE(HeaderOf(dpop_scheme, "DPoP-Nonce").empty());
+    server.Close();
 }
 
 TEST(StreamableHttpTransportTest, RequestStreamHoldOpenDeliversMessageBeforeResult) {

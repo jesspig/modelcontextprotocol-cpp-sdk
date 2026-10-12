@@ -13,6 +13,9 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <thread>
 #include <set>
 #include <algorithm>
@@ -361,6 +364,52 @@ CallToolResult MakeToolIsErrorResult(std::string text) {
     return result;
 }
 
+constexpr int64_t kFileInputMaxBytes = 8 * 1024 * 1024;
+constexpr int64_t kFileInputInlineMaxBytes = 256 * 1024;
+
+bool HasFileInputPrefix(std::string_view s, std::string_view prefix) {
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool IsFileInputRefObject(const JsonValue& node) {
+    if (!node.IsObject()) return false;
+    const auto& obj = node.GetObject();
+    if (obj.empty() || obj.size() > 3) return false;
+    auto uri_it = obj.find("uri");
+    if (uri_it == obj.end() || !uri_it->second.IsString()) return false;
+    for (const auto& entry : obj) {
+        if (entry.first == "uri") continue;
+        if (entry.first == "offset" || entry.first == "length") {
+            if (!entry.second.IsInt()) return false;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool SliceFileInputRange(const std::string& full, int64_t offset, int64_t length,
+    std::string& out, std::string& error)
+{
+    int64_t size = static_cast<int64_t>(full.size());
+    if (offset < 0 || length < 0 || offset > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    int64_t end = (length == 0) ? size : offset + length;
+    if (end < offset || end > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    if (end - offset > kFileInputMaxBytes) {
+        error = "file input exceeds maximum size of 8MB";
+        return false;
+    }
+    out = full.substr(static_cast<size_t>(offset),
+        static_cast<size_t>(end - offset));
+    return true;
+}
+
 std::string ToolExecutionFailureMessage(const std::string& name) {
     return std::string("Error executing tool ") + name;
 }
@@ -453,6 +502,7 @@ McpServer::McpServer(
     : transport_(std::move(transport))
     , options_(std::move(options))
 {
+    SetEtagCacheEnabled(options_.enable_etag_cache);
     auto codec = MakeWireCodec(
         options_.protocol_version.value_or(std::string(kLatestProtocolVersion)));
     handler_ = std::make_shared<McpSessionHandler>(
@@ -758,6 +808,32 @@ void McpServer::SendProgress(const ProgressToken& token, double progress,
             return;
     }
     handler_->SendNotification(notifications::kProgress, std::move(wire));
+}
+
+void McpServer::RegisterTrigger(const std::string& id,
+                                std::vector<std::string> types,
+                                const std::string& webhook_url) {
+    triggers_.Register(id, std::move(types), webhook_url);
+}
+
+bool McpServer::UnregisterTrigger(const std::string& id) {
+    return triggers_.Unregister(id);
+}
+
+void McpServer::EmitTriggerEvent(const std::string& type, JsonValue data) {
+    if (type.empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "trigger event type must not be empty");
+    }
+    if (!options_.enable_triggers_events) return;
+    auto matches = triggers_.Match(type);
+    if (matches.empty()) return;
+    JsonValue params = ext::SerializeTriggerEvent(type, data);
+    std::string body = params.Dump();
+    handler_->NotifySubscribers(notifications::kTriggersEvent, std::move(params));
+    for (const auto& match : matches) {
+        if (match.second.webhook_url.empty()) continue;
+        ext::PostTriggerWebhook(match.second.webhook_url, body);
+    }
 }
 
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
@@ -1603,23 +1679,72 @@ std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
 }
 
 void McpServer::HandleListTools(
-    const JsonRpcRequest&, std::promise<JsonValue> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!options_.enable_progressive_discovery) {
+        {
+            std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+            if (cached_tools_json_) {
+                promise.set_value(*cached_tools_json_);
+                return;
+            }
+        }
+        {
+            std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
+            if (!cached_tools_json_) {
+                cached_tools_json_ = BuildToolsJson();
+            }
+            promise.set_value(*cached_tools_json_);
+        }
+        return;
+    }
+    std::optional<std::string> cursor;
+    std::string query;
+    size_t page_size = kDefaultPageSize;
+    if (req.params && req.params->IsObject()) {
+        cursor = DeserializePaginatedRequestParams(*req.params).cursor;
+        if (auto* q = req.params->Find("query"); q && q->IsString())
+            query = q->GetString();
+        if (auto* ps = req.params->Find("pageSize"); ps && ps->IsInt()) {
+            int64_t v = ps->GetInt();
+            if (v < 1) v = 1;
+            if (v > 100) v = 100;
+            page_size = static_cast<size_t>(v);
+        }
+    }
+    auto ascii_lower = [](std::string s) {
+        for (auto& c : s) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        }
+        return s;
+    };
+    std::string lowered_query = ascii_lower(query);
+    std::vector<Tool> filtered;
     {
         std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
-        if (cached_tools_json_) {
-            promise.set_value(*cached_tools_json_);
-            return;
+        for (const auto& [name, tool_ptr] : tools_) {
+            const Tool& tool = tool_ptr->ProtocolTool();
+            if (!lowered_query.empty()) {
+                bool hit = ascii_lower(tool.name).find(lowered_query) != std::string::npos;
+                if (!hit && tool.description)
+                    hit = ascii_lower(*tool.description).find(lowered_query) != std::string::npos;
+                if (!hit) continue;
+            }
+            filtered.push_back(tool);
         }
     }
-    {
-        std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
-        if (!cached_tools_json_) {
-            cached_tools_json_ = BuildToolsJson();
-        }
-        promise.set_value(*cached_tools_json_);
+    std::sort(filtered.begin(), filtered.end(),
+        [](const Tool& a, const Tool& b) { return a.name < b.name; });
+    ListToolsResult result;
+    size_t next_index = 0;
+    if (PaginateEntries(filtered, ParseCursor(cursor), page_size, next_index,
+            [&result](const Tool& tool) { result.tools.push_back(tool); })) {
+        result.next_cursor = MakeNextCursor(next_index);
     }
+    auto hint = ResolveCacheHint("tools/list");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
+    promise.set_value(SerializeListToolsResult(result));
 }
 
 void McpServer::HandleCallTool(
@@ -1689,6 +1814,162 @@ void McpServer::HandleCallTool(
             McpError(McpErrorCode::InvalidParams,
                      "tool not found: " + params.name)));
         return;
+    }
+
+    if (options_.enable_file_input && params.arguments) {
+        std::optional<std::string> file_input_error;
+        std::function<void(JsonValue&)> resolve_file_input = [&](JsonValue& node) {
+            if (file_input_error) return;
+            if (node.IsArray()) {
+                for (auto& item : node.GetArray()) resolve_file_input(item);
+                return;
+            }
+            if (!IsFileInputRefObject(node)) {
+                if (node.IsObject()) {
+                    for (auto& entry : node.GetObject()) resolve_file_input(entry.second);
+                }
+                return;
+            }
+            FileRef ref = DeserializeFileRef(node);
+            if (HasFileInputPrefix(ref.uri, "https://") ||
+                HasFileInputPrefix(ref.uri, "http://")) {
+                return;
+            }
+            std::string full;
+            bool have_content = false;
+            if (HasFileInputPrefix(ref.uri, "resource://")) {
+                bool found = false;
+                ReadResourceResult read;
+                for (const auto& entry : resources_) {
+                    if (entry.is_template) continue;
+                    if (entry.uri_pattern != ref.uri) continue;
+                    found = true;
+                    try {
+                        read = entry.handler(ref.uri);
+                    } catch (...) {
+                        file_input_error = "file input resource read failed: " + ref.uri;
+                        return;
+                    }
+                    break;
+                }
+                if (!found) {
+                    for (const auto& entry : resources_) {
+                        if (!entry.is_template) continue;
+                        std::string template_error;
+                        auto tmpl = detail::UriTemplate::Parse(
+                            entry.uri_pattern, template_error);
+                        if (!tmpl) continue;
+                        auto variables = tmpl->Match(ref.uri);
+                        if (!variables) continue;
+                        found = true;
+                        try {
+                            read = entry.template_handler(ref.uri, *variables);
+                        } catch (...) {
+                            file_input_error =
+                                "file input resource read failed: " + ref.uri;
+                            return;
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    file_input_error = "file input resource not found: " + ref.uri;
+                    return;
+                }
+                if (read.input_required) {
+                    file_input_error = "file input resource requires input: " + ref.uri;
+                    return;
+                }
+                for (const auto& c : read.contents) {
+                    if (auto* t = std::get_if<TextResourceContents>(&c)) full += t->text;
+                    else if (auto* b = std::get_if<BlobResourceContents>(&c)) full += b->blob;
+                }
+                std::string slice_error;
+                if (!SliceFileInputRange(full, ref.offset, ref.length, full, slice_error)) {
+                    file_input_error = std::move(slice_error);
+                    return;
+                }
+                have_content = true;
+            } else if (HasFileInputPrefix(ref.uri, "file://")) {
+                std::string raw = ref.uri.substr(7);
+                if (raw.size() > 2 && raw[0] == '/' &&
+                    ((raw[1] >= 'A' && raw[1] <= 'Z') ||
+                     (raw[1] >= 'a' && raw[1] <= 'z')) && raw[2] == ':') {
+                    raw.erase(0, 1);
+                }
+                std::error_code canon_ec;
+                std::filesystem::path canon = std::filesystem::weakly_canonical(
+                    std::filesystem::path(raw), canon_ec);
+                if (canon_ec) {
+                    file_input_error = "file input not allowed: " + ref.uri;
+                    return;
+                }
+                bool allowed = false;
+                for (int i = 0; i < 2; ++i) {
+                    std::error_code dir_ec;
+                    std::filesystem::path dir = (i == 0)
+                        ? std::filesystem::temp_directory_path(dir_ec)
+                        : std::filesystem::current_path(dir_ec);
+                    if (dir_ec) continue;
+                    std::error_code dir_canon_ec;
+                    std::filesystem::path cdir =
+                        std::filesystem::weakly_canonical(dir, dir_canon_ec);
+                    if (dir_canon_ec) cdir = dir;
+                    auto rel = canon.lexically_relative(cdir);
+                    if (!rel.empty() && *rel.begin() != "..") {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if (!allowed) {
+                    file_input_error = "file input not allowed: " + ref.uri;
+                    return;
+                }
+                std::ifstream file(canon, std::ios::binary);
+                if (!file) {
+                    file_input_error = "file input not found: " + ref.uri;
+                    return;
+                }
+                file.seekg(0, std::ios::end);
+                int64_t total = static_cast<int64_t>(file.tellg());
+                if (total < 0) total = 0;
+                if (ref.offset < 0 || ref.length < 0 || ref.offset > total) {
+                    file_input_error = "file input range out of bounds";
+                    return;
+                }
+                int64_t end = (ref.length == 0) ? total : ref.offset + ref.length;
+                if (end < ref.offset || end > total) {
+                    file_input_error = "file input range out of bounds";
+                    return;
+                }
+                if (end - ref.offset > kFileInputMaxBytes) {
+                    file_input_error = "file input exceeds maximum size of 8MB";
+                    return;
+                }
+                full.resize(static_cast<size_t>(end - ref.offset));
+                file.seekg(static_cast<std::streamoff>(ref.offset), std::ios::beg);
+                if (!full.empty()) {
+                    file.read(full.data(), static_cast<std::streamsize>(full.size()));
+                    auto got = static_cast<size_t>(file.gcount());
+                    if (got < full.size()) full.resize(got);
+                }
+                have_content = true;
+            } else {
+                return;
+            }
+            if (!have_content) return;
+            if (static_cast<int64_t>(full.size()) > kFileInputInlineMaxBytes) return;
+            JsonValue inlined(JsonValue::object_tag);
+            inlined["uri"] = JsonValue(ref.uri);
+            inlined["content"] = JsonValue(std::move(full));
+            node = std::move(inlined);
+        };
+        resolve_file_input(*params.arguments);
+        if (file_input_error) {
+            promise.set_value(SerializeCallToolResult(
+                MakeToolIsErrorResult(*file_input_error)));
+            return;
+        }
     }
 
     auto req_log_level = ParseRequestLogLevel(req);

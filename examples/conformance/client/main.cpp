@@ -69,6 +69,8 @@ std::unique_ptr<McpClient> ConnectClient(
     options.client_info = Implementation{std::string(client_name), "1.0.0"};
     options.connect_mode = connect_mode;
     options.capabilities = std::move(capabilities);
+    options.enable_tasks_extension = true;
+    options.enable_skills_extension = true;
     if (enable_mrtr_auto_fulfill) {
         ClientOptions::InputRequiredConfig mrtr;
         mrtr.auto_fulfill = true;

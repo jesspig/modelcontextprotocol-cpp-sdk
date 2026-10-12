@@ -73,6 +73,7 @@ inline constexpr std::string_view kTaskCompleted = "notifications/tasks/complete
 inline constexpr std::string_view kTaskFailed = "notifications/tasks/failed";
 inline constexpr std::string_view kTaskCancelled = "notifications/tasks/cancelled";
 inline constexpr std::string_view kTaskInputRequired = "notifications/tasks/input_required";
+inline constexpr std::string_view kTriggersEvent = "notifications/triggers/event";
 
 } // namespace notifications
 

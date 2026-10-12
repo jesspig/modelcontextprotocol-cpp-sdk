@@ -3079,7 +3079,21 @@ TEST(McpClientTest, LegacyPingMetaNotModern) {
         opts.initialization_timeout = std::chrono::seconds(5);
         auto client = McpClient::Create(recorder, opts);
         ASSERT_FALSE(client->IsModernProtocol());
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(push))
+__pragma(warning(disable : 4996))
+#endif
         ASSERT_NO_THROW(client->Ping());
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic pop")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(pop))
+#endif
         ASSERT_TRUE(recorder->SawPing());
         std::string meta_version;
         if (auto meta = recorder->PingMeta(); meta && meta->IsObject()) {
@@ -3101,7 +3115,21 @@ TEST(McpClientTest, LegacyPingMetaNotModern) {
         opts.connect_mode = ConnectMode::Pin;
         auto client = McpClient::Create(recorder, opts);
         ASSERT_TRUE(client->IsModernProtocol());
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(push))
+__pragma(warning(disable : 4996))
+#endif
         EXPECT_THROW(client->Ping(), McpError);
+#if defined(__clang__) || defined(__GNUC__)
+_Pragma("GCC diagnostic pop")
+#endif
+#if defined(_MSC_VER)
+__pragma(warning(pop))
+#endif
         ASSERT_TRUE(recorder->SawPing());
         auto meta = recorder->PingMeta();
         ASSERT_TRUE(meta.has_value());
@@ -3113,4 +3141,279 @@ TEST(McpClientTest, LegacyPingMetaNotModern) {
         client->Close();
         server->Close();
     }
+}
+
+TEST(McpClientTest, SearchToolsFiltersByQueryCaseInsensitive) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"search-server", "1.0.0"};
+    sopts.enable_progressive_discovery = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    auto add = [&](const std::string& name, const std::string& desc) {
+        ToolOptions topts;
+        topts.Description(desc);
+        server->RegisterTool(name, topts,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) -> CallToolResult { return CallToolResult{}; }));
+    };
+    add("weather-now", "Get current weather");
+    add("WEATHER-forecast", "forecast");
+    add("calc-add", "add two numbers");
+    add("journal", "daily WEATHER diary");
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.enable_progressive_discovery = true;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r = client->SearchTools("weather");
+    ASSERT_EQ(r.tools.size(), 3u);
+    EXPECT_EQ(r.tools[0].name, "WEATHER-forecast");
+    EXPECT_EQ(r.tools[1].name, "journal");
+    EXPECT_EQ(r.tools[2].name, "weather-now");
+
+    auto rf = client->SearchTools("FORECAST");
+    ASSERT_EQ(rf.tools.size(), 1u);
+    EXPECT_EQ(rf.tools[0].name, "WEATHER-forecast");
+
+    auto all = client->SearchTools(std::nullopt);
+    EXPECT_EQ(all.tools.size(), 4u);
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SearchToolsClampsOutOfRangePageSize) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"search-server", "1.0.0"};
+    sopts.enable_progressive_discovery = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    auto add = [&](const std::string& name) {
+        ToolOptions topts;
+        topts.Description("clamp tool");
+        server->RegisterTool(name, topts,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) -> CallToolResult { return CallToolResult{}; }));
+    };
+    add("clamp-a");
+    add("clamp-b");
+    add("clamp-c");
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.enable_progressive_discovery = true;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto zero = client->SearchTools(std::nullopt, 0);
+    EXPECT_EQ(zero.tools.size(), 3u);
+    auto neg = client->SearchTools(std::nullopt, -5);
+    EXPECT_EQ(neg.tools.size(), 3u);
+    auto huge = client->SearchTools(std::nullopt, 1000);
+    EXPECT_EQ(huge.tools.size(), 3u);
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SearchToolsAggregatesPages) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"search-server", "1.0.0"};
+    sopts.enable_progressive_discovery = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    auto add = [&](const std::string& name) {
+        ToolOptions topts;
+        topts.Description("paged tool");
+        server->RegisterTool(name, topts,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) -> CallToolResult { return CallToolResult{}; }));
+    };
+    add("pagetool-1");
+    add("pagetool-2");
+    add("pagetool-3");
+    add("pagetool-4");
+    add("pagetool-5");
+    add("unrelated");
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.enable_progressive_discovery = true;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r = client->SearchTools("pagetool", 2);
+    ASSERT_EQ(r.tools.size(), 5u);
+    EXPECT_EQ(r.tools[0].name, "pagetool-1");
+    EXPECT_EQ(r.tools[1].name, "pagetool-2");
+    EXPECT_EQ(r.tools[2].name, "pagetool-3");
+    EXPECT_EQ(r.tools[3].name, "pagetool-4");
+    EXPECT_EQ(r.tools[4].name, "pagetool-5");
+    EXPECT_FALSE(r.next_cursor.has_value());
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, Etag304HitReturnsCachedBody) {
+    SetEtagCacheEnabled(true);
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    std::atomic<bool> saw_conditional{false};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, &saw_conditional](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            std::string inm;
+            if (req.meta && req.meta->IsObject()) {
+                if (auto* v = req.meta->Find("ifNoneMatch"); v && v->IsString())
+                    inm = v->GetString();
+            }
+            if (!inm.empty()) saw_conditional.store(true);
+            if (inm == "etag-v1") {
+                JsonValue result(JsonValue::object_tag);
+                result["notModified"] = JsonValue(true);
+                result["etag"] = JsonValue("etag-v1");
+                p.set_value(std::move(result));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue("uri-a");
+            c["text"] = JsonValue("v1-body");
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            result["etag"] = JsonValue("etag-v1");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    CacheableRequestOptions ropts;
+    ropts.cache_mode = "bypass";
+    auto r1 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r1.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 1);
+    auto r2 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_TRUE(saw_conditional.load());
+    auto* t1 = std::get_if<TextResourceContents>(&r1.contents[0]);
+    auto* t2 = std::get_if<TextResourceContents>(&r2.contents[0]);
+    ASSERT_NE(t1, nullptr);
+    ASSERT_NE(t2, nullptr);
+    EXPECT_EQ(t2->text, "v1-body");
+    EXPECT_EQ(t2->text, t1->text);
+
+    client->Close();
+    server_handler->Close();
+    SetEtagCacheEnabled(false);
+}
+
+TEST(McpClientTest, EtagMissPassesThroughNewBody) {
+    SetEtagCacheEnabled(true);
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    std::atomic<bool> saw_conditional{false};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, &saw_conditional](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            std::string inm;
+            if (req.meta && req.meta->IsObject()) {
+                if (auto* v = req.meta->Find("ifNoneMatch"); v && v->IsString())
+                    inm = v->GetString();
+            }
+            if (!inm.empty()) saw_conditional.store(true);
+            std::string body = "v1-body";
+            std::string etag = "etag-v1";
+            if (inm == "etag-v1") {
+                body = "v2-body";
+                etag = "etag-v2";
+            } else if (inm == "etag-v2") {
+                JsonValue result(JsonValue::object_tag);
+                result["notModified"] = JsonValue(true);
+                result["etag"] = JsonValue("etag-v2");
+                p.set_value(std::move(result));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue("uri-a");
+            c["text"] = JsonValue(body);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            result["etag"] = JsonValue(etag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    CacheableRequestOptions ropts;
+    ropts.cache_mode = "bypass";
+    auto r1 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r1.contents.size(), 1u);
+    auto r2 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_TRUE(saw_conditional.load());
+    auto* t2 = std::get_if<TextResourceContents>(&r2.contents[0]);
+    ASSERT_NE(t2, nullptr);
+    EXPECT_EQ(t2->text, "v2-body");
+    auto r3 = client->ReadResource("uri-a", ropts);
+    ASSERT_EQ(r3.contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 3);
+    auto* t3 = std::get_if<TextResourceContents>(&r3.contents[0]);
+    ASSERT_NE(t3, nullptr);
+    EXPECT_EQ(t3->text, "v2-body");
+
+    client->Close();
+    server_handler->Close();
+    SetEtagCacheEnabled(false);
+}
+
+TEST(McpClientTest, EtagOversizeSkipsEtag) {
+    SetEtagCacheEnabled(true);
+    ListToolsResult big;
+    Tool t;
+    t.name = "big-tool";
+    t.description = std::string(9u * 1024u * 1024u, 'x');
+    t.input_schema = JsonValue(JsonValue::object_tag);
+    big.tools.push_back(std::move(t));
+    JsonValue j = SerializeListToolsResult(big);
+    EXPECT_TRUE(j.Find("etag") == nullptr);
+    SetEtagCacheEnabled(false);
+}
+
+TEST(McpClientTest, EtagDisabledWritesNoEtag) {
+    SetEtagCacheEnabled(false);
+    ListToolsResult small;
+    Tool t;
+    t.name = "small-tool";
+    t.input_schema = JsonValue(JsonValue::object_tag);
+    small.tools.push_back(std::move(t));
+    JsonValue j = SerializeListToolsResult(small);
+    EXPECT_TRUE(j.Find("etag") == nullptr);
+    CacheableResult cr;
+    cr.etag = "abc";
+    JsonValue cj = SerializeCacheableResult(cr);
+    ASSERT_NE(cj.Find("etag"), nullptr);
+    EXPECT_EQ(cj.Find("etag")->GetString(), "abc");
+    auto back = DeserializeCacheableResult(cj);
+    ASSERT_TRUE(back.etag.has_value());
+    EXPECT_EQ(*back.etag, "abc");
 }
