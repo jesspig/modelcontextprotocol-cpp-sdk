@@ -13,6 +13,9 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <thread>
 #include <set>
 #include <algorithm>
@@ -359,6 +362,52 @@ CallToolResult MakeToolIsErrorResult(std::string text) {
     result.is_error = true;
     result.content.push_back(TextContent{"text", std::move(text)});
     return result;
+}
+
+constexpr int64_t kFileInputMaxBytes = 8 * 1024 * 1024;
+constexpr int64_t kFileInputInlineMaxBytes = 256 * 1024;
+
+bool HasFileInputPrefix(std::string_view s, std::string_view prefix) {
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool IsFileInputRefObject(const JsonValue& node) {
+    if (!node.IsObject()) return false;
+    const auto& obj = node.GetObject();
+    if (obj.empty() || obj.size() > 3) return false;
+    auto uri_it = obj.find("uri");
+    if (uri_it == obj.end() || !uri_it->second.IsString()) return false;
+    for (const auto& entry : obj) {
+        if (entry.first == "uri") continue;
+        if (entry.first == "offset" || entry.first == "length") {
+            if (!entry.second.IsInt()) return false;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool SliceFileInputRange(const std::string& full, int64_t offset, int64_t length,
+    std::string& out, std::string& error)
+{
+    int64_t size = static_cast<int64_t>(full.size());
+    if (offset < 0 || length < 0 || offset > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    int64_t end = (length == 0) ? size : offset + length;
+    if (end < offset || end > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    if (end - offset > kFileInputMaxBytes) {
+        error = "file input exceeds maximum size of 8MB";
+        return false;
+    }
+    out = full.substr(static_cast<size_t>(offset),
+        static_cast<size_t>(end - offset));
+    return true;
 }
 
 std::string ToolExecutionFailureMessage(const std::string& name) {
@@ -1738,6 +1787,162 @@ void McpServer::HandleCallTool(
             McpError(McpErrorCode::InvalidParams,
                      "tool not found: " + params.name)));
         return;
+    }
+
+    if (options_.enable_file_input && params.arguments) {
+        std::optional<std::string> file_input_error;
+        std::function<void(JsonValue&)> resolve_file_input = [&](JsonValue& node) {
+            if (file_input_error) return;
+            if (node.IsArray()) {
+                for (auto& item : node.GetArray()) resolve_file_input(item);
+                return;
+            }
+            if (!IsFileInputRefObject(node)) {
+                if (node.IsObject()) {
+                    for (auto& entry : node.GetObject()) resolve_file_input(entry.second);
+                }
+                return;
+            }
+            FileRef ref = DeserializeFileRef(node);
+            if (HasFileInputPrefix(ref.uri, "https://") ||
+                HasFileInputPrefix(ref.uri, "http://")) {
+                return;
+            }
+            std::string full;
+            bool have_content = false;
+            if (HasFileInputPrefix(ref.uri, "resource://")) {
+                bool found = false;
+                ReadResourceResult read;
+                for (const auto& entry : resources_) {
+                    if (entry.is_template) continue;
+                    if (entry.uri_pattern != ref.uri) continue;
+                    found = true;
+                    try {
+                        read = entry.handler(ref.uri);
+                    } catch (...) {
+                        file_input_error = "file input resource read failed: " + ref.uri;
+                        return;
+                    }
+                    break;
+                }
+                if (!found) {
+                    for (const auto& entry : resources_) {
+                        if (!entry.is_template) continue;
+                        std::string template_error;
+                        auto tmpl = detail::UriTemplate::Parse(
+                            entry.uri_pattern, template_error);
+                        if (!tmpl) continue;
+                        auto variables = tmpl->Match(ref.uri);
+                        if (!variables) continue;
+                        found = true;
+                        try {
+                            read = entry.template_handler(ref.uri, *variables);
+                        } catch (...) {
+                            file_input_error =
+                                "file input resource read failed: " + ref.uri;
+                            return;
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    file_input_error = "file input resource not found: " + ref.uri;
+                    return;
+                }
+                if (read.input_required) {
+                    file_input_error = "file input resource requires input: " + ref.uri;
+                    return;
+                }
+                for (const auto& c : read.contents) {
+                    if (auto* t = std::get_if<TextResourceContents>(&c)) full += t->text;
+                    else if (auto* b = std::get_if<BlobResourceContents>(&c)) full += b->blob;
+                }
+                std::string slice_error;
+                if (!SliceFileInputRange(full, ref.offset, ref.length, full, slice_error)) {
+                    file_input_error = std::move(slice_error);
+                    return;
+                }
+                have_content = true;
+            } else if (HasFileInputPrefix(ref.uri, "file://")) {
+                std::string raw = ref.uri.substr(7);
+                if (raw.size() > 2 && raw[0] == '/' &&
+                    ((raw[1] >= 'A' && raw[1] <= 'Z') ||
+                     (raw[1] >= 'a' && raw[1] <= 'z')) && raw[2] == ':') {
+                    raw.erase(0, 1);
+                }
+                std::error_code canon_ec;
+                std::filesystem::path canon = std::filesystem::weakly_canonical(
+                    std::filesystem::path(raw), canon_ec);
+                if (canon_ec) {
+                    file_input_error = "file input not allowed: " + ref.uri;
+                    return;
+                }
+                bool allowed = false;
+                for (int i = 0; i < 2; ++i) {
+                    std::error_code dir_ec;
+                    std::filesystem::path dir = (i == 0)
+                        ? std::filesystem::temp_directory_path(dir_ec)
+                        : std::filesystem::current_path(dir_ec);
+                    if (dir_ec) continue;
+                    std::error_code dir_canon_ec;
+                    std::filesystem::path cdir =
+                        std::filesystem::weakly_canonical(dir, dir_canon_ec);
+                    if (dir_canon_ec) cdir = dir;
+                    auto rel = canon.lexically_relative(cdir);
+                    if (!rel.empty() && *rel.begin() != "..") {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if (!allowed) {
+                    file_input_error = "file input not allowed: " + ref.uri;
+                    return;
+                }
+                std::ifstream file(canon, std::ios::binary);
+                if (!file) {
+                    file_input_error = "file input not found: " + ref.uri;
+                    return;
+                }
+                file.seekg(0, std::ios::end);
+                int64_t total = static_cast<int64_t>(file.tellg());
+                if (total < 0) total = 0;
+                if (ref.offset < 0 || ref.length < 0 || ref.offset > total) {
+                    file_input_error = "file input range out of bounds";
+                    return;
+                }
+                int64_t end = (ref.length == 0) ? total : ref.offset + ref.length;
+                if (end < ref.offset || end > total) {
+                    file_input_error = "file input range out of bounds";
+                    return;
+                }
+                if (end - ref.offset > kFileInputMaxBytes) {
+                    file_input_error = "file input exceeds maximum size of 8MB";
+                    return;
+                }
+                full.resize(static_cast<size_t>(end - ref.offset));
+                file.seekg(static_cast<std::streamoff>(ref.offset), std::ios::beg);
+                if (!full.empty()) {
+                    file.read(full.data(), static_cast<std::streamsize>(full.size()));
+                    auto got = static_cast<size_t>(file.gcount());
+                    if (got < full.size()) full.resize(got);
+                }
+                have_content = true;
+            } else {
+                return;
+            }
+            if (!have_content) return;
+            if (static_cast<int64_t>(full.size()) > kFileInputInlineMaxBytes) return;
+            JsonValue inlined(JsonValue::object_tag);
+            inlined["uri"] = JsonValue(ref.uri);
+            inlined["content"] = JsonValue(std::move(full));
+            node = std::move(inlined);
+        };
+        resolve_file_input(*params.arguments);
+        if (file_input_error) {
+            promise.set_value(SerializeCallToolResult(
+                MakeToolIsErrorResult(*file_input_error)));
+            return;
+        }
     }
 
     auto req_log_level = ParseRequestLogLevel(req);
