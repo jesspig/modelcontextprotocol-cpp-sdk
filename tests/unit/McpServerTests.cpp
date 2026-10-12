@@ -2333,6 +2333,11 @@ RequestMeta MetaWithMcpName(std::string_view name) {
     JsonValue ext(JsonValue::object_tag);
     ext["Mcp-Name"] = JsonValue(std::string(name));
     meta.extensions = std::move(ext);
+    ClientCapabilities caps;
+    std::map<std::string, JsonValue> task_ext;
+    task_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    caps.extensions = std::move(task_ext);
+    meta.client_capabilities = std::move(caps);
     return meta;
 }
 
@@ -2431,7 +2436,7 @@ TEST(McpServerTest, UnsolicitedTaskCreation) {
     CallToolRequestParams params;
     params.name = "quick_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2448,7 +2453,7 @@ TEST(McpServerTest, UnsolicitedTaskCreation) {
     std::optional<GetTaskResult> final_task;
     for (int i = 0; i < 200; ++i) {
         auto get_future = env.client->SendRequest(methods::kGetTask,
-            SerializeGetTaskRequestParams(get_params), {},
+            SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
             std::chrono::milliseconds(2000));
         ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
                   std::future_status::ready);
@@ -2497,7 +2502,7 @@ TEST(McpServerTest, CreateTaskResultFlatNoNested) {
     CallToolRequestParams params;
     params.name = "flat_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2534,7 +2539,7 @@ TEST(McpServerTest, TaskTimestampsPopulated) {
     CallToolRequestParams params;
     params.name = "timed_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2548,7 +2553,7 @@ TEST(McpServerTest, TaskTimestampsPopulated) {
     std::optional<GetTaskResult> final_task;
     for (int i = 0; i < 200; ++i) {
         auto get_future = env.client->SendRequest(methods::kGetTask,
-            SerializeGetTaskRequestParams(get_params), {},
+            SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
             std::chrono::milliseconds(2000));
         ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
                   std::future_status::ready);
@@ -2582,7 +2587,7 @@ TEST(McpServerTest, ToolErrorMapsToCompleted) {
     CallToolRequestParams params;
     params.name = "err_tool";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2594,7 +2599,7 @@ TEST(McpServerTest, ToolErrorMapsToCompleted) {
     std::optional<GetTaskResult> final_task;
     for (int i = 0; i < 200; ++i) {
         auto get_future = env.client->SendRequest(methods::kGetTask,
-            SerializeGetTaskRequestParams(get_params), {},
+            SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
             std::chrono::milliseconds(2000));
         ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
                   std::future_status::ready);
@@ -2630,7 +2635,7 @@ TEST(McpServerTest, ProtocolErrorMapsToFailedWithError) {
     CallToolRequestParams params;
     params.name = "boom_task";
     auto future = env.client->SendRequest(methods::kCallTool,
-        SerializeCallToolRequestParams(params), {},
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
 
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
@@ -2644,7 +2649,7 @@ TEST(McpServerTest, ProtocolErrorMapsToFailedWithError) {
     EXPECT_EQ(failed->status, TaskStatus::Failed);
 
     auto get_future = env.client->SendRequest(methods::kGetTask,
-        SerializeGetTaskRequestParams(get_params), {},
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
     ASSERT_EQ(get_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
@@ -2676,7 +2681,7 @@ TEST(McpServerTest, TasksUpdateWithInputResponses) {
     responses["name"] = std::move(name_resp);
     up.input_responses = std::move(responses);
     auto up_future = env.client->SendRequest(methods::kUpdateTask,
-        SerializeUpdateTaskRequestParams(up), {},
+        SerializeUpdateTaskRequestParams(up), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
     ASSERT_EQ(up_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto up_resp = up_future.get();
@@ -2718,7 +2723,7 @@ TEST(McpServerTest, TasksUpdateWithInputResponses) {
     again["name"] = JsonValue("Bob");
     repeat.input_responses = std::move(again);
     auto repeat_future = env.client->SendRequest(methods::kUpdateTask,
-        SerializeUpdateTaskRequestParams(repeat), {},
+        SerializeUpdateTaskRequestParams(repeat), MetaWithTasksExtension(),
         std::chrono::milliseconds(2000));
     ASSERT_EQ(repeat_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
