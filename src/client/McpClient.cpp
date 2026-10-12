@@ -466,8 +466,11 @@ InitializeResult VersionNegotiation::HandshakeInitialize(
     params.client_info = client_info;
     params.capabilities = capabilities.value_or(ClientCapabilities{});
 
+    RequestMeta handshake_meta;
+    handshake_meta.protocol_version = params.protocol_version;
     auto future = handler.SendRequest(
-        methods::kInitialize, SerializeInitializeRequestParams(params), {}, timeout);
+        methods::kInitialize, SerializeInitializeRequestParams(params),
+        handshake_meta, timeout);
 
     auto result = future.get();
 
@@ -1424,8 +1427,10 @@ CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
 }
 
 EmptyResult McpClient::Ping() {
+    RequestMeta ping_meta;
+    ping_meta.protocol_version = negotiation_.negotiated_version;
     auto result = DoSendRequest(*handler_, methods::kPing,
-        JsonValue(JsonValue::object_tag), RequestMeta{}, kPingTimeout);
+        JsonValue(JsonValue::object_tag), ping_meta, kPingTimeout);
     (void)result;
     return EmptyResult{};
 }

@@ -2938,3 +2938,172 @@ TEST(McpClientTest, MrtrElicitationApplyDefaultsFillsInputResponses) {
     client->Close();
     server_handler->Close();
 }
+
+TEST(McpClientTest, LegacyHandshakeMetaMatchesBodyVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    std::optional<JsonValue> captured_meta;
+    std::string captured_body_version;
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kInitialize,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (req.meta) captured_meta = *req.meta;
+            else captured_meta = std::nullopt;
+            if (req.params && req.params->IsObject()) {
+                if (auto* v = req.params->Find("protocolVersion");
+                    v && v->IsString())
+                    captured_body_version = v->GetString();
+            }
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] =
+                SerializeImplementation(Implementation{"legacy-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    auto client_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client_handler->Start();
+
+    auto result = VersionNegotiation::HandshakeInitialize(
+        *client_handler, Implementation{"test-client", "1.0"}, std::nullopt,
+        std::chrono::seconds(5));
+    EXPECT_EQ(result.protocol_version, std::string(kLegacyProtocolVersion));
+    EXPECT_EQ(captured_body_version, std::string(kLegacyProtocolVersion));
+
+    std::string meta_version;
+    if (captured_meta && captured_meta->IsObject()) {
+        if (auto* pv = captured_meta->Find("io.modelcontextprotocol/protocolVersion");
+            pv && pv->IsString())
+            meta_version = pv->GetString();
+    }
+    EXPECT_NE(meta_version, std::string(kLatestProtocolVersion));
+    if (!meta_version.empty()) {
+        EXPECT_EQ(meta_version, captured_body_version);
+    }
+
+    client_handler->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ModernDiscoverMetaUnaffected) {
+    auto pair = InMemoryTransport::CreatePair();
+    std::optional<JsonValue> captured_meta;
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kDiscover,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (req.meta) captured_meta = *req.meta;
+            else captured_meta = std::nullopt;
+            JsonValue result(JsonValue::object_tag);
+            JsonValue supported(JsonValue::array_tag);
+            supported.PushBack(JsonValue(std::string(kLatestProtocolVersion)));
+            result["supportedVersions"] = std::move(supported);
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] =
+                SerializeImplementation(Implementation{"modern-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    auto client_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client_handler->Start();
+
+    ClientOptions opts;
+    auto discovered = VersionNegotiation::ProbeDiscover(
+        *client_handler, std::string(kLatestProtocolVersion),
+        std::chrono::seconds(5), opts);
+    ASSERT_TRUE(discovered.has_value());
+    ASSERT_TRUE(captured_meta.has_value());
+    ASSERT_TRUE(captured_meta->IsObject());
+    auto* pv = captured_meta->Find("io.modelcontextprotocol/protocolVersion");
+    ASSERT_NE(pv, nullptr);
+    ASSERT_TRUE(pv->IsString());
+    EXPECT_EQ(pv->GetString(), std::string(kLatestProtocolVersion));
+
+    client_handler->Close();
+    server_handler->Close();
+}
+
+struct PingMetaRecorder : public ITransport {
+    explicit PingMetaRecorder(std::shared_ptr<ITransport> inner)
+        : inner_(std::move(inner)) {}
+    std::string_view SessionId() const override { return inner_->SessionId(); }
+    MessageChannel& GetMessageChannel() override { return inner_->GetMessageChannel(); }
+    void SendMessageAsync(JsonRpcMessage message) override {
+        if (const auto* req = AsRequest(message)) {
+            if (req->method == methods::kPing) {
+                std::lock_guard<std::mutex> lk(mutex_);
+                saw_ping_ = true;
+                ping_meta_ = req->meta;
+            }
+        }
+        inner_->SendMessageAsync(std::move(message));
+    }
+    void Close() override { inner_->Close(); }
+    bool IsStateless() const override { return inner_->IsStateless(); }
+    void Start() override { inner_->Start(); }
+    bool SawPing() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return saw_ping_;
+    }
+    std::optional<JsonValue> PingMeta() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return ping_meta_;
+    }
+    std::shared_ptr<ITransport> inner_;
+    mutable std::mutex mutex_;
+    bool saw_ping_ = false;
+    std::optional<JsonValue> ping_meta_;
+};
+
+TEST(McpClientTest, LegacyPingMetaNotModern) {
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        auto recorder = std::make_shared<PingMetaRecorder>(std::move(pair.client));
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"ping-legacy-server", "1.0"};
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+        ClientOptions opts;
+        opts.connect_mode = ConnectMode::Legacy;
+        opts.initialization_timeout = std::chrono::seconds(5);
+        auto client = McpClient::Create(recorder, opts);
+        ASSERT_FALSE(client->IsModernProtocol());
+        ASSERT_NO_THROW(client->Ping());
+        ASSERT_TRUE(recorder->SawPing());
+        std::string meta_version;
+        if (auto meta = recorder->PingMeta(); meta && meta->IsObject()) {
+            if (auto* pv = meta->Find("io.modelcontextprotocol/protocolVersion");
+                pv && pv->IsString())
+                meta_version = pv->GetString();
+        }
+        EXPECT_NE(meta_version, std::string(kLatestProtocolVersion));
+        client->Close();
+        server->Close();
+    }
+    {
+        auto pair = InMemoryTransport::CreatePair();
+        auto recorder = std::make_shared<PingMetaRecorder>(std::move(pair.client));
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"ping-modern-server", "1.0"};
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+        ClientOptions opts;
+        opts.connect_mode = ConnectMode::Pin;
+        auto client = McpClient::Create(recorder, opts);
+        ASSERT_TRUE(client->IsModernProtocol());
+        EXPECT_THROW(client->Ping(), McpError);
+        ASSERT_TRUE(recorder->SawPing());
+        auto meta = recorder->PingMeta();
+        ASSERT_TRUE(meta.has_value());
+        ASSERT_TRUE(meta->IsObject());
+        auto* pv = meta->Find("io.modelcontextprotocol/protocolVersion");
+        ASSERT_NE(pv, nullptr);
+        ASSERT_TRUE(pv->IsString());
+        EXPECT_EQ(pv->GetString(), std::string(kLatestProtocolVersion));
+        client->Close();
+        server->Close();
+    }
+}
