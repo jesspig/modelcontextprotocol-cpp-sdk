@@ -1,9 +1,11 @@
 #pragma once
 #include <mcp/JsonValue.hpp>
+#include <mcp/McpError.hpp>
 
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mcp { namespace detail {
 
@@ -113,6 +115,7 @@ inline const JsonValue* ResolveSchemaRef(const JsonValue& root, std::string_view
 
 inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValue& schema,
                                        const JsonValue& root, size_t depth,
+                                       std::vector<const JsonValue*>& ref_chain,
                                        std::string& error_out) {
     if (schema.IsBool()) {
         if (schema.GetBool()) return true;
@@ -130,9 +133,22 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
             error_out = "invalid $ref";
             return false;
         }
-        const JsonValue* target = ResolveSchemaRef(root, ref->GetString(), error_out);
-        if (!target) return false;
-        if (!ValidateJsonSchemaWithRoot(instance, *target, root, depth + 1, error_out)) return false;
+        const std::string& ref_value = ref->GetString();
+        if (ref_value.empty() || ref_value[0] == '#') {
+            const JsonValue* target = ResolveSchemaRef(root, ref_value, error_out);
+            if (!target) return false;
+            for (const JsonValue* visited : ref_chain) {
+                if (visited == target) {
+                    throw McpError(McpErrorCode::InvalidParams,
+                        "circular $ref '" + ref_value + "'");
+                }
+            }
+            ref_chain.push_back(target);
+            bool ref_ok = ValidateJsonSchemaWithRoot(instance, *target, root, depth + 1,
+                                                     ref_chain, error_out);
+            ref_chain.pop_back();
+            if (!ref_ok) return false;
+        }
     }
     if (auto* c = schema.Find("const")) {
         if (*c != instance) {
@@ -152,14 +168,14 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
     }
     if (auto* all = schema.Find("allOf"); all && all->IsArray()) {
         for (const auto& sub : all->GetArray()) {
-            if (!ValidateJsonSchemaWithRoot(instance, sub, root, depth + 1, error_out)) return false;
+            if (!ValidateJsonSchemaWithRoot(instance, sub, root, depth + 1, ref_chain, error_out)) return false;
         }
     }
     if (auto* any = schema.Find("anyOf"); any && any->IsArray()) {
         bool matched = false;
         std::string ignored;
         for (const auto& sub : any->GetArray()) {
-            if (ValidateJsonSchemaWithRoot(instance, sub, root, depth + 1, ignored)) {
+            if (ValidateJsonSchemaWithRoot(instance, sub, root, depth + 1, ref_chain, ignored)) {
                 matched = true;
                 break;
             }
@@ -170,26 +186,26 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
         size_t matched = 0;
         std::string ignored;
         for (const auto& sub : one->GetArray()) {
-            if (ValidateJsonSchemaWithRoot(instance, sub, root, depth + 1, ignored)) ++matched;
+            if (ValidateJsonSchemaWithRoot(instance, sub, root, depth + 1, ref_chain, ignored)) ++matched;
         }
         if (matched != 1) { error_out = "value does not match oneOf"; return false; }
     }
     if (auto* n = schema.Find("not")) {
         std::string ignored;
-        if (ValidateJsonSchemaWithRoot(instance, *n, root, depth + 1, ignored)) {
+        if (ValidateJsonSchemaWithRoot(instance, *n, root, depth + 1, ref_chain, ignored)) {
             error_out = "value matches forbidden not schema";
             return false;
         }
     }
     if (auto* cond = schema.Find("if")) {
         std::string ignored;
-        if (ValidateJsonSchemaWithRoot(instance, *cond, root, depth + 1, ignored)) {
+        if (ValidateJsonSchemaWithRoot(instance, *cond, root, depth + 1, ref_chain, ignored)) {
             if (auto* then = schema.Find("then")) {
-                if (!ValidateJsonSchemaWithRoot(instance, *then, root, depth + 1, error_out))
+                if (!ValidateJsonSchemaWithRoot(instance, *then, root, depth + 1, ref_chain, error_out))
                     return false;
             }
         } else if (auto* els = schema.Find("else")) {
-            if (!ValidateJsonSchemaWithRoot(instance, *els, root, depth + 1, error_out)) return false;
+            if (!ValidateJsonSchemaWithRoot(instance, *els, root, depth + 1, ref_chain, error_out)) return false;
         }
     }
     if (instance.IsObject()) {
@@ -207,7 +223,7 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
         if (has_props) {
             for (const auto& [key, sub] : props->GetObject()) {
                 auto* val = instance.Find(key);
-                if (val && !ValidateJsonSchemaWithRoot(*val, sub, root, depth + 1, error_out)) {
+                if (val && !ValidateJsonSchemaWithRoot(*val, sub, root, depth + 1, ref_chain, error_out)) {
                     error_out = "property '" + key + "': " + error_out;
                     return false;
                 }
@@ -216,7 +232,7 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
         if (auto* add = schema.Find("additionalProperties")) {
             for (const auto& [key, val] : instance.GetObject()) {
                 if (has_props && props->Contains(key)) continue;
-                if (!ValidateJsonSchemaWithRoot(val, *add, root, depth + 1, error_out)) {
+                if (!ValidateJsonSchemaWithRoot(val, *add, root, depth + 1, ref_chain, error_out)) {
                     error_out = "property '" + key + "': " + error_out;
                     return false;
                 }
@@ -232,7 +248,7 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
             if (has_prefix && i < prefix->Size()) sub = &prefix->GetArray()[i];
             else if (items) sub = items;
             if (sub && !ValidateJsonSchemaWithRoot(instance.GetArray()[i], *sub, root,
-                                                  depth + 1, error_out)) {
+                                                  depth + 1, ref_chain, error_out)) {
                 error_out = "item " + std::to_string(i) + ": " + error_out;
                 return false;
             }
@@ -273,7 +289,8 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
 
 inline bool ValidateJsonSchema(const JsonValue& instance, const JsonValue& schema,
                                std::string& error_out) {
-    return ValidateJsonSchemaWithRoot(instance, schema, schema, 0, error_out);
+    std::vector<const JsonValue*> ref_chain{&schema};
+    return ValidateJsonSchemaWithRoot(instance, schema, schema, 0, ref_chain, error_out);
 }
 
 }} // namespace mcp::detail
