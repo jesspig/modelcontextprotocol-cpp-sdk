@@ -25,6 +25,11 @@ public:
     bool SetTaskStatus(const std::string& task_id, TaskStatus status) override;
     bool AdvanceTaskWithInput(const std::string& task_id,
                               const JsonValue& input_responses) override;
+    bool ParkTaskForInput(const std::string& task_id,
+                          const InputRequests& input_requests) override;
+    bool BindTaskTool(const std::string& task_id,
+                      const std::string& tool_name,
+                      const std::optional<JsonValue>& tool_arguments) override;
     std::vector<TaskState> GetAllTasks() override;
 
 private:

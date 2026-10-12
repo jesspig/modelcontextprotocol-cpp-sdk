@@ -33,6 +33,8 @@ JsonValue SerializeTaskState(const TaskState& state) {
     if (state.poll_interval_ms) obj[detail::kPollIntervalMs] = JsonValue(*state.poll_interval_ms);
     if (state.input_requests) obj[detail::kInputRequests] = SerializeInputRequests(*state.input_requests);
     if (state.input_responses) obj[detail::kInputResponses] = *state.input_responses;
+    if (state.tool_name) obj["toolName"] = JsonValue(*state.tool_name);
+    if (state.tool_arguments) obj["toolArguments"] = *state.tool_arguments;
     return JsonValue(std::move(obj));
 }
 
@@ -62,6 +64,10 @@ TaskState DeserializeTaskState(const JsonValue& j) {
         state.input_requests = DeserializeInputRequests(*v);
     if (auto* v = j.Find(detail::kInputResponses); v && !v->IsNull())
         state.input_responses = *v;
+    if (auto* v = j.Find("toolName"); v && v->IsString())
+        state.tool_name = v->GetString();
+    if (auto* v = j.Find("toolArguments"); v && !v->IsNull())
+        state.tool_arguments = *v;
     return state;
 }
 
@@ -223,9 +229,73 @@ bool FileTaskStore::AdvanceTaskWithInput(
         if (it == tasks_.end()) return false;
         if (it->second.status != TaskStatus::InputRequired) return false;
         original = it->second;
-        it->second.input_responses = input_responses;
+        if (it->second.input_responses && it->second.input_responses->IsObject()
+            && input_responses.IsObject()) {
+            for (const auto& [key, value] : input_responses.GetObject()) {
+                (*it->second.input_responses)[key] = value;
+            }
+        } else {
+            it->second.input_responses = input_responses;
+        }
         it->second.status = TaskStatus::Working;
         it->second.last_updated_at = MakeMillisNow();
+        snapshot = tasks_;
+    }
+    if (!PersistTasks(snapshot)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::ParkTaskForInput(
+    const std::string& task_id,
+    const InputRequests& input_requests)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    std::unordered_map<std::string, TaskState> snapshot;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        if (it->second.status == TaskStatus::Completed
+            || it->second.status == TaskStatus::Failed
+            || it->second.status == TaskStatus::Cancelled) {
+            return false;
+        }
+        original = it->second;
+        it->second.input_requests = input_requests;
+        it->second.status = TaskStatus::InputRequired;
+        it->second.last_updated_at = MakeMillisNow();
+        snapshot = tasks_;
+    }
+    if (!PersistTasks(snapshot)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw std::runtime_error("task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::BindTaskTool(
+    const std::string& task_id,
+    const std::string& tool_name,
+    const std::optional<JsonValue>& tool_arguments)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    std::unordered_map<std::string, TaskState> snapshot;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        original = it->second;
+        it->second.tool_name = tool_name;
+        it->second.tool_arguments = tool_arguments;
         snapshot = tasks_;
     }
     if (!PersistTasks(snapshot)) {

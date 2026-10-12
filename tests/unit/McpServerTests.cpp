@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -804,6 +805,42 @@ TEST(McpServerTest, DiscoverDeclaresAllSupportedVersions) {
     client->Close();
 }
 
+TEST(McpServerTest, DiscoverMirrorsServerInfoInResultMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), opts);
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    DiscoverRequestParams params;
+    auto future = client->SendRequest(methods::kDiscover,
+        SerializeDiscoverRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* meta = resp.Find("_meta");
+    ASSERT_NE(meta, nullptr);
+    ASSERT_TRUE(meta->IsObject());
+    auto* mirrored = meta->Find("io.modelcontextprotocol/serverInfo");
+    ASSERT_NE(mirrored, nullptr);
+    EXPECT_EQ(mirrored->Find("name")->GetString(), "meta-server");
+    EXPECT_EQ(mirrored->Find("version")->GetString(), "2.0.0");
+
+    JsonValue body_only = resp;
+    body_only.GetObject().erase(std::string("serverInfo"));
+    auto recovered = DeserializeDiscoverResult(body_only);
+    EXPECT_EQ(recovered.server_info.name, "meta-server");
+    EXPECT_EQ(recovered.server_info.version, "2.0.0");
+
+    server->Close();
+    client->Close();
+}
+
 namespace {
 
 std::filesystem::path MakeTaskStorePath() {
@@ -1166,6 +1203,55 @@ TEST(McpServerTest, SubscriptionsListenAcknowledgesHonoredFilter) {
     EXPECT_EQ(honored.notifications.resources_list_changed.value_or(false), true);
     ASSERT_EQ(honored.notifications.resource_subscriptions.size(), 1u);
     EXPECT_EQ(honored.notifications.resource_subscriptions[0], "resource://sub/1");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, ToolListChangedHonorsSubscriptionFilter) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed_ids;
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&observed_mutex, &observed_ids](const JsonRpcNotification& n) {
+            std::string sid;
+            if (n.meta && n.meta->IsObject()) {
+                if (auto* v = n.meta->Find("io.modelcontextprotocol/subscriptionId");
+                    v && v->IsString()) {
+                    sid = v->GetString();
+                }
+            }
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed_ids.push_back(sid);
+        });
+
+    SubscriptionsListenRequestParams tools_only;
+    tools_only.notifications.tools_list_changed = true;
+    auto tools_future = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(tools_only),
+        MetaWithSubscriptionId("sub-tools"),
+        std::chrono::milliseconds(2000));
+
+    SubscriptionsListenRequestParams prompts_only;
+    prompts_only.notifications.prompts_list_changed = true;
+    auto prompts_future = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(prompts_only),
+        MetaWithSubscriptionId("sub-prompts"),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(tools_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(tools_future.get().Contains("code"));
+    ASSERT_EQ(prompts_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(prompts_future.get().Contains("code"));
+
+    ctx.server->SendToolListChanged();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::lock_guard<std::mutex> lock(observed_mutex);
+    ASSERT_EQ(observed_ids.size(), 1u);
+    EXPECT_EQ(observed_ids[0], "sub-tools");
 
     ctx.server->Close();
     ctx.client->Close();
@@ -2189,6 +2275,41 @@ ModernTaskEnv MakeModernTaskEnv() {
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
     env.client->Start();
+    InitializeRequestParams iparams;
+    iparams.protocol_version = std::string(kLatestProtocolVersion);
+    iparams.client_info = Implementation{"test-client", "1.0"};
+    ClientCapabilities declared_caps;
+    std::map<std::string, JsonValue> declared_ext;
+    declared_ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    declared_caps.extensions = std::move(declared_ext);
+    iparams.capabilities = std::move(declared_caps);
+    auto init_future = env.client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(iparams), {},
+        std::chrono::milliseconds(2000));
+    if (init_future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        return env;
+    }
+    (void)init_future.get();
+    env.client->SendNotification(notifications::kInitialized);
+    return env;
+}
+
+ModernTaskEnv MakeBareModernTaskEnv() {
+    ModernTaskEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    env.store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(env.store_path, ec);
+    env.store = std::make_shared<FileTaskStore>(env.store_path);
+    sopts.task_store = env.store;
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
     return env;
 }
 
@@ -2205,6 +2326,57 @@ RequestMeta MetaWithMcpName(std::string_view name) {
     ext["Mcp-Name"] = JsonValue(std::string(name));
     meta.extensions = std::move(ext);
     return meta;
+}
+
+RequestMeta MetaWithTasksExtension() {
+    RequestMeta meta;
+    ClientCapabilities caps;
+    std::map<std::string, JsonValue> ext;
+    ext[std::string(kTasksExtensionId)] = JsonValue(JsonValue::object_tag);
+    caps.extensions = std::move(ext);
+    meta.client_capabilities = std::move(caps);
+    return meta;
+}
+
+RequestMeta MetaWithSampling() {
+    RequestMeta meta;
+    ClientCapabilities caps;
+    caps.sampling = SamplingCapability{};
+    meta.client_capabilities = std::move(caps);
+    return meta;
+}
+
+ToolOptions MakeRequiredTaskToolOptions() {
+    ToolOptions opts = MakeTaskToolOptions();
+    opts.execution->task_support = TaskSupport::Required;
+    return opts;
+}
+
+JsonValue SendBareRequest(
+    const std::shared_ptr<McpSessionHandler>& client,
+    std::string_view method,
+    JsonValue params,
+    RequestMeta meta = {})
+{
+    auto future = client->SendRequest(method, std::move(params), std::move(meta),
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        JsonValue err(JsonValue::object_tag);
+        err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
+        return err;
+    }
+    return future.get();
+}
+
+const JsonValue* RequiredTasksExtensionEntry(const JsonValue& resp) {
+    auto* data = resp.Find("data");
+    if (!data) return nullptr;
+    auto* required = data->Find("requiredCapabilities");
+    if (!required) return nullptr;
+    auto* extensions = required->Find("extensions");
+    if (!extensions) return nullptr;
+    return extensions->Find(std::string(kTasksExtensionId));
 }
 
 } // namespace
@@ -2548,6 +2720,325 @@ TEST(McpServerTest, TasksUpdateWithInputResponses) {
               static_cast<int64_t>(McpErrorCode::InvalidParams));
 
     CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksMethodsGateWithoutExtension) {
+    auto env = MakeBareModernTaskEnv();
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = "gate-test";
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params));
+    ASSERT_TRUE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["code"].GetInt(), int64_t(-32021));
+    ASSERT_NE(RequiredTasksExtensionEntry(get_resp), nullptr);
+
+    UpdateTaskRequestParams up_params;
+    up_params.task_id = "gate-test";
+    up_params.input_responses = JsonValue(JsonValue::object_tag);
+    auto up_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(up_params));
+    ASSERT_TRUE(up_resp.Contains("code"));
+    EXPECT_EQ(up_resp["code"].GetInt(), int64_t(-32021));
+    ASSERT_NE(RequiredTasksExtensionEntry(up_resp), nullptr);
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = "gate-test";
+    auto cancel_resp = SendBareRequest(env.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params));
+    ASSERT_TRUE(cancel_resp.Contains("code"));
+    EXPECT_EQ(cancel_resp["code"].GetInt(), int64_t(-32021));
+    ASSERT_NE(RequiredTasksExtensionEntry(cancel_resp), nullptr);
+
+    auto declared_get = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_TRUE(declared_get.Contains("code"));
+    EXPECT_EQ(declared_get["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, OptionalTaskToolWithoutExtensionFallsThroughToSync) {
+    auto env = MakeBareModernTaskEnv();
+
+    env.server->RegisterTool("sync_fallthrough", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "sync-done"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "sync_fallthrough";
+    auto resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_FALSE(resp.Contains("code"));
+    EXPECT_EQ(resp["resultType"].GetString(), "complete");
+    EXPECT_FALSE(resp.Contains("taskId"));
+    EXPECT_FALSE(resp.Contains("task"));
+    ASSERT_TRUE(resp.Contains("content"));
+    ASSERT_TRUE(resp["content"].IsArray());
+    EXPECT_TRUE(resp["content"].Size() >= 1u);
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, RequiredTaskToolWithoutExtensionRejects32021) {
+    auto env = MakeBareModernTaskEnv();
+
+    env.server->RegisterTool("required_job", MakeRequiredTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "should-not-run"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "required_job";
+    auto resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(), int64_t(-32021));
+    ASSERT_NE(RequiredTasksExtensionEntry(resp), nullptr);
+
+    auto declared = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(declared.Contains("code"));
+    EXPECT_EQ(declared["resultType"].GetString(), "task");
+    ASSERT_TRUE(declared.Contains("taskId"));
+    EXPECT_FALSE(declared["taskId"].GetString().empty());
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, PerRequestTasksOptInCreatesTaskWithTtl) {
+    auto env = MakeBareModernTaskEnv();
+
+    env.server->RegisterTool("opt_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "opt-done"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "opt_task";
+    auto resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(resp.Contains("code"));
+    EXPECT_EQ(resp["resultType"].GetString(), "task");
+    ASSERT_TRUE(resp.Contains("taskId"));
+    EXPECT_FALSE(resp["taskId"].GetString().empty());
+    ASSERT_TRUE(resp.Contains("ttlMs"));
+    ASSERT_TRUE(resp["ttlMs"].IsInt());
+    EXPECT_TRUE(resp["ttlMs"].GetInt() > int64_t(0));
+    EXPECT_FALSE(resp.Contains("ttl"));
+    EXPECT_FALSE(resp.Contains("task"));
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksUpdateAckCarriesCompleteResultType) {
+    auto env = MakeBareModernTaskEnv();
+
+    env.store->CreateTask("ack-task");
+    ASSERT_TRUE(env.store->SetTaskStatus("ack-task", TaskStatus::InputRequired));
+
+    UpdateTaskRequestParams up;
+    up.task_id = "ack-task";
+    JsonValue responses(JsonValue::object_tag);
+    responses["name"] = JsonValue("Alice");
+    up.input_responses = std::move(responses);
+    auto up_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(up), MetaWithTasksExtension());
+    ASSERT_FALSE(up_resp.Contains("code"));
+    EXPECT_EQ(up_resp["resultType"].GetString(), "complete");
+    EXPECT_FALSE(up_resp.Contains("taskId"));
+    EXPECT_FALSE(up_resp.Contains("status"));
+    EXPECT_FALSE(up_resp.Contains("result"));
+    EXPECT_FALSE(up_resp.Contains("error"));
+    EXPECT_FALSE(up_resp.Contains("inputRequests"));
+
+    UpdateTaskRequestParams done;
+    done.task_id = "ack-task";
+    JsonValue payload(JsonValue::object_tag);
+    payload["ok"] = JsonValue(true);
+    done.result = std::move(payload);
+    auto done_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(done), MetaWithTasksExtension());
+    ASSERT_FALSE(done_resp.Contains("code"));
+    EXPECT_EQ(done_resp["resultType"].GetString(), "complete");
+
+    CancelTaskRequestParams cancel;
+    cancel.task_id = "ack-task";
+    auto cancel_resp = SendBareRequest(env.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel), MetaWithTasksExtension());
+    ASSERT_FALSE(cancel_resp.Contains("code"));
+    EXPECT_EQ(cancel_resp["resultType"].GetString(), "complete");
+    EXPECT_FALSE(cancel_resp.Contains("taskId"));
+    EXPECT_FALSE(cancel_resp.Contains("status"));
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, SamplingInputWithoutCapabilityRejects32021) {
+    auto env = MakeBareModernTaskEnv();
+
+    auto sampling_tool = [](const Ctx&) {
+        SamplingMessage message;
+        message.role = "user";
+        TextContent content;
+        content.text = "Reply with the single word: pong";
+        message.content = std::move(content);
+        CreateMessageRequestParams sampling_params;
+        sampling_params.messages.push_back(std::move(message));
+        sampling_params.max_tokens = 16;
+        CallToolResult result;
+        InputRequiredResult ir;
+        ir.input_requests["message"] = MakeInputRequestForSampling(sampling_params);
+        result.input_required = std::move(ir);
+        return result;
+    };
+    env.server->RegisterTool("needs_sampling",
+        ToolOptions{}.Description("requires sampling"),
+        std::function<CallToolResult(const Ctx&)>(sampling_tool));
+
+    CallToolRequestParams params;
+    params.name = "needs_sampling";
+    auto resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(), int64_t(-32021));
+    auto* data = resp.Find("data");
+    ASSERT_NE(data, nullptr);
+    auto* required = data->Find("requiredCapabilities");
+    ASSERT_NE(required, nullptr);
+    ASSERT_NE(required->Find("sampling"), nullptr);
+
+    auto declared = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithSampling());
+    ASSERT_FALSE(declared.Contains("code"));
+    EXPECT_EQ(declared["resultType"].GetString(), "input_required");
+    ASSERT_TRUE(declared.Contains("inputRequests"));
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, SamplingInputWithoutCapabilityPassesInLegacyEra) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLegacyProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterTool("legacy_sampling",
+        ToolOptions{}.Description("legacy sampling"),
+        std::function<CallToolResult(const Ctx&)>([](const Ctx&) {
+            SamplingMessage message;
+            message.role = "user";
+            TextContent content;
+            content.text = "Reply with the single word: pong";
+            message.content = std::move(content);
+            CreateMessageRequestParams sampling_params;
+            sampling_params.messages.push_back(std::move(message));
+            sampling_params.max_tokens = 16;
+            CallToolResult result;
+            InputRequiredResult ir;
+            ir.input_requests["message"] =
+                MakeInputRequestForSampling(sampling_params);
+            result.input_required = std::move(ir);
+            return result;
+        }));
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    InitializeRequestParams iparams;
+    iparams.protocol_version = std::string(kLegacyProtocolVersion);
+    iparams.client_info = Implementation{"test-client", "1.0"};
+    iparams.capabilities.roots = RootsCapability{};
+    auto init_future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(iparams), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(init_future.get().Contains("code"));
+    client->SendNotification(notifications::kInitialized);
+
+    CallToolRequestParams params;
+    params.name = "legacy_sampling";
+    auto resp = SendBareRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_FALSE(resp.Contains("code"));
+    EXPECT_EQ(resp["resultType"].GetString(), "input_required");
+
+    server->Close();
+    client->Close();
+}
+
+TEST(McpServerTest, TasksGetCarriesCompleteResultType) {
+    auto env = MakeBareModernTaskEnv();
+
+    env.server->RegisterTool("polled_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "polled-done"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "polled_task";
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(created_resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["resultType"].GetString(), "complete");
+    EXPECT_EQ(get_resp["taskId"].GetString(), created.task_id);
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, LegacyTasksFlowWithoutExtensionUnaffected) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+
+    env.server->RegisterTool("legacy_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "legacy-done"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "legacy_task";
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_FALSE(created_resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+
+    GetTaskRequestParams unknown;
+    unknown.task_id = "no-such-task";
+    auto unknown_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(unknown));
+    ASSERT_TRUE(unknown_resp.Contains("code"));
+    EXPECT_EQ(unknown_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params));
+    ASSERT_FALSE(get_resp.Contains("code"));
+
+    CloseTaskEraEnv(env);
 }
 
 namespace {
@@ -3093,6 +3584,385 @@ TEST(McpServerTest, SkillsMethodsRejectLegacyEra) {
 
     server->Close();
     client->Close();
+}
+
+TEST(McpServerTest, TaskInputRequiredParksWithInputRequests) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("park_tool", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult result;
+            InputRequiredResult ir;
+            ElicitRequestParams first_params;
+            first_params.message = "First input";
+            ir.input_requests["first"] = MakeInputRequestForElicitation(first_params);
+            ElicitRequestParams second_params;
+            second_params.message = "Second input";
+            ir.input_requests["second"] = MakeInputRequestForElicitation(second_params);
+            result.input_required = std::move(ir);
+            return result;
+        });
+
+    CallToolRequestParams params;
+    params.name = "park_tool";
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(created_resp.Contains("code"));
+    EXPECT_EQ(created_resp["resultType"].GetString(), "task");
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+
+    auto parked = WaitForTaskStatus(env.store, created.task_id, TaskStatus::InputRequired);
+    ASSERT_TRUE(parked.has_value());
+    ASSERT_TRUE(parked->input_requests.has_value());
+    EXPECT_EQ(parked->input_requests->size(), size_t{2});
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["status"].GetString(), "input_required");
+    auto* requests = get_resp.Find("inputRequests");
+    ASSERT_NE(requests, nullptr);
+    ASSERT_TRUE(requests->IsObject());
+    EXPECT_EQ(requests->GetObject().size(), size_t{2});
+    for (const auto& entry : requests->GetObject()) {
+        auto* method = entry.second.Find("method");
+        ASSERT_NE(method, nullptr);
+        EXPECT_TRUE(method->IsString());
+    }
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksUpdateResumeCompletesParkedTask) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("confirm_tool", MakeTaskToolOptions(),
+        [](const Ctx& ctx) {
+            auto* entry = ctx.Params().input_responses
+                ? ctx.Params().input_responses->Find("confirm_delete") : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            auto* content = entry && entry->IsObject() ? entry->Find("content") : nullptr;
+            auto* confirm = content && content->IsObject()
+                ? content->Find("confirm") : nullptr;
+            if (action && action->IsString() && action->GetString() == "accept"
+                && confirm && confirm->IsBool() && confirm->GetBool()) {
+                CallToolResult done;
+                done.content.push_back(TextContent{"text", "Deleted report.txt"});
+                return done;
+            }
+            CallToolResult result;
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "Confirm deletion";
+            ir.input_requests["confirm_delete"] =
+                MakeInputRequestForElicitation(elicit_params);
+            result.input_required = std::move(ir);
+            return result;
+        });
+
+    CallToolRequestParams params;
+    params.name = "confirm_tool";
+    JsonValue args(JsonValue::object_tag);
+    args["filename"] = JsonValue("report.txt");
+    params.arguments = std::move(args);
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(created_resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+
+    auto parked = WaitForTaskStatus(env.store, created.task_id, TaskStatus::InputRequired);
+    ASSERT_TRUE(parked.has_value());
+    ASSERT_TRUE(parked->tool_name.has_value());
+    EXPECT_EQ(*parked->tool_name, "confirm_tool");
+    ASSERT_TRUE(parked->tool_arguments.has_value());
+
+    UpdateTaskRequestParams up;
+    up.task_id = created.task_id;
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue entry(JsonValue::object_tag);
+    entry["action"] = JsonValue("accept");
+    JsonValue content(JsonValue::object_tag);
+    content["confirm"] = JsonValue(true);
+    entry["content"] = std::move(content);
+    responses["confirm_delete"] = std::move(entry);
+    up.input_responses = std::move(responses);
+    auto up_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(up), MetaWithTasksExtension());
+    ASSERT_FALSE(up_resp.Contains("code"));
+    EXPECT_EQ(up_resp["resultType"].GetString(), "complete");
+    EXPECT_FALSE(up_resp.Contains("taskId"));
+    EXPECT_FALSE(up_resp.Contains("status"));
+    EXPECT_FALSE(up_resp.Contains("result"));
+    EXPECT_FALSE(up_resp.Contains("error"));
+    EXPECT_FALSE(up_resp.Contains("inputRequests"));
+
+    auto done = WaitForTaskStatus(env.store, created.task_id, TaskStatus::Completed);
+    ASSERT_TRUE(done.has_value());
+    ASSERT_TRUE(done->result.has_value());
+    auto tool_result = DeserializeCallToolResult(*done->result);
+    ASSERT_FALSE(tool_result.content.empty());
+    auto* text = std::get_if<TextContent>(&tool_result.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "Deleted report.txt");
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksUpdatePartialKeepsPendingKey) {
+    auto env = MakeModernTaskEnv();
+
+    auto multi_handler = [](const Ctx& ctx) {
+        auto names = [&ctx](const char* key) -> const JsonValue* {
+            auto* entry = ctx.Params().input_responses
+                ? ctx.Params().input_responses->Find(key) : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            if (!action || !action->IsString() || action->GetString() != "accept")
+                return nullptr;
+            auto* content = entry->Find("content");
+            return (content && content->IsObject()) ? content->Find("name") : nullptr;
+        };
+        auto* first = names("first");
+        auto* second = names("second");
+        if (first && first->IsString() && second && second->IsString()) {
+            CallToolResult done;
+            done.content.push_back(TextContent{"text", "Confirmed both inputs: "
+                + first->GetString() + ", " + second->GetString()});
+            return done;
+        }
+        CallToolResult result;
+        InputRequiredResult ir;
+        ElicitRequestParams elicit_params;
+        elicit_params.message = "What is your name?";
+        ir.input_requests["first"] = MakeInputRequestForElicitation(elicit_params);
+        ir.input_requests["second"] = MakeInputRequestForElicitation(elicit_params);
+        result.input_required = std::move(ir);
+        return result;
+    };
+    env.server->RegisterTool("multi_tool", MakeTaskToolOptions(),
+        std::function<CallToolResult(const Ctx&)>(multi_handler));
+
+    CallToolRequestParams params;
+    params.name = "multi_tool";
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(created_resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+
+    auto parked = WaitForTaskStatus(env.store, created.task_id, TaskStatus::InputRequired);
+    ASSERT_TRUE(parked.has_value());
+    ASSERT_TRUE(parked->input_requests.has_value());
+    EXPECT_EQ(parked->input_requests->size(), size_t{2});
+
+    UpdateTaskRequestParams partial;
+    partial.task_id = created.task_id;
+    JsonValue partial_responses(JsonValue::object_tag);
+    JsonValue first_entry(JsonValue::object_tag);
+    first_entry["action"] = JsonValue("accept");
+    JsonValue first_content(JsonValue::object_tag);
+    first_content["name"] = JsonValue("partial-1");
+    first_entry["content"] = std::move(first_content);
+    partial_responses["first"] = std::move(first_entry);
+    partial.input_responses = std::move(partial_responses);
+    auto partial_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(partial), MetaWithTasksExtension());
+    ASSERT_FALSE(partial_resp.Contains("code"));
+    EXPECT_EQ(partial_resp["resultType"].GetString(), "complete");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["status"].GetString(), "input_required");
+    auto* requests = get_resp.Find("inputRequests");
+    ASSERT_NE(requests, nullptr);
+    ASSERT_TRUE(requests->IsObject());
+    EXPECT_EQ(requests->GetObject().size(), size_t{1});
+    EXPECT_NE(requests->Find("second"), nullptr);
+    EXPECT_EQ(requests->Find("first"), nullptr);
+
+    UpdateTaskRequestParams rest;
+    rest.task_id = created.task_id;
+    JsonValue rest_responses(JsonValue::object_tag);
+    JsonValue second_entry(JsonValue::object_tag);
+    second_entry["action"] = JsonValue("accept");
+    JsonValue second_content(JsonValue::object_tag);
+    second_content["name"] = JsonValue("partial-2");
+    second_entry["content"] = std::move(second_content);
+    rest_responses["second"] = std::move(second_entry);
+    rest.input_responses = std::move(rest_responses);
+    auto rest_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(rest), MetaWithTasksExtension());
+    ASSERT_FALSE(rest_resp.Contains("code"));
+
+    auto done = WaitForTaskStatus(env.store, created.task_id, TaskStatus::Completed);
+    ASSERT_TRUE(done.has_value());
+    ASSERT_TRUE(done->result.has_value());
+    auto tool_result = DeserializeCallToolResult(*done->result);
+    ASSERT_FALSE(tool_result.content.empty());
+    auto* text = std::get_if<TextContent>(&tool_result.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "Confirmed both inputs: partial-1, partial-2");
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TasksUpdateUnknownKeyTolerated) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("parked_tool", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult result;
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "Confirm";
+            ir.input_requests["confirm_delete"] =
+                MakeInputRequestForElicitation(elicit_params);
+            result.input_required = std::move(ir);
+            return result;
+        });
+
+    CallToolRequestParams params;
+    params.name = "parked_tool";
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(created_resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+    ASSERT_TRUE(WaitForTaskStatus(
+        env.store, created.task_id, TaskStatus::InputRequired).has_value());
+
+    UpdateTaskRequestParams up;
+    up.task_id = created.task_id;
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue unknown(JsonValue::object_tag);
+    unknown["ignored"] = JsonValue(true);
+    responses["unknown-key"] = std::move(unknown);
+    up.input_responses = std::move(responses);
+    auto up_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(up), MetaWithTasksExtension());
+    ASSERT_FALSE(up_resp.Contains("code"));
+    EXPECT_EQ(up_resp["resultType"].GetString(), "complete");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["status"].GetString(), "input_required");
+    auto* requests = get_resp.Find("inputRequests");
+    ASSERT_NE(requests, nullptr);
+    EXPECT_NE(requests->Find("confirm_delete"), nullptr);
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, RequiredTaskToolSyncFirstThenTask) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("greet_task", MakeRequiredTaskToolOptions(),
+        [](const Ctx& ctx) {
+            auto* entry = ctx.Params().input_responses
+                ? ctx.Params().input_responses->Find("user_name") : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            auto* content = entry && entry->IsObject() ? entry->Find("content") : nullptr;
+            auto* name = content && content->IsObject() ? content->Find("name") : nullptr;
+            if (action && action->IsString() && action->GetString() == "accept"
+                && name && name->IsString()) {
+                CallToolResult done;
+                done.content.push_back(
+                    TextContent{"text", "Hello, " + name->GetString() + "!"});
+                return done;
+            }
+            CallToolResult result;
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "What is your name?";
+            ir.input_requests["user_name"] =
+                MakeInputRequestForElicitation(elicit_params);
+            result.input_required = std::move(ir);
+            return result;
+        });
+
+    CallToolRequestParams round_one;
+    round_one.name = "greet_task";
+    auto first_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(round_one), MetaWithTasksExtension());
+    ASSERT_FALSE(first_resp.Contains("code"));
+    EXPECT_EQ(first_resp["resultType"].GetString(), "input_required");
+    EXPECT_FALSE(first_resp.Contains("taskId"));
+    auto* first_requests = first_resp.Find("inputRequests");
+    ASSERT_NE(first_requests, nullptr);
+    ASSERT_TRUE(first_requests->IsObject());
+    ASSERT_EQ(first_requests->GetObject().size(), size_t{1});
+    std::string input_key = first_requests->GetObject().begin()->first;
+
+    CallToolRequestParams round_two;
+    round_two.name = "greet_task";
+    JsonValue responses(JsonValue::object_tag);
+    JsonValue entry(JsonValue::object_tag);
+    entry["action"] = JsonValue("accept");
+    JsonValue content(JsonValue::object_tag);
+    content["name"] = JsonValue("Alice");
+    entry["content"] = std::move(content);
+    responses[input_key] = std::move(entry);
+    round_two.input_responses = std::move(responses);
+    auto second_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(round_two), MetaWithTasksExtension());
+    ASSERT_FALSE(second_resp.Contains("code"));
+    EXPECT_EQ(second_resp["resultType"].GetString(), "task");
+    auto created = DeserializeCreateTaskResult(second_resp);
+    ASSERT_FALSE(created.task_id.empty());
+    EXPECT_FALSE(second_resp.Contains("requestState"));
+    EXPECT_FALSE(second_resp.Contains("inputRequests"));
+
+    auto done = WaitForTaskStatus(env.store, created.task_id, TaskStatus::Completed);
+    ASSERT_TRUE(done.has_value());
+    ASSERT_TRUE(done->result.has_value());
+    auto tool_result = DeserializeCallToolResult(*done->result);
+    ASSERT_FALSE(tool_result.content.empty());
+    auto* text = std::get_if<TextContent>(&tool_result.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "Hello, Alice!");
+
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, RequiredTaskToolSyncThrowMapsToFailed) {
+    auto env = MakeModernTaskEnv();
+
+    env.server->RegisterTool("sync_boom", MakeRequiredTaskToolOptions(),
+        [](const Ctx&) -> CallToolResult {
+            throw McpError(McpErrorCode::InternalError, "sync-boom");
+        });
+
+    CallToolRequestParams params;
+    params.name = "sync_boom";
+    auto created_resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension());
+    ASSERT_FALSE(created_resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(created_resp);
+    ASSERT_FALSE(created.task_id.empty());
+
+    auto failed = WaitForTaskStatus(env.store, created.task_id, TaskStatus::Failed);
+    ASSERT_TRUE(failed.has_value());
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_FALSE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["status"].GetString(), "failed");
+    auto* error = get_resp.Find("error");
+    ASSERT_NE(error, nullptr);
+    EXPECT_FALSE(get_resp.Contains("result"));
+
+    CloseModernTaskEnv(env);
 }
 
 TEST(McpServerTest, MetaReachesHandler) {

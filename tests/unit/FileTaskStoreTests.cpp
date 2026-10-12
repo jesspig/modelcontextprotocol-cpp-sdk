@@ -139,8 +139,7 @@ TEST_F(FileTaskStoreTest, CorruptFileDoesNotThrow) {
     EXPECT_FALSE(store.GetTask("task-1").has_value());
 }
 
-TEST_F(FileTaskStoreTest, AdvanceTaskWithInput) {
-    FileTaskStore store(store_path);
+TEST_F(FileTaskStoreTest, AdvanceTaskWithInput) {    FileTaskStore store(store_path);
     store.CreateTask("task-1");
     ASSERT_TRUE(store.SetTaskStatus("task-1", TaskStatus::InputRequired));
 
@@ -237,4 +236,102 @@ TEST_F(FileTaskStoreTest, TaskStoreOldFileCompat) {
         EXPECT_EQ(task->input_responses->Find("name")->GetString(), "Alice");
         EXPECT_TRUE(restored.GetTask("task-other").has_value());
     }
+}
+
+TEST_F(FileTaskStoreTest, ParkTaskForInput) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+
+    InputRequests requests;
+    ElicitRequestParams params;
+    params.message = "Need it";
+    requests["first"] = MakeInputRequestForElicitation(params);
+    requests["second"] = MakeInputRequestForElicitation(params);
+    EXPECT_TRUE(store.ParkTaskForInput("task-1", requests));
+
+    auto task = store.GetTask("task-1");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_EQ(task->status, TaskStatus::InputRequired);
+    ASSERT_TRUE(task->input_requests.has_value());
+    EXPECT_EQ(task->input_requests->size(), size_t{2});
+    ASSERT_TRUE(task->last_updated_at.has_value());
+
+    EXPECT_FALSE(store.ParkTaskForInput("missing", requests));
+
+    JsonValue result(JsonValue::object_tag);
+    ASSERT_TRUE(store.UpdateTask("task-1", result));
+    EXPECT_FALSE(store.ParkTaskForInput("task-1", requests));
+}
+
+TEST_F(FileTaskStoreTest, AdvanceTaskWithInputMergesResponses) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+
+    InputRequests requests;
+    ElicitRequestParams params;
+    params.message = "Need it";
+    requests["first"] = MakeInputRequestForElicitation(params);
+    requests["second"] = MakeInputRequestForElicitation(params);
+    ASSERT_TRUE(store.ParkTaskForInput("task-1", requests));
+
+    JsonValue first(JsonValue::object_tag);
+    first["first"] = JsonValue("one");
+    EXPECT_TRUE(store.AdvanceTaskWithInput("task-1", first));
+
+    InputRequests pruned;
+    pruned["second"] = MakeInputRequestForElicitation(params);
+    ASSERT_TRUE(store.ParkTaskForInput("task-1", pruned));
+
+    JsonValue second(JsonValue::object_tag);
+    second["second"] = JsonValue("two");
+    second["unknown-key"] = JsonValue(true);
+    EXPECT_TRUE(store.AdvanceTaskWithInput("task-1", second));
+
+    auto task = store.GetTask("task-1");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_EQ(task->status, TaskStatus::Working);
+    ASSERT_TRUE(task->input_responses.has_value());
+    auto* first_entry = task->input_responses->Find("first");
+    ASSERT_NE(first_entry, nullptr);
+    EXPECT_EQ(first_entry->GetString(), "one");
+    auto* second_entry = task->input_responses->Find("second");
+    ASSERT_NE(second_entry, nullptr);
+    EXPECT_EQ(second_entry->GetString(), "two");
+    EXPECT_NE(task->input_responses->Find("unknown-key"), nullptr);
+}
+
+TEST_F(FileTaskStoreTest, BindTaskToolPersistsAcrossInstances) {
+    {
+        FileTaskStore store(store_path);
+        store.CreateTask("task-1");
+        JsonValue args(JsonValue::object_tag);
+        args["filename"] = JsonValue("a.txt");
+        EXPECT_TRUE(store.BindTaskTool("task-1", "confirm_delete", args));
+        EXPECT_FALSE(store.BindTaskTool("missing", "confirm_delete", std::nullopt));
+    }
+
+    FileTaskStore restored(store_path);
+    auto task = restored.GetTask("task-1");
+    ASSERT_TRUE(task.has_value());
+    ASSERT_TRUE(task->tool_name.has_value());
+    EXPECT_EQ(*task->tool_name, "confirm_delete");
+    ASSERT_TRUE(task->tool_arguments.has_value());
+    auto* filename = task->tool_arguments->Find("filename");
+    ASSERT_NE(filename, nullptr);
+    EXPECT_EQ(filename->GetString(), "a.txt");
+}
+
+TEST_F(FileTaskStoreTest, TaskStoreOldFileWithoutToolBinding) {
+    {
+        std::ofstream ofs(store_path);
+        ASSERT_TRUE(ofs.is_open());
+        ofs << R"({"tasks":{"task-old":{"task_id":"task-old","status":1,)"
+               R"("result":{"answer":7},"progress":0.0,"created_at":"1700000000000"}}})";
+    }
+
+    FileTaskStore store(store_path);
+    auto task = store.GetTask("task-old");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_FALSE(task->tool_name.has_value());
+    EXPECT_FALSE(task->tool_arguments.has_value());
 }

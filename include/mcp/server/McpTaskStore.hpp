@@ -36,6 +36,8 @@ struct TaskState {
     std::optional<int64_t> poll_interval_ms;
     std::optional<InputRequests> input_requests;
     std::optional<JsonValue> input_responses;
+    std::optional<std::string> tool_name;
+    std::optional<JsonValue> tool_arguments;
 };
 
 class IMcpTaskStore {
@@ -50,6 +52,9 @@ public:
                             const std::optional<std::string>& reason) = 0;
     virtual bool SetTaskStatus(const std::string& task_id, TaskStatus status) = 0;
     virtual bool AdvanceTaskWithInput(const std::string&, const JsonValue&) { return false; }
+    virtual bool ParkTaskForInput(const std::string&, const InputRequests&) { return false; }
+    virtual bool BindTaskTool(const std::string&, const std::string&,
+                              const std::optional<JsonValue>&) { return false; }
     virtual std::vector<TaskState> GetAllTasks() = 0;
 };
 
