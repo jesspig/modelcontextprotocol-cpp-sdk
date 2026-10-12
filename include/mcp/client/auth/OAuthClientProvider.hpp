@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mcp {
 
@@ -23,6 +24,7 @@ struct OAuthClientOptions {
     std::optional<std::string> client_id;
     std::optional<std::string> client_secret;
     std::vector<std::string> scopes;
+    std::function<std::vector<std::string>(const std::vector<std::string>&)> scope_filter;
     std::shared_ptr<ITokenCache> token_cache;
     std::optional<std::string> resource;
     std::string application_type{"native"};
@@ -69,6 +71,8 @@ private:
     void EnforceIssuerBinding();
 
     std::string ResolveResourceIndicator() const;
+
+    std::vector<std::string> ResolveScopes() const;
 
     bool FetchClientMetadataDocument();
 

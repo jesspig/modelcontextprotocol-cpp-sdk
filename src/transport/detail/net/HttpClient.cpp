@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <string>
 
 namespace mcp { namespace detail { namespace net {
@@ -16,7 +17,6 @@ namespace mcp { namespace detail { namespace net {
 namespace {
 
 constexpr std::size_t kMaxHeaderCount = 100;
-constexpr std::size_t kMaxBodyBytes = 8 * 1024 * 1024;
 constexpr std::size_t kReadChunk = 8 * 1024;
 constexpr std::chrono::milliseconds kMaxConnectTimeout(10000);
 
@@ -59,21 +59,26 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
     if (closed_)
         throw McpError(McpErrorCode::ConnectionClosed, "HTTP client is closed");
 
-    UrlParts url = ParseUrl(req.url);
+    max_body_bytes_ = req.max_response_bytes.value_or(
+        (std::numeric_limits<std::size_t>::max)());
+    HttpRequestSpec current = req;
+
+    for (int redirect = 0; ; ++redirect) {
+    UrlParts url = ParseUrl(current.url);
     if (url.host.empty() || url.port == 0)
-        throw McpError(McpErrorCode::ProtocolViolation, "invalid URL: " + req.url);
+        throw McpError(McpErrorCode::ProtocolViolation, "invalid URL: " + current.url);
     bool want_tls = (url.scheme == "https");
     if (url.scheme != "http" && url.scheme != "https")
-        throw McpError(McpErrorCode::ProtocolViolation, "unsupported scheme in URL: " + req.url);
+        throw McpError(McpErrorCode::ProtocolViolation, "unsupported scheme in URL: " + current.url);
 
     if (!connected_ || use_tls_ != want_tls || host_ != url.host || port_ != url.port || IsEof()) {
         CloseConnection();
         use_tls_ = want_tls;
         host_ = url.host;
         port_ = url.port;
-        auto connect_timeout = (std::min)(req.timeout, kMaxConnectTimeout);
+        auto connect_timeout = (std::min)(current.timeout, kMaxConnectTimeout);
         if (use_tls_) {
-            tls_ = std::make_unique<TlsSocket>(req.verify_tls);
+            tls_ = std::make_unique<TlsSocket>(current.verify_tls);
             tls_->Connect(host_, port_, connect_timeout);
         } else {
             tcp_ = std::make_unique<TcpSocket>();
@@ -86,26 +91,26 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
     if (path.empty()) path = "/";
 
     std::string request;
-    request.reserve(256 + req.body.size());
-    request += req.method + " " + path + " HTTP/1.1\r\n";
+    request.reserve(256 + current.body.size());
+    request += current.method + " " + path + " HTTP/1.1\r\n";
     std::string host_header = host_;
     if (host_.find(':') != std::string::npos)
         host_header = "[" + host_ + "]";
     bool default_port = (use_tls_ && port_ == 443) || (!use_tls_ && port_ == 80);
     if (!default_port) host_header += ":" + std::to_string(port_);
     request += "Host: " + host_header + "\r\n";
-    for (const auto& [name, value] : req.headers) {
+    for (const auto& [name, value] : current.headers) {
         if (name.find_first_of("\r\n") != std::string::npos ||
             value.find_first_of("\r\n") != std::string::npos)
             throw McpError(McpErrorCode::ProtocolViolation, "header contains CR or LF");
         request += name + ": " + value + "\r\n";
     }
-    if (!req.body.empty())
-        request += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
+    if (!current.body.empty())
+        request += "Content-Length: " + std::to_string(current.body.size()) + "\r\n";
     request += "Connection: keep-alive\r\n\r\n";
-    request += req.body;
+    request += current.body;
 
-    auto deadline = std::chrono::steady_clock::now() + req.timeout;
+    auto deadline = std::chrono::steady_clock::now() + current.timeout;
     HttpResponseInfo resp;
     bool http10 = false;
     bool keep_alive = true;
@@ -163,12 +168,50 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
                 } catch (const std::out_of_range&) {
                     throw McpError(McpErrorCode::ProtocolViolation, "Content-Length out of range");
                 }
-                if (parsed > kMaxBodyBytes)
+                if (parsed > max_body_bytes_)
                     throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
                 content_length = static_cast<std::size_t>(parsed);
                 has_content_length = true;
             } else if (name == "connection") {
                 if (ToLower(value).find("close") != std::string::npos) keep_alive = false;
+            }
+        }
+
+        if (IsRedirectStatus(resp.status_code) &&
+            current.redirect_policy != HttpRedirectPolicy::NoFollow) {
+            auto loc_it = resp.headers.find("location");
+            if (loc_it != resp.headers.end()) {
+                if (redirect >= current.max_redirects)
+                    throw McpError(McpErrorCode::ProtocolViolation, "too many HTTP redirects");
+                std::string next_url;
+                bool same_origin = false;
+                try {
+                    next_url = ResolveRedirectUrl(current.url, loc_it->second);
+                    same_origin = IsSameOriginRedirect(current.url, next_url);
+                } catch (const McpError&) {
+                    throw;
+                } catch (const std::exception& e) {
+                    throw McpError(McpErrorCode::ProtocolViolation,
+                        std::string("invalid redirect location: ") + e.what());
+                }
+                if (current.redirect_policy == HttpRedirectPolicy::SameOriginOnly && !same_origin)
+                    throw McpError(McpErrorCode::ProtocolViolation,
+                        "cross-origin redirect blocked by redirect policy");
+                if (resp.status_code == 303 ||
+                    ((resp.status_code == 301 || resp.status_code == 302) &&
+                     current.method == "POST")) {
+                    current.method = "GET";
+                    current.body.clear();
+                }
+                if (!same_origin) {
+                    for (auto hit = current.headers.begin(); hit != current.headers.end();) {
+                        if (ToLower(hit->first) == "authorization") hit = current.headers.erase(hit);
+                        else ++hit;
+                    }
+                }
+                current.url = std::move(next_url);
+                CloseConnection();
+                continue;
             }
         }
 
@@ -181,7 +224,7 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
         } else if (has_content_length) {
             ReadFixedBody(resp, content_length, body_cb, deadline);
         } else if (body_cb) {
-            StreamBody(body_cb, req.timeout);
+            StreamBody(body_cb, current.timeout);
         } else {
             ReadUntilEof(resp, deadline);
         }
@@ -192,6 +235,7 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
 
     if (http10 || !keep_alive) CloseConnection();
     return resp;
+    }
 }
 
 void HttpClient::WriteAll(std::string_view data, const std::chrono::steady_clock::time_point& deadline) {
@@ -306,7 +350,7 @@ void HttpClient::ReadChunkedBody(HttpResponseInfo& resp,
                 if (ReadLine(deadline).empty()) return;
             }
         }
-        if (chunk_len > kMaxBodyBytes - total)
+        if (chunk_len > max_body_bytes_ - total)
             throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
 
         std::size_t remaining = chunk_len;
@@ -337,7 +381,7 @@ void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_
                          : tcp_->Read(buffer, sizeof(buffer), remaining);
         }
         if (n > 0) {
-            if (resp.body.size() + n > kMaxBodyBytes)
+            if (resp.body.size() + n > max_body_bytes_)
                 throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
             resp.body.append(buffer, n);
             continue;

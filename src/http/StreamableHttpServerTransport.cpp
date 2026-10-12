@@ -263,10 +263,12 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     : TransportBase()
     , options_(std::move(options))
     , http_server_(std::make_unique<HttpServer>(options_.port,
-          [keep_alive_ms = options_.sse_keep_alive_ms, host = options_.host] {
+          [keep_alive_ms = options_.sse_keep_alive_ms, host = options_.host,
+           max_body = options_.max_request_body_bytes] {
               HttpServerOptions http_options;
               http_options.sse_keep_alive_ms = keep_alive_ms;
               http_options.bind_host = host;
+              http_options.max_request_body_bytes = max_body;
               return http_options;
           }()))
     , event_store_(options_.event_store
@@ -565,7 +567,9 @@ void StreamableHttpServerTransport::HandlePost(
 
     JsonRpcMessage msg;
     try {
-        if (req.body.size() > detail::kMaxHttpBodyBytes) {
+        std::size_t body_limit =
+            options_.max_request_body_bytes.value_or(detail::kMaxHttpBodyBytes);
+        if (req.body.size() > body_limit) {
             resp.status_code = 413;
             resp.status_text = "Payload Too Large";
             resp.body = R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Message size exceeds maximum allowed size"}})";

@@ -1,12 +1,15 @@
 #pragma once
 
 #include <mcp/JsonRpc.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -47,6 +50,8 @@ struct HttpServerOptions {
     int sse_keep_alive_ms{0};
 
     std::string bind_host;
+
+    std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
 };
 
 struct HttpServerImpl;

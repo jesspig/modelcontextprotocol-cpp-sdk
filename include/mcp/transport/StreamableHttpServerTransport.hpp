@@ -4,12 +4,14 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/EventStore.hpp>
 #include <mcp/http/SessionStore.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpVersion.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <future>
 #include <memory>
@@ -51,6 +53,7 @@ struct StreamableHttpServerOptions {
 
     std::string host;
 
+    std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
     struct BearerAuthConfig {
         std::function<AuthResult(const std::string& token)> verify;
         std::string resource_metadata_url;

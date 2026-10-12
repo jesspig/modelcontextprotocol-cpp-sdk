@@ -3231,9 +3231,41 @@ TEST(McpServerTest, SkillsListGetDirectory) {
     ASSERT_EQ(contents->Size(), 1u);
     EXPECT_EQ((*contents)[0].Find("text")->GetString(), "# Code Review");
 
-    Skill bad_scheme;
-    bad_scheme.uri = "https://example.com/code-review/SKILL.md";
-    EXPECT_THROW(env.server->RegisterSkill(bad_scheme), mcp::McpError);
+    Skill other_scheme;
+    other_scheme.uri = "https://example.com/code-review/SKILL.md";
+    other_scheme.frontmatter = JsonValue(JsonValue::object_tag);
+    other_scheme.resources = SkillResources{std::vector<SkillResource>{}};
+    EXPECT_NO_THROW(env.server->RegisterSkill(other_scheme));
+
+    Skill nested;
+    nested.uri = "skill://org/nested/deep/SKILL.md";
+    JsonValue nested_fm(JsonValue::object_tag);
+    nested_fm["name"] = JsonValue("deep");
+    nested.frontmatter = nested_fm;
+    nested.resources = SkillResources{std::vector<SkillResource>{
+        SkillResource{"skill://org/nested/deep/SKILL.md", "sha256:eee", int64_t(64)},
+    }};
+    EXPECT_NO_THROW(env.server->RegisterSkill(nested));
+
+    SkillsGetRequestParams nested_params;
+    nested_params.uri = "skill://org/nested/deep/SKILL.md";
+    auto nested_resp = SendSkillsRequest(env.client, methods::kGetSkill,
+        SerializeSkillsGetRequestParams(nested_params));
+    ASSERT_FALSE(nested_resp.Contains("code"));
+    EXPECT_EQ(DeserializeSkillsGetResult(nested_resp).skill.uri,
+        "skill://org/nested/deep/SKILL.md");
+
+    ReadDirectoryRequestParams nested_dir_params;
+    nested_dir_params.uri = "skill://org/nested";
+    auto nested_dir_resp = SendSkillsRequest(env.client, methods::kReadDirectory,
+        SerializeReadDirectoryRequestParams(nested_dir_params));
+    ASSERT_FALSE(nested_dir_resp.Contains("code"));
+    auto nested_dir = DeserializeReadDirectoryResult(nested_dir_resp);
+    ASSERT_EQ(nested_dir.resources.size(), 1u);
+    EXPECT_EQ(nested_dir.resources[0].uri, "skill://org/nested/deep");
+    ASSERT_TRUE(nested_dir.resources[0].mime_type.has_value());
+    EXPECT_EQ(*nested_dir.resources[0].mime_type, "inode/directory");
+
     Skill bad_shape;
     bad_shape.uri = "skill://code-review/other.md";
     EXPECT_THROW(env.server->RegisterSkill(bad_shape), mcp::McpError);
@@ -3286,6 +3318,48 @@ TEST(McpServerTest, SkillsDirectoryPagination) {
     EXPECT_EQ(union_uris.size(), 106u);
     EXPECT_EQ(union_uris.front(), "skill://bulk/SKILL.md");
     EXPECT_EQ(union_uris.back(), "skill://bulk/file-104.md");
+
+    CloseSkillsEnv(env);
+}
+
+TEST(McpServerTest, SkillsListPaginationAtomic) {
+    auto env = MakeSkillsEnv(false);
+
+    for (int i = 0; i < 105; ++i) {
+        char uri[48];
+        std::snprintf(uri, sizeof(uri), "skill://page-%03d/SKILL.md", i);
+        Skill entry;
+        entry.uri = uri;
+        entry.frontmatter = JsonValue(JsonValue::object_tag);
+        entry.resources = SkillResources{std::vector<SkillResource>{}};
+        env.server->RegisterSkill(std::move(entry));
+    }
+
+    auto first_resp = SendSkillsRequest(env.client, methods::kListSkills,
+        SerializePaginatedRequestParams(PaginatedRequestParams{}));
+    ASSERT_FALSE(first_resp.Contains("code"));
+    auto first = DeserializeSkillsListResult(first_resp);
+    ASSERT_EQ(first.skills.size(), 100u);
+    ASSERT_TRUE(first.next_cursor.has_value());
+    EXPECT_EQ(*first.next_cursor, "100");
+
+    PaginatedRequestParams second_page;
+    second_page.cursor = first.next_cursor;
+    auto second_resp = SendSkillsRequest(env.client, methods::kListSkills,
+        SerializePaginatedRequestParams(second_page));
+    ASSERT_FALSE(second_resp.Contains("code"));
+    auto second = DeserializeSkillsListResult(second_resp);
+    EXPECT_EQ(second.skills.size(), 6u);
+    EXPECT_FALSE(second.next_cursor.has_value());
+
+    std::vector<std::string> union_uris;
+    for (const auto& s : first.skills) union_uris.push_back(s.uri);
+    for (const auto& s : second.skills) union_uris.push_back(s.uri);
+    std::sort(union_uris.begin(), union_uris.end());
+    union_uris.erase(std::unique(union_uris.begin(), union_uris.end()), union_uris.end());
+    EXPECT_EQ(union_uris.size(), 106u);
+    EXPECT_EQ(union_uris.front(), "skill://code-review/SKILL.md");
+    EXPECT_EQ(union_uris.back(), "skill://page-104/SKILL.md");
 
     CloseSkillsEnv(env);
 }

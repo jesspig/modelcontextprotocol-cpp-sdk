@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -96,12 +97,11 @@ SseEvent ParseSseEvent(const std::string& block) {
 
 class SseClientSessionTransport final : public TransportBase {
 public:
-    SseClientSessionTransport(std::string server_url, std::string name)
+    SseClientSessionTransport(SseClientTransportOptions options)
         : TransportBase()
         , http_client_(std::make_unique<detail::net::HttpClient>())
         , post_client_(std::make_unique<detail::net::HttpClient>())
-        , server_url_(std::move(server_url))
-        , name_(std::move(name))
+        , options_(std::move(options))
     {
     }
 
@@ -157,9 +157,11 @@ private:
         while (running_) {
             detail::net::HttpRequestSpec req;
             req.method = "GET";
-            req.url = server_url_;
+            req.url = options_.server_url;
             req.timeout = kSseClientIdleTimeout;
             req.headers["Accept"] = "text/event-stream";
+            req.redirect_policy = options_.redirect_policy;
+            req.max_redirects = options_.max_redirects;
             if (!last_event_id_.empty()) {
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
@@ -168,9 +170,9 @@ private:
                 if (!chunk.empty()) {
                     sse_buffer_.append(chunk.data(), chunk.size());
 
-                    if (sse_buffer_.size() > detail::kMaxMessageSize) {
+                    if (sse_buffer_.size() > SseEventLimit()) {
                         sse_buffer_.clear();
-                        NotifyError("message size exceeds maximum allowed size");
+                        NotifyError("SSE event size exceeds maximum allowed size");
                         running_.store(false);
                         http_client_->Close();
                         return;
@@ -233,13 +235,13 @@ private:
         if (evt.event_type == "endpoint") {
             try {
                 std::lock_guard<std::mutex> lock(send_mutex_);
-                endpoint_url_ = ResolveEndpoint(server_url_, evt.data);
+                endpoint_url_ = ResolveEndpoint(options_.server_url, evt.data);
             } catch (const std::exception& e) {
                 NotifyError(std::string("invalid endpoint URL: ") + e.what());
             }
         } else if (evt.event_type == "message" && !evt.data.empty()) {
-            if (evt.data.size() > detail::kMaxMessageSize) {
-                NotifyError("message size exceeds maximum allowed size");
+            if (evt.data.size() > SseEventLimit()) {
+                NotifyError("SSE event size exceeds maximum allowed size");
                 return;
             }
             try {
@@ -304,16 +306,22 @@ private:
         req.url = endpoint;
         req.headers["Content-Type"] = "application/json";
         req.body = body;
+        req.redirect_policy = options_.redirect_policy;
+        req.max_redirects = options_.max_redirects;
         try {
             post_client_->Request(req);
         } catch (...) {
         }
     }
 
+    std::size_t SseEventLimit() const {
+        return options_.max_sse_event_bytes.value_or(
+            (std::numeric_limits<std::size_t>::max)());
+    }
+
     std::unique_ptr<detail::net::HttpClient> http_client_;
     std::unique_ptr<detail::net::HttpClient> post_client_;
-    std::string server_url_;
-    std::string name_;
+    SseClientTransportOptions options_;
     std::string endpoint_url_;
     std::string sse_buffer_;
     std::string last_event_id_;
@@ -355,17 +363,24 @@ std::chrono::milliseconds ReconnectDelayForAttempt(int attempt, std::optional<ui
 } // namespace sse_client_impl
 
 SseClientTransport::SseClientTransport(std::string_view server_url, std::string_view name)
-    : server_url_(server_url)
-    , name_(name.empty() ? std::string("sse") : std::string(name))
+    : options_()
 {
+    options_.server_url = std::string(server_url);
+    options_.name = name.empty() ? std::string("sse") : std::string(name);
+}
+
+SseClientTransport::SseClientTransport(SseClientTransportOptions options)
+    : options_(std::move(options))
+{
+    if (options_.name.empty()) options_.name = "sse";
 }
 
 SseClientTransport::~SseClientTransport() = default;
 
-std::string_view SseClientTransport::Name() const { return name_; }
+std::string_view SseClientTransport::Name() const { return options_.name; }
 
 std::shared_ptr<ITransport> SseClientTransport::Connect() {
-    auto session = std::make_shared<SseClientSessionTransport>(server_url_, name_);
+    auto session = std::make_shared<SseClientSessionTransport>(options_);
     session->Start();
     return session;
 }

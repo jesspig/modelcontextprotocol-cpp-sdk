@@ -11,11 +11,13 @@
 #include <mcp/protocol/MessageFilter.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mcp {
@@ -66,6 +68,12 @@ struct MCP_API ServerOptions {
 
     std::function<void()> on_transport_close;
     std::function<void(std::string_view)> on_transport_error;
+
+    std::optional<std::size_t> max_tool_input_elements;
+
+    std::optional<std::vector<std::string>> supported_protocol_versions;
+    bool subscriptions_enabled{true};
+    std::function<std::optional<CacheHint>(std::string_view method)> cache_hint_resolver;
 
     std::shared_ptr<class IMcpTaskStore> task_store;
 };

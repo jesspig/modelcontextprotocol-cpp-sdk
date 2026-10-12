@@ -34,22 +34,14 @@ bool HasCapability(const ClientCapabilities& caps, const std::string& required) 
 constexpr char kErrorDataSupported[] = "supported";
 constexpr char kErrorDataRequested[] = "requested";
 
-bool IsSupportedProtocolVersion(std::string_view version) {
-    for (auto known : kProtocolVersions) {
-        if (known == version) return true;
-    }
-    return false;
-}
-
-JsonValue MakeUnsupportedProtocolVersionData(const std::string& requested) {
-    JsonValue supported(JsonValue::array_tag);
-    for (auto known : kProtocolVersions) {
-        supported.PushBack(JsonValue(std::string(known)));
-    }
-    JsonValue data(JsonValue::object_tag);
-    data[kErrorDataSupported] = std::move(supported);
-    data[kErrorDataRequested] = JsonValue(requested);
-    return data;
+void AttachTraceFromRequest(SpanEvent& event, const JsonRpcRequest& req) {
+    if (!req.meta || !req.meta->IsObject()) return;
+    if (auto* v = req.meta->Find(detail::kTraceparent); v && v->IsString())
+        event.traceparent = v->GetString();
+    if (auto* v = req.meta->Find(detail::kTracestate); v && v->IsString())
+        event.tracestate = v->GetString();
+    if (auto* v = req.meta->Find(detail::kBaggage); v && v->IsString())
+        event.baggage = v->GetString();
 }
 
 const char* InvalidMetaField(const JsonValue& meta) {
@@ -181,6 +173,7 @@ McpSessionHandler::McpSessionHandler(
     , incoming_filters_(std::move(incoming_filters))
     , outgoing_filters_(std::move(outgoing_filters))
 {
+    for (auto known : kProtocolVersions) supported_versions_.emplace_back(known);
 }
 
 McpSessionHandler::~McpSessionHandler() {
@@ -344,6 +337,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         ~SpanGuard() {
             if (!open) return;
             auto event = MakeServerRequestEvent(req, SpanPhase::End, true);
+            AttachTraceFromRequest(event, req);
             InvokeSpan(handler, event, SpanPhase::End);
         }
     } span_guard{span_handler_, req, span_open};
@@ -380,10 +374,10 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
         if (auto* declared = req.meta->Find(detail::kMetaProtocolVersionKey)) {
             const std::string requested = declared->GetString();
-            if (!IsSupportedProtocolVersion(requested)) {
+            if (!IsVersionSupported(requested)) {
                 SendErrorResponse(req.id, McpErrorCode::UnsupportedProtocolVersion,
                     "unsupported protocol version: " + requested,
-                    MakeUnsupportedProtocolVersionData(requested));
+                    MakeVersionErrorData(requested));
                 return;
             }
         }
@@ -486,6 +480,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
     const auto finish_span = [this, &item](bool failed) {
         if (!span_handler_) return;
         auto event = MakeServerRequestEvent(item.req, SpanPhase::End, failed);
+        AttachTraceFromRequest(event, item.req);
         InvokeSpan(span_handler_, event, SpanPhase::End);
     };
     try {
@@ -672,13 +667,23 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
 
     if (IsModernProtocolVersion(meta.protocol_version)) {
         req.meta = SerializeRequestMeta(meta);
-    } else if (meta.progress_token) {
-        JsonValue* legacy_meta = req.params->Find(detail::kMeta);
-        if (!legacy_meta) {
-            (*req.params)[detail::kMeta] = JsonValue(JsonValue::object_tag);
-            legacy_meta = req.params->Find(detail::kMeta);
+    } else {
+        if (meta.progress_token) {
+            JsonValue* legacy_meta = req.params->Find(detail::kMeta);
+            if (!legacy_meta) {
+                (*req.params)[detail::kMeta] = JsonValue(JsonValue::object_tag);
+                legacy_meta = req.params->Find(detail::kMeta);
+            }
+            (*legacy_meta)[detail::kProgressToken] = SerializeProgressToken(*meta.progress_token);
         }
-        (*legacy_meta)[detail::kProgressToken] = SerializeProgressToken(*meta.progress_token);
+        if (req.params->IsObject()) {
+            JsonValue* legacy_meta = req.params->Find(detail::kMeta);
+            if (legacy_meta && legacy_meta->IsObject() && legacy_meta->Empty())
+                req.params->GetObject().erase(std::string(detail::kMeta));
+            if (req.params->Empty()) req.params = std::nullopt;
+        } else if (req.params->IsNull()) {
+            req.params = std::nullopt;
+        }
     }
 
     auto pending = std::make_shared<PendingRequest>();
@@ -839,6 +844,13 @@ void McpSessionHandler::NotifySubscribers(
                         }
                     }
                 }
+            } else if (notification_type == notifications::kTaskStatus ||
+                       notification_type == notifications::kTaskWorking ||
+                       notification_type == notifications::kTaskCompleted ||
+                       notification_type == notifications::kTaskFailed ||
+                       notification_type == notifications::kTaskCancelled ||
+                       notification_type == notifications::kTaskInputRequired) {
+                should_notify = true;
             }
 
             if (!should_notify) continue;
@@ -914,15 +926,25 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
         }
     }
     if (pending) {
-        std::optional<JsonValue> data;
-        if (!reason.empty()) {
-            JsonValue d(JsonValue::object_tag);
-            d[detail::kReason] = JsonValue(reason);
-            data = std::move(d);
+        auto make_error = [&]() {
+            std::optional<JsonValue> data;
+            if (!reason.empty()) {
+                JsonValue d(JsonValue::object_tag);
+                d[detail::kReason] = JsonValue(reason);
+                data = std::move(d);
+            }
+            return SerializeErrorData(
+                ErrorData{McpErrorCode::RequestCancelled, "request cancelled", std::move(data)});
+        };
+        auto callback = pending->callback;
+        try {
+            std::thread([callback, err = make_error()]() mutable {
+                InvokeSafely([&] { callback(std::move(err)); }, "cancel-callback");
+            }).detach();
+        } catch (...) {
+            auto err = make_error();
+            InvokeSafely([&] { callback(std::move(err)); }, "cancel-callback");
         }
-        auto err = SerializeErrorData(
-            ErrorData{McpErrorCode::RequestCancelled, "request cancelled", std::move(data)});
-        InvokeSafely([&] { pending->callback(std::move(err)); }, "cancel-callback");
     }
 }
 
@@ -997,6 +1019,32 @@ void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view version) {
     std::unique_lock<std::shared_mutex> lock(codec_mutex_);
     negotiated_version_ = std::make_shared<const std::string>(version);
     codec_ = std::move(new_codec);
+}
+
+void McpSessionHandler::SetSupportedProtocolVersions(std::vector<std::string> versions) {
+    if (versions.empty()) return;
+    std::unique_lock<std::shared_mutex> lock(versions_mutex_);
+    supported_versions_ = std::move(versions);
+}
+
+bool McpSessionHandler::IsVersionSupported(std::string_view version) const {
+    std::shared_lock<std::shared_mutex> lock(versions_mutex_);
+    for (const auto& known : supported_versions_) {
+        if (known == version) return true;
+    }
+    return false;
+}
+
+JsonValue McpSessionHandler::MakeVersionErrorData(const std::string& requested) const {
+    std::shared_lock<std::shared_mutex> lock(versions_mutex_);
+    JsonValue supported(JsonValue::array_tag);
+    for (const auto& known : supported_versions_) {
+        supported.PushBack(JsonValue(known));
+    }
+    JsonValue data(JsonValue::object_tag);
+    data[kErrorDataSupported] = std::move(supported);
+    data[kErrorDataRequested] = JsonValue(requested);
+    return data;
 }
 
 std::string McpSessionHandler::NegotiatedProtocolVersion() const {

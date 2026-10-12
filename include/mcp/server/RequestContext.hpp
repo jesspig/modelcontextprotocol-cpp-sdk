@@ -2,6 +2,7 @@
 
 #include <mcp/Export.hpp>
 
+#include <mcp/Content.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/McpTypes.hpp>
@@ -36,8 +37,15 @@ public:
     {
         if (jsonrpc_request_.meta) {
             auto* lv = jsonrpc_request_.meta->Find("io.modelcontextprotocol/logLevel");
-            if (lv && lv->IsInt()) {
-                log_level_ = static_cast<LoggingLevel>(lv->GetInt());
+            if (lv) {
+                if (lv->IsInt()) {
+                    log_level_ = static_cast<LoggingLevel>(lv->GetInt());
+                } else if (lv->IsString()) {
+                    try {
+                        log_level_ = DeserializeLoggingLevel(*lv);
+                    } catch (...) {
+                    }
+                }
             }
         }
     }

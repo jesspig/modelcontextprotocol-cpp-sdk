@@ -31,6 +31,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -498,8 +499,8 @@ private:
             if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
                 break;
             pending.append(buf, nread);
-            if (pending.size() > detail::kMaxMessageSize) {
-                MCP_LOG(Error, "Listen SSE stream exceeded max message size");
+            if (pending.size() > SseEventLimit()) {
+                MCP_LOG(Error, "Listen SSE stream exceeded max SSE event size");
                 break;
             }
             size_t pos;
@@ -537,8 +538,8 @@ private:
         }
         StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return true;
-        if (parsed.data.size() > detail::kMaxMessageSize) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max message size");
+        if (parsed.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
             return true;
         }
         if (parsed.message && channel_) {
@@ -625,6 +626,12 @@ private:
             return s;
         };
         std::string auth_value;
+        std::string current_url = options_.endpoint;
+        std::string current_body = body;
+        std::string current_method = "POST";
+        int redirects = 0;
+        for (;;) {
+        bool redirected = false;
         for (int attempt = 0; attempt < 2; ++attempt) {
             HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -635,7 +642,7 @@ private:
                 return;
             }
 
-            auto url = detail::ParseUrl(options_.endpoint);
+            auto url = detail::ParseUrl(current_url);
             auto wh = ToWideStr(url.host);
             auto wp = ToWideStr(url.path);
             if (wp.empty()) wp = L"/";
@@ -648,8 +655,9 @@ private:
                 return;
             }
 
+            auto wmethod = ToWideStr(current_method);
             DWORD flags = (url.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
-            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST",
+            HINTERNET hRequest = WinHttpOpenRequest(hConnect, wmethod.c_str(),
                 wp.c_str(), nullptr, WINHTTP_NO_REFERER,
                 WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
             if (!hRequest) {
@@ -668,7 +676,7 @@ private:
                                 L"Accept: application/json, text/event-stream\r\n";
             std::string method;
             try {
-                auto body_jv2 = JsonValue::Parse(body);
+                auto body_jv2 = JsonValue::Parse(current_body);
                 if (auto* m = body_jv2.Find("method"); m && m->IsString()) {
                     method = m->GetString();
                     hdrs += L"Mcp-Method: " + ToWideStr(method) + L"\r\n";
@@ -720,9 +728,9 @@ private:
 
             BOOL sent = WinHttpSendRequest(hRequest,
                 WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                const_cast<char*>(body.data()),
-                static_cast<DWORD>(body.size()),
-                static_cast<DWORD>(body.size()), 0);
+                const_cast<char*>(current_body.data()),
+                static_cast<DWORD>(current_body.size()),
+                static_cast<DWORD>(current_body.size()), 0);
 
             if (!sent) {
                 MCP_LOG(Error, "WinHttpSendRequest failed");
@@ -752,6 +760,63 @@ private:
             if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
                     L"Mcp-Session-Id", sid_buf, &sid_size, nullptr)) {
                 StoreSessionId(wide_to_utf8(sid_buf));
+            }
+
+            if (status_ok && detail::IsRedirectStatus(static_cast<int>(status_code))) {
+                wchar_t loc_buf[2048] = {};
+                DWORD loc_size = sizeof(loc_buf);
+                std::string location;
+                if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_LOCATION,
+                        WINHTTP_HEADER_NAME_BY_INDEX, loc_buf, &loc_size,
+                        WINHTTP_NO_HEADER_INDEX)) {
+                    location = wide_to_utf8(loc_buf);
+                }
+                bool follow = !location.empty() &&
+                    options_.redirect_policy != detail::HttpRedirectPolicy::NoFollow;
+                std::string next_url;
+                bool same_origin = false;
+                if (follow) {
+                    try {
+                        next_url = detail::ResolveRedirectUrl(current_url, location);
+                        same_origin = detail::IsSameOriginRedirect(current_url, next_url);
+                    } catch (const std::exception&) {
+                        follow = false;
+                        MCP_LOG(Error, "invalid redirect location");
+                        NotifyError("invalid redirect location");
+                    }
+                }
+                if (follow && options_.redirect_policy ==
+                        detail::HttpRedirectPolicy::SameOriginOnly &&
+                    !same_origin) {
+                    follow = false;
+                    MCP_LOG(Error, "cross-origin redirect blocked by redirect policy");
+                    NotifyError("cross-origin redirect blocked by redirect policy");
+                }
+                if (follow && redirects >= options_.max_redirects) {
+                    follow = false;
+                    MCP_LOG(Error, "too many HTTP redirects");
+                    NotifyError("too many HTTP redirects");
+                }
+                if (!follow) {
+                    WinHttpCloseHandle(hRequest);
+                    WinHttpCloseHandle(hConnect);
+                    WinHttpCloseHandle(hSession);
+                    return;
+                }
+                if (status_code == 303 ||
+                    ((status_code == 301 || status_code == 302) &&
+                     current_method == "POST")) {
+                    current_method = "GET";
+                    current_body.clear();
+                }
+                if (!same_origin) auth_value.clear();
+                current_url = std::move(next_url);
+                ++redirects;
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                redirected = true;
+                break;
             }
 
             if (status_ok && status_code >= 400)
@@ -789,7 +854,7 @@ private:
                 if (status_code == 400 && attempt == 0 &&
                     streamable_http_client_impl::IsHeaderMismatchBody(err_body)) {
                     if (streamable_http_client_impl::RefreshToolAnnotations(
-                            options_.endpoint,
+                            current_url,
                             options_.stateless ? std::string{} : CurrentSessionId(),
                             NegotiatedVersion(), auth_value,
                             options_.additional_headers, tool_annotations_)) {
@@ -810,7 +875,7 @@ private:
                 }
                 if (!delivered && status_code == 404) {
                     try {
-                        auto req_body = JsonValue::Parse(body);
+                        auto req_body = JsonValue::Parse(current_body);
                         if (channel_) {
                             channel_->Send(streamable_http_client_impl::
                                 MakeSessionExpiredError(req_body));
@@ -833,7 +898,7 @@ private:
             {
                 bool had_id = false;
                 try {
-                    auto jv = JsonValue::Parse(body);
+                    auto jv = JsonValue::Parse(current_body);
                     had_id = jv.Contains("id");
                 } catch (...) {
                 }
@@ -861,7 +926,7 @@ private:
                 sse_request_ = hRequest;
                 std::optional<RequestId> request_id;
                 try {
-                    auto pending_body = JsonValue::Parse(body);
+                    auto pending_body = JsonValue::Parse(current_body);
                     if (auto* pending_id = pending_body.Find("id");
                         pending_id && !pending_id->IsNull()) {
                         request_id = RequestIdFromJson(*pending_id);
@@ -885,11 +950,11 @@ private:
                     if (!WinHttpReadData(hRequest, sbuf, swant, &sread) || sread == 0)
                         break;
                     sse_body.append(sbuf, sread);
-                    if (sse_body.size() > detail::kMaxMessageSize) {
+                    if (sse_body.size() > SseEventLimit()) {
                         sse_request_ = nullptr;
                         sse_body.clear();
-                        MCP_LOG(Error, "HTTP SSE response exceeded max message size");
-                        NotifyError("HTTP SSE response exceeded max message size");
+                        MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
+                        NotifyError("HTTP SSE event exceeded max SSE event size");
                         WinHttpCloseHandle(hRequest);
                         WinHttpCloseHandle(hConnect);
                         WinHttpCloseHandle(hSession);
@@ -952,6 +1017,8 @@ private:
                 WinHttpCloseHandle(hSession);
                 return;
             }
+        }
+        if (!redirected) return;
         }
     }
 
@@ -1066,8 +1133,8 @@ private:
             if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
                 break;
             pending.append(buf, nread);
-            if (pending.size() > detail::kMaxMessageSize) {
-                MCP_LOG(Error, "Resume SSE stream exceeded max message size");
+            if (pending.size() > SseEventLimit()) {
+                MCP_LOG(Error, "Resume SSE stream exceeded max SSE event size");
                 break;
             }
             size_t pos;
@@ -1093,9 +1160,9 @@ private:
         }
         StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return false;
-        if (parsed.data.size() > detail::kMaxMessageSize) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max message size");
-            NotifyError("HTTP SSE block exceeded max message size");
+        if (parsed.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
+            NotifyError("HTTP SSE block exceeded max SSE event size");
             return false;
         }
         if (learn_version && parsed.message) {
@@ -1139,6 +1206,11 @@ private:
     void StoreNegotiatedVersion(std::string version) {
         std::lock_guard<std::mutex> lk(version_mutex_);
         if (negotiated_version_.empty()) negotiated_version_ = std::move(version);
+    }
+
+    std::size_t SseEventLimit() const {
+        return options_.max_sse_event_bytes.value_or(
+            (std::numeric_limits<std::size_t>::max)());
     }
 
     bool DeliverIncoming(JsonRpcMessage message) {
@@ -1356,6 +1428,8 @@ private:
         req.url = options_.endpoint;
         req.timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
             streamable_http_client_impl::kListenStreamTimeout);
+        req.redirect_policy = options_.redirect_policy;
+        req.max_redirects = options_.max_redirects;
         req.headers["Accept"] = "text/event-stream";
         req.headers["MCP-Protocol-Version"] =
             streamable_http_client_impl::EffectiveProtocolVersion(
@@ -1387,8 +1461,8 @@ private:
                     listen_state_ = ListenState::Streaming;
                 }
                 pending.append(chunk.data(), chunk.size());
-                if (pending.size() > detail::kMaxMessageSize) {
-                    MCP_LOG(Error, "Listen SSE stream exceeded max message size");
+                if (pending.size() > SseEventLimit()) {
+                    MCP_LOG(Error, "Listen SSE stream exceeded max SSE event size");
                     throw ListenAbort{};
                 }
                 size_t pos;
@@ -1433,8 +1507,8 @@ private:
         }
         StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return true;
-        if (parsed.data.size() > detail::kMaxMessageSize) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max message size");
+        if (parsed.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
             return true;
         }
         if (parsed.message && channel_) {
@@ -1533,6 +1607,8 @@ private:
             req.body = body;
             req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
             req.headers = headers;
+            req.redirect_policy = options_.redirect_policy;
+            req.max_redirects = options_.max_redirects;
             detail::net::HttpClient client;
             detail::net::HttpResponseInfo resp;
             std::string full_body;
@@ -1554,6 +1630,9 @@ private:
                         throw PostBodyTooLarge{};
                     }
                     sse_pending.append(chunk.data(), chunk.size());
+                    if (sse_pending.size() > SseEventLimit()) {
+                        throw PostBodyTooLarge{};
+                    }
                     size_t pos;
                     while ((pos = sse_pending.find("\n\n")) != std::string::npos) {
                         std::string block = sse_pending.substr(0, pos);
@@ -1700,6 +1779,8 @@ private:
         resume_req.method = "GET";
         resume_req.url = options_.endpoint;
         resume_req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
+        resume_req.redirect_policy = options_.redirect_policy;
+        resume_req.max_redirects = options_.max_redirects;
         resume_req.headers["Accept"] = "text/event-stream";
         resume_req.headers["MCP-Protocol-Version"] =
             streamable_http_client_impl::EffectiveProtocolVersion(
@@ -1721,7 +1802,7 @@ private:
         try {
             resume_client->Request(resume_req, [&](std::string_view chunk) {
                 pending.append(chunk.data(), chunk.size());
-                if (pending.size() > detail::kMaxMessageSize) {
+                if (pending.size() > SseEventLimit()) {
                     throw PostBodyTooLarge{};
                 }
                 size_t pos;
@@ -1755,9 +1836,9 @@ private:
         }
         StoreRetryMs(parsed.retry_ms);
         if (parsed.data.empty()) return false;
-        if (parsed.data.size() > detail::kMaxMessageSize) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max message size");
-            NotifyError("HTTP SSE block exceeded max message size");
+        if (parsed.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
+            NotifyError("HTTP SSE block exceeded max SSE event size");
             return false;
         }
         if (learn_version && parsed.message) {
@@ -1801,6 +1882,11 @@ private:
     void StoreNegotiatedVersion(std::string version) {
         std::lock_guard<std::mutex> lk(version_mutex_);
         if (negotiated_version_.empty()) negotiated_version_ = std::move(version);
+    }
+
+    std::size_t SseEventLimit() const {
+        return options_.max_sse_event_bytes.value_or(
+            (std::numeric_limits<std::size_t>::max)());
     }
 
     HttpClientTransportOptions options_;

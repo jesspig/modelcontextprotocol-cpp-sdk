@@ -105,6 +105,7 @@ public:
     void SetNegotiatedProtocolVersion(std::string_view version);
 
     std::string NegotiatedProtocolVersion() const;
+    void SetSupportedProtocolVersions(std::vector<std::string> versions);
     bool IsJuly2026OrLater() const {
         return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion());
     }
@@ -137,6 +138,8 @@ private:
     void CheckTimeouts();
     void EraseProgressTokens(const std::string& request_id);
     void EraseIncomingCancellationFlag(const std::string& request_id_key);
+    bool IsVersionSupported(std::string_view version) const;
+    JsonValue MakeVersionErrorData(const std::string& requested) const;
 
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<WireCodec> codec_;
@@ -144,6 +147,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::shared_ptr<const std::string> negotiated_version_;
+    mutable std::shared_mutex versions_mutex_;
+    std::vector<std::string> supported_versions_;
 
     std::thread message_loop_thread_;
     std::thread timeout_thread_;

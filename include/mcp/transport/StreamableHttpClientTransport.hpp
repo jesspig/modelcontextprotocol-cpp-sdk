@@ -2,12 +2,15 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/transport/HttpTransportMode.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -24,6 +27,9 @@ struct HttpClientTransportOptions {
     std::function<std::string(std::string_view www_authenticate)> auth_challenge_handler;
     bool enable_listen_stream = true;
     bool stateless = false;
+    std::optional<std::size_t> max_sse_event_bytes = detail::kMaxSseEventBytes;
+    detail::HttpRedirectPolicy redirect_policy = detail::HttpRedirectPolicy::SameOriginOnly;
+    int max_redirects = detail::kMaxHttpRedirects;
 };
 
 class StreamableHttpClientTransport : public IClientTransport {

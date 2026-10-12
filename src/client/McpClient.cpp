@@ -21,6 +21,7 @@ namespace {
     constexpr std::chrono::seconds kTaskRequestTimeout(600);
     constexpr std::chrono::seconds kPingTimeout(10);
     constexpr std::chrono::milliseconds kSubscriptionAckTimeout(5000);
+    constexpr std::chrono::milliseconds kMaxServerPollInterval(300000);
 
     constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffBase(50);
     constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffMax(250);
@@ -526,7 +527,9 @@ void McpClient::WireClientHandlers() {
             ElicitRequestParams params;
             if (req.params) params = DeserializeElicitRequestParams(*req.params);
             if (params.mode == "url") {
-                if (!params.elicitation_id) {
+                const bool modern_era =
+                    IsModernProtocolVersion(negotiation_.negotiated_version);
+                if (!modern_era && !params.elicitation_id) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                             "url elicitation missing elicitationId")));
@@ -544,14 +547,16 @@ void McpClient::WireClientHandlers() {
                 }
                 JsonValue result = SerializeElicitResult(ElicitResult{});
                 result["action"] = JsonValue(action);
-                JsonValue complete_params(JsonValue::object_tag);
-                complete_params["elicitationId"] = JsonValue(*params.elicitation_id);
-                try {
-                    handler_->SendNotification(
-                        notifications::kElicitationComplete,
-                        std::move(complete_params));
-                } catch (...) {
-                    MCP_LOG(Error, "failed to send elicitation/complete notification");
+                if (!modern_era) {
+                    JsonValue complete_params(JsonValue::object_tag);
+                    complete_params["elicitationId"] = JsonValue(*params.elicitation_id);
+                    try {
+                        handler_->SendNotification(
+                            notifications::kElicitationComplete,
+                            std::move(complete_params));
+                    } catch (...) {
+                        MCP_LOG(Error, "failed to send elicitation/complete notification");
+                    }
                 }
                 p.set_value(std::move(result));
                 return;
@@ -778,6 +783,7 @@ static bool TryFulfillInputRequired(
     const JsonValue& result_json,
     const ClientOptions& options,
     const std::optional<ElicitationHandler>& elicitation_handler,
+    const std::optional<UrlElicitationHandler>& url_elicitation_handler,
     const std::optional<SamplingHandler>& sampling_handler,
     const std::optional<RootsHandler>& roots_handler,
     JsonValue& out_input_responses,
@@ -806,13 +812,24 @@ static bool TryFulfillInputRequired(
 
     for (const auto& [key, request] : input_req.input_requests) {
         if (request.method == methods::kElicit) {
-            if (!elicitation_handler) {
-                throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
-            }
             auto elicit_params = DeserializeElicitRequestParams(request.params);
-            auto elicit_result = (*elicitation_handler)(elicit_params);
-            MaybeApplyElicitationDefaults(elicit_result, elicit_params, options);
-            responses[key] = MakeInputResponseFromElicitResult(elicit_result);
+            if (elicit_params.mode == "url") {
+                std::string action = "decline";
+                if (url_elicitation_handler) {
+                    (*url_elicitation_handler)(elicit_params);
+                    action = "accept";
+                }
+                ElicitResult url_result;
+                url_result.action = std::move(action);
+                responses[key] = MakeInputResponseFromElicitResult(url_result);
+            } else {
+                if (!elicitation_handler) {
+                    throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
+                }
+                auto elicit_result = (*elicitation_handler)(elicit_params);
+                MaybeApplyElicitationDefaults(elicit_result, elicit_params, options);
+                responses[key] = MakeInputResponseFromElicitResult(elicit_result);
+            }
         } else if (request.method == methods::kCreateMessage) {
             if (!sampling_handler) {
                 throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
@@ -895,7 +912,7 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
         std::optional<std::string> request_state;
         bool state_only = false;
         if (TryFulfillInputRequired(result_json, options_, elicitation_handler_,
-                sampling_handler_, roots_handler_,
+                url_elicitation_handler_, sampling_handler_, roots_handler_,
                 input_responses, request_state, state_only)) {
             if (state_only) {
                 int64_t delay_ms = kMrtrStateOnlyBackoffBase.count()
@@ -1025,13 +1042,23 @@ CallToolResult McpClient::CallTool(
 
     JsonValue req_json(JsonValue::object_tag);
     req_json[detail::kName] = JsonValue(params.name);
-    if (params.arguments) req_json["arguments"] = *params.arguments;
+    req_json["arguments"] = params.arguments.value_or(JsonValue(JsonValue::object_tag));
 
     auto round_timeout = options_.input_required_config
         ? options_.input_required_config->round_timeout
         : kTaskRequestTimeout;
-    auto result_json = SendRequestWithMrtr(
-        methods::kCallTool, std::move(req_json), meta, round_timeout);
+    JsonValue retry_params = req_json;
+    JsonValue result_json;
+    try {
+        result_json = SendRequestWithMrtr(
+            methods::kCallTool, std::move(req_json), meta, round_timeout);
+    } catch (const McpError& e) {
+        if (e.Code() != McpErrorCode::HeaderMismatch) throw;
+        response_cache_->Clear();
+        (void)ListTools();
+        result_json = SendRequestWithMrtr(
+            methods::kCallTool, std::move(retry_params), meta, round_timeout);
+    }
 
     if (auto task_payload = ResolveTaskResult(*this, options_, result_json)) {
         return task_payload->IsNull()
@@ -1194,7 +1221,7 @@ GetPromptResult McpClient::GetPrompt(
 
     JsonValue req_json(JsonValue::object_tag);
     req_json[detail::kName] = JsonValue(std::string(name));
-    if (arguments) req_json["arguments"] = *arguments;
+    req_json["arguments"] = arguments.value_or(JsonValue(JsonValue::object_tag));
 
     auto timeout = options.read_timeout_ms
         ? std::chrono::milliseconds(*options.read_timeout_ms)
@@ -1319,7 +1346,7 @@ GetTaskResult McpClient::CallToolAsTask(
 
     JsonValue req_json(JsonValue::object_tag);
     req_json[detail::kName] = JsonValue(params.name);
-    if (params.arguments) req_json["arguments"] = *params.arguments;
+    req_json["arguments"] = params.arguments.value_or(JsonValue(JsonValue::object_tag));
 
     auto round_timeout = options_.input_required_config
         ? options_.input_required_config->round_timeout
@@ -1397,6 +1424,7 @@ GetTaskResult McpClient::PollTaskToCompletion(
     std::chrono::seconds timeout)
 {
     auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto interval = poll_interval;
 
     while (std::chrono::steady_clock::now() < deadline) {
         auto task = GetTask(task_id);
@@ -1408,11 +1436,17 @@ GetTaskResult McpClient::PollTaskToCompletion(
             return task;
         }
 
-        if (std::chrono::steady_clock::now() + poll_interval >= deadline) {
+        if (task.poll_interval_ms && *task.poll_interval_ms > 0) {
+            auto server_interval = std::chrono::milliseconds(*task.poll_interval_ms);
+            interval = server_interval < kMaxServerPollInterval
+                ? server_interval : kMaxServerPollInterval;
+        }
+
+        if (std::chrono::steady_clock::now() + interval >= deadline) {
             break;
         }
 
-        std::this_thread::sleep_for(poll_interval);
+        std::this_thread::sleep_for(interval);
     }
 
     throw McpError(McpErrorCode::InternalError,

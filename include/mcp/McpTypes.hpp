@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -574,6 +575,7 @@ JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotifica
 LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(const JsonValue& j);
 
 JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v);
+JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v, std::string_view protocol_version);
 ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j);
 JsonValue SerializeElicitResult(const ElicitResult& v);
 ElicitResult DeserializeElicitResult(const JsonValue& j);

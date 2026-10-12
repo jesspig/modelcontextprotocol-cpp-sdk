@@ -9,8 +9,10 @@
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSchemaValidator.hpp>
 #include <detail/UriTemplate.hpp>
+#include <mcp/detail/McpParamAnnotations.hpp>
 
 #include <condition_variable>
+#include <cstddef>
 #include <thread>
 #include <set>
 #include <algorithm>
@@ -27,6 +29,15 @@ namespace {
 
     constexpr std::chrono::seconds kElicitTimeout(600);
     constexpr std::chrono::seconds kNoWait(0);
+
+    constexpr std::string_view kUrlElicitationInputKey = "elicitation";
+
+    struct UrlElicitationInputRequired : std::runtime_error {
+        InputRequests input_requests;
+        explicit UrlElicitationInputRequired(InputRequests requests)
+            : std::runtime_error("url elicitation requires an MRTR input round-trip")
+            , input_requests(std::move(requests)) {}
+    };
 
     constexpr std::string_view kDefaultLoggerName = "mcp-server";
 
@@ -46,16 +57,20 @@ namespace {
         return std::to_string(next_index);
     }
 
-    constexpr std::string_view kSkillSchemePrefix = "skill://";
     constexpr std::string_view kSkillFileSuffix = "/SKILL.md";
     constexpr std::string_view kDirectoryMimeType = "inode/directory";
+    constexpr std::string_view kSchemeSeparator = "://";
 
     bool IsSkillEntryUri(std::string_view uri) {
-        if (uri.size() <= kSkillSchemePrefix.size() + kSkillFileSuffix.size()) return false;
-        if (uri.compare(0, kSkillSchemePrefix.size(), kSkillSchemePrefix) != 0) return false;
+        if (uri.size() <= kSkillFileSuffix.size()) return false;
         if (uri.compare(uri.size() - kSkillFileSuffix.size(),
                 kSkillFileSuffix.size(), kSkillFileSuffix) != 0) return false;
-        return true;
+        auto scheme_end = uri.find(kSchemeSeparator);
+        if (scheme_end == std::string_view::npos || scheme_end == 0) return false;
+        std::string_view after = uri.substr(scheme_end + kSchemeSeparator.size());
+        auto slash = after.find('/');
+        if (slash == std::string_view::npos || slash == 0) return false;
+        return after.size() > slash + 1;
     }
 
     std::string SkillRootFromEntryUri(const std::string& uri) {
@@ -195,12 +210,18 @@ namespace {
         McpSessionHandler& handler,
         std::string_view method,
         std::string_view task_id,
-        TaskStatus status)
+        TaskStatus status,
+        bool modern)
     {
         TaskStatusNotificationParams params;
         params.task_id = std::string(task_id);
         params.status = TaskStatusToWireString(status);
-        handler.SendNotification(method, SerializeTaskStatusNotificationParams(params));
+        JsonValue wire = SerializeTaskStatusNotificationParams(params);
+        if (modern) {
+            handler.NotifySubscribers(method, std::move(wire));
+            return;
+        }
+        handler.SendNotification(method, std::move(wire));
     }
 
     std::string MakeIso8601Now() {
@@ -307,16 +328,64 @@ namespace {
         }
         return false;
     }
+
+    JsonValue DecodeStatePayloadForMint(const std::optional<std::string>& state) {
+        JsonValue fallback(JsonValue::object_tag);
+        if (!state) return fallback;
+        try {
+            JsonValue parsed = JsonValue::Parse(*state);
+            if (parsed.IsObject()) return parsed;
+        } catch (...) {
+        }
+        auto decoded = detail::DecodeRequestStatePayload(*state);
+        if (decoded && decoded->IsObject()) return *decoded;
+        return fallback;
+    }
 }
 
 namespace {
 
-CacheHint GetCacheHint(const std::optional<std::map<std::string, CacheHint, std::less<>>>& hints, const std::string_view method) {
-    if (hints) {
-        auto it = hints->find(method);
-        if (it != hints->end()) return it->second;
+CallToolResult MakeToolIsErrorResult(std::string text) {
+    CallToolResult result;
+    result.is_error = true;
+    result.content.push_back(TextContent{"text", std::move(text)});
+    return result;
+}
+
+std::string ToolExecutionFailureMessage(const std::string& name) {
+    return std::string("Error executing tool ") + name;
+}
+
+bool ValidateToolCallArguments(
+    const Tool& tool_def,
+    const std::optional<JsonValue>& args,
+    std::string& error_out)
+{
+    JsonValue instance(JsonValue::object_tag);
+    if (args) instance = *args;
+    return detail::ValidateJsonSchema(instance, tool_def.input_schema, error_out);
+}
+
+std::size_t ToolInputElementCount(const std::optional<JsonValue>& args) {
+    if (!args) return 0;
+    if (args->IsObject()) return args->GetObject().size();
+    if (args->IsArray()) return args->GetArray().size();
+    return 1;
+}
+
+std::optional<LoggingLevel> ParseRequestLogLevel(const JsonRpcRequest& req) {
+    if (!req.meta || !req.meta->IsObject()) return std::nullopt;
+    auto* lv = req.meta->Find(detail::kMetaLogLevelKey);
+    if (!lv) return std::nullopt;
+    if (lv->IsInt()) return static_cast<LoggingLevel>(lv->GetInt());
+    if (lv->IsString()) {
+        try {
+            return DeserializeLoggingLevel(*lv);
+        } catch (...) {
+            return std::nullopt;
+        }
     }
-    return {};
+    return std::nullopt;
 }
 
 }
@@ -326,6 +395,39 @@ static bool RequireInitialized(bool initialized, bool modern_era, std::promise<J
     p.set_exception(std::make_exception_ptr(
         McpError(McpErrorCode::InvalidRequest, "Server not initialized")));
     return false;
+}
+
+CacheHint McpServer::ResolveCacheHint(std::string_view method) const {
+    std::function<std::optional<CacheHint>(std::string_view)> hook;
+    {
+        std::lock_guard<std::mutex> lock(cache_hook_mutex_);
+        hook = cache_hint_hook_;
+    }
+    if (hook) {
+        if (auto resolved = hook(method)) return *resolved;
+    }
+    if (options_.cache_hints) {
+        auto it = options_.cache_hints->find(method);
+        if (it != options_.cache_hints->end()) return it->second;
+    }
+    return {};
+}
+
+std::vector<std::string> McpServer::EffectiveSupportedVersions() const {
+    if (options_.supported_protocol_versions &&
+        !options_.supported_protocol_versions->empty()) {
+        return *options_.supported_protocol_versions;
+    }
+    std::vector<std::string> versions;
+    versions.reserve(std::size(kProtocolVersions));
+    for (auto v : kProtocolVersions) versions.emplace_back(v);
+    return versions;
+}
+
+void McpServer::SetCacheable(
+    std::function<std::optional<CacheHint>(std::string_view method)> resolver) {
+    std::lock_guard<std::mutex> lock(cache_hook_mutex_);
+    cache_hint_hook_ = std::move(resolver);
 }
 
 std::unique_ptr<McpServer> McpServer::Create(
@@ -354,6 +456,12 @@ McpServer::McpServer(
     WireHandlers();
 
     DeriveCapabilities();
+
+    handler_->SetSupportedProtocolVersions(EffectiveSupportedVersions());
+    if (options_.cache_hint_resolver) {
+        std::lock_guard<std::mutex> lock(cache_hook_mutex_);
+        cache_hint_hook_ = options_.cache_hint_resolver;
+    }
 
     if (options_.protocol_version) {
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
@@ -436,6 +544,10 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     if (!IsValidToolName(t.name)) {
         throw McpError(McpErrorCode::InvalidParams,
             "invalid tool name: " + t.name);
+    }
+    auto header_annotations = detail::ParseToolParamAnnotations(t.input_schema);
+    if (!header_annotations.IsValid()) {
+        throw McpError(McpErrorCode::InvalidParams, header_annotations.invalid_reason);
     }
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
@@ -581,6 +693,20 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     }
     if (current_level && static_cast<int>(level) < static_cast<int>(*current_level))
         return;
+    EmitLoggingMessage(level, data);
+}
+
+void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level) {
+    if (min_level) {
+        if (static_cast<int>(level) < static_cast<int>(*min_level))
+            return;
+        EmitLoggingMessage(level, data);
+        return;
+    }
+    SendLoggingMessage(level, data);
+}
+
+void McpServer::EmitLoggingMessage(LoggingLevel level, std::string_view data) {
     JsonValue params(JsonValue::object_tag);
     params[detail::kLevel] = SerializeLoggingLevel(level);
     params[detail::kData] = JsonValue(std::string(data));
@@ -598,15 +724,9 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     handler_->SendNotification(notifications::kMessage, std::move(params));
 }
 
-void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level) {
-    if (min_level && static_cast<int>(level) < static_cast<int>(*min_level))
-        return;
-    SendLoggingMessage(level, data);
-}
-
 void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
-    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) return;
-    SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status);
+    SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status,
+        IsModernProtocolVersion(handler_->NegotiatedProtocolVersion()));
 }
 
 void McpServer::SendProgress(const ProgressToken& token, double progress,
@@ -679,6 +799,20 @@ std::future<ElicitResult> McpServer::ElicitUrl(
     const std::string& url,
     const std::string& message,
     std::chrono::seconds timeout) {
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        (void)timeout;
+        ElicitRequestParams params;
+        params.message = message;
+        params.mode = "url";
+        params.url = url;
+        InputRequest request;
+        request.method = std::string(methods::kElicit);
+        request.params = SerializeElicitRequestParams(
+            params, handler_->NegotiatedProtocolVersion());
+        InputRequests requests;
+        requests[std::string(kUrlElicitationInputKey)] = std::move(request);
+        throw UrlElicitationInputRequired(std::move(requests));
+    }
     const std::string elicitation_id =
         "elicit-" + std::to_string(next_elicitation_id_.fetch_add(1));
 
@@ -930,6 +1064,7 @@ void McpServer::WireCoreHandlers() {
 
     handler_->SetNotificationHandler(notifications::kElicitationComplete,
         [this](const JsonRpcNotification& notif) {
+            if (handler_->IsJuly2026OrLater()) return;
             if (!notif.params || !notif.params->IsObject()) return;
             auto* id = notif.params->Find("elicitationId");
             if (!id || !id->IsString()) return;
@@ -1068,10 +1203,10 @@ void McpServer::WireTaskHandlers() {
                                      std::string("task persist failed: ") + e.what())));
                         return;
                     }
+                    SendTaskNotification(*handler_,
+                        notifications::kTaskWorking,
+                        params.task_id, TaskStatus::Working, modern);
                     if (!modern) {
-                        SendTaskNotification(*handler_,
-                            notifications::kTaskWorking,
-                            params.task_id, TaskStatus::Working);
                         UpdateTaskResult r;
                         JsonValue ack = SerializeEmptyResult(r);
                         ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
@@ -1125,8 +1260,9 @@ void McpServer::WireTaskHandlers() {
                             resume_flag = it->second;
                         }
                     }
-                    auto resume_log = [this](LoggingLevel level, std::string_view data) {
-                        SendLoggingMessage(level, data);
+                    auto resume_log_level = ParseRequestLogLevel(req);
+                    auto resume_log = [this, resume_log_level](LoggingLevel level, std::string_view data) {
+                        SendLoggingMessage(level, data, resume_log_level);
                     };
                     RequestContext<CallToolRequestParams> resume_ctx(
                         *this, req, std::move(resume_params),
@@ -1218,12 +1354,11 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
-                if (!modern) {
-                    SendTaskNotification(*handler_,
-                        params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
-                        params.task_id,
-                        params.result ? TaskStatus::Completed : TaskStatus::Working);
-                }
+                SendTaskNotification(*handler_,
+                    params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
+                    params.task_id,
+                    params.result ? TaskStatus::Completed : TaskStatus::Working,
+                    modern);
                 UpdateTaskResult r;
                 JsonValue ack = SerializeEmptyResult(r);
                 ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
@@ -1294,10 +1429,8 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
-                if (!modern) {
-                    SendTaskNotification(*handler_, notifications::kTaskCancelled,
-                        params.task_id, TaskStatus::Cancelled);
-                }
+                SendTaskNotification(*handler_, notifications::kTaskCancelled,
+                    params.task_id, TaskStatus::Cancelled, modern);
                 CancelTaskResult r;
                 JsonValue ack = SerializeEmptyResult(r);
                 ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
@@ -1414,7 +1547,7 @@ JsonValue McpServer::BuildToolsJson() {
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
-    auto hint = GetCacheHint(options_.cache_hints, "tools/list");
+    auto hint = ResolveCacheHint("tools/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     return SerializeListToolsResult(result);
 }
@@ -1519,8 +1652,9 @@ void McpServer::HandleCallTool(
         return;
     }
 
-    auto log_fn = [this](LoggingLevel level, std::string_view data) {
-        SendLoggingMessage(level, data);
+    auto req_log_level = ParseRequestLogLevel(req);
+    auto log_fn = [this, req_log_level](LoggingLevel level, std::string_view data) {
+        SendLoggingMessage(level, data, req_log_level);
     };
     auto cancel_flag = handler_->GetIncomingCancellationFlag(req.id);
     if (!cancel_flag) {
@@ -1530,6 +1664,13 @@ void McpServer::HandleCallTool(
         *this, req, std::move(params), std::move(log_fn), cancel_flag);
 
     auto tool = it->second;
+
+    if (options_.max_tool_input_elements &&
+        ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements) {
+        promise.set_value(SerializeCallToolResult(MakeToolIsErrorResult(
+            "tool arguments exceed maximum input element count")));
+        return;
+    }
 
     const auto& tool_def = tool->ProtocolTool();
     const bool task_declared = tool_def.execution
@@ -1555,29 +1696,45 @@ void McpServer::HandleCallTool(
 
         if (modern && required_task) {
             registry_lock.unlock();
-            auto required_promise = std::make_shared<std::promise<CallToolResult>>();
-            auto required_future = required_promise->get_future();
-            tool->InvokeAsync(ctx, std::move(*required_promise));
             CallToolResult first_result;
             bool first_failed = false;
             JsonValue first_error(JsonValue::object_tag);
+            std::string required_arguments_error;
+            if (!ValidateToolCallArguments(
+                    tool_def, ctx.Params().arguments, required_arguments_error)) {
+                first_result = MakeToolIsErrorResult(
+                    std::string("invalid arguments: ") + required_arguments_error);
+            } else {
+            auto required_promise = std::make_shared<std::promise<CallToolResult>>();
+            auto required_future = required_promise->get_future();
+            tool->InvokeAsync(ctx, std::move(*required_promise));
             try {
                 first_result = required_future.get();
+            } catch (const UrlElicitationInputRequired& e) {
+                first_result.input_required = InputRequiredResult{};
+                first_result.input_required->input_requests = e.input_requests;
             } catch (const McpError& e) {
                 first_failed = true;
                 first_error[detail::kCode] = JsonValue(static_cast<int64_t>(e.Code()));
                 first_error[detail::kMessage] = JsonValue(std::string(e.ErrorMessage()));
                 if (e.Data()) first_error[detail::kData] = *e.Data();
             } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("tool '") + tool_def.name +
+                    "' failed: " + e.what());
                 first_failed = true;
                 first_error[detail::kCode] =
                     JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
-                first_error[detail::kMessage] = JsonValue(std::string(e.what()));
+                first_error[detail::kMessage] =
+                    JsonValue(ToolExecutionFailureMessage(tool_def.name));
             } catch (...) {
+                MCP_LOG(Error, std::string("tool '") + tool_def.name +
+                    "' failed with unknown exception");
                 first_failed = true;
                 first_error[detail::kCode] =
                     JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
-                first_error[detail::kMessage] = JsonValue(std::string("tool execution failed"));
+                first_error[detail::kMessage] =
+                    JsonValue(ToolExecutionFailureMessage(tool_def.name));
+            }
             }
             if (!first_failed && first_result.input_required) {
                 if (RequiresSamplingInput(first_result)
@@ -1588,12 +1745,8 @@ void McpServer::HandleCallTool(
                 }
                 auto result = std::move(first_result);
                 if (options_.request_state_key) {
-                    JsonValue payload(JsonValue::object_tag);
-                    if (result.input_required->request_state) {
-                        auto parsed =
-                            JsonValue::Parse(*result.input_required->request_state);
-                        if (parsed.IsObject()) payload = parsed;
-                    }
+                    JsonValue payload =
+                        DecodeStatePayloadForMint(result.input_required->request_state);
                     payload["iat"] = JsonValue(
                         static_cast<int64_t>(std::time(nullptr)));
                     result.input_required->request_state =
@@ -1653,10 +1806,8 @@ void McpServer::HandleCallTool(
         store->CreateTask(task_id);
         store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
         store->SetTaskStatus(task_id, TaskStatus::Working);
-        if (!modern) {
-            SendTaskNotification(*handler_, notifications::kTaskStatus,
-                task_id, TaskStatus::Working);
-        }
+        SendTaskNotification(*handler_, notifications::kTaskStatus,
+            task_id, TaskStatus::Working, modern);
 
         CreateTaskResult created;
         created.task_id = task_id;
@@ -1676,9 +1827,9 @@ void McpServer::HandleCallTool(
                 };
                 auto finish = [&](TaskStatus status, bool notify) {
                     store->SetTaskStatus(task_id, status);
-                    if (notify && !modern) {
+                    if (notify) {
                         SendTaskNotification(*handler_, notifications::kTaskStatus,
-                            task_id, status);
+                            task_id, status, modern);
                     }
                     retire_task();
                 };
@@ -1693,9 +1844,55 @@ void McpServer::HandleCallTool(
                 };
                 auto result_promise = std::make_shared<std::promise<CallToolResult>>();
                 auto result_future = result_promise->get_future();
+                std::string background_arguments_error;
+                if (!ValidateToolCallArguments(tool->ProtocolTool(),
+                        ctx.Params().arguments, background_arguments_error)) {
+                    store->UpdateTask(task_id, SerializeCallToolResult(
+                        MakeToolIsErrorResult(std::string("invalid arguments: ") +
+                            background_arguments_error)));
+                    finish(TaskStatus::Completed, true);
+                    return;
+                }
                 tool->InvokeAsync(ctx, std::move(*result_promise));
+                CallToolResult pre_result;
                 try {
-                    auto result = result_future.get();
+                    pre_result = result_future.get();
+                } catch (const UrlElicitationInputRequired& e) {
+                    pre_result.input_required = InputRequiredResult{};
+                    pre_result.input_required->input_requests = e.input_requests;
+                } catch (const McpError& e) {
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(e.Code()),
+                            std::string(e.ErrorMessage()), e.Data());
+                    }
+                    return;
+                } catch (const std::exception& e) {
+                    MCP_LOG(Error, std::string("tool '") +
+                        tool->ProtocolTool().name + "' failed: " + e.what());
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
+                            ToolExecutionFailureMessage(tool->ProtocolTool().name),
+                            std::nullopt);
+                    }
+                    return;
+                } catch (...) {
+                    MCP_LOG(Error, std::string("tool '") +
+                        tool->ProtocolTool().name + "' failed with unknown exception");
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
+                            ToolExecutionFailureMessage(tool->ProtocolTool().name),
+                            std::nullopt);
+                    }
+                    return;
+                }
+                try {
+                    auto result = std::move(pre_result);
                     if (cancel_flag->load()) {
                         finish(TaskStatus::Cancelled, false);
                         return;
@@ -1721,15 +1918,21 @@ void McpServer::HandleCallTool(
                     if (cancel_flag->load()) {
                         finish(TaskStatus::Cancelled, false);
                     } else {
+                        MCP_LOG(Error, std::string("tool '") +
+                            tool->ProtocolTool().name + "' failed: " + e.what());
                         fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
-                            std::string(e.what()), std::nullopt);
+                            ToolExecutionFailureMessage(tool->ProtocolTool().name),
+                            std::nullopt);
                     }
                 } catch (...) {
                     if (cancel_flag->load()) {
                         finish(TaskStatus::Cancelled, false);
                     } else {
+                        MCP_LOG(Error, std::string("tool '") +
+                            tool->ProtocolTool().name + "' failed with unknown exception");
                         fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
-                            std::string("tool execution failed"), std::nullopt);
+                            ToolExecutionFailureMessage(tool->ProtocolTool().name),
+                            std::nullopt);
                     }
                 }
             });
@@ -1750,23 +1953,40 @@ void McpServer::HandleCallTool(
          request_state_key = std::move(request_state_key),
          modern_era, per_request_caps,
          stored_caps = GetClientCapabilities()]() mutable {
+            std::string sync_arguments_error;
+            if (!ValidateToolCallArguments(tool->ProtocolTool(),
+                    ctx.Params().arguments, sync_arguments_error)) {
+                captured_promise->set_value(SerializeCallToolResult(
+                    MakeToolIsErrorResult(std::string("invalid arguments: ") +
+                        sync_arguments_error)));
+                return;
+            }
             auto result_promise = std::make_shared<std::promise<CallToolResult>>();
             auto result_future = result_promise->get_future();
             tool->InvokeAsync(ctx, std::move(*result_promise));
             CallToolResult sync_result;
             try {
                 sync_result = result_future.get();
+            } catch (const UrlElicitationInputRequired& e) {
+                sync_result.input_required = InputRequiredResult{};
+                sync_result.input_required->input_requests = e.input_requests;
             } catch (const McpError& e) {
-                CallToolResult err_result;
-                err_result.is_error = true;
-                err_result.content.push_back(TextContent{"text", e.what()});
-                captured_promise->set_value(SerializeCallToolResult(err_result));
+                captured_promise->set_value(SerializeCallToolResult(
+                    MakeToolIsErrorResult(std::string(e.ErrorMessage()))));
+                return;
+            } catch (const std::exception& e) {
+                MCP_LOG(Error, std::string("tool '") +
+                    tool->ProtocolTool().name + "' failed: " + e.what());
+                captured_promise->set_value(SerializeCallToolResult(
+                    MakeToolIsErrorResult(
+                        ToolExecutionFailureMessage(tool->ProtocolTool().name))));
                 return;
             } catch (...) {
-                CallToolResult err_result;
-                err_result.is_error = true;
-                err_result.content.push_back(TextContent{"text", "internal error"});
-                captured_promise->set_value(SerializeCallToolResult(err_result));
+                MCP_LOG(Error, std::string("tool '") +
+                    tool->ProtocolTool().name + "' failed with unknown exception");
+                captured_promise->set_value(SerializeCallToolResult(
+                    MakeToolIsErrorResult(
+                        ToolExecutionFailureMessage(tool->ProtocolTool().name))));
                 return;
             }
             if (modern_era && RequiresSamplingInput(sync_result)
@@ -1779,12 +1999,8 @@ void McpServer::HandleCallTool(
                 auto result = std::move(sync_result);
                 if (result.input_required) {
                     if (request_state_key) {
-                        JsonValue payload(JsonValue::object_tag);
-                        if (result.input_required->request_state) {
-                            auto parsed =
-                                JsonValue::Parse(*result.input_required->request_state);
-                            if (parsed.IsObject()) payload = parsed;
-                        }
+                        JsonValue payload =
+                            DecodeStatePayloadForMint(result.input_required->request_state);
                         payload["iat"] = JsonValue(
                             static_cast<int64_t>(std::time(nullptr)));
                         result.input_required->request_state =
@@ -1843,7 +2059,7 @@ void McpServer::HandleListResources(
             [](const ResourceEntry& entry) { return !entry.is_template; })) {
         result.next_cursor = MakeNextCursor(next_index);
     }
-    auto hint = GetCacheHint(options_.cache_hints, "resources/list");
+    auto hint = ResolveCacheHint("resources/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListResourcesResult(result));
 }
@@ -1873,7 +2089,7 @@ void McpServer::HandleListResourceTemplates(
             [](const ResourceEntry& entry) { return entry.is_template; })) {
         result.next_cursor = MakeNextCursor(next_index);
     }
-    auto hint = GetCacheHint(options_.cache_hints, "resources/templates/list");
+    auto hint = ResolveCacheHint("resources/templates/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListResourceTemplatesResult(result));
 }
@@ -1895,12 +2111,8 @@ void McpServer::HandleReadResource(
                 auto result = entry.handler(params.uri);
                 if (result.input_required) {
                     if (options_.request_state_key) {
-                        JsonValue payload(JsonValue::object_tag);
-                        if (result.input_required->request_state) {
-                            auto parsed =
-                                JsonValue::Parse(*result.input_required->request_state);
-                            if (parsed.IsObject()) payload = parsed;
-                        }
+                        JsonValue payload =
+                            DecodeStatePayloadForMint(result.input_required->request_state);
                         payload["iat"] = JsonValue(
                             static_cast<int64_t>(std::time(nullptr)));
                         result.input_required->request_state =
@@ -1909,7 +2121,7 @@ void McpServer::HandleReadResource(
                     promise.set_value(SerializeReadResourceResult(result));
                     return;
                 }
-                auto hint = GetCacheHint(options_.cache_hints, "resources/read");
+                auto hint = ResolveCacheHint("resources/read");
                 if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
                 promise.set_value(SerializeReadResourceResult(result));
                 return;
@@ -1931,12 +2143,8 @@ void McpServer::HandleReadResource(
             auto result = entry.template_handler(params.uri, *variables);
             if (result.input_required) {
                 if (options_.request_state_key) {
-                    JsonValue payload(JsonValue::object_tag);
-                    if (result.input_required->request_state) {
-                        auto parsed =
-                            JsonValue::Parse(*result.input_required->request_state);
-                        if (parsed.IsObject()) payload = parsed;
-                    }
+                    JsonValue payload =
+                        DecodeStatePayloadForMint(result.input_required->request_state);
                     payload["iat"] = JsonValue(
                         static_cast<int64_t>(std::time(nullptr)));
                     result.input_required->request_state =
@@ -1945,7 +2153,7 @@ void McpServer::HandleReadResource(
                 promise.set_value(SerializeReadResourceResult(result));
                 return;
             }
-            auto hint = GetCacheHint(options_.cache_hints, "resources/read");
+            auto hint = ResolveCacheHint("resources/read");
             if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
             promise.set_value(SerializeReadResourceResult(result));
             return;
@@ -1985,7 +2193,7 @@ void McpServer::HandleListPrompts(
             })) {
         result.next_cursor = MakeNextCursor(next_index);
     }
-    auto hint = GetCacheHint(options_.cache_hints, "prompts/list");
+    auto hint = ResolveCacheHint("prompts/list");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeListPromptsResult(result));
 }
@@ -2006,12 +2214,8 @@ void McpServer::HandleGetPrompt(
                 auto result = entry.handler(params.name, params.arguments);
                 if (result.input_required) {
                     if (options_.request_state_key) {
-                        JsonValue payload(JsonValue::object_tag);
-                        if (result.input_required->request_state) {
-                            auto parsed =
-                                JsonValue::Parse(*result.input_required->request_state);
-                            if (parsed.IsObject()) payload = parsed;
-                        }
+                        JsonValue payload =
+                            DecodeStatePayloadForMint(result.input_required->request_state);
                         payload["iat"] = JsonValue(
                             static_cast<int64_t>(std::time(nullptr)));
                         result.input_required->request_state =
@@ -2063,7 +2267,7 @@ void McpServer::HandleListSkills(
             })) {
         result.next_cursor = MakeNextCursor(next_index);
     }
-    auto hint = GetCacheHint(options_.cache_hints, "skills/list");
+    auto hint = ResolveCacheHint("skills/list");
     result.ttl_ms = hint.ttl_ms;
     result.cache_scope = hint.cache_scope;
     promise.set_value(SerializeSkillsListResult(result));
@@ -2094,7 +2298,7 @@ void McpServer::HandleGetSkill(
         if (skill.uri == params.uri) {
             SkillsGetResult result;
             result.skill = skill;
-            auto hint = GetCacheHint(options_.cache_hints, "skills/get");
+            auto hint = ResolveCacheHint("skills/get");
             result.ttl_ms = hint.ttl_ms;
             result.cache_scope = hint.cache_scope;
             promise.set_value(SerializeSkillsGetResult(result));
@@ -2149,7 +2353,7 @@ void McpServer::HandleReadDirectory(
             })) {
         result.next_cursor = MakeNextCursor(next_index);
     }
-    auto hint = GetCacheHint(options_.cache_hints, "resources/directory/read");
+    auto hint = ResolveCacheHint("resources/directory/read");
     result.ttl_ms = hint.ttl_ms;
     result.cache_scope = hint.cache_scope;
     promise.set_value(SerializeReadDirectoryResult(result));
@@ -2192,10 +2396,7 @@ void McpServer::HandleDiscover(
         handler_->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
     }
     DiscoverResult result;
-    result.supported_versions.reserve(std::size(kProtocolVersions));
-    for (auto v : kProtocolVersions) {
-        result.supported_versions.emplace_back(v);
-    }
+    result.supported_versions = EffectiveSupportedVersions();
     result.capabilities = capabilities_;
     if (options_.server_info) {
         result.server_info = Implementation{
@@ -2213,7 +2414,7 @@ void McpServer::HandleDiscover(
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }
-    auto hint = GetCacheHint(options_.cache_hints, "server/discover");
+    auto hint = ResolveCacheHint("server/discover");
     if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
     promise.set_value(SerializeDiscoverResult(result));
 }
@@ -2245,10 +2446,10 @@ void McpServer::HandleInitialize(
     if (options_.protocol_version) {
         handler_->SetNegotiatedProtocolVersion(*options_.protocol_version);
     } else {
-        std::string_view selected = kDefaultNegotiatedProtocolVersion;
+        std::string selected(kDefaultNegotiatedProtocolVersion);
         if (!params.protocol_version.empty()) {
-            selected = kLegacyProtocolVersion;
-            for (auto v : kProtocolVersions) {
+            selected = std::string(kLegacyProtocolVersion);
+            for (const auto& v : EffectiveSupportedVersions()) {
                 if (v == params.protocol_version && !IsModernProtocolVersion(v)) {
                     selected = v;
                     break;
@@ -2283,6 +2484,12 @@ void McpServer::HandleSubscriptionsListen(
         promise.set_exception(std::make_exception_ptr(
             McpError(McpErrorCode::MethodNotFound,
                      "subscriptions/listen not available in this protocol version")));
+        return;
+    }
+    if (!options_.subscriptions_enabled) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                     "subscriptions are disabled")));
         return;
     }
 

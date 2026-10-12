@@ -1,4 +1,5 @@
 #include <mcp/client/McpClient.hpp>
+#include <mcp/client/SkillVerify.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
 #include <cstdlib>
@@ -272,8 +273,10 @@ void RunSSERetryClient(const std::string& server_url) {
 }
 
 void RunJsonSchemaRefNoDerefClient(const std::string& server_url) {
+    ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                : ConnectMode::Legacy;
     auto client = ConnectClient(server_url, "json-schema-ref-no-deref-client",
-        ConnectMode::Legacy, ClientCapabilities{});
+        mode, ClientCapabilities{});
     auto tools = client->ListTools();
     std::cout << "Available tools: " << tools.tools.size() << std::endl;
     client->Close();
@@ -310,6 +313,16 @@ void RunSkillsNoPrefetchClient(const std::string& server_url) {
         ConnectMode::Legacy, ClientCapabilities{});
     auto skills = client->ListSkills();
     std::cout << "Listed skills (" << skills.skills.size() << ")" << std::endl;
+    for (const auto& skill : skills.skills) {
+        std::string limits_error;
+        if (CheckSkillLimits(skill, limits_error)) {
+            std::cout << "Skill limits ok (" << skill.uri << ")" << std::endl;
+        } else {
+            std::cout << "Skill limits exceeded (" << skill.uri
+                      << "): " << limits_error << std::endl;
+        }
+    }
+    std::cout << "Supporting files prefetched: 0" << std::endl;
     client->Close();
     std::cout << "Connection closed successfully" << std::endl;
 }
@@ -319,21 +332,67 @@ void RunSkillsVerifyClient(const std::string& server_url) {
         ConnectMode::Legacy, ClientCapabilities{});
     auto skills = client->ListSkills();
     std::cout << "Listed skills (" << skills.skills.size() << ")" << std::endl;
-    std::string target;
+    const Skill* target = nullptr;
     for (const auto& skill : skills.skills) {
         if (skill.uri.size() >= 9 &&
             skill.uri.compare(skill.uri.size() - 9, 9, "/SKILL.md") == 0) {
-            target = skill.uri;
+            target = &skill;
             break;
         }
     }
-    if (target.empty() && !skills.skills.empty()) target = skills.skills.front().uri;
-    if (target.empty())
+    if (!target && !skills.skills.empty()) target = &skills.skills.front();
+    if (!target)
         throw std::runtime_error("Test server advertised no skills");
-    auto resource = client->ReadResource(target);
+    std::string limits_error;
+    if (CheckSkillLimits(*target, limits_error)) {
+        std::cout << "Skill limits ok (" << target->uri << ")" << std::endl;
+    } else {
+        std::cout << "Skill limits exceeded (" << target->uri
+                  << "): " << limits_error << std::endl;
+    }
+    std::string frontmatter_error;
+    if (VerifyFrontmatter(*target, target->frontmatter, frontmatter_error)) {
+        std::cout << "Skill frontmatter self-consistent (" << target->uri << ")"
+                  << std::endl;
+    } else {
+        std::cout << "Skill frontmatter mismatch: " << frontmatter_error
+                  << std::endl;
+    }
+    std::string approval_key = ApprovalKey("conformance", *target);
+    std::cout << "Skill approval key: " << approval_key << std::endl;
+    if (IsApprovalStillValid(*target, *target)) {
+        std::cout << "Skill approval snapshot still valid (" << target->uri << ")"
+                  << std::endl;
+    } else {
+        std::cout << "Skill approval snapshot changed (" << target->uri << ")"
+                  << std::endl;
+    }
+    auto resource = client->ReadResource(target->uri);
     std::cout << "Read skill manifest (" << resource.contents.size()
               << " content blocks), stopping before supporting files"
               << std::endl;
+    std::string payload;
+    for (const auto& content : resource.contents) {
+        if (auto* text = std::get_if<TextResourceContents>(&content)) {
+            payload = text->text;
+            break;
+        }
+    }
+    if (auto* manifest =
+            std::get_if<std::vector<SkillResource>>(&target->resources)) {
+        for (const auto& file : *manifest) {
+            if (file.uri != target->uri) continue;
+            std::string bytes_error;
+            if (VerifyFileBytes(file, payload, bytes_error)) {
+                std::cout << "Skill manifest digest ok (" << file.uri << ")"
+                          << std::endl;
+            } else {
+                std::cout << "Skill manifest digest mismatch: " << bytes_error
+                          << std::endl;
+            }
+            break;
+        }
+    }
     client->Close();
     std::cout << "Connection closed successfully" << std::endl;
 }
