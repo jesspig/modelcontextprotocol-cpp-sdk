@@ -32,17 +32,7 @@ client:
     # C++ client 无 OAuth 表面，core 集逐个运行 auth 场景时 client 以
     # Unknown scenario 退出 1，靠本基线放行（requirements 2025-11-25 内共 14 个）。
     # 完整 31 个见 tests/conformance/baseline.yaml 与 baseline-2026-07-28.yaml。
-    - auth/metadata-default
     - auth/metadata-var1
     - auth/metadata-var2
     - auth/metadata-var3
-    - auth/basic-cimd
-    - auth/scope-from-www-authenticate
-    - auth/scope-from-scopes-supported
-    - auth/scope-omitted-when-undefined
     - auth/scope-step-up
-    - auth/scope-retry-limit
-    - auth/token-endpoint-auth-basic
-    - auth/token-endpoint-auth-post
-    - auth/token-endpoint-auth-none
-    - auth/pre-registration
