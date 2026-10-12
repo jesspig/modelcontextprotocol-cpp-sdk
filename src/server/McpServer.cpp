@@ -1603,23 +1603,72 @@ std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
 }
 
 void McpServer::HandleListTools(
-    const JsonRpcRequest&, std::promise<JsonValue> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
     if (!RequireInitialized(initialized_, handler_->IsJuly2026OrLater(), promise)) return;
+    if (!options_.enable_progressive_discovery) {
+        {
+            std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+            if (cached_tools_json_) {
+                promise.set_value(*cached_tools_json_);
+                return;
+            }
+        }
+        {
+            std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
+            if (!cached_tools_json_) {
+                cached_tools_json_ = BuildToolsJson();
+            }
+            promise.set_value(*cached_tools_json_);
+        }
+        return;
+    }
+    std::optional<std::string> cursor;
+    std::string query;
+    size_t page_size = kDefaultPageSize;
+    if (req.params && req.params->IsObject()) {
+        cursor = DeserializePaginatedRequestParams(*req.params).cursor;
+        if (auto* q = req.params->Find("query"); q && q->IsString())
+            query = q->GetString();
+        if (auto* ps = req.params->Find("pageSize"); ps && ps->IsInt()) {
+            int64_t v = ps->GetInt();
+            if (v < 1) v = 1;
+            if (v > 100) v = 100;
+            page_size = static_cast<size_t>(v);
+        }
+    }
+    auto ascii_lower = [](std::string s) {
+        for (auto& c : s) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        }
+        return s;
+    };
+    std::string lowered_query = ascii_lower(query);
+    std::vector<Tool> filtered;
     {
         std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
-        if (cached_tools_json_) {
-            promise.set_value(*cached_tools_json_);
-            return;
+        for (const auto& [name, tool_ptr] : tools_) {
+            const Tool& tool = tool_ptr->ProtocolTool();
+            if (!lowered_query.empty()) {
+                bool hit = ascii_lower(tool.name).find(lowered_query) != std::string::npos;
+                if (!hit && tool.description)
+                    hit = ascii_lower(*tool.description).find(lowered_query) != std::string::npos;
+                if (!hit) continue;
+            }
+            filtered.push_back(tool);
         }
     }
-    {
-        std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
-        if (!cached_tools_json_) {
-            cached_tools_json_ = BuildToolsJson();
-        }
-        promise.set_value(*cached_tools_json_);
+    std::sort(filtered.begin(), filtered.end(),
+        [](const Tool& a, const Tool& b) { return a.name < b.name; });
+    ListToolsResult result;
+    size_t next_index = 0;
+    if (PaginateEntries(filtered, ParseCursor(cursor), page_size, next_index,
+            [&result](const Tool& tool) { result.tools.push_back(tool); })) {
+        result.next_cursor = MakeNextCursor(next_index);
     }
+    auto hint = ResolveCacheHint("tools/list");
+    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
+    promise.set_value(SerializeListToolsResult(result));
 }
 
 void McpServer::HandleCallTool(

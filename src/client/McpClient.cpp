@@ -990,6 +990,34 @@ ListToolsResult McpClient::ListToolsAll() {
         std::to_string(kMaxListPages) + " pages");
 }
 
+ListToolsResult McpClient::SearchTools(
+    std::optional<std::string> query,
+    std::optional<int64_t> page_size)
+{
+    ListToolsResult all;
+    std::optional<std::string> cursor;
+    for (size_t page = 0; page < kMaxListPages; ++page) {
+        auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+        PaginatedRequestParams params;
+        params.cursor = cursor;
+        JsonValue req_json = SerializePaginatedRequestParams(params);
+        if (options_.enable_progressive_discovery) {
+            if (query && !query->empty()) req_json["query"] = JsonValue(*query);
+            if (page_size) req_json["pageSize"] = JsonValue(*page_size);
+        }
+        auto result_json = DoSendRequest(*handler_, methods::kListTools,
+            std::move(req_json), meta, kDefaultRequestTimeout);
+        auto page_result = DeserializeListToolsResult(result_json);
+        for (auto& tool : page_result.tools) all.tools.push_back(std::move(tool));
+        if (!page_result.next_cursor || page_result.next_cursor->empty())
+            return all;
+        cursor = std::move(page_result.next_cursor);
+    }
+    throw McpError(McpErrorCode::ProtocolViolation,
+        "list pagination did not converge within " +
+        std::to_string(kMaxListPages) + " pages");
+}
+
 static std::optional<JsonValue> ResolveTaskResult(
     McpClient& client, const ClientOptions& options, const JsonValue& result_json)
 {

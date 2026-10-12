@@ -1150,6 +1150,7 @@ TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
         MetaWithSubscriptionId("client-sub-1"),
         std::chrono::milliseconds(2000));
 
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto resp = future.get();
     ASSERT_FALSE(resp.Contains("code"));
@@ -1157,7 +1158,6 @@ TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
     ASSERT_TRUE(resp.Contains("resultType"));
     EXPECT_EQ(resp["resultType"], JsonValue("complete"));
 
-    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto ack = ack_future.get();
     EXPECT_EQ(ack.method, std::string(notifications::kSubscriptionsAcknowledged));
     ASSERT_TRUE(ack.meta.has_value());
@@ -1190,11 +1190,11 @@ TEST(McpServerTest, SubscriptionsListenAcknowledgesHonoredFilter) {
         MetaWithSubscriptionId("client-sub-2"),
         std::chrono::milliseconds(2000));
 
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto resp = future.get();
     ASSERT_FALSE(resp.Contains("code"));
 
-    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto ack = ack_future.get();
     ASSERT_TRUE(ack.params.has_value());
     auto honored = DeserializeSubscriptionsAcknowledgedNotificationParams(*ack.params);
@@ -2197,8 +2197,8 @@ TEST(McpServerTest, SendResourceUpdatedReachesSubscribedUri) {
         MetaWithSubscriptionId("client-sub-upd"),
         std::chrono::milliseconds(2000));
 
-    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
 
     ctx.server->SendResourceUpdated("resource://send/1");
 
@@ -2239,8 +2239,8 @@ TEST(McpServerTest, SendResourceUpdatedSkipsUnsubscribedUri) {
         MetaWithSubscriptionId("client-sub-other"),
         std::chrono::milliseconds(2000));
 
-    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(subscribe.wait_for(std::chrono::seconds(3)), std::future_status::ready);
 
     ctx.server->SendResourceUpdated("resource://other/9");
 
@@ -3534,9 +3534,9 @@ TEST(McpServerTest, SkillsListChangedSubscriptionGating) {
         SerializeSubscriptionsListenRequestParams(tools_only),
         MetaWithSubscriptionId("sub-tools"),
         std::chrono::milliseconds(2000));
+    ASSERT_EQ(ack_first_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_FALSE(listen_future.get().Contains("code"));
-    ASSERT_EQ(ack_first_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
 
     std::promise<JsonRpcNotification> prompt_skipped;
     auto prompt_skipped_future = prompt_skipped.get_future();
@@ -3575,8 +3575,8 @@ TEST(McpServerTest, SkillsListChangedSubscriptionGating) {
         SerializeSubscriptionsListenRequestParams(prompts_and_resources),
         MetaWithSubscriptionId("sub-pr"),
         std::chrono::milliseconds(2000));
-    ASSERT_EQ(listen2_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     ASSERT_EQ(ack_second_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(listen2_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto ack2 = ack_second_future.get();
     auto* ack2_sid = ack2.meta->Find("io.modelcontextprotocol/subscriptionId");
     ASSERT_NE(ack2_sid, nullptr);

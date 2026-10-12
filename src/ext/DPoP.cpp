@@ -1,0 +1,320 @@
+#include <mcp/ext/DPoP.hpp>
+#include <mcp/detail/Base64Url.hpp>
+#include <mcp/detail/sha256.hpp>
+#include <mcp/ErrorCodes.hpp>
+#include <mcp/McpError.hpp>
+
+#if defined(MCP_HAVE_OPENSSL)
+#define MCP_DPOP_HAVE_OPENSSL 1
+#elif defined(__has_include)
+#if __has_include(<openssl/ec.h>) && __has_include(<openssl/ecdsa.h>) && \
+    __has_include(<openssl/evp.h>) && __has_include(<openssl/obj_mac.h>) && \
+    __has_include(<openssl/rand.h>)
+#define MCP_DPOP_HAVE_OPENSSL 1
+#endif
+#endif
+
+#if defined(MCP_DPOP_HAVE_OPENSSL)
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/ecdsa.h>
+#include <openssl/obj_mac.h>
+#include <openssl/rand.h>
+#endif
+
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+
+namespace mcp::ext::dpop {
+
+namespace detail {
+
+std::string DpopEscapeJson(std::string_view input) {
+    std::string out;
+    out.reserve(input.size());
+    for (char c : input) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[7];
+                    buf[0] = '\\';
+                    buf[1] = 'u';
+                    buf[2] = '0';
+                    buf[3] = '0';
+                    buf[4] = "0123456789ABCDEF"[(c >> 4) & 0xF];
+                    buf[5] = "0123456789ABCDEF"[c & 0xF];
+                    buf[6] = '\0';
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+std::string DpopBase64Url(std::string_view raw) {
+    return mcp::detail::Base64UrlEncode(raw);
+}
+
+std::string DpopSha256Base64Url(std::string_view input) {
+    return DpopBase64Url(mcp::detail::Sha256::Hash(input));
+}
+
+std::string DpopThumbprintJson(std::string_view x, std::string_view y) {
+    std::string out("{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"");
+    out += DpopEscapeJson(x);
+    out += "\",\"y\":\"";
+    out += DpopEscapeJson(y);
+    out += "\"}";
+    return out;
+}
+
+} // namespace detail
+
+std::string ComputeThumbprint(std::string_view x, std::string_view y) {
+    if (x.empty() || y.empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "DPoP thumbprint requires x and y");
+    }
+    return detail::DpopSha256Base64Url(detail::DpopThumbprintJson(x, y));
+}
+
+std::string PublicJwkJson(const EcP256Jwk& key) {
+    std::string out("{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"");
+    out += detail::DpopEscapeJson(key.x);
+    out += "\",\"y\":\"";
+    out += detail::DpopEscapeJson(key.y);
+    out += "\"}";
+    return out;
+}
+
+bool IsNonceFresh(int64_t iat_seconds, int64_t now_seconds, int64_t window_seconds) {
+    if (window_seconds < 0) return false;
+    if (iat_seconds > now_seconds) return false;
+    return (now_seconds - iat_seconds) <= window_seconds;
+}
+
+int64_t NowSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+#if defined(MCP_DPOP_HAVE_OPENSSL)
+
+namespace detail {
+
+struct DpopEcKeyDeleter {
+    void operator()(EC_KEY* key) const noexcept { EC_KEY_free(key); }
+};
+
+struct DpopBnDeleter {
+    void operator()(BIGNUM* bn) const noexcept { BN_free(bn); }
+};
+
+struct DpopPointDeleter {
+    void operator()(EC_POINT* point) const noexcept { EC_POINT_free(point); }
+};
+
+struct DpopSigDeleter {
+    void operator()(ECDSA_SIG* sig) const noexcept { ECDSA_SIG_free(sig); }
+};
+
+using DpopEcKeyPtr = std::unique_ptr<EC_KEY, DpopEcKeyDeleter>;
+using DpopBnPtr = std::unique_ptr<BIGNUM, DpopBnDeleter>;
+using DpopPointPtr = std::unique_ptr<EC_POINT, DpopPointDeleter>;
+using DpopSigPtr = std::unique_ptr<ECDSA_SIG, DpopSigDeleter>;
+
+std::string DpopBnToFixed32(const BIGNUM* bn) {
+    unsigned char buf[32];
+    if (BN_bn2binpad(bn, buf, sizeof(buf)) != static_cast<int>(sizeof(buf))) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key coordinate encoding failed");
+    }
+    return std::string(reinterpret_cast<const char*>(buf), sizeof(buf));
+}
+
+DpopBnPtr DpopBinToBn(std::string_view raw) {
+    DpopBnPtr bn(BN_bin2bn(reinterpret_cast<const unsigned char*>(raw.data()),
+                           static_cast<int>(raw.size()), nullptr));
+    if (!bn) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key material invalid");
+    }
+    return bn;
+}
+
+std::string DpopRandomBase64Url(std::size_t bytes) {
+    std::string raw(bytes, '\0');
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&raw[0]),
+                   static_cast<int>(bytes)) != 1) {
+        throw McpError(McpErrorCode::InternalError, "DPoP random generation failed");
+    }
+    return DpopBase64Url(raw);
+}
+
+} // namespace detail
+
+EcP256Jwk GenerateKey() {
+    detail::DpopEcKeyPtr key(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+    if (!key || EC_KEY_generate_key(key.get()) != 1) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key generation failed");
+    }
+    const BIGNUM* priv = EC_KEY_get0_private_key(key.get());
+    const EC_POINT* pub = EC_KEY_get0_public_key(key.get());
+    const EC_GROUP* group = EC_KEY_get0_group(key.get());
+    if (!priv || !pub || !group) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key generation failed");
+    }
+    detail::DpopBnPtr x(BN_new());
+    detail::DpopBnPtr y(BN_new());
+    if (!x || !y) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key generation failed");
+    }
+    if (EC_POINT_get_affine_coordinates(group, pub, x.get(), y.get(), nullptr) != 1) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key generation failed");
+    }
+    EcP256Jwk out;
+    out.x = detail::DpopBase64Url(detail::DpopBnToFixed32(x.get()));
+    out.y = detail::DpopBase64Url(detail::DpopBnToFixed32(y.get()));
+    unsigned char priv_buf[32];
+    if (BN_bn2binpad(priv, priv_buf, sizeof(priv_buf)) != static_cast<int>(sizeof(priv_buf))) {
+        throw McpError(McpErrorCode::InternalError, "DPoP key generation failed");
+    }
+    out.d = detail::DpopBase64Url(
+        std::string(reinterpret_cast<const char*>(priv_buf), sizeof(priv_buf)));
+    return out;
+}
+
+std::string CreateProof(const EcP256Jwk& key,
+                        std::string_view htm,
+                        std::string_view htu,
+                        std::optional<std::string_view> access_token,
+                        std::optional<std::string_view> nonce,
+                        std::optional<int64_t> iat_override_seconds) {
+    if (key.x.empty() || key.y.empty() || key.d.empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "DPoP proof requires a complete EC key");
+    }
+    if (htm.empty() || htu.empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "DPoP proof requires htm and htu");
+    }
+    auto decoded = mcp::detail::Base64UrlDecode(key.d);
+    if (!decoded || decoded->size() != 32) {
+        throw McpError(McpErrorCode::InvalidParams, "DPoP key material invalid");
+    }
+    std::string header("{\"alg\":\"ES256\",\"jwk\":");
+    header += PublicJwkJson(key);
+    header += ",\"typ\":\"dpop+jwt\"}";
+    int64_t iat = iat_override_seconds ? *iat_override_seconds : NowSeconds();
+    std::string payload("{\"htm\":\"");
+    payload += detail::DpopEscapeJson(htm);
+    payload += "\",\"htu\":\"";
+    payload += detail::DpopEscapeJson(htu);
+    payload += "\",\"iat\":";
+    payload += std::to_string(iat);
+    payload += ",\"jti\":\"";
+    payload += detail::DpopRandomBase64Url(16);
+    payload += "\"";
+    if (access_token && !access_token->empty()) {
+        payload += ",\"ath\":\"";
+        payload += detail::DpopSha256Base64Url(*access_token);
+        payload += "\"";
+    }
+    if (nonce && !nonce->empty()) {
+        payload += ",\"nonce\":\"";
+        payload += detail::DpopEscapeJson(*nonce);
+        payload += "\"";
+    }
+    payload += "}";
+    std::string signing_input = detail::DpopBase64Url(header);
+    signing_input += ".";
+    signing_input += detail::DpopBase64Url(payload);
+    std::string digest = mcp::detail::Sha256::Hash(signing_input);
+
+    detail::DpopEcKeyPtr ec(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+    if (!ec) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    detail::DpopBnPtr priv = detail::DpopBinToBn(*decoded);
+    const EC_GROUP* group = EC_KEY_get0_group(ec.get());
+    if (!group) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    detail::DpopPointPtr pub(EC_POINT_new(group));
+    if (!pub) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    if (EC_POINT_mul(group, pub.get(), priv.get(), nullptr, nullptr, nullptr) != 1) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    if (EC_KEY_set_private_key(ec.get(), priv.get()) != 1 ||
+        EC_KEY_set_public_key(ec.get(), pub.get()) != 1) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    detail::DpopSigPtr sig(ECDSA_do_sign(
+        reinterpret_cast<const unsigned char*>(digest.data()),
+        static_cast<int>(digest.size()), ec.get()));
+    if (!sig) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    const BIGNUM* r = nullptr;
+    const BIGNUM* s = nullptr;
+    ECDSA_SIG_get0_sig(sig.get(), &r, &s);
+    if (!r || !s) {
+        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
+    }
+    std::string raw_sig = detail::DpopBnToFixed32(r);
+    raw_sig += detail::DpopBnToFixed32(s);
+    std::string proof = signing_input;
+    proof += ".";
+    proof += detail::DpopBase64Url(raw_sig);
+    return proof;
+}
+
+#else
+
+EcP256Jwk GenerateKey() {
+    throw McpError(McpErrorCode::InternalError,
+                   "DPoP requires OpenSSL EC support, which is not available in this build");
+}
+
+std::string CreateProof(const EcP256Jwk&,
+                        std::string_view,
+                        std::string_view,
+                        std::optional<std::string_view>,
+                        std::optional<std::string_view>,
+                        std::optional<int64_t>) {
+    throw McpError(McpErrorCode::InternalError,
+                   "DPoP requires OpenSSL EC support, which is not available in this build");
+}
+
+#endif
+
+} // namespace mcp::ext::dpop
+
+#if defined(MCP_DPOP_HAVE_OPENSSL)
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+#endif

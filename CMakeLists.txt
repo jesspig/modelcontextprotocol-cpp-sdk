@@ -163,7 +163,7 @@ target_sources(mcp-client PRIVATE
     src/client/SkillVerify.cpp
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
-target_link_libraries(mcp-client PUBLIC mcp-protocol)
+target_link_libraries(mcp-client PUBLIC mcp-protocol mcp-ext)
 if(WIN32)
     target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
 endif()
@@ -200,6 +200,7 @@ set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 add_library(mcp-ext STATIC)
 target_sources(mcp-ext PRIVATE
     src/ext/Apps.cpp
+    src/ext/DPoP.cpp
     src/ext/ServerCard.cpp)
 target_link_libraries(mcp-ext PUBLIC mcp-core)
 target_include_directories(mcp-ext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

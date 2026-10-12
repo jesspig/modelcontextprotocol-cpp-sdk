@@ -52,6 +52,9 @@ public:
     ListToolsResult ListTools(
         std::optional<std::string> cursor = std::nullopt);
     ListToolsResult ListToolsAll();
+    ListToolsResult SearchTools(
+        std::optional<std::string> query = std::nullopt,
+        std::optional<int64_t> page_size = std::nullopt);
     CallToolResult CallTool(
         std::string_view name,
         std::optional<JsonValue> arguments = std::nullopt,

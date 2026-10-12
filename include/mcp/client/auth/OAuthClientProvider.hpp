@@ -1,6 +1,7 @@
 #pragma once
 #include <mcp/JsonValue.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
+#include <mcp/ext/DPoP.hpp>
 #include <mcp/McpTypes.hpp>
 
 #include <functional>
@@ -8,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mcp {
@@ -28,6 +30,7 @@ struct OAuthClientOptions {
     std::shared_ptr<ITokenCache> token_cache;
     std::optional<std::string> resource;
     std::string application_type{"native"};
+    bool enable_dpop{false};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -52,6 +55,12 @@ public:
     bool HasToken() const;
 
     std::string GetAuthorizationHeader() const;
+
+    std::string BuildDPoPProof(std::string_view htm,
+                               std::string_view htu,
+                               std::optional<std::string_view> access_token = std::nullopt);
+
+    void SetDPoPNonce(std::string nonce);
 
     bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
 
@@ -91,6 +100,10 @@ private:
     std::string code_challenge_;
 
     std::string state_;
+
+    std::optional<ext::dpop::EcP256Jwk> dpop_key_;
+    std::optional<std::string> dpop_nonce_;
+    mutable std::mutex dpop_mutex_;
 
     std::mutex refresh_mutex_;
 };

@@ -3114,3 +3114,117 @@ TEST(McpClientTest, LegacyPingMetaNotModern) {
         server->Close();
     }
 }
+
+TEST(McpClientTest, SearchToolsFiltersByQueryCaseInsensitive) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"search-server", "1.0.0"};
+    sopts.enable_progressive_discovery = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    auto add = [&](const std::string& name, const std::string& desc) {
+        ToolOptions topts;
+        topts.Description(desc);
+        server->RegisterTool(name, topts,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) -> CallToolResult { return CallToolResult{}; }));
+    };
+    add("weather-now", "Get current weather");
+    add("WEATHER-forecast", "forecast");
+    add("calc-add", "add two numbers");
+    add("journal", "daily WEATHER diary");
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.enable_progressive_discovery = true;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r = client->SearchTools("weather");
+    ASSERT_EQ(r.tools.size(), 3u);
+    EXPECT_EQ(r.tools[0].name, "WEATHER-forecast");
+    EXPECT_EQ(r.tools[1].name, "journal");
+    EXPECT_EQ(r.tools[2].name, "weather-now");
+
+    auto rf = client->SearchTools("FORECAST");
+    ASSERT_EQ(rf.tools.size(), 1u);
+    EXPECT_EQ(rf.tools[0].name, "WEATHER-forecast");
+
+    auto all = client->SearchTools(std::nullopt);
+    EXPECT_EQ(all.tools.size(), 4u);
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SearchToolsClampsOutOfRangePageSize) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"search-server", "1.0.0"};
+    sopts.enable_progressive_discovery = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    auto add = [&](const std::string& name) {
+        ToolOptions topts;
+        topts.Description("clamp tool");
+        server->RegisterTool(name, topts,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) -> CallToolResult { return CallToolResult{}; }));
+    };
+    add("clamp-a");
+    add("clamp-b");
+    add("clamp-c");
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.enable_progressive_discovery = true;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto zero = client->SearchTools(std::nullopt, 0);
+    EXPECT_EQ(zero.tools.size(), 3u);
+    auto neg = client->SearchTools(std::nullopt, -5);
+    EXPECT_EQ(neg.tools.size(), 3u);
+    auto huge = client->SearchTools(std::nullopt, 1000);
+    EXPECT_EQ(huge.tools.size(), 3u);
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SearchToolsAggregatesPages) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"search-server", "1.0.0"};
+    sopts.enable_progressive_discovery = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    auto add = [&](const std::string& name) {
+        ToolOptions topts;
+        topts.Description("paged tool");
+        server->RegisterTool(name, topts,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) -> CallToolResult { return CallToolResult{}; }));
+    };
+    add("pagetool-1");
+    add("pagetool-2");
+    add("pagetool-3");
+    add("pagetool-4");
+    add("pagetool-5");
+    add("unrelated");
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.enable_progressive_discovery = true;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r = client->SearchTools("pagetool", 2);
+    ASSERT_EQ(r.tools.size(), 5u);
+    EXPECT_EQ(r.tools[0].name, "pagetool-1");
+    EXPECT_EQ(r.tools[1].name, "pagetool-2");
+    EXPECT_EQ(r.tools[2].name, "pagetool-3");
+    EXPECT_EQ(r.tools[3].name, "pagetool-4");
+    EXPECT_EQ(r.tools[4].name, "pagetool-5");
+    EXPECT_FALSE(r.next_cursor.has_value());
+
+    client->Close();
+    server->Close();
+}

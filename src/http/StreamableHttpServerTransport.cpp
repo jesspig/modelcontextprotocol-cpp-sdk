@@ -232,6 +232,22 @@ bool IsTaskMethod(std::string_view method) {
            method == methods::kCancelTask;
 }
 
+bool IsTaskStreamNotification(std::string_view method) {
+    return method == notifications::kTaskStatus ||
+           method == notifications::kTaskWorking ||
+           method == notifications::kTaskCompleted ||
+           method == notifications::kTaskFailed ||
+           method == notifications::kTaskCancelled ||
+           method == notifications::kTaskInputRequired;
+}
+
+std::optional<std::string> UpdatedResourceUri(const JsonRpcNotification& notif) {
+    if (!notif.params || !notif.params->IsObject()) return std::nullopt;
+    auto* uri = notif.params->Find(detail::kUri);
+    if (!uri || !uri->IsString()) return std::nullopt;
+    return uri->GetString();
+}
+
 bool RequiresMcpNameHeader(std::string_view method) {
     return method == methods::kCallTool || method == methods::kReadResource ||
            method == methods::kGetPrompt || IsTaskMethod(method);
@@ -257,6 +273,27 @@ void RespondUnsupportedVersion(HttpResponse& resp, const std::string& version,
                           std::move(id), std::move(data));
 }
 } // namespace
+
+StreamableHttpServerTransport::ListenFilter
+StreamableHttpServerTransport::ParseListenFilter(const JsonRpcRequest& req) {
+    ListenFilter filter;
+    if (!req.params || !req.params->IsObject()) return filter;
+    auto* section = req.params->Find(detail::kNotifications);
+    if (!section || !section->IsObject()) return filter;
+    auto* tools = section->Find("toolsListChanged");
+    filter.tools = tools && tools->IsBool() && tools->GetBool();
+    auto* prompts = section->Find("promptsListChanged");
+    filter.prompts = prompts && prompts->IsBool() && prompts->GetBool();
+    auto* resources = section->Find("resourcesListChanged");
+    filter.resources = resources && resources->IsBool() && resources->GetBool();
+    auto* subs = section->Find("resourceSubscriptions");
+    if (subs && subs->IsArray()) {
+        for (const auto& entry : subs->GetArray()) {
+            if (entry.IsString()) filter.resource_uris.push_back(entry.GetString());
+        }
+    }
+    return filter;
+}
 
 StreamableHttpServerTransport::StreamableHttpServerTransport(
     StreamableHttpServerOptions options)
@@ -793,6 +830,16 @@ void StreamableHttpServerTransport::HandlePost(
             if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg))
                 hold_token = RequestTokenKey(*hold_req);
         }
+        bool hold_listen = false;
+        ListenFilter listen_filter;
+        if (hold_open && options_.listen_hold_open) {
+            if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg)) {
+                if (hold_req->method == methods::kSubscribe) {
+                    hold_listen = true;
+                    listen_filter = ParseListenFilter(*hold_req);
+                }
+            }
+        }
         auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
         auto future = promise->get_future();
         {
@@ -802,6 +849,7 @@ void StreamableHttpServerTransport::HandlePost(
                 hold_open_requests_.insert(id_str);
                 if (hold_token) progress_token_routes_[*hold_token] = id_str;
             }
+            if (hold_listen) listen_filters_[id_str] = std::move(listen_filter);
         }
         if (!channel_->TrySend(std::move(msg))) {
             {
@@ -876,7 +924,7 @@ void StreamableHttpServerTransport::HandlePost(
         resp.status_code = 200;
         resp.status_text = "OK";
         resp.is_sse = true;
-        resp.sse_close_after_write = true;
+        resp.sse_close_after_write = !hold_listen;
         resp.headers["content-type"] = "text/event-stream";
         resp.headers["cache-control"] = "no-cache";
         resp.headers["x-accel-buffering"] = "no";
@@ -1034,6 +1082,7 @@ void StreamableHttpServerTransport::EraseRequestStreamStateLocked(
 {
     hold_open_requests_.erase(id_str);
     request_stream_frames_.erase(id_str);
+    listen_filters_.erase(id_str);
     for (auto it = progress_token_routes_.begin();
          it != progress_token_routes_.end();) {
         if (it->second == id_str) it = progress_token_routes_.erase(it);
@@ -1064,6 +1113,53 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
             request_stream_frames_[id_str].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));
         return true;
+    }
+    if (notif->method == notifications::kToolListChanged ||
+        notif->method == notifications::kPromptListChanged ||
+        notif->method == notifications::kResourceListChanged) {
+        bool buffered = false;
+        for (const auto& [id_str, filter] : listen_filters_) {
+            if (hold_open_requests_.count(id_str) == 0) continue;
+            bool match = false;
+            if (notif->method == notifications::kToolListChanged) match = filter.tools;
+            else if (notif->method == notifications::kPromptListChanged) match = filter.prompts;
+            else match = filter.resources;
+            if (!match) continue;
+            request_stream_frames_[id_str].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+            buffered = true;
+        }
+        return buffered;
+    }
+    if (notif->method == notifications::kResourceUpdated) {
+        auto uri = UpdatedResourceUri(*notif);
+        if (!uri) return false;
+        bool buffered = false;
+        for (const auto& [id_str, filter] : listen_filters_) {
+            if (hold_open_requests_.count(id_str) == 0) continue;
+            bool match = false;
+            for (const auto& candidate : filter.resource_uris) {
+                if (candidate == *uri) {
+                    match = true;
+                    break;
+                }
+            }
+            if (!match) continue;
+            request_stream_frames_[id_str].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+            buffered = true;
+        }
+        return buffered;
+    }
+    if (IsTaskStreamNotification(notif->method)) {
+        bool buffered = false;
+        for (const auto& entry : listen_filters_) {
+            if (hold_open_requests_.count(entry.first) == 0) continue;
+            request_stream_frames_[entry.first].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+            buffered = true;
+        }
+        return buffered;
     }
     return false;
 }
