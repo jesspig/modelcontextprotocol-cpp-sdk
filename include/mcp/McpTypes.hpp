@@ -26,9 +26,11 @@ struct ToolAnnotations {
 };
 
 enum class ToolExecutionMode { Auto, Manual, Task };
+enum class TaskSupport { Optional, Required };
 struct ToolExecution {
     ToolExecutionMode mode{ToolExecutionMode::Auto};
     std::optional<std::string> human_use;
+    std::optional<TaskSupport> task_support;
 };
 
 struct ResourceAnnotations {

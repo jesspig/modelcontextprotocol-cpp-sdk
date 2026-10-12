@@ -33,6 +33,30 @@ TEST(McpTypesTest, ToolRoundTrip) {
     EXPECT_EQ(t.annotations->read_only_hint, t2.annotations->read_only_hint);
 }
 
+TEST(McpTypesTest, ToolExecutionTaskSupportRoundTrip) {
+    ToolExecution required;
+    required.mode = ToolExecutionMode::Task;
+    required.task_support = TaskSupport::Required;
+    auto required_wire = SerializeToolExecution(required);
+    EXPECT_EQ(required_wire["taskSupport"].GetString(), "required");
+    auto required_back = DeserializeToolExecution(required_wire);
+    ASSERT_TRUE(required_back.task_support.has_value());
+    EXPECT_TRUE(required_back.task_support == TaskSupport::Required);
+
+    ToolExecution optional;
+    optional.mode = ToolExecutionMode::Task;
+    optional.task_support = TaskSupport::Optional;
+    auto optional_wire = SerializeToolExecution(optional);
+    EXPECT_EQ(optional_wire["taskSupport"].GetString(), "optional");
+
+    ToolExecution unset;
+    unset.mode = ToolExecutionMode::Task;
+    auto unset_wire = SerializeToolExecution(unset);
+    EXPECT_FALSE(unset_wire.Contains("taskSupport"));
+    auto unset_back = DeserializeToolExecution(unset_wire);
+    EXPECT_FALSE(unset_back.task_support.has_value());
+}
+
 TEST(McpTypesTest, ResourceRoundTrip) {
     Resource r;
     r.uri = "file:///data";
