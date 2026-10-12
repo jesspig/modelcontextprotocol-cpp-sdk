@@ -1,15 +1,15 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 18 个测试目标（15 unit + integration/conformance/framework），848 个测试用例（ctest 注册口径，自研测试框架）；静态断言统计 3605；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
+description: 18 个测试目标（15 unit + integration/conformance/framework），848 个测试用例（ctest 注册口径，自研测试框架）；静态断言统计 3606；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-10-13T02:37:22+08:00
+timestamp: 2026-10-13T03:53:10+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为 **ctest 注册口径**（本轮 848，原 769；`--gtest_list_tests` 逐二进制求和 848 与 ctest 一致；Tier1 对标分支 11 提交 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` + 过滤修复增量并入既有目标，无新目标）；断言数为静态统计（`(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用；口径为 `tests/**/*.cpp`，不含框架头文件中的宏定义；本轮实测 3605，较上轮 +318，与分支 diff 增量闭合）。
+全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为 **ctest 注册口径**（本轮 848，原 769；`--gtest_list_tests` 逐二进制求和 848 与 ctest 一致；Tier1 对标分支 11 提交 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` + 过滤修复增量并入既有目标，无新目标）；断言数为静态统计（`(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用；口径为 `tests/**/*.cpp`，不含框架头文件中的宏定义；本轮实测 3606，较上轮 +1——`gap-and-ci-green` 分支 C-T1 在 `MakeModernTaskEnv` 加一握手断言（initialize 回 `MethodNotFound` 即判失败），用例数不动）。
 
 目标数维持 18：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）。
 
@@ -19,7 +19,7 @@ resource: tests/CMakeLists.txt
 |------|------|------|------|
 | mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests | 176 | 381 |
 | mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 65 | 307 |
-| mcp-server-tests | McpServerTests | 95 | 806 |
+| mcp-server-tests | McpServerTests | 95 | 807 |
 | mcp-client-tests | McpClientTests | 76 | 375 |
 | mcp-oauth-tests | OAuthTests | 38 | 132 |
 | mcp-transport-tests | TransportTests、MessageChannelTests | 15 | 62 |
@@ -35,7 +35,7 @@ resource: tests/CMakeLists.txt
 | mcp-integration-tests | ClientServerRoundTrip、Phase1InteropTests、Phase2ClosureTests | 19 | 113 |
 | mcp-conformance-tests | ProtocolConformance | 123 | 386 |
 | mcp-framework-self-tests | SelfTests | 37 | 76 |
-| **合计** | | **848** | **3605** |
+| **合计** | | **848** | **3606** |
 
 ## 测试注意点
 
@@ -84,6 +84,7 @@ resource: tests/CMakeLists.txt
 - referee pin `@modelcontextprotocol/conformance@0.2.0-alpha.12`（alpha 通道最新；requirements 内核与 alpha.11 一致，升级只收 referee 修补）；server/client 双 job 按 `spec` 矩阵（`2025-11-25` / `2026-07-28`，`fail-fast: false`）各跑双 leg：2025 leg 用 `--spec-version`（legacy 有状态 wire），2026 leg 用 `--requirements 2026-07-28`；conformance-server 以 `--stateless` 切换双模式（stateless 下不固定 `protocol_version`、挂 task_store + 全方法 cache_hints + 注册技能/任务 fixture；stateful 固定 `2025-11-25`），就绪探测按 leg 分化（legacy 探 `initialize`，modern 探 `server/discover`，兼作 liveness）
 - **退出码语义由 referee `--expected-failures` 机制保证**（基线 `tests/conformance/baseline.yaml`，本轮共 33 条：server 1 + client 32 = `http-custom-headers` 1 + auth 31）：基线外失败 → exit 1 真回归；过期基线条目（实现落地）→ exit 1 必须删条目——基线只减不增；新增场景一律按实跑结果逐条归因后才入基线，绝不预先臆测
 - server fixture：`examples/conformance/server`（`conformance-server`，`MCP_BUILD_CONFORMANCE=ON`），stateful 28 工具 / 4 资源（含 1 URI 模板）/ 5 提示词全集；stateless 另增 `SkillsAndTasks.cpp`（3 技能：weather/greeter manifest + dynamic 动态 + `SetSkillsDirectoryRead(true)`，4 任务工具：greet 同步 + slow_compute/failing_job/protocol_error_job 任务模式，`FileTaskStore` 落临时目录）与 MRTR/Content 修补（`_meta` 合并入 `Params().meta` 后 fixture 改读 `Params().meta` 取 progressToken/logLevel/clientCapabilities，不再走 `GetRequest().meta` 旁路）；`InputRequiredResultPrompt` 改两阶段（首轮回 `input_required` + `request_state`，次轮带上下文渲染）；client 驱动：`examples/conformance/client`（`conformance-client`，随 `MCP_BUILD_EXAMPLES`），15 场景注册表（含新增 `sep-2640-client-no-prefetch/verify-digest/verify-size/verify-frontmatter` 技能场景），`MCP_CONFORMANCE_SCENARIO` env + argv[1] URL，退出码回报结果
+- `gap-and-ci-green` 分支四 leg 新数（主代理实测，7 提交 `48134d8/63c6c15/ac1d4a3/ad8075a/b1d529f/333130c/84f931f`）：**server legacy 67/67 绿；server modern 194 passed + `server-stateless` 基线 1 条绿（仅剩 2 SHOULD WARNING，listen 推送缺口）；client legacy 179 passed + 4 条 auth 基线（删 10 条目转绿，保留 `metadata-var1/var2/var3` + `scope-step-up`，`http-custom-headers` 另留 1 条）；client modern 383 passed + 保留 10 条目（删 21 条目转绿，保留 `metadata-var1/var2/var3`、`authorization-server-migration`、`client-credentials-jwt/basic`、`enterprise-managed-authorization`、`dpop`、`dpop-nonce`、`wif-jwt-bearer`）**；基线现状：`baseline-2026-07-28.yaml` client 段 10 条 + server 段 `server-stateless` 1 条，`baseline-2025-11-25.yaml` client 段 4 auth + `http-custom-headers` 1 条 + server 段 `server-sse-multiple-streams` 1 条，`baseline.yaml` 为未知版本回退（含 `http-custom-headers` 已删 client 条目注释）；CI 双 job 已改 per-leg 基线映射（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）；B2 已证伪转 B3（基线保留）；生产缺口记账（token 无 iss、`ExchangeCodeForToken` 忽略 auth method/secret、Discover 无 PRM 路径插入与 openid 回退、无传输层 DPoP proof、私钥 jwt 缺失、StepUp 无 403 链路）同见 tier1-parity 页
 - T11 四 leg 收口（分支 `feature/tier1-parity-2026-07-28`，10 提交 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` + `baseline-2026-07-28.yaml` 删除 `http-custom-headers` 条目及 10 行注释）：**server legacy 67/67 绿；server modern 194+1 经 `server-stateless` 基线绿，仅剩 2 SHOULD WARNING**（`ServerSendsPromptsListChangedOnSubscription` 与 `ServerSendsToolsListChangedOnSubscription`，listen 推送缺口）；**client legacy 11+43 经 auth 基线绿；client modern 66+68 经 auth 基线绿**（`http-custom-headers` 18/18 已删基线，删条目即变绿证据）；专项 **request_state 5/5、`$ref` 1/1、schema-preservation 9/9**。auth fixture 场景仍走基线（单元已闭环，见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md) 遗留记账）。技术对标声明见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)（仅技术对标、无官方 Tier 申报意向）
 - server leg 历史实测：**2025 leg 绿**（31 场景；GATE1 主会话结论，本任务未复跑）；**2026 leg 红**（GATE1 主会话结论：modern requirements 23 个 scored 失败，归因表见主会话收口，本任务未复跑）：G 系列冻结批已解决旧 4 缺口中的 3 个——input-required（`resources/read` 与 `prompts/get` 支持 `InputRequiredResult` + 自动签名，`PromptsGetInputRequired`/`ResourceReadInputRequired` 单测守护）、sep-2164（data 通道修补后 `data.uri` 回声）、tools-call-with-progress-modern（modern POST 常开 + progress/logging 按 token 路由缓冲进同一 SSE 流，`RequestStreamHoldOpen*` 单测守护；legacy leg 早已绿）；剩余生产缺口为 server-stateless（`_meta` 缺失拒收的 400 映射/-32020 对 -32022/initialize 现代 404/-32021 能力拒收/subscriptions/listen 流）
 - client leg 历史实测（2026-10-12 于 Windows 复跑，脚本修复后直跑；T11 收口结论见上条四 leg）：**2025 leg 红**（core 集 `--spec-version 2025-11-25`，6 passed / 48 failed，exit 1）：unexpected 唯一 `elicitation-sep1034-client-defaults` 0/5（string/integer/number/enum/boolean 五项缺省均未生效）——G 批实现 `applyDefaults` 后删基线条目，但 referee 场景仍失败，疑 fixture 侧未声明 `applyDefaults` 能力致客户端回填短路（推测，待主会话裁决：恢复条目或补 fixture 声明）；`sse-retry` 3/3 通过（G8b 删除证据再确认）；14 个 auth `Unknown scenario` exit 1 由基线覆盖。**2026 leg 红**（`--requirements 2026-07-28` 39 场景，两轮复跑 run1 43 passed / 78 failed、run2 `--verbose` 42 passed / 79 failed，均 exit 1）：unexpected 为 `sep-2322-client-request-state` 0/5（5 项 MRTR 客户端检查全败；2026-10-11 的 5/0 删条目证据作废，疑 G 批 request_state 链路改动致回归，待主会话裁决）与 `json-schema-ref-no-deref` 0/1（新场景，未归因、未入基线，基线只减不增）；25 auth + `http-custom-headers` 由基线覆盖（T11 时 `http-custom-headers` 18/18 已删基线；此前 Windows 下 `invalid UTF-8` 解析失败 + 30s 超时）；其余非 auth（tools_call、request-metadata、http-standard-headers、http-invalid-tool-headers、json-schema-2020-12-preservation）全绿，T11 专项复核 request_state 5/5、`$ref` 1/1、schema-preservation 9/9。保留条目：`server-sse-multiple-streams`（跨 leg 保留：legacy suite 内 skip 以 WARNING 记账，无条目 legacy 退出 1；modern 2/2 通过但 invocation 本就为红；fixture 不设 session_store 防 DELETE 毒化后续场景）

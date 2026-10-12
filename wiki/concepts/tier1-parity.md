@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-13T02:37:22+08:00
+timestamp: 2026-10-13T03:53:10+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -28,15 +28,44 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 | 服务端现代任务用例形态 | 对等 | `b7a613e`（逐请求声明） |
 | `http-custom-headers` 18/18 | 对等（基线已删） | `baseline-2026-07-28.yaml` 删除 10 行注释 + 条目；CI Linux 报 stale 即为变绿证据 |
 
-## conformance 四 leg（本分支口径）
+## conformance 四 leg（本分支 `feature/gap-and-ci-green` 口径，主代理实测）
 
 - server legacy：67/67 绿
-- server modern：194+1 经 `server-stateless` 基线绿，仅剩 2 SHOULD WARNING（`ServerSendsPromptsListChangedOnSubscription`、`ServerSendsToolsListChangedOnSubscription`，均为 SHOULD 级 listen 推送缺口）
-- client legacy：11+43 经 auth 基线绿
-- client modern：66+68 经 auth 基线绿（`http-custom-headers` 18/18 已删基线）
+- server modern：194 passed + `server-stateless` 基线 1 条绿，仅剩 2 SHOULD WARNING（`ServerSendsPromptsListChangedOnSubscription`、`ServerSendsToolsListChangedOnSubscription`，均为 SHOULD 级 listen 推送缺口）
+- client legacy：179 passed + 4 条 auth 基线（删 10 条目转绿：`metadata-default`、`basic-cimd`、`scope-from-www-authenticate`、`scope-from-scopes-supported`、`scope-omitted-when-undefined`、`scope-retry-limit`、`token-endpoint-auth-basic/post/none`、`pre-registration`；保留 `metadata-var1/var2/var3` + `scope-step-up`；`http-custom-headers` 另留 1 条）
+- client modern：383 passed + 保留 10 条目（删 21 条目转绿：`metadata-default`、`basic-cimd`、`scope`×5、`token-endpoint`×3、`pre-registration`、`resource-mismatch`、`offline-access-scope`、`offline-access-not-supported`、`iss`×6 含 normalized、`metadata-issuer-mismatch`；保留 `metadata-var1/var2/var3`、`authorization-server-migration`（部分失败）、`client-credentials-jwt/basic`、`enterprise-managed-authorization`、`dpop`、`dpop-nonce`、`wif-jwt-bearer` 共 10 条）
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-ctest 口径 848 用例（原 769），分布见 [/tests.md](/tests.md)。
+ctest 口径 848 用例全绿，断言 token 3606（原 3605，C-T1 握手断言 +1：`MakeModernTaskEnv` 断言 initialize 回 `MethodNotFound`），分布见 [/tests.md](/tests.md)。
+
+T11 口径留档：server legacy 67/67、server modern 194+1、client legacy 11+43、client modern 66+68（auth 全走基线时代）。
+
+## A-T2 auth 进展（fixture 真实流联调）
+
+`examples/conformance/client/main.cpp`（+1143 行，分支 `feature/gap-and-ci-green` 的 `63c6c15/333130c`）为 client 夹具接上真实 OAuth 流：PRM-first 发现（`/.well-known/oauth-protected-resource` → `authorization_servers[0]` → RFC 8414 元数据）、CIMD 客户端标识（`http(s)://` `client_id` 拉元数据文档）与 DCR 回退（仅未配置 `client_id` 时注册）、授权码交换（`AuthCodeTokenFields` + `ManualToken`）、授权响应 `iss` 校验（缺 `iss`/错 issuer 拒绝）、`token-exchange`/`id-jag` 变体路径。`dpop`/`dpop-nonce` 场景明确标 untestable（逐请求 DPoP proof 需传输层支持，见下生产缺口记账）。
+
+证据为 referee `stale`：转绿条目从两 per-leg 基线删除后复跑不再报缺条目（`baseline-2026-07-28.yaml` 删 21、`baseline-2025-11-25.yaml` 删 10；`84f931f/333130c`）。
+
+## B2 证伪（fixture 侧分流不可行，转 B3）
+
+B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。转 B3：基线保留 + 本结论记账，零代码改动。
+
+## CI 红根因与修复（三项）
+
+1. DPoP 虚构 API（一行，已修，ubuntu proof 待 CI）：`src/ext/DPoP.cpp` 的 `ECDSA_SIG_get0_sig` 为虚构 API，改为 `ECDSA_SIG_get0`（`48134d8`）
+2. inline 链接（已修，release + WERROR 本地证毕）：`src/http/StreamableHttpClientTransport.cpp` 的 `ReconnectDelayForAttempt` 去 `inline`（`48134d8`）
+3. 深嵌套栈溢出（解析器改显式栈，已修）：`src/core/JsonParser.cpp` 递归下降（`ParseObject`/`ParseArray` 经 `depth_` 计数）改显式栈迭代（`ParseContainer` + `Frame` 栈，`kMaxDepth` 改按栈深判定）（`ac1d4a3`）；macOS Bus error 为我方 T6/T7 引入、现已修，windows SEGFAULT 早有、本次一并修好
+
+CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/client 双 job 按 `CONFORMANCE_SPEC_VERSION` 选择基线（2026-07-28 → `baseline-2026-07-28.yaml`、2025-11-25 → `baseline-2025-11-25.yaml`，未知回退 `baseline.yaml`）（`b1d529f`）；fallback 对齐同提交。
+
+## 生产缺口记账（A-T2 上报，未静默丢弃）
+
+1. token 响应无 `iss` 致 provider 流拿不到可用 token
+2. `ExchangeCodeForToken` 忽略 auth method/secret
+3. `Discover` 无 PRM 路径插入与 openid 回退
+4. 无传输层 DPoP proof（`dpop`/`dpop-nonce` fixture 侧只能标 untestable）
+5. 私钥 jwt 缺失（`client-credentials-jwt`/`wif-jwt-bearer` 仍走基线）
+6. StepUp 无 403 链路
 
 ## 非标超集声明
 
@@ -44,15 +73,15 @@ ctest 口径 848 用例（原 769），分布见 [/tests.md](/tests.md)。
 
 ## 遗留记账（未静默丢弃）
 
-1. auth fixture 场景仍走基线（单元已闭环）：client 双 leg 的 auth 条目（legacy 43、modern 68）继续保留，靠基线放行；生产 OAuth 表面单测已闭环，fixture 侧联调待后续
+1. auth 基线现状（fixture 真实流后仅剩失败条目）：modern 保留 10 条（见上四 leg）、legacy 保留 4 条 + `http-custom-headers`；生产 OAuth 表面单测已闭环，未转绿条目归因见上生产缺口记账
 2. `maxToolInputElements` 未实现：工具输入元素数上限缺口，待排期
 3. `ttlMs`/`cacheScope` 客户端消费未验证：服务端附带字段已具备，客户端消费路径无验证覆盖
 4. `enable_listen_stream` 默认 true：stateless 客户端默认仍持开 GET 监听，须显式关；是否纳入单连接强制待裁决（见 [experimental-flags](/concepts/experimental-flags.md)）
-5. `StepUpAuthorization` 空元数据解引用：无元数据路径存在空解引用风险，待加固
+5. `StepUpAuthorization` 空元数据解引用：无元数据路径存在空解引用风险，待加固；另无 403 链路（见上生产缺口记账）
 6. `GetAccessToken` 持锁同步刷新：刷新整段持 `refresh_mutex_`，同步阻塞语义待优化（见 [oauth](/concepts/oauth.md)）
-7. `MakeModernTaskEnv` 失效 initialize 握手：现代任务测试 helper 的握手形态已失效，由 `b7a613e` 改逐请求声明绕行，helper 本体待修
+7. `MakeModernTaskEnv` 失效 initialize 握手 + 死通知保留：现代任务测试 helper 的握手形态已失效，由 `b7a613e` 改逐请求声明绕行；本分支 C-T1 加一握手断言（initialize 回 `MethodNotFound` 即判失败，`tests/unit/McpServerTests.cpp`），死通知发送保留，helper 本体待修
 8. `unevaluated` 求值近似：`unevaluatedProperties`/`unevaluatedItems` 为近似求值，非完整语义
-9. README 的 PKCE/DCR 表述待统一：`README.md:96`（`OAuth (PKCE/DCR)`）与 `README.md:276`（`jwt-bearer … is not supported, public-client PKCE/DCR flow remains the supported path`）并存，面向 Tier1 全量鉴权表面后的公开表述待统一
+9. ~~README 的 PKCE/DCR 表述待统一~~（本分支已解决：`README.md`/`README_zh.md` 统一为 `PKCE/CIMD（DCR 回退）`，`ad8075a` 前序 + 本分支 `README` 口径；`jwt-bearer` 不支持声明同步更新）
 
 ## 相关页面
 
