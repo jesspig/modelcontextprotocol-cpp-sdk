@@ -160,7 +160,7 @@ inline constexpr std::chrono::seconds kListenStreamTimeout{600};
 inline constexpr std::chrono::milliseconds kReconnectWaitFloor{450};
 inline constexpr std::chrono::milliseconds kReconnectWaitCeiling{1000};
 
-inline std::chrono::milliseconds ReconnectDelayForAttempt(
+std::chrono::milliseconds ReconnectDelayForAttempt(
     int attempt, std::optional<uint64_t> retry_ms) {
     std::chrono::milliseconds wait = kListenRetryInitialDelay;
     for (int i = 1; i < attempt; ++i)

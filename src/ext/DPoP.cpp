@@ -350,7 +350,7 @@ std::string CreateProof(const EcP256Jwk& key,
     }
     const BIGNUM* r = nullptr;
     const BIGNUM* s = nullptr;
-    ECDSA_SIG_get0_sig(sig.get(), &r, &s);
+    ECDSA_SIG_get0(sig.get(), &r, &s);
     if (!r || !s) {
         throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
     }
