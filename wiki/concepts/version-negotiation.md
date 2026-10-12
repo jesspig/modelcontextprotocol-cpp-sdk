@@ -3,7 +3,7 @@ type: Concept
 title: 版本协商
 description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、supportedVersions 交集、codec 重建、HTTP 版本头自学习与主动校验、tasks/skills 双时代门控。
 tags: [协议, 版本, 协商, 2026, tasks, skills]
-timestamp: 2026-10-11T16:35:00+08:00
+timestamp: 2026-10-12T14:37:46+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -15,14 +15,23 @@ resource: include/mcp/client/VersionNegotiation.hpp
 
 - **现代版本（2026-07-28+）绝不通过 `initialize` 协商**——只能通过 `server/discover`
 - **`HandleInitialize` 在支持表中回显客户端的旧版版本号**：客户端版本命中支持表（且非现代）时返回客户端发送的版本（切勿返回 `kLatestProtocolVersion`——TS SDK v2 会校验 `result.protocolVersion` 是否在其旧版列表中）；**未声明（空串）回退 `kDefaultNegotiatedProtocolVersion`**（"2025-03-26"，对齐 5 语言的 `DEFAULT_NEGOTIATED_PROTOCOL_VERSION`）；**非空但未知版本回退 `kLegacyProtocolVersion`**（"2025-11-25"，对齐 python `LATEST_HANDSHAKE_VERSION` 与 rust 服务端默认）
-- `server/discover` 支持版本为 `kProtocolVersions` 全表（5 个，2024-11-05 至 2026-07-28），并**无条件置 `initialized_=true`**；服务端 `HandleDiscover` 总是回 `serverInfo`（`options_.server_info` 缺失回退 `{"mcp-server", kSdkVersion}`）；discover 响应**解析侧**（客户端 `DeserializeDiscoverResult`）对 `serverInfo` 容缺——顶层缺失时从 `_meta["io.modelcontextprotocol/serverInfo"]` 提取（官方 TS 服务器即此形态，[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）
+- `server/discover` 支持版本为 `EffectiveSupportedVersions()`（默认 `kProtocolVersions` 全表 5 个，`ServerOptions::supported_protocol_versions` 非空时窄化，见下节），并**无条件置 `initialized_=true`**；服务端 `HandleDiscover` 总是回 `serverInfo`（`options_.server_info` 缺失回退 `{"mcp-server", kSdkVersion}`）；discover 响应**解析侧**（客户端 `DeserializeDiscoverResult`）对 `serverInfo` 容缺——顶层缺失时从 `_meta["io.modelcontextprotocol/serverInfo"]` 提取（官方 TS 服务器即此形态，[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）
 - **客户端 discover 响应的版本交集**（[McpClient.cpp](../../src/client/McpClient.cpp)）：`DeclaresSharedClientVersion` 判定响应 `supportedVersions` 与客户端支持表（`kProtocolVersions`）是否相交——字段缺失/非数组视为**未声明**，接受探测版本；`SelectSharedVersion` 从交集中取客户端支持的**最新**版本（数组从新到旧找第一个命中）；声明的列表为空或无交集则回退 `initialize`；仅字段未声明时保留探测版本（服务器应答探测即隐式接受）
 - 每次协商后 `SetNegotiatedProtocolVersion` 重建 WireCodec（`shared_ptr<WireCodec>` + `codec_mutex_`，`shared_mutex` 内整体交换 `negotiated_version_` 与 `codec_`，线程安全，消息循环运行中可调用）；`NegotiatedProtocolVersion()` 锁下拷贝返回 `std::string`
 - **`initialize` 在 2026 时代豁免**：入站验证遇 `NotInEra` 时仅拒绝非 initialize 请求，现代服务端仍须应答遗留握手（[McpSessionHandler.cpp:396](../../src/protocol/McpSessionHandler.cpp)）
 
 ## 服务端拒绝不受支持版本
 
-`McpSessionHandler` 在派发前检查非 `initialize` 请求的 `_meta.protocolVersion`：不在 `kProtocolVersions` 内（`IsSupportedProtocolVersion`）即回 `UnsupportedProtocolVersion`（-32022），`data` 同时携带 `requested` 与服务端 `supported` 列表（[McpSessionHandler.cpp:415](../../src/protocol/McpSessionHandler.cpp)）。上表客户端 Auto 模式的 corrective 重试正是针对该错误码。
+`McpSessionHandler` 在派发前检查非 `initialize` 请求的 `_meta.protocolVersion`：不在**已配置支持表**（`IsVersionSupported`，默认 `kProtocolVersions` 全表）内即回 `UnsupportedProtocolVersion`（-32022），`data` 同时携带 `requested` 与服务端 `supported` 列表（`MakeVersionErrorData` 按同一配置表生成，[McpSessionHandler.cpp:415](../../src/protocol/McpSessionHandler.cpp)）。上表客户端 Auto 模式的 corrective 重试正是针对该错误码。
+
+## 支持版本窄化（`SupportedProtocolVersions`）
+
+支持表默认即 `kProtocolVersions` 全表（5 个），两处可窄化（均只影响服务端应答侧，客户端探测/交集逻辑不变）：
+
+- `ServerOptions::supported_protocol_versions`（非空才生效）：`McpServer` 构造期经 `EffectiveSupportedVersions()` 同时接线三处——`handler_->SetSupportedProtocolVersions`（上节 `_meta` 门控 + 错误 `data.supported`）、`HandleDiscover` 的 `supported_versions` 应答、`HandleInitialize` 的版本选择循环（空串仍回退 `kDefaultNegotiatedProtocolVersion`，非空未知仍回退 `kLegacyProtocolVersion`，但候选集改为窄化后表）
+- `McpSessionHandler::SetSupportedProtocolVersions(versions)`：空数组直接忽略（保留旧表）；非空整体替换（`versions_mutex_` 读写锁，消息循环运行中可调）
+
+窄化后客户端 corrective 重试的 `data.supported` 即窄化表；`server/discover` 声明与 `_meta` 门控天然一致，不会出现“声明支持、门控拒绝”的分裂。
 
 ## 客户端三种连接模式
 
@@ -69,11 +78,11 @@ transport 层无协商状态，改为**从流量中学习**（[StreamableHttpCli
 
 | 方法 | 2025 | 2026 | 备注 |
 |------|------|------|------|
-| tasks/get、tasks/update、tasks/cancel | 可用 | 可用 | 双时代（SEP-2663）；2026 下任务通知抑制 + `Mcp-Name` 头校验，见 [/concepts/tasks-extension.md](tasks-extension.md) |
+| tasks/get、tasks/update、tasks/cancel | 可用 | 可用 | 双时代（SEP-2663）；2026 下任务通知按订阅路由（`_meta.subscriptionId` 逐订阅者标注）+ `Mcp-Name` 头校验，见 [/concepts/tasks-extension.md](tasks-extension.md) |
 | tasks/result、tasks/list | 可用 | `NotInEra` → MethodNotFound | 仍仅 2025（`kLegacyGetTaskPayload`/`kLegacyListTasks`） |
 | skills/list、skills/get、resources/directory/read | `NotInEra` → MethodNotFound | 可用 | 仅 2026（SEP-2640），见 [/concepts/skills-extension.md](skills-extension.md) |
 | ping、elicitation/create、resources/subscribe 等其余 2025-only | 可用 | `NotInEra` → MethodNotFound | 不变 |
-| tools/call（任务执行模式） | 立即返回 task | 立即返回 task | 双时代均可（此前 2026 拒绝，现放行；通知抑制） |
+| tools/call（任务执行模式） | 立即返回 task | 立即返回 task | 双时代均可（此前 2026 拒绝，现放行；通知按订阅路由） |
 
 ## 官方互通验证（TS conformance 服务器，端口 3010）
 

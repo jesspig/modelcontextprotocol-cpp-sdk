@@ -45,6 +45,10 @@ server->Run();
 | `request_state_key` | `optional<string>` | MRTR 服务端请求状态签名密钥（HMAC）；设置后若未显式提供 `request_state_verifier`，自动接线内置验证器，在处理器前拒绝篡改/过期的状态（返回 -32602 且 `data.reason="invalid_request_state"`） |
 | `request_state_ttl` | `chrono::seconds` | 签发的请求状态最大寿命（默认 0 = 不检查过期） |
 | `cache_hints` | `optional<map<string, CacheHint, less<>>>` | 按方法的缓存提示（ttlMs, cacheScope） |
+| `cache_hint_resolver` | `function<optional<CacheHint>(string_view)>` | 按方法动态解析缓存提示的逃生钩子（优先于 `cache_hints` 静态表；运行时可经 `SetCacheable` 替换） |
+| `supported_protocol_versions` | `optional<vector<string>>` | 窄化服务端支持版本表（discover 应答、initialize 候选集、`_meta` 门控与错误 `data.supported` 三处同时生效；空即全表） |
+| `subscriptions_enabled` | `bool` | 订阅总开关（默认 `true`；关闭则 `subscriptions/listen` 回 `MethodNotFound`） |
+| `max_tool_input_elements` | `optional<size_t>` | 工具参数元素数上限（对象键数/数组长度；超限回 `is_error` 工具结果而非协议错误） |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR/elicitation 行为的配置 |
 | `input_required_config.max_rounds` | `int` | 最大启发式收集轮次（默认 10） |
 | `input_required_config.round_timeout` | `chrono::seconds` | 每轮超时时间（默认 600s） |

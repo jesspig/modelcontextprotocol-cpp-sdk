@@ -1,5 +1,7 @@
 # 更新摘要
 
+- 2026-10-12 — spec-20260728-tier1-parity 一次性对齐：T2 request_state/T3 schema/T5 错误面/T6 上限重定向/T7 头空载荷/T8 协商可观测/T9 PRM-first/T10 任务推送/T11 技能验签/T12 文档，748/748，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
+
 - 2026-10-12 — G 系列冻结批知识库收敛 + GATE1 文档收尾（GATE1）：生产只读（失败语义 failed+内联 error、2026 扁平/2025 嵌套、`_meta` 合并、非工具 input_required、请求流缓冲、applyDefaults），修正 mcp-server/tasks-extension/modules-server 三处 G4 过时描述；tests.md 重列 18 目标 **715 用例 / 2857 断言**（无新目标；全量 715/715 通过）；基线仅刷头部注释（33 条不动，input-required/sep-2164/progress-modern 已绿）；脚本修 client leg 相对路径 spawn（转绝对路径）；Windows 复跑 client 双 leg 均为红（2025 unexpected elicitation 0/5、2026 unexpected sep-2322 0/5 + json-schema 0/1，三项待主会话裁决），与前提不符以实测为准，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
 
 - 2026-10-11 — 任务/技能双扩展与传输加固知识库收敛（T11b）：分支 12 提交冻结后一次收敛——wire-codec（26 方法并集/tasks 双时代交集/`ValidateTaskHeaders`）、mcp-server（任务分流/skills 三方法/目录视图/扩展声明）、mcp-client（扩展守卫/`UpdateTask` inputResponses/技能缓存/audience 透传）、file-task-store（6 新字段/`AdvanceTaskWithInput`）、oauth（audience/issuer 绑定/challenge 加固/403 分流）、streamable-http（版本头 400/taskId 头/无状态选项/503 满存与闲置过期/legacy SSE 默认关/重试钳制）、sse（T9b reconciliate）、version-negotiation（skills/tasks 门控表）；新增 tasks/skills 两概念页；tests.md 重列 18 目标 **691 用例 / 2638 断言**（无新目标，conformance 双 leg：2025 双绿/2026 双红，删 4 条保留 sse-retry/server-sse-multiple-streams/http-custom-headers）；docs 中英 6 页镜像同步，详见 [/changelog/2026-10-11-log.md](/changelog/2026-10-11-log.md)

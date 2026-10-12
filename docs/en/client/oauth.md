@@ -4,11 +4,12 @@ The client supports the MCP OAuth authorization flow for servers that require au
 
 ## Flow
 
-1. **Authorization Code + PKCE** with S256 code challenge
-2. **Client identity**: when `client_id` is a URL, the Client ID Metadata Document (CIMD) is fetched and parsed; **Dynamic Client Registration** (DCR, HTTP POST to the registration endpoint) runs only when no `client_id` is configured
-3. **Resource indicator**: the authorization request and all token requests carry a `resource` parameter per RFC 8707
-4. **Token refresh** via preemptive expiry check (not 401-driven)
-5. **Token revocation** via manual `Revoke()` call (best-effort call to the RFC 7009 revocation endpoint; failure does not affect local token clearing)
+1. **Metadata discovery**: RFC 9728 protected-resource metadata (`/.well-known/oauth-protected-resource`) first — the authorization server is located via `authorization_servers[0]` before its RFC 8414 metadata is fetched (a missing `resource` is carried over from the protected-resource document); each failed stage logs a warning and falls back — first to direct RFC 8414 discovery, finally to hardcoded `server_url` defaults (`issuer=server_url`, `authorize`/`token` suffixes) — never failing hard
+2. **Authorization Code + PKCE** with S256 code challenge
+3. **Client identity**: when `client_id` is a URL, the Client ID Metadata Document (CIMD) is fetched and parsed; **Dynamic Client Registration** (DCR, HTTP POST to the registration endpoint) runs only when no `client_id` is configured
+4. **Resource indicator**: the authorization request and all token requests carry a `resource` parameter per RFC 8707
+5. **Token refresh** via preemptive expiry check (not 401-driven)
+6. **Token revocation** via manual `Revoke()` call (best-effort call to the RFC 7009 revocation endpoint; failure does not affect local token clearing)
 
 ## OAuthClientOptions
 
@@ -19,6 +20,7 @@ The client supports the MCP OAuth authorization flow for servers that require au
 | `client_id` | `optional<string>` | Client identifier (auto-registered if absent) |
 | `client_secret` | `optional<string>` | Client secret (optional) |
 | `scopes` | `vector<string>` | Requested OAuth scopes |
+| `scope_filter` | `function<vector<string>(const vector<string>&)>` | Pre-send scope hook (empty by default, scopes sent as-is): the return value replaces `scope` in the authorization URL and the `client_credentials` token request; refresh requests carry no `scope` and a missing persisted scope falls back to the previous value, unaffected by this hook |
 | `token_cache` | `shared_ptr<ITokenCache>` | Token persistence (default: `InMemoryTokenCache`) |
 | `resource` | `optional<string>` | RFC 8707 resource indicator sent with the authorization request and token requests; falls back to the discovered metadata `resource`, then to `server_url`; when the resolved value is empty the parameter is omitted entirely; persisted as the token's audience — cached tokens are treated as invalid once the indicator changes |
 | `application_type` | `string` | `application_type` sent during dynamic registration (default `"native"`) |
@@ -72,7 +74,9 @@ auto token = auth->GetAccessToken();
 - **RFC 8707 `resource`**: resolved as "explicit `options.resource` → discovered metadata `resource` → `server_url`". When the resolved value is non-empty it is injected into the authorization URL and all three token requests (`client_credentials`, authorization-code exchange, `refresh_token`).
 - **Audience binding**: token responses are persisted together with the current resource indicator (`TokenContainer.resource`, also persisted by `FileTokenCache`); once the indicator changes, `Authenticate` clears the mismatched cache first, and `GetAccessToken` / `IsAuthenticated` / `HasToken` / `GetAuthorizationHeader` all behave as if no valid token exists.
 - **RFC 9207 `iss`**: the `iss` in token and refresh responses must be present and match the discovered metadata issuer, otherwise the response is rejected. On the authorization-response side the same comparison runs after the `state` check and before the code is exchanged: a non-empty `AuthorizationCodeResult::iss` that differs from the issuer is rejected, while an absent `iss` is not validated.
-- **Issuer binding**: a discovery response missing `issuer` fails (no longer falls back to `server_url`); the first discovery binds the issuer, and a later issuer change clears dynamic registration info and local tokens before rebinding.
+- **Issuer binding**: `issuer` is a required field — authorization server implementations missing it should add it; the current implementation logs a warning on a missing issuer and continues down the fallback chain (direct RFC 8414 discovery first, then hardcoded `server_url` defaults), to be tightened into a hard failure in a future version. The first discovery binds the issuer, and a later issuer change clears dynamic registration info and local tokens before rebinding.
+- **expectedResource comparison**: the client-side `VerifyResourceMatch` requires the discovered metadata `resource` to equal `server_url` exactly or match its scheme+host prefix (a missing/empty field passes); the server-side audience gate (active when `validate_token_resource` is true and `expected_resource` is non-empty) requires the token `resource` to be non-empty and equal to `expected_resource`, otherwise 401 `invalid_token`. Both sides share the same normalization (strip `#fragment`, strip trailing slash, see `NormalizeResourceUrl`), but the direction is asymmetric — the server rejects a missing audience while the client passes a missing `resource` field.
+- **Client authentication methods**: the sending side supports only `none` and `client_secret_post` (`client_secret` sent with the form); `private_key_jwt` / `jwt-bearer` (client assertion, JWT assertion) are currently unsupported — `token_endpoint_auth_method` is only adopted informationally (stored in the registration info) and no assertion is ever constructed; servers requiring such methods need an assertion flow implemented outside the SDK.
 - **CIMD (Client ID Metadata Document)**: when `client_id` is a URL, the client metadata document at that URL is fetched and parsed (adopting its `token_endpoint_auth_method`). Failures are best-effort (a warning is logged and the configured values are used) and do not abort the authorization flow; dynamic registration sends `application_type` (default `"native"`).
 - **Challenge hardening**: `HandleAuthChallenge` returns false on oversized/illegal input (never throws); illegal URLs and mismatched resources are both refused.
 
