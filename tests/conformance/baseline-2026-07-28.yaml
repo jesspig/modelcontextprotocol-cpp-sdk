@@ -4,10 +4,18 @@
 # 未知版本回退 tests/conformance/baseline.yaml。完整归因见 baseline.yaml，本文件只收
 # modern leg（--requirements 2026-07-28）实际运行的场景条目（server 0 + client 32）。
 
-# （server 键：空。server-sse-multiple-streams 在 modern requirements 内 2/2 通过，
+# （server 键：仅 server-stateless 一条。server-sse-multiple-streams 在 modern requirements 内 2/2 通过，
 # 故不入本文件（入则报 stale）；该条目仅留 baseline-2025-11-25.yaml 保 legacy 绿。）
 
-server: []
+server:
+    # --- server-stateless（SHOULD 级推送缺口，modern leg 保绿）---
+    # 2026-10-12 referee 实测 28/28 通过但带 2 个 WARNING
+    # （ServerSendsPromptsListChangedOnSubscription 与
+    # ServerSendsToolsListChangedOnSubscription，均为 SHOULD 级：
+    # 诊断工具变更列表后 listen 流未收到 list_changed 推送），
+    # referee 将其判为 unexpected 致 modern server leg 退出 1。
+    # 待生产实现变更推送后 referee 会报 stale，届时删除本条目。
+    - server-stateless
 
 client:
     # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
