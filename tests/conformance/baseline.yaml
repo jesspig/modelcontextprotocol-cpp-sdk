@@ -82,17 +82,11 @@ server:
     - server-stateless
 
 client:
-    # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
-    # fixture 有对应场景注册且逻辑正确（列工具→按 context 逐个调用），
-    # 但 Windows 下 MCP_CONFORMANCE_CONTEXT 经 getenv 取回时非 ASCII
-    # （世界）与字面控制字符致 JsonValue::Parse 报 invalid UTF-8，
-    # client 退出 1。CI Linux（UTF-8 locale）下预期通过；若 CI modern
-    # invocation 报本条目 stale，即为变绿证据，届时删除。
-    # 旧“fetch-shim/注入点依赖”归因错误：context 系经环境变量下发，
-    # C++ fixture 可读，无需 TS fetch shim。
-    - http-custom-headers
-
     # --- 已删 client 条目（逐条证据，结论以最新复跑为准）---
+    # http-custom-headers：fallback 跟随 modern per-leg 删除
+    # （baseline-2026-07-28.yaml client 段已无此条目；原注释以“CI modern
+    # invocation 报 stale”为删除证据，legacy 条目仍保留于
+    # baseline-2025-11-25.yaml）。最终以 leg 复跑确认为准。
     # sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
     # 本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
     # event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报

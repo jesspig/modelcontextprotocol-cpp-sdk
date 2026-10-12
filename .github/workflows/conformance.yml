@@ -52,6 +52,14 @@ jobs:
           PORT=3010
           SERVER_URL="http://localhost:${PORT}/mcp"
           SERVER_BIN="${GITHUB_WORKSPACE}/build/debug/examples/conformance/server/conformance-server"
+          # 与 scripts/run-conformance.sh 一致：按 CONFORMANCE_SPEC_VERSION 映射
+          # per-leg 基线（未知版本回退 tests/conformance/baseline.yaml）。
+          BASELINE="${CONFORMANCE_BASELINE}"
+          case "${CONFORMANCE_SPEC_VERSION}" in
+          2026-07-28) BASELINE="tests/conformance/baseline-2026-07-28.yaml" ;;
+          2025-11-25) BASELINE="tests/conformance/baseline-2025-11-25.yaml" ;;
+          *) BASELINE="tests/conformance/baseline.yaml" ;;
+          esac
 
           # 与 scripts/run-conformance.sh 一致：端口被占时拒跑，防止对残留
           # 旧进程做 conformance 得出假结论。
@@ -108,7 +116,7 @@ jobs:
           echo "Server is ready. Running conformance tests..."
           conformance server --url "${SERVER_URL}" \
               ${SPEC_ARGS} \
-              --expected-failures "${CONFORMANCE_BASELINE}" \
+              --expected-failures "${BASELINE}" \
               --verbose
 
   client:
@@ -149,15 +157,23 @@ jobs:
         run: |
           set -e
           CLIENT_BIN="${GITHUB_WORKSPACE}/build/debug/examples/conformance/client/conformance-client"
+          # 与 scripts/run-conformance.sh 一致：按 CONFORMANCE_SPEC_VERSION 映射
+          # per-leg 基线（未知版本回退 tests/conformance/baseline.yaml）。
+          BASELINE="${CONFORMANCE_BASELINE}"
+          case "${CONFORMANCE_SPEC_VERSION}" in
+          2026-07-28) BASELINE="tests/conformance/baseline-2026-07-28.yaml" ;;
+          2025-11-25) BASELINE="tests/conformance/baseline-2025-11-25.yaml" ;;
+          *) BASELINE="tests/conformance/baseline.yaml" ;;
+          esac
           if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
               conformance client --command "${CLIENT_BIN}" \
                   --requirements 2026-07-28 \
-                  --expected-failures "${CONFORMANCE_BASELINE}" \
+                  --expected-failures "${BASELINE}" \
                   --verbose
           else
               conformance client --command "${CLIENT_BIN}" \
                   --suite core \
                   --spec-version "${CONFORMANCE_SPEC_VERSION}" \
-                  --expected-failures "${CONFORMANCE_BASELINE}" \
+                  --expected-failures "${BASELINE}" \
                   --verbose
           fi
