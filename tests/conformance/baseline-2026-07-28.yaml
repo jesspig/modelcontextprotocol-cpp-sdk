@@ -21,42 +21,20 @@ client:
     # --- auth/*（C++ client 无 OAuth 表面，全部 untestable）---
     # 注意旧注释“core 不选择 auth”已证伪：core/active 逐个运行 auth
     # 场景，client 以 Unknown scenario 退出 1，靠本基线放行。
-    # requirements 集共 31 个 auth 场景（2026 requirements 新增 11 个：
-    # resource-mismatch、offline-access-scope、offline-access-not-supported、
-    # authorization-server-migration、iss-supported、iss-not-advertised、
-    # iss-supported-missing、iss-wrong-issuer、iss-unexpected、
-    # iss-normalized、metadata-issuer-mismatch），C++ 侧同样无表面，
-    # 同样 unknown 退出 1。2026-10-12 复跑输出中 expected 命中 25 auth +
-    # http-custom-headers；另 6 个新 auth（client-credentials-jwt/basic、
-    # enterprise-managed-authorization、dpop、dpop-nonce、wif-jwt-bearer）
-    # 同样 unknown 退出 1，终判 unexpected 仅 sep-2322 与
-    # json-schema-ref-no-deref 两项（见上），与 auth 无关。
-    # 待 OAuth client 表面落地（生产）或 referee 收敛后重审。
-    - auth/metadata-default
+    # 2026-10-13 A-T2 fixture 真实流联调后 21 条目转绿删除（referee stale 证据，
+    # modern leg 383 passed）：metadata-default、basic-cimd、scope×5、
+    # token-endpoint×3、pre-registration、resource-mismatch、
+    # offline-access-scope、offline-access-not-supported、iss×6（含 normalized）、
+    # metadata-issuer-mismatch。保留：metadata-var1/var3 与 migration（部分失败）、
+    # metadata-var2、cc-jwt、dpop×2（全败，生产缺口记账）、cc-basic、enterprise、
+    # wif（0 failed 但 referee 未标 stale，暂留待追标）。
+    # 旧注记（2026-10-12，全 unknown 时代）已过时，留档至此：
+    # requirements 集 31 auth 当时靠本基线放行；A-T2 后 fixture 走真实流，
+    # 仅上列保留条目仍失败，其余转绿删除。
     - auth/metadata-var1
     - auth/metadata-var2
     - auth/metadata-var3
-    - auth/basic-cimd
-    - auth/scope-from-www-authenticate
-    - auth/scope-from-scopes-supported
-    - auth/scope-omitted-when-undefined
-    - auth/scope-step-up
-    - auth/scope-retry-limit
-    - auth/token-endpoint-auth-basic
-    - auth/token-endpoint-auth-post
-    - auth/token-endpoint-auth-none
-    - auth/pre-registration
-    - auth/resource-mismatch
-    - auth/offline-access-scope
-    - auth/offline-access-not-supported
     - auth/authorization-server-migration
-    - auth/iss-supported
-    - auth/iss-not-advertised
-    - auth/iss-supported-missing
-    - auth/iss-wrong-issuer
-    - auth/iss-unexpected
-    - auth/iss-normalized
-    - auth/metadata-issuer-mismatch
     - auth/client-credentials-jwt
     - auth/client-credentials-basic
     - auth/enterprise-managed-authorization
