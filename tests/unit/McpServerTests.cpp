@@ -4459,3 +4459,31 @@ TEST(McpServerTest, TriggerEmitDisabledByDefault) {
 
     CloseTriggerEmitEnv(env);
 }
+
+TEST(McpServerTest, ListChangedDropsWithoutSubscription) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed;
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&observed_mutex, &observed](const JsonRpcNotification& n) {
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed.push_back(n.method);
+        });
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&observed_mutex, &observed](const JsonRpcNotification& n) {
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed.push_back(n.method);
+        });
+
+    ctx.server->SendToolListChanged();
+    ctx.server->SendPromptListChanged();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::lock_guard<std::mutex> lock(observed_mutex);
+    EXPECT_TRUE(observed.empty());
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
