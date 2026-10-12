@@ -41,15 +41,22 @@ auto server = McpServer::Create(transport, opts);
 
 ## 实验开关
 
-`ServerOptions` 10 开关与 `ClientOptions` 3 开关默认全为 `false`，须显式置 `true`：
+`ServerOptions` 10 开关与 `ClientOptions` 4 开关默认全为 `false`，须显式置 `true`（开关构造期同步：`McpServer::Create` 按值拷贝，事后改调用方 `options` 不生效；etag 为进程级全局，任一服务端开态构造即打开全进程读写）：
 
 | 端 | 开关 | 开 | 关 |
 |----|------|----|----|
 | 服务端 | `enable_tasks_extension` | 声明 tasks 扩展；`tasks/get\|update\|cancel` 与任务化 `tools/call` 生效 | 无 `task_store` 时对应方法 `MethodNotFound`（`tasks extension is disabled`）；仅设 `task_store` 时隐式启用并记 `Warning`（0.3.5→0.3.8 过渡，见下） |
 | 服务端 | `enable_skills_extension` | 已注册技能且具 resources 能力时声明 skills 扩展；`skills/list\|get` 与 `directory/read` 生效 | 三方法一律 `MethodNotFound`（`skills extension is disabled`），无隐式路径 |
-| 服务端 | `enable_apps_extension` / `enable_server_card` / `enable_etag_cache` / `enable_progressive_discovery` / `enable_file_input` / `enable_triggers_events` / `enable_dpop` / `enable_interceptor_alias` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
+| 服务端 | `enable_etag_cache` | 列表类结果附内容哈希 `etag`（超 8MB 跳过）；命中 `notModified` 时客户端以存表回退，请求经 meta 扩展附 `ifNoneMatch` | 结果不附 `etag`，客户端存取短路，无条件发送 |
+| 服务端 | `enable_progressive_discovery` | `tools/list` 支持 `query` 过滤 + `pageSize` 翻页；`listen` 即刷持开，`list_changed` 按订阅缓冲 | `tools/list` 走缓存全量；`listen` 与 `list_changed` 走原路径 |
+| 服务端 | `enable_file_input` | `tools/call` 参数内 `file://`/`resource://` 引用按范围切片并内联小文件（`http(s)` 透传，越界超限回错误） | 参数原样透传 |
+| 服务端 | `enable_triggers_events` | 注册表 + 按类型匹配，经订阅投递触发器事件通知并打 webhook（失败只记 `Warning`） | 发射直接返回，事件静默丢弃 |
+| 服务端 | `enable_dpop` | Bearer 链加 DPoP 证明验签（失败 401 带 nonce，`jti` 防重放；无 OpenSSL 硬报错） | 原 Bearer 链 |
+| 服务端 | `enable_interceptor_alias` | 别名即实现：`Interceptor` 为 `MessageFilter` 别名，注册转发既有管线，零行为变化；开关无门控 | 同左 |
+| 服务端 | `enable_apps_extension` / `enable_server_card` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
 | 客户端 | `enable_tasks_extension` | `extensions` 映射含任务键即声明；`UpdateTask`/`PollTaskToCompletion` 与任务句柄路径生效 | 上述调用抛 `MethodNotFound`（`tasks extension is disabled`） |
 | 客户端 | `enable_skills_extension` | `ListSkills`/`GetSkill`/`ReadDirectory` 生效 | 三调用抛 `MethodNotFound`（`skills extension is disabled`） |
+| 客户端 | `enable_progressive_discovery` | `SearchTools` 翻页请求附 `query`/`pageSize` | 翻页聚合仍可用，但不附 `query`/`pageSize` |
 | 客户端 | `enable_apps_extension` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
 
 兼容过渡（0.3.5→0.3.8，本次任务给定口径）：`TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` 均标 `[[deprecated]]`，提示显式置开关；其中仅 tasks 有真实隐式路径（只设 `task_store` 即启用，伴 `Warning` 日志），skills 无隐式路径、必须显式开启。

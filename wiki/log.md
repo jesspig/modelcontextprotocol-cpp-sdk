@@ -1,5 +1,7 @@
 # 更新摘要
 
+- 2026-10-12 — 前瞻六开关文档同步（ad547f9 后续批次）：`experimental-flags.md` 六开关去“保留未接线”标注（etag/渐进/文件/触发器/dpop 已实现默认关语义 + 构造期同步节，interceptor 为无门控别名；客户端增至 4 开关），docs 中英 extensions.md 同表镜像，tests.md 仅留用例数待回填占位；只改 6 个 md，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
+
 - 2026-10-12 — 实验开关文档补齐（ad547f9/cada606 遗留）：新建 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)（服务端 10 + 客户端 3 开关表、tasks 隐式兼容 + Warning + deprecated、关/开两态语义），tests.md 增开关矩阵、docs 中英 extensions.md 镜像开关表；只改 6 个 md，不碰代码与测试基线，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
 
 - 2026-10-12 — spec-20260728-tier1-parity 一次性对齐：T2 request_state/T3 schema/T5 错误面/T6 上限重定向/T7 头空载荷/T8 协商可观测/T9 PRM-first/T10 任务推送/T11 技能验签/T12 文档，748/748，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
@@ -11,5 +13,3 @@
 - 2026-09-20 — 知识库一致性审计：三路只读审计确认基线三数 18/632/2154 零差值、语义层全一致；修正 15 处行号漂移与链接写法（http/http-server/streamable-http 6 处行号，concurrency/version-negotiation/meta-and-filters/storage 9 处 `:行号` 移出 URL，其中 6 处行号亦漂移一并修正，均以源码实测为准）；AGENTS.md 链接规则澄清为根链接或相对链接均可；7 页 timestamp 同步，详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)
 
 - 2026-09-20 — 版本号更新至 0.3.5：`include/mcp/McpVersion.hpp` 的 `kSdkVersion` `0.3.4` → `0.3.5`（唯一来源，`CMakeLists.txt` 自动提取，无需改 CMake；`client_info`/`server_version`/`server_info` 默认值随之更新）；在线文档中英 `client/overview.md` 与知识库 `classes/mcp-client.md` 默认客户端标识同步，详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)
-
-- 2026-09-20 — Streamable HTTP 服务端请求有界等待监听者：新增 `HttpServer::SseClientCount`（`sse_mutex_` 改 `mutable`），`StreamableHttpServerTransport::SendMessageAsync` 仅对 `IsRequest` 在零监听者时 50ms 步长轮询至多 2s（`Disconnected` 可中断，超时 Warning 后仍广播；Notification 保持 fire-and-forget）；5 文件 35 增 1 改，未碰 conformance 基线与 fixture；背景为 CI sampling 约 30s 超时 / sep1330 1 过 1 挂而本地复现全过（根因 GET 广播快照为空静默丢弃），修复后 66 passed 1 failed（仅基线内 progress）；wiki 3 页同步（streamable-http/http/http-server），详见 [/changelog/2026-09-20-log.md](/changelog/2026-09-20-log.md)

@@ -41,15 +41,22 @@ A skill entry `uri` must have the shape `<scheme>://<name>/SKILL.md` (scheme-agn
 
 ## Experimental Flags
 
-The 10 `ServerOptions` flags and 3 `ClientOptions` flags all default to `false` and must be explicitly set to `true`:
+The 10 `ServerOptions` flags and 4 `ClientOptions` flags all default to `false` and must be explicitly set to `true` (flags sync at construction: `McpServer::Create` copies options by value, later mutations of the caller's `options` have no effect; etag is process-global — any server constructed with it on enables process-wide etag reads/writes):
 
 | Side | Flag | On | Off |
 |------|------|----|-----|
 | Server | `enable_tasks_extension` | Declares the tasks extension; `tasks/get\|update\|cancel` and taskified `tools/call` take effect | Without `task_store`, the corresponding methods return `MethodNotFound` (`tasks extension is disabled`); with only `task_store` set, implicitly enabled with a `Warning` (0.3.5→0.3.8 transition, see below) |
 | Server | `enable_skills_extension` | With at least one registered skill and the resources capability, declares the skills extension; `skills/list\|get` and `directory/read` take effect | All three methods return `MethodNotFound` (`skills extension is disabled`); no implicit path |
-| Server | `enable_apps_extension` / `enable_server_card` / `enable_etag_cache` / `enable_progressive_discovery` / `enable_file_input` / `enable_triggers_events` / `enable_dpop` / `enable_interceptor_alias` | Reserved: declared, default `false`, no gating wired yet | Same as left |
+| Server | `enable_etag_cache` | List results carry a content-hash `etag` (skipped past the 8 MB cap); on a `notModified` reply clients fall back to the stored body, sending `ifNoneMatch` via the meta extensions | No `etag` attached; client store access short-circuits, unconditional sends |
+| Server | `enable_progressive_discovery` | `tools/list` supports `query` filtering + `pageSize` paging; `listen` flushes and holds open, `list_changed` buffers per subscription | `tools/list` serves the cached full set; `listen` and `list_changed` use the legacy paths |
+| Server | `enable_file_input` | `file://`/`resource://` references inside `tools/call` arguments are range-sliced and small files inlined (`http(s)` passes through; out-of-range/over-limit returns an error) | Arguments pass through untouched |
+| Server | `enable_triggers_events` | Registry + type-matched emit, delivered via subscription-filtered trigger event notifications plus webhooks (failures only log a `Warning`) | Emit returns immediately; events are silently dropped |
+| Server | `enable_dpop` | DPoP proof verification added to the Bearer chain (401 with nonce on failure, `jti` replay protection; hard error without OpenSSL) | Plain Bearer chain |
+| Server | `enable_interceptor_alias` | Alias as implementation: `Interceptor` aliases `MessageFilter`, registration forwards to the existing pipeline with zero behavior change; the flag itself has no gating | Same as left |
+| Server | `enable_apps_extension` / `enable_server_card` | Reserved: declared, default `false`, no gating wired yet | Same as left |
 | Client | `enable_tasks_extension` | Declared when the `extensions` map carries the tasks key; `UpdateTask`/`PollTaskToCompletion` and the task-handle path take effect | Those calls throw `MethodNotFound` (`tasks extension is disabled`) |
 | Client | `enable_skills_extension` | `ListSkills`/`GetSkill`/`ReadDirectory` take effect | All three calls throw `MethodNotFound` (`skills extension is disabled`) |
+| Client | `enable_progressive_discovery` | `SearchTools` paging requests carry `query`/`pageSize` | Paged aggregation still works but without `query`/`pageSize` |
 | Client | `enable_apps_extension` | Reserved: declared, default `false`, no gating wired yet | Same as left |
 
 Compatibility transition (0.3.5→0.3.8, scope given by this task): `TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` are both marked `[[deprecated]]`, directing users to set the flags explicitly; only tasks has a real implicit path (setting just `task_store` enables it, accompanied by a `Warning` log), while skills has no implicit path and must be enabled explicitly.
