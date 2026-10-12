@@ -141,6 +141,124 @@ CallToolResult ProtocolErrorJob(const ToolContext&)
         "protocol_error_job encountered a protocol-level failure");
 }
 
+const JsonValue* AcceptedResponseContent(
+    const std::optional<JsonValue>& responses, const char* key)
+{
+    if (!responses) return nullptr;
+    auto* entry = responses->Find(key);
+    if (!entry || !entry->IsObject()) return nullptr;
+    if (auto* action = entry->Find("action")) {
+        if (!action->IsString() || std::string(action->GetString()) != "accept") {
+            return nullptr;
+        }
+        auto* content = entry->Find("content");
+        return (content && content->IsObject()) ? content : nullptr;
+    }
+    return entry;
+}
+
+JsonValue MakeConfirmRequestedSchema()
+{
+    JsonValue confirm(JsonValue::object_tag);
+    confirm["type"] = JsonValue("boolean");
+    JsonValue properties(JsonValue::object_tag);
+    properties["confirm"] = std::move(confirm);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(properties);
+    schema["required"] = JsonValue(JsonValue::array_tag);
+    schema["required"].PushBack(JsonValue("confirm"));
+    return schema;
+}
+
+JsonValue MakeNameRequestedSchema()
+{
+    JsonValue name(JsonValue::object_tag);
+    name["type"] = JsonValue("string");
+    JsonValue properties(JsonValue::object_tag);
+    properties["name"] = std::move(name);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(properties);
+    schema["required"] = JsonValue(JsonValue::array_tag);
+    schema["required"].PushBack(JsonValue("name"));
+    return schema;
+}
+
+InputRequest MakeConfirmDeleteRequest()
+{
+    ElicitRequestParams params;
+    params.message = "Confirm deletion of the requested file";
+    params.requested_schema = MakeConfirmRequestedSchema();
+    return MakeInputRequestForElicitation(params);
+}
+
+InputRequest MakeUserNameRequest(const char* message)
+{
+    ElicitRequestParams params;
+    params.message = message;
+    params.requested_schema = MakeNameRequestedSchema();
+    return MakeInputRequestForElicitation(params);
+}
+
+CallToolResult ConfirmDelete(const ToolContext& ctx)
+{
+    std::string filename = "file";
+    if (ctx.Params().arguments) {
+        if (auto* value = ctx.Params().arguments->Find("filename");
+            value && value->IsString()) {
+            filename = value->GetString();
+        }
+    }
+    if (auto* content = AcceptedResponseContent(
+            ctx.Params().input_responses, "confirm_delete")) {
+        if (auto* confirm = content->Find("confirm");
+            confirm && confirm->IsBool() && confirm->GetBool()) {
+            return MakeTextResult("Deleted " + filename);
+        }
+    }
+    CallToolResult result;
+    InputRequiredResult ir;
+    ir.input_requests["confirm_delete"] = MakeConfirmDeleteRequest();
+    result.input_required = std::move(ir);
+    return result;
+}
+
+CallToolResult MultiInput(const ToolContext& ctx)
+{
+    const auto& responses = ctx.Params().input_responses;
+    auto* first = AcceptedResponseContent(responses, "first");
+    auto* second = AcceptedResponseContent(responses, "second");
+    auto* first_name = first ? first->Find("name") : nullptr;
+    auto* second_name = second ? second->Find("name") : nullptr;
+    if (first_name && first_name->IsString() && second_name && second_name->IsString()) {
+        return MakeTextResult("Confirmed both inputs: " + first_name->GetString()
+            + ", " + second_name->GetString());
+    }
+    CallToolResult result;
+    InputRequiredResult ir;
+    ir.input_requests["first"] = MakeUserNameRequest("First input: what is your name?");
+    ir.input_requests["second"] = MakeUserNameRequest("Second input: what is your name?");
+    result.input_required = std::move(ir);
+    return result;
+}
+
+CallToolResult TestToolWithTask(const ToolContext& ctx)
+{
+    auto* content = AcceptedResponseContent(
+        ctx.Params().input_responses, "user_name");
+    if (content) {
+        if (auto* name = content->Find("name"); name && name->IsString()) {
+            return MakeTextResult("Hello, " + name->GetString() + "!");
+        }
+    }
+    CallToolResult result;
+    InputRequiredResult ir;
+    ir.input_requests["user_name"] = MakeUserNameRequest("What is your name?");
+    result.input_required = std::move(ir);
+    return result;
+}
+
 JsonValue MakeNameSchema()
 {
     JsonValue name(JsonValue::object_tag);
@@ -171,12 +289,32 @@ JsonValue MakeSlowComputeSchema()
     return schema;
 }
 
+JsonValue MakeFilenameSchema()
+{
+    JsonValue filename(JsonValue::object_tag);
+    filename["type"] = JsonValue("string");
+    filename["description"] = JsonValue("File to delete");
+    JsonValue properties(JsonValue::object_tag);
+    properties["filename"] = std::move(filename);
+    JsonValue schema(JsonValue::object_tag);
+    schema["type"] = JsonValue("object");
+    schema["properties"] = std::move(properties);
+    return schema;
+}
+
 ToolOptions MakeTaskToolOptions()
 {
     ToolExecution execution;
     execution.mode = ToolExecutionMode::Task;
     ToolOptions options;
     options.execution = execution;
+    return options;
+}
+
+ToolOptions MakeRequiredTaskToolOptions()
+{
+    ToolOptions options = MakeTaskToolOptions();
+    options.execution->task_support = TaskSupport::Required;
     return options;
 }
 
@@ -280,7 +418,7 @@ void RegisterConformanceTaskTools(McpServer& server)
         std::function<CallToolResult(const ToolContext&)>(&SlowCompute));
 
     server.RegisterTool("failing_job",
-        MakeTaskToolOptions().Description(
+        MakeRequiredTaskToolOptions().Description(
             "SEP-2663: task-supporting tool always reporting a tool error"),
         std::function<CallToolResult(const ToolContext&)>(&FailingJob));
 
@@ -288,6 +426,25 @@ void RegisterConformanceTaskTools(McpServer& server)
         MakeTaskToolOptions().Description(
             "SEP-2663: task-supporting tool panicking into a protocol error"),
         std::function<CallToolResult(const ToolContext&)>(&ProtocolErrorJob));
+
+    server.RegisterTool("confirm_delete",
+        MakeTaskToolOptions()
+            .Description("SEP-2663: task-supporting tool emitting a single "
+                "elicitation/create inputRequest then completing on response")
+            .InputSchema(MakeFilenameSchema()),
+        std::function<CallToolResult(const ToolContext&)>(&ConfirmDelete));
+
+    server.RegisterTool("multi_input",
+        MakeTaskToolOptions().Description(
+            "SEP-2663: task-supporting tool fanning out two elicitation/create "
+            "inputRequests in parallel for the partial-fulfillment check"),
+        std::function<CallToolResult(const ToolContext&)>(&MultiInput));
+
+    server.RegisterTool("test_tool_with_task",
+        MakeRequiredTaskToolOptions().Description(
+            "SEP-2663: MRTR loop gathering user_name then escalating to async "
+            "with the gathered name reflected in the final task result"),
+        std::function<CallToolResult(const ToolContext&)>(&TestToolWithTask));
 }
 
 std::shared_ptr<IMcpTaskStore> MakeConformanceTaskStore()

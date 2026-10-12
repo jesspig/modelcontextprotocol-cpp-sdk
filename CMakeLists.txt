@@ -221,6 +221,9 @@ endif()
 
 if(MCP_BUILD_CONFORMANCE)
     add_subdirectory(examples/conformance/server)
+    if(NOT MCP_BUILD_EXAMPLES)
+        add_subdirectory(examples/conformance/client)
+    endif()
 endif()
 
 file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"

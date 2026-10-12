@@ -9,6 +9,11 @@ PORT="${PORT:-3010}"
 BUILD_PRESET="${BUILD_PRESET:-debug}"
 CONFORMANCE_SPEC_VERSION="${CONFORMANCE_SPEC_VERSION:-2025-11-25}"
 BASELINE="tests/conformance/baseline.yaml"
+case "${CONFORMANCE_SPEC_VERSION}" in
+2026-07-28) BASELINE="tests/conformance/baseline-2026-07-28.yaml" ;;
+2025-11-25) BASELINE="tests/conformance/baseline-2025-11-25.yaml" ;;
+*) BASELINE="tests/conformance/baseline.yaml" ;;
+esac
 CONFORMANCE_PKG="@modelcontextprotocol/conformance@0.2.0-alpha.12"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

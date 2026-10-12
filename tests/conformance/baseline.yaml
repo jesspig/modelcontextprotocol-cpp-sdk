@@ -1,4 +1,7 @@
 # C++ SDK 官方 conformance 已知偏差基线。
+# per-leg 拆分：baseline-2025-11-25.yaml（legacy leg）与 baseline-2026-07-28.yaml（modern leg）；
+# 选用规则见 scripts/run-conformance.sh（按 CONFORMANCE_SPEC_VERSION 映射，未知版本回退本文件）。
+# 本文件条目冻结，仅作回退默认；各 leg 真源以对应 per-leg 文件为准（条目逐字一致）。
 #
 # 驱动包：@modelcontextprotocol/conformance@0.2.0-alpha.12（alpha 通道最新，
 # 2026-10-01；requirements 内核与 alpha.11 一致，升级只收 referee 修补）。
