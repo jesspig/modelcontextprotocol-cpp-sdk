@@ -18,6 +18,8 @@ public:
     virtual void Filter(const JsonRpcMessage& message, MessageFilterNext next) = 0;
 };
 
+using Interceptor = MessageFilter;
+
 class MessageFilterFuncAdapter : public MessageFilter {
 public:
     explicit MessageFilterFuncAdapter(MessageFilterFunc func) : func_(std::move(func)) {}
@@ -32,6 +34,10 @@ class FilterPipeline {
 public:
     void AddFilter(std::shared_ptr<MessageFilter> filter) {
         filters_.push_back(std::move(filter));
+    }
+
+    void AddInterceptor(std::shared_ptr<Interceptor> interceptor) {
+        AddFilter(std::move(interceptor));
     }
 
     void Execute(const JsonRpcMessage& message, MessageFilterNext final_handler) {
