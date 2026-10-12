@@ -2,6 +2,7 @@
 #include <mcp/detail/Base64Url.hpp>
 #include <mcp/detail/sha256.hpp>
 #include <mcp/ErrorCodes.hpp>
+#include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 
 #if defined(MCP_HAVE_OPENSSL)
@@ -31,11 +32,15 @@
 #endif
 
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
+#include <random>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace mcp::ext::dpop {
 
@@ -119,6 +124,74 @@ int64_t NowSeconds() {
                std::chrono::system_clock::now().time_since_epoch())
         .count();
 }
+
+JtiReplayCache::JtiReplayCache(int64_t window_seconds)
+    : window_seconds_(window_seconds < 0 ? 0 : window_seconds) {}
+
+bool JtiReplayCache::CheckAndStore(std::string_view jti,
+                                   int64_t iat_seconds,
+                                   int64_t now_seconds) {
+    if (jti.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = seen_.begin(); it != seen_.end();) {
+        if (now_seconds - it->second > window_seconds_) it = seen_.erase(it);
+        else ++it;
+    }
+    std::string key(jti);
+    if (seen_.find(key) != seen_.end()) return false;
+    seen_.emplace(std::move(key), iat_seconds);
+    return true;
+}
+
+void JtiReplayCache::Clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    seen_.clear();
+}
+
+std::string GenerateNonce(std::size_t random_bytes) {
+    if (random_bytes == 0) random_bytes = 16;
+    if (random_bytes > 64) random_bytes = 64;
+    std::string raw(random_bytes, '\0');
+#if defined(MCP_DPOP_HAVE_OPENSSL)
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&raw[0]),
+                   static_cast<int>(random_bytes)) != 1) {
+        throw McpError(McpErrorCode::InternalError, "DPoP nonce generation failed");
+    }
+#else
+    std::random_device rd;
+    for (size_t i = 0; i < raw.size(); ++i)
+        raw[i] = static_cast<char>(rd() & 0xFF);
+#endif
+    return mcp::detail::Base64UrlEncode(raw);
+}
+
+namespace verify_detail {
+
+std::string LowerCopy(std::string_view input) {
+    std::string out(input);
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+std::string StripHtuSuffix(std::string_view htu) {
+    size_t end = htu.size();
+    for (size_t i = 0; i < htu.size(); ++i) {
+        if (htu[i] == '?' || htu[i] == '#') {
+            end = i;
+            break;
+        }
+    }
+    return std::string(htu.substr(0, end));
+}
+
+const JsonValue* RequireStringField(const JsonValue& obj, std::string_view key) {
+    auto* field = obj.Find(key);
+    if (!field || !field->IsString()) return nullptr;
+    return field;
+}
+
+} // namespace verify_detail
 
 #if defined(MCP_DPOP_HAVE_OPENSSL)
 
@@ -289,6 +362,114 @@ std::string CreateProof(const EcP256Jwk& key,
     return proof;
 }
 
+bool VerifyProof(std::string_view proof,
+                 const DPoPVerifyOptions& options,
+                 JtiReplayCache& replay) {
+    if (options.htm.empty() || options.htu.empty() || options.access_token.empty())
+        return false;
+    if (options.window_seconds < 0) return false;
+    int64_t now = options.now_seconds != 0 ? options.now_seconds : NowSeconds();
+    size_t dot1 = proof.find('.');
+    if (dot1 == std::string_view::npos || dot1 == 0) return false;
+    size_t dot2 = proof.find('.', dot1 + 1);
+    if (dot2 == std::string_view::npos || dot2 == dot1 + 1) return false;
+    if (proof.find('.', dot2 + 1) != std::string_view::npos) return false;
+    std::string header_seg(proof.substr(0, dot1));
+    std::string payload_seg(proof.substr(dot1 + 1, dot2 - dot1 - 1));
+    std::string sig_seg(proof.substr(dot2 + 1));
+    if (sig_seg.empty()) return false;
+    auto header_raw = mcp::detail::Base64UrlDecode(header_seg);
+    auto payload_raw = mcp::detail::Base64UrlDecode(payload_seg);
+    auto sig_raw = mcp::detail::Base64UrlDecode(sig_seg);
+    if (!header_raw || !payload_raw || !sig_raw || sig_raw->size() != 64)
+        return false;
+    JsonValue header;
+    JsonValue payload;
+    try {
+        header = JsonValue::Parse(*header_raw);
+        payload = JsonValue::Parse(*payload_raw);
+    } catch (...) {
+        return false;
+    }
+    if (!header.IsObject() || !payload.IsObject()) return false;
+    auto* alg = verify_detail::RequireStringField(header, "alg");
+    if (!alg || alg->GetString() != "ES256") return false;
+    auto* typ = verify_detail::RequireStringField(header, "typ");
+    if (!typ || verify_detail::LowerCopy(typ->GetString()) != "dpop+jwt") return false;
+    auto* jwk = header.Find("jwk");
+    if (!jwk || !jwk->IsObject()) return false;
+    auto* kty = verify_detail::RequireStringField(*jwk, "kty");
+    auto* crv = verify_detail::RequireStringField(*jwk, "crv");
+    auto* x = verify_detail::RequireStringField(*jwk, "x");
+    auto* y = verify_detail::RequireStringField(*jwk, "y");
+    if (!kty || !crv || !x || !y) return false;
+    if (kty->GetString() != "EC" || crv->GetString() != "P-256") return false;
+    if (x->GetString().empty() || y->GetString().empty()) return false;
+    if (jwk->Find("d") != nullptr) return false;
+    auto* htm = verify_detail::RequireStringField(payload, "htm");
+    if (!htm || htm->GetString() != options.htm) return false;
+    auto* htu = verify_detail::RequireStringField(payload, "htu");
+    if (!htu || htu->GetString().empty()) return false;
+    std::string bearing = verify_detail::StripHtuSuffix(htu->GetString());
+    std::string expected = verify_detail::StripHtuSuffix(options.htu);
+    bool htu_ok = !expected.empty() && bearing == expected;
+    if (!htu_ok && options.alternate_htu && !options.alternate_htu->empty())
+        htu_ok = bearing == verify_detail::StripHtuSuffix(*options.alternate_htu);
+    if (!htu_ok) return false;
+    auto* iat = payload.Find("iat");
+    if (!iat || !iat->IsInt()) return false;
+    if (!IsNonceFresh(iat->GetInt(), now, options.window_seconds)) return false;
+    auto* jti = verify_detail::RequireStringField(payload, "jti");
+    if (!jti || jti->GetString().empty()) return false;
+    auto* ath = verify_detail::RequireStringField(payload, "ath");
+    if (!ath || ath->GetString() != detail::DpopSha256Base64Url(options.access_token))
+        return false;
+    auto* nonce = payload.Find("nonce");
+    if (nonce) {
+        if (!nonce->IsString()) return false;
+        if (options.expected_nonce && !options.expected_nonce->empty() &&
+            nonce->GetString() != *options.expected_nonce)
+            return false;
+    }
+    auto x_raw = mcp::detail::Base64UrlDecode(x->GetString());
+    auto y_raw = mcp::detail::Base64UrlDecode(y->GetString());
+    if (!x_raw || !y_raw || x_raw->size() != 32 || y_raw->size() != 32)
+        return false;
+    std::string signing_input = header_seg;
+    signing_input += ".";
+    signing_input += payload_seg;
+    std::string digest = mcp::detail::Sha256::Hash(signing_input);
+    detail::DpopEcKeyPtr ec(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+    if (!ec) return false;
+    const EC_GROUP* group = EC_KEY_get0_group(ec.get());
+    if (!group) return false;
+    detail::DpopPointPtr pub(EC_POINT_new(group));
+    detail::DpopBnPtr x_bn(BN_bin2bn(
+        reinterpret_cast<const unsigned char*>(x_raw->data()), 32, nullptr));
+    detail::DpopBnPtr y_bn(BN_bin2bn(
+        reinterpret_cast<const unsigned char*>(y_raw->data()), 32, nullptr));
+    if (!pub || !x_bn || !y_bn) return false;
+    if (EC_POINT_set_affine_coordinates(group, pub.get(), x_bn.get(), y_bn.get(),
+                                        nullptr) != 1)
+        return false;
+    if (EC_KEY_set_public_key(ec.get(), pub.get()) != 1) return false;
+    if (EC_KEY_check_key(ec.get()) != 1) return false;
+    detail::DpopSigPtr sig(ECDSA_SIG_new());
+    detail::DpopBnPtr r(BN_bin2bn(
+        reinterpret_cast<const unsigned char*>(sig_raw->data()), 32, nullptr));
+    detail::DpopBnPtr s(BN_bin2bn(
+        reinterpret_cast<const unsigned char*>(sig_raw->data() + 32), 32, nullptr));
+    if (!sig || !r || !s) return false;
+    if (ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) return false;
+    r.release();
+    s.release();
+    int verified = ECDSA_do_verify(
+        reinterpret_cast<const unsigned char*>(digest.data()),
+        static_cast<int>(digest.size()), sig.get(), ec.get());
+    if (verified != 1) return false;
+    return replay.CheckAndStore(jti->GetString(), iat->GetInt(), now);
+}
+
 #else
 
 EcP256Jwk GenerateKey() {
@@ -302,6 +483,13 @@ std::string CreateProof(const EcP256Jwk&,
                         std::optional<std::string_view>,
                         std::optional<std::string_view>,
                         std::optional<int64_t>) {
+    throw McpError(McpErrorCode::InternalError,
+                   "DPoP requires OpenSSL EC support, which is not available in this build");
+}
+
+bool VerifyProof(std::string_view,
+                 const DPoPVerifyOptions&,
+                 JtiReplayCache&) {
     throw McpError(McpErrorCode::InternalError,
                    "DPoP requires OpenSSL EC support, which is not available in this build");
 }

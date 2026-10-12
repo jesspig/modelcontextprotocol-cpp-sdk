@@ -6,6 +6,7 @@
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
+#include <mcp/ext/DPoP.hpp>
 
 #include <transport/detail/net/NetIoUtil.hpp>
 
@@ -17,6 +18,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -203,6 +205,47 @@ void RespondInsufficientScope(HttpResponse& resp,
     resp.headers["content-type"] = "application/json";
 }
 
+constexpr size_t kDPoPSchemeLength = 5;
+
+bool IsDPoPAuthorization(const std::string& value) {
+    static constexpr const char* kScheme = "dpop ";
+    if (value.size() < kDPoPSchemeLength) return false;
+    for (size_t i = 0; i < kDPoPSchemeLength; ++i) {
+        if (std::tolower(static_cast<unsigned char>(value[i])) != kScheme[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+ext::dpop::JtiReplayCache& DPoPReplayCache() {
+    static ext::dpop::JtiReplayCache cache(300);
+    return cache;
+}
+
+std::mutex& DPoPServerNonceMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::string& DPoPServerNonceValue() {
+    static std::string nonce;
+    return nonce;
+}
+
+std::string DPoPCurrentServerNonce() {
+    std::lock_guard<std::mutex> lock(DPoPServerNonceMutex());
+    std::string& nonce = DPoPServerNonceValue();
+    if (nonce.empty()) nonce = ext::dpop::GenerateNonce();
+    return nonce;
+}
+
+void DPoPFailUnauthorized(HttpResponse& resp, const std::string& metadata_url,
+                          const std::vector<std::string>& scopes) {
+    RespondUnauthorized(resp, metadata_url, true, scopes);
+    resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
+}
+
 void RespondStatelessError(HttpResponse& resp, int status, const char* status_text,
                            McpErrorCode code, const std::string& message,
                            std::optional<RequestId> id, std::optional<JsonValue> data) {
@@ -387,6 +430,75 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
 {
     if (!options_.bearer_auth) return true;
     const auto& config = *options_.bearer_auth;
+
+    if (config.enable_dpop) {
+        auto dpop_auth = GetMcpHeader(req, "authorization");
+        if (!dpop_auth || !IsDPoPAuthorization(*dpop_auth)) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        auto token = dpop_auth->substr(kDPoPSchemeLength);
+        detail::net::TrimInPlace(token);
+        if (token.empty()) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        auto result = config.verify(token);
+        if (!result.ok) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        auto proof = GetMcpHeader(req, "dpop");
+        bool proof_ok = false;
+        if (proof && !proof->empty()) {
+            auto host = GetMcpHeader(req, "host");
+            std::string req_path = req.path;
+            if (auto query = req_path.find('?'); query != std::string::npos)
+                req_path.resize(query);
+            if (host && !host->empty() && !req_path.empty()) {
+                ext::dpop::DPoPVerifyOptions verify_options;
+                verify_options.htm = req.method;
+                verify_options.htu = "http://" + *host + req_path;
+                verify_options.alternate_htu = "https://" + *host + req_path;
+                verify_options.access_token = token;
+                verify_options.expected_nonce = DPoPCurrentServerNonce();
+                try {
+                    proof_ok = ext::dpop::VerifyProof(*proof, verify_options,
+                                                      DPoPReplayCache());
+                } catch (...) {
+                    proof_ok = false;
+                }
+            }
+        }
+        if (!proof_ok) {
+            DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                 config.scopes_supported);
+            return false;
+        }
+        if (config.validate_token_resource && !config.expected_resource.empty()) {
+            bool audience_ok = result.resource && !result.resource->empty() &&
+                NormalizeResourceUrl(*result.resource) ==
+                    NormalizeResourceUrl(config.expected_resource);
+            if (!audience_ok) {
+                DPoPFailUnauthorized(resp, config.resource_metadata_url,
+                                     config.scopes_supported);
+                return false;
+            }
+        }
+        for (const auto& required : config.required_scopes) {
+            if (std::find(result.scopes.begin(), result.scopes.end(), required)
+                == result.scopes.end()) {
+                RespondInsufficientScope(resp, config.required_scopes);
+                resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
+                return false;
+            }
+        }
+        resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
+        return true;
+    }
 
     auto authorization = GetMcpHeader(req, "authorization");
     if (!authorization || !IsBearerAuthorization(*authorization)) {

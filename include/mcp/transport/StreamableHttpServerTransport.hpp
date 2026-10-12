@@ -66,6 +66,7 @@ struct StreamableHttpServerOptions {
         bool serve_metadata_endpoint{true};
         std::string expected_resource;
         bool validate_token_resource{true};
+        bool enable_dpop{false};
     };
     std::optional<BearerAuthConfig> bearer_auth;
 
