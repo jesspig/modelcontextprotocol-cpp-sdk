@@ -2297,7 +2297,13 @@ ModernTaskEnv MakeModernTaskEnv() {
         ADD_FAILURE();
         return env;
     }
-    (void)init_future.get();
+    auto init_resp = init_future.get();
+    if (!init_resp.Contains("code")) {
+        ADD_FAILURE();
+        return env;
+    }
+    EXPECT_EQ(init_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
     env.client->SendNotification(notifications::kInitialized);
     return env;
 }

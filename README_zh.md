@@ -94,7 +94,7 @@ ctest --preset debug --output-on-failure
 - **mcp-transport** — 传输层实现：StdioServerTransport、StdioClientTransport、SseClientTransport、InMemoryTransport、WebSocketClientTransport、StreamableHttpServerTransport、StreamableHttpClientTransport。平台相关 I/O 在 `detail/` 目录下（posix、win32）。
 - **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联与超时、`MessageFilter` 管道。
 - **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit、订阅管理。
-- **mcp-client** — `McpClient`，含服务器发现（`server/discover` → initialize 回退）、版本协商、OAuth（PKCE/DCR）、MRTR（InputRequired 循环）、工具缓存、`FileTokenCache`。
+- **mcp-client** — `McpClient`，含服务器发现（`server/discover` → initialize 回退）、版本协商、OAuth（PKCE/CIMD，DCR 回退）、MRTR（InputRequired 循环）、工具缓存、`FileTokenCache`。
 - **mcp-http** — 用于 Streamable HTTP 模式的 HTTP 服务器：`HttpServer`、`EventStore`（SSE 事件持久化）、`StreamableHttpServerTransport`、`StreamableHttpClientTransport`。
 
 ### 所有传输层
@@ -176,7 +176,7 @@ auto result = client->CallTool("echo",
 客户端支持 MCP OAuth 授权流程：
 
 - **授权码 + PKCE** 流程，使用 S256 代码挑战
-- 动态客户端注册（DCR）
+- CIMD 客户端标识与 DCR 回退（`client_id` 为 `http(s)://` URL 时拉取客户端元数据文档；仅未配置 `client_id` 时动态注册）
 - Token 刷新和撤销
 - 可插拔 Token 缓存（`ITokenCache`），内置持久化 `FileTokenCache`
 
@@ -260,7 +260,7 @@ build/debug/examples/EchoServer/EchoServer
 | 多轮请求 | SEP-2322 `input_required` 结果（`inputRequests`/`inputResponses` + `requestState`），legacy 线上亦可履行（CHANGELOG §0.24.0/§1.2.0）；`resultType` 仅 `complete`/`input_required`（[result_type.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/result_type.rb)） | `InputRequiredResult` + elicitation 循环（[mrtr](wiki/concepts/mrtr.md)）；另有任务句柄专用的 `task` 结果类型 |
 | 请求头 | 发送 SEP-2243 `Mcp-Method`/`Mcp-Name`，`x-mcp-header` 参数镜像为 `Mcp-Param-*`（CHANGELOG §0.22.0/§1.2.0；[mcp_param_headers.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/client/mcp_param_headers.rb)）；现代路径强制要求 `Mcp-Method` | `Mcp-Name` 校验含 tasks `taskId` 比对（[mcp-param-headers](wiki/concepts/mcp-param-headers.md)、[tasks-extension](wiki/concepts/tasks-extension.md)） |
 | 缓存 | 服务端标注 SEP-2549 `ttlMs`/`cacheScope`（CHANGELOG §0.24.0/§1.2.0）；`lib/mcp/client/` 下未见客户端响应缓存【假设：未实现，待源码核实】 | 客户端响应缓存，TTL + public/private 双分区（[response-cache](wiki/concepts/response-cache.md)） |
-| 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/DCR + `FileTokenCache`，服务端 Bearer 鉴权（见上文 OAuth 支持） |
+| 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/CIMD（DCR 回退）+ `FileTokenCache`，服务端 Bearer 鉴权（见上文 OAuth 支持） |
 | 任务（SEP-2663） | 未实现——“remains planned”（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，[#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)） | `tasks/get\|update\|cancel` 双时代 + `FileTaskStore`（[tasks-extension](wiki/concepts/tasks-extension.md)） |
 | 技能（SEP-2640） | 未实现【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`，仅 2026 时代（[skills-extension](wiki/concepts/skills-extension.md)） |
 
@@ -271,7 +271,7 @@ build/debug/examples/EchoServer/EchoServer
 - **应用界面渲染**——服务器推送的 UI 组件不渲染，仅作不透明数据透传。
 - **EMA**——未实现 EMA 协商，对端回退到基线能力协商。
 - **DPoP**——DPoP 绑定令牌既不发送也不校验，上文 OAuth 支持中的 Bearer 令牌路径仍为受支持流程。
-- **jwt-bearer**——不支持 `jwt-bearer` / `private_key_jwt` 客户端认证，公开客户端 PKCE/DCR 流程仍为受支持路径。
+- **jwt-bearer**——不支持 `jwt-bearer` / `private_key_jwt` 客户端认证，公开客户端 PKCE/CIMD 流程仍为受支持路径。
 - **ETag**——不存储、不比对 `ETag` / `If-None-Match` 校验器，缓存响应仅按 TTL 治理。
 - **渐进式发现**——未实现增量能力发现，恒用完整 `server/discover`（现代）/ `initialize`（遗留）握手。
 - **文件上传**——未实现可续传文件上传原语，文件内容仅经现有工具/资源载荷流转。
