@@ -249,6 +249,7 @@ inline bool RefreshToolAnnotations(const std::string& endpoint,
 namespace {
 
 constexpr DWORD kHttpTimeoutMs = 30000;
+constexpr DWORD kStreamReadSliceMs = 1000;
 
 std::wstring ToWideStr(const std::string& s) {
     if (s.empty()) return {};
@@ -302,6 +303,10 @@ public:
         auto sse_req = sse_request_.exchange(nullptr);
         if (sse_req) {
             WinHttpSetTimeouts(sse_req, 0, 0, 0, 500);
+        }
+        auto resume_req = resume_request_.exchange(nullptr);
+        if (resume_req) {
+            WinHttpSetTimeouts(resume_req, 0, 0, 0, 500);
         }
         detail::JoinThreadSafely(send_thread_);
         if (channel_) channel_->Close();
@@ -416,11 +421,8 @@ private:
             WinHttpCloseHandle(hSession);
             return ListenState::Connecting;
         }
-        auto recv_ms = static_cast<DWORD>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                streamable_http_client_impl::kListenStreamTimeout).count());
         WinHttpSetTimeouts(hRequest, kHttpTimeoutMs, kHttpTimeoutMs,
-                           kHttpTimeoutMs, recv_ms);
+                           kHttpTimeoutMs, kStreamReadSliceMs);
 
         std::wstring hdrs = L"Accept: text/event-stream\r\n";
         hdrs += L"MCP-Protocol-Version: " + ToWideStr(
@@ -486,8 +488,11 @@ private:
         for (;;) {
             if (!running_) break;
             DWORD navail = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &navail) || navail == 0)
+            if (!WinHttpQueryDataAvailable(hRequest, &navail)) {
+                if (GetLastError() == ERROR_WINHTTP_TIMEOUT && running_) continue;
                 break;
+            }
+            if (navail == 0) break;
             DWORD nread = 0;
             DWORD nwant = navail < sizeof(buf) ? navail : static_cast<DWORD>(sizeof(buf));
             if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
@@ -655,7 +660,7 @@ private:
                 return;
             }
             if (!WinHttpSetTimeouts(hRequest, kHttpTimeoutMs, kHttpTimeoutMs,
-                                    kHttpTimeoutMs, kHttpTimeoutMs)) {
+                                    kHttpTimeoutMs, kStreamReadSliceMs)) {
                 MCP_LOG(Warning, "WinHttpSetTimeouts failed");
             }
 
@@ -854,12 +859,26 @@ private:
 
             if (isSse) {
                 sse_request_ = hRequest;
+                std::optional<RequestId> request_id;
+                try {
+                    auto pending_body = JsonValue::Parse(body);
+                    if (auto* pending_id = pending_body.Find("id");
+                        pending_id && !pending_id->IsNull()) {
+                        request_id = RequestIdFromJson(*pending_id);
+                    }
+                } catch (...) {
+                }
+                bool resolved = false;
                 std::string sse_body;
                 char sbuf[4096];
                 for (;;) {
                     DWORD savail = 0;
-                    if (!WinHttpQueryDataAvailable(hRequest, &savail) || savail == 0)
+                    if (!WinHttpQueryDataAvailable(hRequest, &savail)) {
+                        if (GetLastError() == ERROR_WINHTTP_TIMEOUT && running_)
+                            continue;
                         break;
+                    }
+                    if (savail == 0) break;
                     DWORD sread = 0;
                     DWORD swant = savail < sizeof(sbuf) ? savail
                                                         : static_cast<DWORD>(sizeof(sbuf));
@@ -880,10 +899,22 @@ private:
                     while ((pos = sse_body.find("\n\n")) != std::string::npos) {
                         std::string block = sse_body.substr(0, pos);
                         sse_body.erase(0, pos + 2);
-                        DispatchSseBlock(block, is_initialize);
+                        if (DispatchSseBlock(block, is_initialize, request_id))
+                            resolved = true;
                     }
                 }
                 sse_request_ = nullptr;
+                if (!resolved && request_id.has_value() && running_) {
+                    resolved = ResumePostStreamViaGet(*request_id, is_initialize);
+                }
+                if (!resolved && request_id.has_value() && running_ && channel_) {
+                    JsonRpcErrorResponse stream_error;
+                    stream_error.id = request_id;
+                    stream_error.error.code = McpErrorCode::ConnectionClosed;
+                    stream_error.error.message = "SSE stream ended without response";
+                    channel_->Send(JsonRpcMessage(std::move(stream_error)));
+                    NotifyError("HTTP POST SSE stream ended without response");
+                }
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
@@ -924,18 +955,148 @@ private:
         }
     }
 
-    void DispatchSseBlock(const std::string& block, bool learn_version) {
+    bool ResumePostStreamViaGet(const RequestId& request_id, bool learn_version) {
+        std::string resume_id;
+        {
+            std::lock_guard<std::mutex> lk(last_event_id_mutex_);
+            if (last_event_id_.empty()) return false;
+            resume_id = last_event_id_;
+        }
+        if (options_.stateless) return false;
+        streamable_http_client_impl::SleepInterruptibly(
+            running_,
+            streamable_http_client_impl::ReconnectDelayForAttempt(
+                1, CurrentRetryMs()));
+        if (!running_) return false;
+        HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
+            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession) return false;
+
+        auto url = detail::ParseUrl(options_.endpoint);
+        auto wh = ToWideStr(url.host);
+        auto wp = ToWideStr(url.path);
+        if (wp.empty()) wp = L"/";
+
+        HINTERNET hConnect = WinHttpConnect(hSession, wh.c_str(), url.port, 0);
+        if (!hConnect) {
+            WinHttpCloseHandle(hSession);
+            return false;
+        }
+
+        DWORD flags = (url.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
+            wp.c_str(), nullptr, WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+        if (!hRequest) {
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return false;
+        }
+        WinHttpSetTimeouts(hRequest, kHttpTimeoutMs, kHttpTimeoutMs,
+                           kHttpTimeoutMs, kStreamReadSliceMs);
+
+        std::wstring hdrs = L"Accept: text/event-stream\r\n";
+        hdrs += L"MCP-Protocol-Version: " + ToWideStr(
+            streamable_http_client_impl::EffectiveProtocolVersion(
+                NegotiatedVersion())) + L"\r\n";
+        auto resume_sid = CurrentSessionId();
+        if (!resume_sid.empty()) {
+            hdrs += L"Mcp-Session-Id: " + ToWideStr(resume_sid) + L"\r\n";
+        }
+        hdrs += L"Last-Event-ID: " + ToWideStr(resume_id) + L"\r\n";
+        WinHttpAddRequestHeaders(hRequest, hdrs.data(),
+            static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
+
+        auto finish = [&](bool matched) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return matched;
+        };
+
+        if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                nullptr, 0, 0, 0) ||
+            !WinHttpReceiveResponse(hRequest, nullptr)) {
+            return finish(false);
+        }
+
+        DWORD status_code = 0;
+        DWORD scSize = sizeof(status_code);
+        BOOL status_ok = WinHttpQueryHeaders(hRequest,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                nullptr, &status_code, &scSize, nullptr);
+        if (!status_ok || status_code != 200) {
+            return finish(false);
+        }
+        wchar_t contentType[64] = {};
+        DWORD ctSize = sizeof(contentType);
+        bool isSse = false;
+        if (WinHttpQueryHeaders(hRequest,
+                WINHTTP_QUERY_CONTENT_TYPE, nullptr,
+                contentType, &ctSize, nullptr)) {
+            isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
+        }
+        if (!isSse) {
+            return finish(false);
+        }
+
+        resume_request_ = hRequest;
+        if (!running_) {
+            resume_request_ = nullptr;
+            return finish(false);
+        }
+        std::optional<RequestId> wanted = request_id;
+        bool matched = false;
+        std::string pending;
+        char buf[4096];
+        auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(kHttpTimeoutMs);
+        for (;;) {
+            if (!running_ || matched) break;
+            if (std::chrono::steady_clock::now() >= deadline) break;
+            DWORD navail = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &navail)) {
+                if (GetLastError() == ERROR_WINHTTP_TIMEOUT && running_) continue;
+                break;
+            }
+            if (navail == 0) break;
+            DWORD nread = 0;
+            DWORD nwant = navail < sizeof(buf) ? navail : static_cast<DWORD>(sizeof(buf));
+            if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
+                break;
+            pending.append(buf, nread);
+            if (pending.size() > detail::kMaxMessageSize) {
+                MCP_LOG(Error, "Resume SSE stream exceeded max message size");
+                break;
+            }
+            size_t pos;
+            while ((pos = pending.find("\n\n")) != std::string::npos) {
+                std::string block = pending.substr(0, pos);
+                pending.erase(0, pos + 2);
+                if (DispatchSseBlock(block, learn_version, wanted)) {
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        resume_request_ = nullptr;
+        return finish(matched);
+    }
+
+    bool DispatchSseBlock(const std::string& block, bool learn_version,
+                          const std::optional<RequestId>& request_id) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
         if (!parsed.event_id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
         StoreRetryMs(parsed.retry_ms);
-        if (parsed.data.empty()) return;
+        if (parsed.data.empty()) return false;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
             NotifyError("HTTP SSE block exceeded max message size");
-            return;
+            return false;
         }
         if (learn_version && parsed.message) {
             if (auto v = streamable_http_client_impl::NegotiatedVersionFromResponse(
@@ -944,9 +1105,19 @@ private:
             }
         }
         if (parsed.message) {
+            bool matches = false;
+            if (request_id.has_value()) {
+                if (auto* response = AsResponse(*parsed.message)) {
+                    matches = (response->id == *request_id);
+                } else if (auto* error = AsError(*parsed.message)) {
+                    matches = (error->id.has_value() && *error->id == *request_id);
+                }
+            }
             DeliverIncoming(std::move(*parsed.message));
+            return matches;
         } else {
             MCP_LOG(Error, "HTTP SSE block parse failed");
+            return false;
         }
     }
 
@@ -1018,6 +1189,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> delete_pending_{false};
     std::atomic<HINTERNET> sse_request_{nullptr};
+    std::atomic<HINTERNET> resume_request_{nullptr};
     std::thread listen_thread_;
     std::mutex listen_mutex_;
     std::atomic<streamable_http_client_impl::ListenState> listen_state_{
@@ -1056,6 +1228,8 @@ struct ListenAbort {};
 
 struct PostBodyTooLarge {};
 
+struct ResumeMatched {};
+
 class StreamableHttpSessionTransport : public TransportBase {
 public:
     explicit StreamableHttpSessionTransport(
@@ -1083,6 +1257,7 @@ public:
         {
             std::lock_guard<std::mutex> lk(listen_mutex_);
             if (listen_client_) listen_client_->Close();
+            if (resume_client_) resume_client_->Close();
         }
         std::thread listen_thread;
         {
@@ -1362,6 +1537,16 @@ private:
             detail::net::HttpResponseInfo resp;
             std::string full_body;
             std::string sse_pending;
+            std::optional<RequestId> post_request_id;
+            try {
+                auto pending_body = JsonValue::Parse(body);
+                if (auto* pending_id = pending_body.Find("id");
+                    pending_id && !pending_id->IsNull()) {
+                    post_request_id = RequestIdFromJson(*pending_id);
+                }
+            } catch (...) {
+            }
+            bool post_resolved = false;
             try {
                 resp = client.Request(req, [&](std::string_view chunk) {
                     full_body.append(chunk.data(), chunk.size());
@@ -1373,7 +1558,8 @@ private:
                     while ((pos = sse_pending.find("\n\n")) != std::string::npos) {
                         std::string block = sse_pending.substr(0, pos);
                         sse_pending.erase(0, pos + 2);
-                        DispatchSseBlock(block, is_initialize);
+                        if (DispatchSseBlock(block, is_initialize, post_request_id))
+                            post_resolved = true;
                     }
                 });
             } catch (const PostBodyTooLarge&) {
@@ -1461,6 +1647,17 @@ private:
 
             auto ct = httpclient_posix_impl::GetHeader(resp, "Content-Type");
             if (ct.find("text/event-stream") != std::string::npos) {
+                if (!post_resolved && post_request_id.has_value() && running_) {
+                    post_resolved = ResumePostStreamViaGet(*post_request_id, is_initialize);
+                }
+                if (!post_resolved && post_request_id.has_value() && running_ && channel_) {
+                    JsonRpcErrorResponse stream_error;
+                    stream_error.id = post_request_id;
+                    stream_error.error.code = McpErrorCode::ConnectionClosed;
+                    stream_error.error.message = "SSE stream ended without response";
+                    channel_->Send(JsonRpcMessage(std::move(stream_error)));
+                    NotifyError("HTTP POST SSE stream ended without response");
+                }
                 return;
             } else {
                 if (full_body.empty()) return;
@@ -1486,18 +1683,82 @@ private:
         }
     }
 
-    void DispatchSseBlock(const std::string& block, bool learn_version) {
+    bool ResumePostStreamViaGet(const RequestId& request_id, bool learn_version) {
+        std::string resume_id;
+        {
+            std::lock_guard<std::mutex> lk(last_event_id_mutex_);
+            if (last_event_id_.empty()) return false;
+            resume_id = last_event_id_;
+        }
+        if (options_.stateless) return false;
+        streamable_http_client_impl::SleepInterruptibly(
+            running_,
+            streamable_http_client_impl::ReconnectDelayForAttempt(
+                1, CurrentRetryMs()));
+        if (!running_) return false;
+        detail::net::HttpRequestSpec resume_req;
+        resume_req.method = "GET";
+        resume_req.url = options_.endpoint;
+        resume_req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
+        resume_req.headers["Accept"] = "text/event-stream";
+        resume_req.headers["MCP-Protocol-Version"] =
+            streamable_http_client_impl::EffectiveProtocolVersion(
+                NegotiatedVersion());
+        auto resume_sid = CurrentSessionId();
+        if (!resume_sid.empty()) {
+            resume_req.headers["Mcp-Session-Id"] = std::move(resume_sid);
+        }
+        resume_req.headers["Last-Event-ID"] = std::move(resume_id);
+        auto resume_client = std::make_unique<detail::net::HttpClient>();
+        {
+            std::lock_guard<std::mutex> lk(listen_mutex_);
+            if (!running_) return false;
+            resume_client_ = resume_client.get();
+        }
+        bool matched = false;
+        std::string pending;
+        std::optional<RequestId> wanted = request_id;
+        try {
+            resume_client->Request(resume_req, [&](std::string_view chunk) {
+                pending.append(chunk.data(), chunk.size());
+                if (pending.size() > detail::kMaxMessageSize) {
+                    throw PostBodyTooLarge{};
+                }
+                size_t pos;
+                while ((pos = pending.find("\n\n")) != std::string::npos) {
+                    std::string block = pending.substr(0, pos);
+                    pending.erase(0, pos + 2);
+                    if (DispatchSseBlock(block, learn_version, wanted)) {
+                        matched = true;
+                        throw ResumeMatched{};
+                    }
+                }
+            });
+        } catch (const ResumeMatched&) {
+        } catch (const PostBodyTooLarge&) {
+            MCP_LOG(Error, "HTTP resume stream exceeded max message size");
+        } catch (const std::exception&) {
+        }
+        {
+            std::lock_guard<std::mutex> lk(listen_mutex_);
+            resume_client_ = nullptr;
+        }
+        return matched;
+    }
+
+    bool DispatchSseBlock(const std::string& block, bool learn_version,
+                          const std::optional<RequestId>& request_id) {
         auto parsed = streamable_http_client_impl::ParseSseBlock(block);
         if (!parsed.event_id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
             last_event_id_ = parsed.event_id;
         }
         StoreRetryMs(parsed.retry_ms);
-        if (parsed.data.empty()) return;
+        if (parsed.data.empty()) return false;
         if (parsed.data.size() > detail::kMaxMessageSize) {
             MCP_LOG(Error, "HTTP SSE block exceeded max message size");
             NotifyError("HTTP SSE block exceeded max message size");
-            return;
+            return false;
         }
         if (learn_version && parsed.message) {
             if (auto v = streamable_http_client_impl::NegotiatedVersionFromResponse(
@@ -1506,9 +1767,19 @@ private:
             }
         }
         if (parsed.message) {
+            bool matches = false;
+            if (request_id.has_value()) {
+                if (auto* response = AsResponse(*parsed.message)) {
+                    matches = (response->id == *request_id);
+                } else if (auto* error = AsError(*parsed.message)) {
+                    matches = (error->id.has_value() && *error->id == *request_id);
+                }
+            }
             DeliverIncoming(std::move(*parsed.message));
+            return matches;
         } else {
             MCP_LOG(Error, "HTTP SSE block parse failed");
+            return false;
         }
     }
 
@@ -1553,6 +1824,7 @@ private:
     std::optional<uint64_t> retry_ms_;
     std::atomic<bool> listen_requested_{false};
     detail::net::HttpClient* listen_client_ = nullptr;
+    detail::net::HttpClient* resume_client_ = nullptr;
 
     http_detail::ToolAnnotationCache tool_annotations_;
 

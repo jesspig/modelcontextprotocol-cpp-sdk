@@ -33,6 +33,30 @@ TEST(McpTypesTest, ToolRoundTrip) {
     EXPECT_EQ(t.annotations->read_only_hint, t2.annotations->read_only_hint);
 }
 
+TEST(McpTypesTest, ToolExecutionTaskSupportRoundTrip) {
+    ToolExecution required;
+    required.mode = ToolExecutionMode::Task;
+    required.task_support = TaskSupport::Required;
+    auto required_wire = SerializeToolExecution(required);
+    EXPECT_EQ(required_wire["taskSupport"].GetString(), "required");
+    auto required_back = DeserializeToolExecution(required_wire);
+    ASSERT_TRUE(required_back.task_support.has_value());
+    EXPECT_TRUE(required_back.task_support == TaskSupport::Required);
+
+    ToolExecution optional;
+    optional.mode = ToolExecutionMode::Task;
+    optional.task_support = TaskSupport::Optional;
+    auto optional_wire = SerializeToolExecution(optional);
+    EXPECT_EQ(optional_wire["taskSupport"].GetString(), "optional");
+
+    ToolExecution unset;
+    unset.mode = ToolExecutionMode::Task;
+    auto unset_wire = SerializeToolExecution(unset);
+    EXPECT_FALSE(unset_wire.Contains("taskSupport"));
+    auto unset_back = DeserializeToolExecution(unset_wire);
+    EXPECT_FALSE(unset_back.task_support.has_value());
+}
+
 TEST(McpTypesTest, ResourceRoundTrip) {
     Resource r;
     r.uri = "file:///data";
@@ -743,4 +767,63 @@ TEST(McpTypesTest, SkillsAndLegacyTaskMethods) {
     EXPECT_EQ(std::string(methods::kReadDirectory), "resources/directory/read");
     EXPECT_EQ(std::string(methods::kLegacyGetTaskPayload), std::string(methods::kGetTaskPayload));
     EXPECT_EQ(std::string(methods::kLegacyListTasks), std::string(methods::kListTasks));
+}
+
+TEST(McpTypesTest, NoHintEmitsZeroPrivate) {
+    {
+        ListToolsResult r;
+        auto jv = SerializeListToolsResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        ListResourcesResult r;
+        auto jv = SerializeListResourcesResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        ListResourceTemplatesResult r;
+        auto jv = SerializeListResourceTemplatesResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        ReadResourceResult r;
+        auto jv = SerializeReadResourceResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        ListPromptsResult r;
+        auto jv = SerializeListPromptsResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        DiscoverResult r;
+        r.server_info = Implementation{"s", "1"};
+        auto jv = SerializeDiscoverResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        SkillsListResult r;
+        auto jv = SerializeSkillsListResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        SkillsGetResult r;
+        r.skill.resources = SkillResources{std::string("dynamic")};
+        auto jv = SerializeSkillsGetResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
+    {
+        ReadDirectoryResult r;
+        auto jv = SerializeReadDirectoryResult(r);
+        EXPECT_EQ(jv["ttlMs"].GetInt(), int64_t(0));
+        EXPECT_EQ(jv["cacheScope"].GetString(), "private");
+    }
 }

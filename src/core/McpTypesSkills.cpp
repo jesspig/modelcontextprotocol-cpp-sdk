@@ -5,6 +5,13 @@
 
 namespace mcp {
 
+namespace {
+
+constexpr int64_t kSkillsDefaultTtlMs = 0;
+constexpr char kSkillsDefaultCacheScope[] = "private";
+
+} // anonymous namespace
+
 JsonValue SerializeSkillResource(const SkillResource& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
@@ -66,8 +73,16 @@ JsonValue SerializeSkillsListResult(const SkillsListResult& v) {
     for (const auto& s : v.skills) arr.push_back(SerializeSkill(s));
     obj[detail::kSkills] = JsonValue(std::move(arr));
     detail::SerializeOptional(obj, detail::kNextCursor, v.next_cursor);
-    detail::SerializeOptional(obj, detail::kTTLMs, v.ttl_ms);
-    detail::SerializeOptional(obj, detail::kCacheScope, v.cache_scope);
+    if (v.ttl_ms) {
+        obj[detail::kTTLMs] = JsonValue(*v.ttl_ms);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kSkillsDefaultTtlMs);
+    }
+    if (v.cache_scope) {
+        obj[detail::kCacheScope] = JsonValue(*v.cache_scope);
+    } else {
+        obj[detail::kCacheScope] = JsonValue(kSkillsDefaultCacheScope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;
@@ -91,8 +106,16 @@ SkillsListResult DeserializeSkillsListResult(const JsonValue& j) {
 JsonValue SerializeSkillsGetResult(const SkillsGetResult& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kSkill] = SerializeSkill(v.skill);
-    detail::SerializeOptional(obj, detail::kTTLMs, v.ttl_ms);
-    detail::SerializeOptional(obj, detail::kCacheScope, v.cache_scope);
+    if (v.ttl_ms) {
+        obj[detail::kTTLMs] = JsonValue(*v.ttl_ms);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kSkillsDefaultTtlMs);
+    }
+    if (v.cache_scope) {
+        obj[detail::kCacheScope] = JsonValue(*v.cache_scope);
+    } else {
+        obj[detail::kCacheScope] = JsonValue(kSkillsDefaultCacheScope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;
@@ -148,8 +171,16 @@ JsonValue SerializeReadDirectoryResult(const ReadDirectoryResult& v) {
     for (const auto& child : v.resources) arr.push_back(SerializeDirectoryChild(child));
     obj[detail::kResources] = JsonValue(std::move(arr));
     detail::SerializeOptional(obj, detail::kNextCursor, v.next_cursor);
-    detail::SerializeOptional(obj, detail::kTTLMs, v.ttl_ms);
-    detail::SerializeOptional(obj, detail::kCacheScope, v.cache_scope);
+    if (v.ttl_ms) {
+        obj[detail::kTTLMs] = JsonValue(*v.ttl_ms);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kSkillsDefaultTtlMs);
+    }
+    if (v.cache_scope) {
+        obj[detail::kCacheScope] = JsonValue(*v.cache_scope);
+    } else {
+        obj[detail::kCacheScope] = JsonValue(kSkillsDefaultCacheScope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;

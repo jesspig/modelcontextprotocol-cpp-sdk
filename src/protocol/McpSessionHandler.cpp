@@ -435,7 +435,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         handler(req, std::move(*promise));
     } catch (const McpError& e) {
         EraseIncomingCancellationFlag(cancel_key);
-        SendErrorResponse(req.id, e.Code(), std::string(e.what()));
+        SendErrorResponse(req.id, e.Code(), std::string(e.what()), e.Data());
         return;
     } catch (const std::exception& e) {
         EraseIncomingCancellationFlag(cancel_key);
@@ -453,9 +453,10 @@ bool McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::s
     if (client_capabilities_ && HasCapability(*client_capabilities_, required)) return true;
 
     JsonValue data(JsonValue::object_tag);
-    JsonValue arr(JsonValue::array_tag);
-    arr.PushBack(JsonValue(required));
-    data[detail::kRequiredCapabilities] = std::move(arr);
+    JsonValue capability(JsonValue::object_tag);
+    JsonValue required_caps(JsonValue::object_tag);
+    required_caps[std::string_view(required)] = std::move(capability);
+    data[detail::kRequiredCapabilities] = std::move(required_caps);
     SendErrorResponse(req.id, McpErrorCode::MissingRequiredClientCapability,
         "missing required client capability: " + required, std::move(data));
     return false;
@@ -503,6 +504,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
         err_resp.error.message = e.what();
+        if (e.Data()) err_resp.error.data = *e.Data();
         finish_span(true);
         SendMessage(JsonRpcMessage{std::move(err_resp)});
     } catch (const std::exception& e) {

@@ -26,9 +26,11 @@ struct ToolAnnotations {
 };
 
 enum class ToolExecutionMode { Auto, Manual, Task };
+enum class TaskSupport { Optional, Required };
 struct ToolExecution {
     ToolExecutionMode mode{ToolExecutionMode::Auto};
     std::optional<std::string> human_use;
+    std::optional<TaskSupport> task_support;
 };
 
 struct ResourceAnnotations {
@@ -118,6 +120,8 @@ using ListPromptsRequestParams = PaginatedRequestParams;
 struct ResourceRequestParams {
     std::string uri;
     std::optional<RequestMeta> meta;
+    std::optional<JsonValue> input_responses;
+    std::optional<std::string> request_state;
 };
 using ReadResourceRequestParams = ResourceRequestParams;
 using SubscribeRequestParams = ResourceRequestParams;
@@ -135,6 +139,8 @@ struct GetPromptRequestParams {
     std::string name;
     std::optional<JsonValue> arguments;
     std::optional<RequestMeta> meta;
+    std::optional<JsonValue> input_responses;
+    std::optional<std::string> request_state;
 };
 
 struct CompleteRequestParams {
@@ -224,6 +230,7 @@ struct ListResourceTemplatesResult : Result {
 struct ReadResourceResult : Result {
     std::vector<ResourceContents> contents;
     std::optional<CacheHint> cache_hint;
+    std::optional<InputRequiredResult> input_required;
 };
 
 struct ListPromptsResult : Result {
@@ -235,6 +242,7 @@ struct ListPromptsResult : Result {
 struct GetPromptResult : Result {
     std::vector<PromptMessage> messages;
     std::optional<std::string> description;
+    std::optional<InputRequiredResult> input_required;
 };
 
 struct CompleteResult : Result {

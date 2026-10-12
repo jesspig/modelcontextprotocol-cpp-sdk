@@ -36,6 +36,11 @@ JsonValue SerializeToolExecution(const ToolExecution& v) {
                 "SerializeToolExecution: unknown mode: " + std::to_string(static_cast<int>(v.mode)));
     }
     detail::SerializeOptional(obj, "humanUse", v.human_use);
+    if (v.task_support == TaskSupport::Required) {
+        obj["taskSupport"] = JsonValue("required");
+    } else if (v.task_support == TaskSupport::Optional) {
+        obj["taskSupport"] = JsonValue("optional");
+    }
     return obj;
 }
 
@@ -51,6 +56,11 @@ ToolExecution DeserializeToolExecution(const JsonValue& j) {
                 std::string("DeserializeToolExecution: unknown mode string: '") + s + "'");
     }
     detail::DeserializeOptional(j, "humanUse", v.human_use);
+    if (auto* ts = j.Find("taskSupport"); ts && ts->IsString()) {
+        const auto& s = ts->GetString();
+        if (s == "required") v.task_support = TaskSupport::Required;
+        else if (s == "optional") v.task_support = TaskSupport::Optional;
+    }
     return v;
 }
 

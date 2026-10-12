@@ -7,6 +7,9 @@ namespace mcp {
 
 namespace {
 
+constexpr int64_t kDefaultTtlMs = 0;
+constexpr char kDefaultCacheScope[] = "private";
+
 std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
     auto* ttl = j.Find(detail::kTTLMs);
     auto* scope = j.Find(detail::kCacheScope);
@@ -63,6 +66,9 @@ void WriteListResultCommon(JsonValue& obj,
         obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
         detail::SerializeOptional(obj, detail::kTTLMs, cache_hint->ttl_ms);
         detail::SerializeOptional(obj, detail::kCacheScope, cache_hint->cache_scope);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kDefaultTtlMs);
+        obj[detail::kCacheScope] = JsonValue(kDefaultCacheScope);
     }
     detail::SerializeOptional(obj, detail::kMeta, meta);
     obj[detail::kResultType] = SerializeResultType(result_type);
@@ -189,7 +195,12 @@ ListResourceTemplatesResult DeserializeListResourceTemplatesResult(const JsonVal
 JsonValue SerializeReadResourceResult(const ReadResourceResult& v) {
     JsonValue obj(JsonValue::object_tag);
     SerializeListItems(obj, detail::kContents, v.contents, SerializeResourceContents);
-    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta, v.result_type);
+    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta,
+        v.input_required ? ResultType::InputRequired : v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    }
     return obj;
 }
 
@@ -223,7 +234,13 @@ JsonValue SerializeGetPromptResult(const GetPromptResult& v) {
     }
     detail::SerializeOptional(obj, detail::kDescription, v.description);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        obj[detail::kResultType] = JsonValue(detail::kInputRequiredValue);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    } else {
+        obj[detail::kResultType] = SerializeResultType(v.result_type);
+    }
     return obj;
 }
 
@@ -296,6 +313,9 @@ JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
         obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
         detail::SerializeOptional(obj, detail::kTTLMs, v.cache_hint->ttl_ms);
         detail::SerializeOptional(obj, detail::kCacheScope, v.cache_hint->cache_scope);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kDefaultTtlMs);
+        obj[detail::kCacheScope] = JsonValue(kDefaultCacheScope);
     }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);

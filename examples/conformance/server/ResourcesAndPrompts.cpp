@@ -1,5 +1,6 @@
 #include "ConformanceServer.hpp"
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <string>
@@ -116,11 +117,34 @@ GetPromptResult PromptWithEmbeddedResource(const std::string&,
 GetPromptResult InputRequiredResultPrompt(const std::string&,
     const std::optional<JsonValue>&)
 {
+    static std::atomic<bool> awaiting_input{true};
+    if (awaiting_input.exchange(false)) {
+        ElicitRequestParams params;
+        params.message = "What context should the prompt use?";
+        JsonValue field(JsonValue::object_tag);
+        field["type"] = JsonValue("string");
+        JsonValue properties(JsonValue::object_tag);
+        properties["context"] = std::move(field);
+        JsonValue schema(JsonValue::object_tag);
+        schema["type"] = JsonValue("object");
+        schema["properties"] = std::move(properties);
+        JsonValue required(JsonValue::array_tag);
+        required.PushBack(JsonValue("context"));
+        schema["required"] = std::move(required);
+        params.requested_schema = std::move(schema);
+        InputRequiredResult ir;
+        ir.input_requests["user_context"] = MakeInputRequestForElicitation(params);
+        JsonValue state(JsonValue::object_tag);
+        state["prompt"] = JsonValue("test_input_required_result_prompt");
+        ir.request_state = state.Dump();
+        GetPromptResult result;
+        result.input_required = std::move(ir);
+        return result;
+    }
     GetPromptResult result;
     PromptMessage message;
     message.role = "user";
-    message.content = TextContent{"text",
-        "V7 placeholder: input_required_result prompt"};
+    message.content = TextContent{"text", "Prompt rendered with provided context."};
     result.messages.push_back(std::move(message));
     return result;
 }

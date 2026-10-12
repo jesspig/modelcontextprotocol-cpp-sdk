@@ -236,14 +236,32 @@ build/debug/examples/EchoServer/EchoServer
 
 本 SDK 参考了官方 MCP 协议规范和参考实现：
 
-| 语言       | 仓库                                                            |
-|-----------|----------------------------------------------------------------|
-| Python    | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) |
-| TypeScript| [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) |
-| Go        | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) |
-| C#        | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) |
-| Java      | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) |
-| Rust      | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) |
+| 语言       | 仓库                                                            | 分级    |
+|-----------|----------------------------------------------------------------|--------|
+| Python    | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) | Tier 1 |
+| TypeScript| [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) | Tier 1 |
+| Go        | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) | Tier 1 |
+| C#        | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) | Tier 1 |
+| Rust      | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) | Tier 1 |
+| Java      | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) | Tier 2 |
+| Ruby      | [modelcontextprotocol/ruby-sdk](https://github.com/modelcontextprotocol/ruby-sdk) | Tier 1 |
+
+> 分级依据[官方 SDK 列表（2026-07-28 修订版）](https://modelcontextprotocol.io/docs/2026-07-28/sdk)：Java 仍为 Tier 2，Ruby 为新晋 Tier 1 成员，故保留原六 SDK 口径并增补 Ruby 行。分级规则见 [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers)——Tasks 等协议扩展任何分级均不强制要求。
+
+### Ruby SDK 对照注记
+
+官方 Ruby SDK（`mcp` gem，2026-10-11 時 `main` 分支现状；最新发布 `1.7.0`，日期 2026-10-05，见 [CHANGELOG.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/CHANGELOG.md) 与 [version.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/version.rb)）相对本 SDK 的分维度实现要点：
+
+| 维度 | Ruby（`mcp` gem） | 本 SDK |
+|------|------------------|--------|
+| 规范版本 | 2025-06-18、2025-11-25、2026-07-28（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，Current Status） | 2024-11-05…2026-07-28，双时代编解码（见上文协议版本） |
+| `server/discover` | 现代时代永不经 `initialize` 协商（CHANGELOG §1.2.0）；`server/discover` 定稿并带现代客户端支持；stdio 按传输 era lock，Streamable HTTP 走无会话现代路径（[methods.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/methods.rb)） | Auto 模式按传输分类回退（[version-negotiation](wiki/concepts/version-negotiation.md)） |
+| 多轮请求 | SEP-2322 `input_required` 结果（`inputRequests`/`inputResponses` + `requestState`），legacy 线上亦可履行（CHANGELOG §0.24.0/§1.2.0）；`resultType` 仅 `complete`/`input_required`（[result_type.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/result_type.rb)） | `InputRequiredResult` + elicitation 循环（[mrtr](wiki/concepts/mrtr.md)）；另有任务句柄专用的 `task` 结果类型 |
+| 请求头 | 发送 SEP-2243 `Mcp-Method`/`Mcp-Name`，`x-mcp-header` 参数镜像为 `Mcp-Param-*`（CHANGELOG §0.22.0/§1.2.0；[mcp_param_headers.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/client/mcp_param_headers.rb)）；现代路径强制要求 `Mcp-Method` | `Mcp-Name` 校验含 tasks `taskId` 比对（[mcp-param-headers](wiki/concepts/mcp-param-headers.md)、[tasks-extension](wiki/concepts/tasks-extension.md)） |
+| 缓存 | 服务端标注 SEP-2549 `ttlMs`/`cacheScope`（CHANGELOG §0.24.0/§1.2.0）；`lib/mcp/client/` 下未见客户端响应缓存【假设：未实现，待源码核实】 | 客户端响应缓存，TTL + public/private 双分区（[response-cache](wiki/concepts/response-cache.md)） |
+| 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/DCR + `FileTokenCache`，服务端 Bearer 鉴权（见上文 OAuth 支持） |
+| 任务（SEP-2663） | 未实现——“remains planned”（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，[#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)） | `tasks/get\|update\|cancel` 双时代 + `FileTaskStore`（[tasks-extension](wiki/concepts/tasks-extension.md)） |
+| 技能（SEP-2640） | 未实现【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`，仅 2026 时代（[skills-extension](wiki/concepts/skills-extension.md)） |
 
 ## 许可证
 

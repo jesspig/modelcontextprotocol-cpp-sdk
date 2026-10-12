@@ -3,7 +3,7 @@ type: Concept
 title: 任务扩展
 description: SEP-2663 任务扩展：双时代 tasks/get|update|cancel、2025-only tasks/result|list、任务化 tools/call、inputResponses 推进、Mcp-Name 头校验与现代通知抑制。
 tags: [tasks, 扩展, 双时代, 2026]
-timestamp: 2026-10-11T16:35:00+08:00
+timestamp: 2026-10-12T01:00:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -30,7 +30,7 @@ wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../..
 
 - **通知抑制**：modern 下任务状态通知一律不发——任务化 `tools/call` 的初始 Working、`finish` 的终态、`tasks/update` 的 `tasks/completed`/`tasks/working`、`tasks/cancel` 的 `tasks/cancelled` 均跳过；`SendTaskStatus` 直接返回。legacy 保持 `notifications/tasks/*` 全量语义
 - **`Mcp-Name` 头校验**：modern 下 tasks 三处理器在请求 meta 携带 `Mcp-Name`（同时认 `mcp-name` 小写）时经 `WireCodec::ValidateTaskHeaders` 比对 `params.taskId`——缺失/空 taskId → `InvalidParams`，头值不等 → `HeaderMismatch`；无头时跳过。HTTP 层（`ValidateMcpHeaders`）对三方法**强制**要求该头（缺失/失配 → 400），客户端对三方法按 `params.taskId` 发送 `Mcp-Name`
-- **结果形态**：`CreateTaskResult` 顶层直写 `taskId/status/createdAt`（+ 可选 statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs/inputRequests），同时保留嵌套 `task` 对象做兼容；反序列化顶层优先、嵌套兜底。`ResultType` 新增 `Task` 枚举值（wire `"task"`），2026 `EncodeResult` 不改写 task 结果的 `resultType`
+- **结果形态**：`CreateTaskResult` 按时代分形态——2026 时代扁平直写顶层 `taskId/status/createdAt`（+ 可选 statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs/inputRequests）并抹掉嵌套 `task` 对象，2025 时代保留嵌套 `task` 对象做兼容；反序列化顶层优先、嵌套兜底（`DeserializeCreateTaskResult` 双形态接受）。`ResultType` 新增 `Task` 枚举值（wire `"task"`），2026 `EncodeResult` 不改写 task 结果的 `resultType`
 
 ## tasks/update 的 inputResponses 分支
 

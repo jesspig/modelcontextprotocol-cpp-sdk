@@ -55,3 +55,7 @@ p.arguments = {arg};
 ::: note
 `PromptOptions` fields (`description`, `title`, `icons`, `arguments`) are propagated to the protocol-level `Prompt` struct returned via `prompts/list`.
 :::
+
+## Input Requests (input_required)
+
+Prompt handlers may also return `input_required` (`GetPromptResult::input_required`) to start a multi-round input collection; the client retries the get carrying `inputResponses` + `requestState` (same MRTR loop as tool calls, with automatic `request_state` signing when `request_state_key` is configured).

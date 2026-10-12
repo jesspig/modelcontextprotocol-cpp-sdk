@@ -1,4 +1,7 @@
 # C++ SDK 官方 conformance 已知偏差基线。
+# per-leg 拆分：baseline-2025-11-25.yaml（legacy leg）与 baseline-2026-07-28.yaml（modern leg）；
+# 选用规则见 scripts/run-conformance.sh（按 CONFORMANCE_SPEC_VERSION 映射，未知版本回退本文件）。
+# 本文件条目冻结，仅作回退默认；各 leg 真源以对应 per-leg 文件为准（条目逐字一致）。
 #
 # 驱动包：@modelcontextprotocol/conformance@0.2.0-alpha.12（alpha 通道最新，
 # 2026-10-01；requirements 内核与 alpha.11 一致，升级只收 referee 修补）。
@@ -23,17 +26,22 @@
 # skills/tasks/sse-retry 等扩展场景默认被 referee skip（extension 不在
 # active 适用集内），只在 --suite all / --force 下 run for visibility。
 #
-# server 侧现状：legacy leg 31 场景全绿（基线已清空）；
-# modern leg（--requirements 2026-07-28）剩余 4 个 scored 缺口，
-# 均为生产侧缺口（见下），fixture 无从修补且基线只减不增，故 modern
-# leg 当前为红，逐条证据见 workflow 输出与 T11a 收口报告。
+# server 侧现状：legacy leg 31 场景绿（server 基线仅留跨 leg 保留的
+# server-sse-multiple-streams 1 条，见下）；
+# modern leg（--requirements 2026-07-28）当前为红：GATE1 主会话结论为
+# 23 个 scored 失败（归因表见主会话收口，wiki/tests.md 转述，本任务未复跑
+# server leg）。G 系列冻结批已解决旧 4 缺口中的 3 个（单测守护，不另增条目）：
+#   - input-required-result-non-tool-request：resources/read 与 prompts/get
+#     已支持 InputRequiredResult（自动签名 request_state），fixture 改两阶段
+#     首轮回 input_required
+#   - sep-2164-resource-not-found：data 通道修补后 data.uri 回声已补
+#     （SHOULD WARNING，本就非 scored 红项）
+#   - tools-call-with-progress：modern 下 POST 常开 + progress/logging 按
+#     token 路由缓冲进同一 SSE 流（BufferRequestStreamNotification），
+#     单写即关无流可达已修复（legacy leg 早已绿）
+# 剩余生产缺口（modern leg 为红的主因）：
 #   - server-stateless：_meta 缺失拒收的 400 映射、-32020 对 -32022、
 #     initialize 现代 404、-32021 能力拒收、subscriptions/listen 流
-#   - sep-2164-resource-not-found：错误 data.uri 回声缺失（SHOULD WARNING）
-#   - input-required-result-non-tool-request：prompts/get 无
-#     InputRequiredResult 表达形状
-#   - tools-call-with-progress：stateless 下 POST 单写即关，
-#     tool 内 progress 广播无 GET 流可达（legacy leg 已绿，见下）
 #
 # 已删条目归因（删前均有 referee 变绿证据，禁恢复）：
 #   - tools-call-with-progress：双因——其一传输未开 GET 流
@@ -66,25 +74,6 @@ server:
     - server-sse-multiple-streams
 
 client:
-    # --- sse-retry（SEP-1699，legacy client scored）---
-    # 2026-10-11 referee alpha.12 实测仍失败，保留。失败特征已更新：
-    # POST 流被 server 关断后 client 从不开 resume GET（单次初始 GET
-    # 后无二次连接），pending 的 tools/call 永不决议，client 悬挂至
-    # referee 30s kill（CLIENT TIMED OUT）。旧归因“重连过早 -70ms”
-    # 实为初始 GET 被误计为重连（本轮 -54ms）；Last-Event-ID 从未发出
-    # （无二次 GET 可带）。T9 重试钳制与 T9b Last-Event-ID 代码在此
-    # 路径无从触发。生产缺口：POST SSE clean-EOF 不向 pending 调用
-    # 报错（WinHTTP 路径静默丢弃；此为 Windows 本地悬挂、CI Linux
-    # 表现为快失败的根因候选）+ 缺 POST 中断后的 GET resume。
-    # 待生产补齐 resume 后以变绿证据删除本条目。
-    - sse-retry
-
-    # --- SEP-1034 elicitation 默认值 ---
-    # SDK 客户端缺 applyDefaults：elicitation handler 返回空 content 时未按
-    # 请求 schema 的默认值填充即回传，server 侧校验失败，预期 FAIL。
-    # 实现 applyDefaults 后删除本条目（届时 runner 会以过期条目报错）。
-    - elicitation-sep1034-client-defaults
-
     # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
     # fixture 有对应场景注册且逻辑正确（列工具→按 context 逐个调用），
     # 但 Windows 下 MCP_CONFORMANCE_CONTEXT 经 getenv 取回时非 ASCII
@@ -95,23 +84,44 @@ client:
     # C++ fixture 可读，无需 TS fetch shim。
     - http-custom-headers
 
-    # --- 已删 client 条目（modern leg 变绿证据，禁恢复）---
-    # sep-2322-client-request-state（5/0）、http-standard-headers（9/0）、
-    # http-invalid-tool-headers（12/0）：2026-10-11 --requirements
-    # 2026-07-28 实测全过。legacy leg 不运行这些场景（core 18 场景无
-    # 它们），删后 legacy 不受影响。
+    # --- 已删 client 条目（逐条证据，结论以最新复跑为准）---
+    # sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
+    # 本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
+    # event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报
+    # stale，故删。生产侧为 G8b：POST SSE 过早 EOF 后按钳制延迟重建
+    # GET 并把原 ID 结果递回 pending，失败仍走 G8 fail-fast。
+    # 2026-10-12 core leg（2025）复跑再确认 3/3，禁恢复。
+    # http-standard-headers（9/0）、http-invalid-tool-headers（12/0）：
+    # 2026-10-11 --requirements 2026-07-28 实测全过，2026-10-12 复跑仍全绿，
+    # 禁恢复。
+    # sep-2322-client-request-state：2026-10-11 以 5/0 删除；但 2026-10-12
+    # --requirements 复跑 0/5 且为 unexpected（5 项 MRTR 客户端检查全败），
+    # 删除证据作废，待主会话裁决（恢复条目或修 request_state 链路回归）。
+    # elicitation-sep1034-client-defaults：G 批实现 applyDefaults
+    # （7 单测守护）后删除；但 2026-10-12 core leg（2025）复跑 0/5 且为
+    # unexpected（string/integer/number/enum/boolean 五项缺省全未生效），
+    # 疑 fixture 未声明 applyDefaults 能力致回填短路（推测），待主会话裁决
+    # （恢复条目或补 fixture 声明）。
+    #
+    # --- json-schema-ref-no-deref（新场景，未归因未入基线）---
+    # 2026 requirements 集内场景（工具带网络 $ref 时客户端应调 tools/list），
+    # C++ client 未观测到该调用，2026-10-12 复跑 0/1 unexpected。
+    # 基线只减不增：待主会话归因后再议是否入基线，本次不动条目。
     #
     # --- auth/*（C++ client 无 OAuth 表面，全部 untestable）---
     # 注意旧注释“core 不选择 auth”已证伪：core/active 逐个运行 auth
     # 场景，client 以 Unknown scenario 退出 1，靠本基线放行。
-    # 2026 requirements 新增 11 个 scored auth 场景（resource-mismatch、
-    # offline-access-scope、offline-access-not-supported、
+    # requirements 集共 31 个 auth 场景（2026 requirements 新增 11 个：
+    # resource-mismatch、offline-access-scope、offline-access-not-supported、
     # authorization-server-migration、iss-supported、iss-not-advertised、
     # iss-supported-missing、iss-wrong-issuer、iss-unexpected、
     # iss-normalized、metadata-issuer-mismatch），C++ 侧同样无表面，
-    # 同样 unknown 退出 1，但基线只减不增不得补，故 modern client leg
-    # 当前为红（exit 1），与 legacy 无关。待 OAuth client 表面落地
-    # （生产）或 referee 收敛后重审。
+    # 同样 unknown 退出 1。2026-10-12 复跑输出中 expected 命中 25 auth +
+    # http-custom-headers；另 6 个新 auth（client-credentials-jwt/basic、
+    # enterprise-managed-authorization、dpop、dpop-nonce、wif-jwt-bearer）
+    # 同样 unknown 退出 1，终判 unexpected 仅 sep-2322 与
+    # json-schema-ref-no-deref 两项（见上），与 auth 无关。
+    # 待 OAuth client 表面落地（生产）或 referee 收敛后重审。
     - auth/metadata-default
     - auth/metadata-var1
     - auth/metadata-var2

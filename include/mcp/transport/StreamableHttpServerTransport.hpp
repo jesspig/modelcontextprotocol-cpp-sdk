@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mcp {
@@ -77,6 +78,7 @@ public:
     void Start() override;
     void Close() override;
     void SendMessageAsync(JsonRpcMessage message) override;
+    bool BufferRequestStreamNotification(JsonRpcMessage message) override;
     bool IsStateless() const override { return options_.stateless; }
 
     static bool ValidateMcpHeaders(
@@ -109,6 +111,11 @@ private:
 
     static std::string RequestIdToString(const RequestId& id);
 
+    bool TryBufferRequestStreamNotification(const JsonRpcMessage& message);
+    void EraseRequestStreamStateLocked(const std::string& id_str);
+    static std::optional<std::string> RequestTokenKey(const JsonRpcRequest& req);
+    static std::optional<std::string> NotificationTokenKey(const JsonRpcNotification& notif);
+
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;
     std::shared_ptr<EventStore> event_store_;
@@ -118,6 +125,9 @@ private:
     std::atomic<size_t> stateless_inflight_{0};
     std::unordered_map<std::string, std::shared_ptr<std::promise<JsonRpcMessage>>> pending_responses_;
     std::mutex pending_mutex_;
+    std::unordered_map<std::string, std::vector<std::string>> request_stream_frames_;
+    std::unordered_map<std::string, std::string> progress_token_routes_;
+    std::unordered_set<std::string> hold_open_requests_;
 };
 
 } // namespace mcp

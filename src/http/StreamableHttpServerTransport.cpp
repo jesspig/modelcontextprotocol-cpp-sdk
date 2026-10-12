@@ -55,6 +55,14 @@ std::string SseEscapeData(std::string_view data) {
     return out;
 }
 
+std::optional<std::string> RequestStreamTokenFromObject(const JsonValue& obj) {
+    auto* pt = obj.Find(detail::kProgressToken);
+    if (!pt) return std::nullopt;
+    if (pt->IsString()) return pt->GetString();
+    if (pt->IsInt()) return std::to_string(pt->GetInt());
+    return std::nullopt;
+}
+
 std::optional<int> MapRequestErrorHttpStatus(int code) {
     switch (code) {
         case static_cast<int>(McpErrorCode::ParseError):
@@ -69,6 +77,48 @@ std::optional<int> MapRequestErrorHttpStatus(int code) {
         default:
             return std::nullopt;
     }
+}
+
+std::optional<RequestId> ProbeRequestId(std::string_view body) {
+    try {
+        JsonValue parsed = JsonValue::Parse(body);
+        auto* id = parsed.Find(detail::kId);
+        if (!id || id->IsNull()) return std::nullopt;
+        if (id->IsInt()) return RequestId{id->GetInt()};
+        if (id->IsString()) return RequestId{id->GetString()};
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+std::optional<RequestId> MessageRequestId(const JsonRpcMessage& msg) {
+    if (auto* req = std::get_if<JsonRpcRequest>(&msg)) return req->id;
+    return std::nullopt;
+}
+
+bool IsRemovedStatelessMethod(std::string_view method) {
+    return method == methods::kInitialize || method == methods::kPing ||
+           method == methods::kSetLoggingLevel ||
+           method == methods::kSubscribeResource ||
+           method == methods::kUnsubscribeResource;
+}
+
+std::optional<std::string> DeclaredMetaVersion(const JsonRpcRequest& req) {
+    if (req.meta && req.meta->IsObject()) {
+        auto* pv = req.meta->Find(detail::kMetaProtocolVersionKey);
+        if (pv && pv->IsString() && !pv->GetString().empty())
+            return pv->GetString();
+    }
+    return std::nullopt;
+}
+
+bool HasRequiredStatelessMeta(const JsonRpcRequest& req) {
+    if (!req.meta || !req.meta->IsObject()) return false;
+    auto* pv = req.meta->Find(detail::kMetaProtocolVersionKey);
+    if (!pv || !pv->IsString() || pv->GetString().empty()) return false;
+    auto* cc = req.meta->Find(detail::kMetaClientCapabilitiesKey);
+    if (!cc || !cc->IsObject()) return false;
+    return true;
 }
 
 constexpr const char* kWellKnownMetadataPath = "/.well-known/oauth-protected-resource";
@@ -153,19 +203,28 @@ void RespondInsufficientScope(HttpResponse& resp,
     resp.headers["content-type"] = "application/json";
 }
 
-void RespondHeaderMismatch(HttpResponse& resp, const std::string& message) {
-    resp.status_code = 400;
-    resp.status_text = "Bad Request";
+void RespondStatelessError(HttpResponse& resp, int status, const char* status_text,
+                           McpErrorCode code, const std::string& message,
+                           std::optional<RequestId> id, std::optional<JsonValue> data) {
+    resp.status_code = status;
+    resp.status_text = status_text;
     JsonValue::Object err_obj;
     err_obj["jsonrpc"] = JsonValue("2.0");
-    {
-        JsonValue::Object err_err;
-        err_err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::HeaderMismatch));
-        err_err["message"] = JsonValue(message);
-        err_obj["error"] = JsonValue(std::move(err_err));
-    }
+    if (id) err_obj["id"] = RequestIdToJson(*id);
+    else err_obj["id"] = JsonValue(nullptr);
+    JsonValue::Object err_err;
+    err_err["code"] = JsonValue(static_cast<int64_t>(code));
+    err_err["message"] = JsonValue(message);
+    if (data) err_err["data"] = std::move(*data);
+    err_obj["error"] = JsonValue(std::move(err_err));
     resp.body = JsonValue(std::move(err_obj)).Dump();
     resp.headers["content-type"] = "application/json";
+}
+
+void RespondHeaderMismatch(HttpResponse& resp, const std::string& message,
+                           std::optional<RequestId> id) {
+    RespondStatelessError(resp, 400, "Bad Request", McpErrorCode::HeaderMismatch,
+                          message, std::move(id), std::nullopt);
 }
 
 bool IsTaskMethod(std::string_view method) {
@@ -185,19 +244,17 @@ bool IsSupportedProtocolVersion(std::string_view version) {
     return false;
 }
 
-void RespondUnsupportedVersion(HttpResponse& resp, const std::string& version) {
-    resp.status_code = 400;
-    resp.status_text = "Bad Request";
-    JsonValue::Object err_obj;
-    err_obj["jsonrpc"] = JsonValue("2.0");
-    {
-        JsonValue::Object err_err;
-        err_err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
-        err_err["message"] = JsonValue("Unsupported protocol version '" + version + "'");
-        err_obj["error"] = JsonValue(std::move(err_err));
-    }
-    resp.body = JsonValue(std::move(err_obj)).Dump();
-    resp.headers["content-type"] = "application/json";
+void RespondUnsupportedVersion(HttpResponse& resp, const std::string& version,
+                               std::optional<RequestId> id) {
+    JsonValue supported(JsonValue::array_tag);
+    for (auto known : kProtocolVersions) supported.PushBack(JsonValue(std::string(known)));
+    JsonValue data(JsonValue::object_tag);
+    data["supported"] = std::move(supported);
+    data["requested"] = JsonValue(version);
+    RespondStatelessError(resp, 400, "Bad Request",
+                          McpErrorCode::UnsupportedProtocolVersion,
+                          "Unsupported protocol version '" + version + "'",
+                          std::move(id), std::move(data));
 }
 } // namespace
 
@@ -500,7 +557,7 @@ void StreamableHttpServerTransport::HandlePost(
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     if (proto_ver.has_value() && !proto_ver->empty() &&
         !IsSupportedProtocolVersion(*proto_ver)) {
-        RespondUnsupportedVersion(resp, *proto_ver);
+        RespondUnsupportedVersion(resp, *proto_ver, ProbeRequestId(req.body));
         return;
     }
     auto mcp_method = GetMcpHeader(req, "mcp-method");
@@ -542,19 +599,64 @@ void StreamableHttpServerTransport::HandlePost(
         std::string body_method;
         if (auto* m = body_jv.Find("method"); m && m->IsString()) body_method = m->GetString();
         if (!mcp_method.has_value()) {
-            RespondHeaderMismatch(resp, "missing required Mcp-Method header");
+            RespondHeaderMismatch(resp, "missing required Mcp-Method header",
+                                  MessageRequestId(msg));
             return;
         }
         if (RequiresMcpNameHeader(body_method) && !mcp_name.has_value()) {
-            RespondHeaderMismatch(resp, "missing required Mcp-Name header");
+            RespondHeaderMismatch(resp, "missing required Mcp-Name header",
+                                  MessageRequestId(msg));
             return;
         }
     }
 
     std::string header_error;
     if (!ValidateMcpHeaders(mcp_method.value_or(""), mcp_name.value_or(""), body_jv, header_error)) {
-        RespondHeaderMismatch(resp, header_error);
+        RespondHeaderMismatch(resp, header_error, MessageRequestId(msg));
         return;
+    }
+
+    if (options_.stateless) {
+        if (auto* post_req = std::get_if<JsonRpcRequest>(&msg)) {
+            bool legacy_pinned = proto_ver.has_value() && !proto_ver->empty() &&
+                                 !IsModernProtocolVersion(*proto_ver);
+            if (!legacy_pinned) {
+                if (IsRemovedStatelessMethod(post_req->method)) {
+                    bool removed = true;
+                    if (post_req->method == methods::kInitialize) {
+                        removed = proto_ver.has_value() && !proto_ver->empty() &&
+                                  IsModernProtocolVersion(*proto_ver);
+                    }
+                    if (removed) {
+                        RespondStatelessError(resp, 404, "Not Found",
+                                              McpErrorCode::MethodNotFound,
+                                              "method not found: " + post_req->method,
+                                              post_req->id, std::nullopt);
+                        return;
+                    }
+                }
+                auto meta_version = DeclaredMetaVersion(*post_req);
+                if (proto_ver.has_value() && !proto_ver->empty() &&
+                    meta_version.has_value() && *proto_ver != *meta_version) {
+                    RespondStatelessError(resp, 400, "Bad Request",
+                                          McpErrorCode::HeaderMismatch,
+                                          "Mcp-Protocol-Version header '" + *proto_ver +
+                                          "' does not match request _meta protocolVersion '" +
+                                          *meta_version + "'",
+                                          post_req->id, std::nullopt);
+                    return;
+                }
+                if (post_req->method == methods::kDiscover &&
+                    !HasRequiredStatelessMeta(*post_req)) {
+                    RespondStatelessError(resp, 400, "Bad Request",
+                                          McpErrorCode::InvalidParams,
+                                          "stateless requests must carry _meta with "
+                                          "protocolVersion and clientCapabilities",
+                                          post_req->id, std::nullopt);
+                    return;
+                }
+            }
+        }
     }
 
     if (proto_ver.has_value() && !proto_ver->empty()) {
@@ -588,7 +690,7 @@ void StreamableHttpServerTransport::HandlePost(
 
         std::string param_error;
         if (!ValidateParamHeaders(req, *req_ptr, param_error)) {
-            RespondHeaderMismatch(resp, param_error);
+            RespondHeaderMismatch(resp, param_error, req_ptr->id);
             return;
         }
     }
@@ -639,16 +741,29 @@ void StreamableHttpServerTransport::HandlePost(
             inflight_guard.emplace(stateless_inflight_);
         }
         auto id_str = RequestIdToString(*req_id);
+        std::string hold_version(kDefaultNegotiatedProtocolVersion);
+        if (proto_ver && !proto_ver->empty()) hold_version = *proto_ver;
+        bool hold_open = IsModernProtocolVersion(hold_version);
+        std::optional<std::string> hold_token;
+        if (hold_open) {
+            if (auto* hold_req = std::get_if<JsonRpcRequest>(&msg))
+                hold_token = RequestTokenKey(*hold_req);
+        }
         auto promise = std::make_shared<std::promise<JsonRpcMessage>>();
         auto future = promise->get_future();
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
             pending_responses_[id_str] = promise;
+            if (hold_open) {
+                hold_open_requests_.insert(id_str);
+                if (hold_token) progress_token_routes_[*hold_token] = id_str;
+            }
         }
         if (!channel_->TrySend(std::move(msg))) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_responses_.erase(id_str);
+                EraseRequestStreamStateLocked(id_str);
             }
             resp.status_code = 503;
             resp.status_text = "Service Unavailable";
@@ -662,6 +777,7 @@ void StreamableHttpServerTransport::HandlePost(
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_responses_.erase(id_str);
+                EraseRequestStreamStateLocked(id_str);
             }
             resp.status_code = 504;
             resp.status_text = "Gateway Timeout";
@@ -678,6 +794,16 @@ void StreamableHttpServerTransport::HandlePost(
             return;
         }
         auto response = future.get();
+        std::vector<std::string> hold_frames;
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            if (hold_open) {
+                auto fit = request_stream_frames_.find(id_str);
+                if (fit != request_stream_frames_.end())
+                    hold_frames = std::move(fit->second);
+                EraseRequestStreamStateLocked(id_str);
+            }
+        }
         if (const auto* err = std::get_if<JsonRpcErrorResponse>(&response)) {
             auto mapped = MapRequestErrorHttpStatus(static_cast<int>(err->error.code));
             if (mapped) {
@@ -710,7 +836,9 @@ void StreamableHttpServerTransport::HandlePost(
         resp.headers["content-type"] = "text/event-stream";
         resp.headers["cache-control"] = "no-cache";
         resp.headers["x-accel-buffering"] = "no";
-        resp.body = "event: message\ndata: " +
+        resp.body.clear();
+        for (auto& hold_frame : hold_frames) resp.body += hold_frame;
+        resp.body += "event: message\ndata: " +
                     SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
     } else {
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
@@ -736,7 +864,7 @@ void StreamableHttpServerTransport::HandleGet(
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     if (proto_ver.has_value() && !proto_ver->empty() &&
         !IsSupportedProtocolVersion(*proto_ver)) {
-        RespondUnsupportedVersion(resp, *proto_ver);
+        RespondUnsupportedVersion(resp, *proto_ver, std::nullopt);
         return;
     }
     if (proto_ver.has_value() && !proto_ver->empty()) {
@@ -791,6 +919,8 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
         }
     }
 
+    if (TryBufferRequestStreamNotification(message)) return;
+
     if (IsRequest(message) && http_server_ &&
         http_server_->SseClientCount() == 0) {
         std::string wait_method;
@@ -832,6 +962,72 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
 {
     std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(std::move(msg))) + "\n\n";
     return data;
+}
+
+std::optional<std::string> StreamableHttpServerTransport::RequestTokenKey(
+    const JsonRpcRequest& req)
+{
+    if (req.meta && req.meta->IsObject()) {
+        if (auto key = RequestStreamTokenFromObject(*req.meta)) return key;
+    }
+    if (req.params && req.params->IsObject()) {
+        if (auto* m = req.params->Find(detail::kMeta); m && m->IsObject()) {
+            if (auto key = RequestStreamTokenFromObject(*m)) return key;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> StreamableHttpServerTransport::NotificationTokenKey(
+    const JsonRpcNotification& notif)
+{
+    if (!notif.params || !notif.params->IsObject()) return std::nullopt;
+    return RequestStreamTokenFromObject(*notif.params);
+}
+
+void StreamableHttpServerTransport::EraseRequestStreamStateLocked(
+    const std::string& id_str)
+{
+    hold_open_requests_.erase(id_str);
+    request_stream_frames_.erase(id_str);
+    for (auto it = progress_token_routes_.begin();
+         it != progress_token_routes_.end();) {
+        if (it->second == id_str) it = progress_token_routes_.erase(it);
+        else ++it;
+    }
+}
+
+bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
+    const JsonRpcMessage& message)
+{
+    auto* notif = AsNotification(message);
+    if (!notif) return false;
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (hold_open_requests_.empty()) return false;
+    if (notif->method == notifications::kProgress) {
+        auto key = NotificationTokenKey(*notif);
+        if (!key) return false;
+        auto route = progress_token_routes_.find(*key);
+        if (route == progress_token_routes_.end()) return false;
+        if (hold_open_requests_.count(route->second) == 0) return false;
+        request_stream_frames_[route->second].push_back(
+            BuildSseEvent(JsonRpcMessage(message)));
+        return true;
+    }
+    if (notif->method == notifications::kMessage ||
+        notif->method == notifications::kSubscriptionsAcknowledged) {
+        for (const auto& id_str : hold_open_requests_)
+            request_stream_frames_[id_str].push_back(
+                BuildSseEvent(JsonRpcMessage(message)));
+        return true;
+    }
+    return false;
+}
+
+bool StreamableHttpServerTransport::BufferRequestStreamNotification(
+    JsonRpcMessage message)
+{
+    return TryBufferRequestStreamNotification(message);
 }
 
 std::optional<std::string> StreamableHttpServerTransport::GetMcpHeader(

@@ -300,13 +300,7 @@ CallToolResult Capabilities(const ToolContext& ctx)
         return MakeTextResult("Capability-aware input requests fulfilled");
     }
     std::optional<ClientCapabilities> declared;
-    if (ctx.GetRequest().meta) {
-        if (auto* caps = ctx.GetRequest().meta->Find(
-                "io.modelcontextprotocol/clientCapabilities")) {
-            declared = DeserializeClientCapabilities(*caps);
-        }
-    }
-    if (!declared && ctx.Params().meta && ctx.Params().meta->client_capabilities) {
+    if (ctx.Params().meta && ctx.Params().meta->client_capabilities) {
         declared = *ctx.Params().meta->client_capabilities;
     }
     if (!declared) {

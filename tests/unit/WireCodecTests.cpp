@@ -1,7 +1,12 @@
+#include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/WireCodec.hpp>
+#include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/McpCore.hpp>
 
 #include <mcp/test/McpTest.hpp>
+
+#include <chrono>
+#include <future>
 
 using namespace mcp;
 
@@ -415,4 +420,103 @@ TEST(WireCodecTest, JsonRpcNotificationWithMetaRoundTrip) {
     ASSERT_TRUE(notif2.params);
     EXPECT_FALSE(notif2.params->Contains("_meta"));
     EXPECT_EQ((*notif2.params)["level"], "info");
+}
+
+TEST(WireCodecTest, ErrorDataRoundTrip) {
+    const std::string versions[] = {
+        std::string(kLegacyProtocolVersion), std::string(kLatestProtocolVersion)};
+    for (const auto& version : versions) {
+        SCOPED_TRACE(version);
+        auto codec = MakeWireCodec(version);
+        ASSERT_NE(codec, nullptr);
+        EXPECT_EQ(codec->EncodeErrorCode(
+            static_cast<int32_t>(McpErrorCode::MissingRequiredClientCapability)),
+            static_cast<int32_t>(McpErrorCode::MissingRequiredClientCapability));
+
+        JsonValue form(JsonValue::object_tag);
+        JsonValue elicitation(JsonValue::object_tag);
+        elicitation["form"] = std::move(form);
+        JsonValue required(JsonValue::object_tag);
+        required["elicitation"] = std::move(elicitation);
+        JsonValue data(JsonValue::object_tag);
+        data["requiredCapabilities"] = std::move(required);
+        McpError error(McpErrorCode::MissingRequiredClientCapability,
+            "Missing required client capabilities: elicitation", std::move(data));
+        ASSERT_TRUE(error.Data().has_value());
+
+        JsonRpcErrorResponse err_resp;
+        err_resp.id = RequestId{int64_t(7)};
+        err_resp.error.code = static_cast<McpErrorCode>(
+            codec->EncodeErrorCode(static_cast<int32_t>(error.Code())));
+        err_resp.error.message = std::string(error.what());
+        if (error.Data()) err_resp.error.data = *error.Data();
+
+        auto wire = JsonValue::Parse(SerializeMessage(JsonRpcMessage(err_resp)));
+        EXPECT_EQ(wire["error"]["code"], JsonValue(int64_t(-32021)));
+        ASSERT_TRUE(wire["error"].Contains("data"));
+        EXPECT_TRUE(wire["error"]["data"]["requiredCapabilities"]
+            ["elicitation"].Contains("form"));
+
+        auto parsed = DeserializeMessage(SerializeMessage(JsonRpcMessage(err_resp)));
+        auto* err2 = AsError(parsed);
+        ASSERT_NE(err2, nullptr);
+        EXPECT_EQ(err2->error.code, McpErrorCode::MissingRequiredClientCapability);
+        EXPECT_EQ(err2->error.message,
+            "Missing required client capabilities: elicitation");
+        ASSERT_TRUE(err2->error.data.has_value());
+        ASSERT_TRUE(err2->error.data->IsObject());
+        const JsonValue* required2 = err2->error.data->Find("requiredCapabilities");
+        ASSERT_NE(required2, nullptr);
+        const JsonValue* elicitation2 = required2->Find("elicitation");
+        ASSERT_NE(elicitation2, nullptr);
+        EXPECT_TRUE(elicitation2->Contains("form"));
+        EXPECT_FALSE(elicitation2->Contains("url"));
+    }
+
+    McpError plain(McpErrorCode::InternalError, "boom");
+    EXPECT_FALSE(plain.Data().has_value());
+    JsonRpcErrorResponse plain_resp;
+    plain_resp.id = RequestId{int64_t(8)};
+    plain_resp.error.code = plain.Code();
+    plain_resp.error.message = std::string(plain.what());
+    if (plain.Data()) plain_resp.error.data = *plain.Data();
+    auto plain_wire = JsonValue::Parse(SerializeMessage(JsonRpcMessage(plain_resp)));
+    EXPECT_FALSE(plain_wire["error"].Contains("data"));
+}
+
+TEST(WireCodecTest, VerifyCapabilityObjectShape) {
+    const std::pair<std::string_view, std::string_view> cases[] = {
+        {methods::kCreateMessage, "sampling"},
+        {methods::kListRoots, "roots"},
+    };
+    for (const auto& [method, key] : cases) {
+        SCOPED_TRACE(std::string(method));
+        auto pair = InMemoryTransport::CreatePair();
+        auto client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+        auto server = std::make_shared<McpSessionHandler>(
+            std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+        client->Start();
+        server->Start();
+        server->SetRequestHandler(method,
+            [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+                p.set_value(JsonValue(JsonValue::object_tag));
+            });
+        auto future = client->SendRequest(
+            method, JsonValue(JsonValue::object_tag), {}, std::chrono::milliseconds(2000));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        auto result = future.get();
+        ASSERT_TRUE(result.Contains("code"));
+        EXPECT_EQ(result["code"].GetInt(), int64_t(-32021));
+        ASSERT_TRUE(result.Contains("data"));
+        ASSERT_TRUE(result["data"].IsObject());
+        const JsonValue* required = result["data"].Find("requiredCapabilities");
+        ASSERT_NE(required, nullptr);
+        EXPECT_TRUE(required->IsObject());
+        const JsonValue* cap = required->Find(key);
+        ASSERT_NE(cap, nullptr);
+        EXPECT_TRUE(cap->IsObject());
+        client->Close();
+        server->Close();
+    }
 }

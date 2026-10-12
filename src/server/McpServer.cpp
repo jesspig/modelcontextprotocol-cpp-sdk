@@ -154,6 +154,33 @@ namespace {
         return "working";
     }
 
+    std::vector<std::string> ComputePendingInputKeys(
+        const std::optional<InputRequests>& parked,
+        const std::optional<JsonValue>& accumulated)
+    {
+        std::vector<std::string> pending;
+        if (!parked) return pending;
+        for (const auto& entry : *parked) {
+            bool answered = accumulated && accumulated->IsObject()
+                && accumulated->Find(entry.first) != nullptr;
+            if (!answered) pending.push_back(entry.first);
+        }
+        return pending;
+    }
+
+    InputRequests FilterInputRequests(
+        const std::optional<InputRequests>& parked,
+        const std::vector<std::string>& pending)
+    {
+        InputRequests pruned;
+        if (!parked) return pruned;
+        for (const auto& key : pending) {
+            auto it = parked->find(key);
+            if (it != parked->end()) pruned[key] = it->second;
+        }
+        return pruned;
+    }
+
     bool IsValidToolName(std::string_view name) {
         if (name.empty() || name.size() > 128) return false;
         return std::all_of(name.begin(), name.end(), [](char c) {
@@ -189,11 +216,18 @@ namespace {
         return std::string(buf);
     }
 
-    JsonValue MakeGetTaskResultJson(const TaskState& task, bool include_optional_fields) {
+    JsonValue MakeGetTaskResultJson(
+        const TaskState& task, bool include_optional_fields, bool complete_result_type)
+    {
         GetTaskResult r;
         r.task_id = task.task_id;
         r.status = TaskStatusToWireString(task.status);
-        r.result = task.result;
+        if (complete_result_type) r.task_result_type = detail::kCompleteValue;
+        if (task.status == TaskStatus::Failed) {
+            r.error = task.result;
+        } else {
+            r.result = task.result;
+        }
         if (include_optional_fields) {
             r.error_message = task.error_message;
             r.input_required = task.input_required;
@@ -214,6 +248,64 @@ namespace {
         if (auto* v = req.meta->Find(kMcpNameHeaderLower); v && v->IsString())
             return v->GetString();
         return std::nullopt;
+    }
+
+    constexpr int64_t kDefaultTaskTtlMs = 300000;
+
+    bool ClientDeclaresTasksExtension(const ClientCapabilities& caps) {
+        if (!caps.extensions) return false;
+        return caps.extensions->find(std::string(kTasksExtensionId))
+            != caps.extensions->end();
+    }
+
+    bool TasksExtensionDeclared(
+        const std::shared_ptr<const ClientCapabilities>& stored,
+        const std::optional<ClientCapabilities>& per_request)
+    {
+        if (stored && ClientDeclaresTasksExtension(*stored)) return true;
+        if (per_request && ClientDeclaresTasksExtension(*per_request)) return true;
+        return false;
+    }
+
+    bool SamplingDeclared(
+        const std::shared_ptr<const ClientCapabilities>& stored,
+        const std::optional<ClientCapabilities>& per_request)
+    {
+        if (stored && stored->sampling) return true;
+        if (per_request && per_request->sampling) return true;
+        return false;
+    }
+
+    McpError MissingTasksExtensionError() {
+        JsonValue extension(JsonValue::object_tag);
+        JsonValue extensions(JsonValue::object_tag);
+        extensions[std::string(kTasksExtensionId)] = std::move(extension);
+        JsonValue required(JsonValue::object_tag);
+        required[detail::kExtensions] = std::move(extensions);
+        JsonValue data(JsonValue::object_tag);
+        data[detail::kRequiredCapabilities] = std::move(required);
+        return McpError(McpErrorCode::MissingRequiredClientCapability,
+            "Missing required client capability: io.modelcontextprotocol/tasks",
+            std::move(data));
+    }
+
+    McpError MissingSamplingCapabilityError() {
+        JsonValue sampling(JsonValue::object_tag);
+        JsonValue required(JsonValue::object_tag);
+        required[detail::kSampling] = std::move(sampling);
+        JsonValue data(JsonValue::object_tag);
+        data[detail::kRequiredCapabilities] = std::move(required);
+        return McpError(McpErrorCode::MissingRequiredClientCapability,
+            "Missing required client capability: sampling",
+            std::move(data));
+    }
+
+    bool RequiresSamplingInput(const CallToolResult& result) {
+        if (!result.input_required) return false;
+        for (const auto& entry : result.input_required->input_requests) {
+            if (entry.second.method == methods::kCreateMessage) return true;
+        }
+        return false;
     }
 }
 
@@ -493,6 +585,16 @@ void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
     params[detail::kLevel] = SerializeLoggingLevel(level);
     params[detail::kData] = JsonValue(std::string(data));
     params["logger"] = JsonValue(std::string(kDefaultLoggerName));
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        JsonRpcNotification notif;
+        notif.method = std::string(notifications::kMessage);
+        notif.params = params;
+        RequestMeta meta;
+        meta.protocol_version = handler_->NegotiatedProtocolVersion();
+        notif.meta = SerializeRequestMeta(meta);
+        if (transport_->BufferRequestStreamNotification(JsonRpcMessage{std::move(notif)}))
+            return;
+    }
     handler_->SendNotification(notifications::kMessage, std::move(params));
 }
 
@@ -515,11 +617,39 @@ void McpServer::SendProgress(const ProgressToken& token, double progress,
     params.progress = progress;
     params.total = total;
     params.message = std::move(message);
-    handler_->SendNotification(notifications::kProgress,
-        SerializeProgressNotificationParams(params));
+    JsonValue wire = SerializeProgressNotificationParams(params);
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+        JsonRpcNotification notif;
+        notif.method = std::string(notifications::kProgress);
+        notif.params = wire;
+        RequestMeta meta;
+        meta.protocol_version = handler_->NegotiatedProtocolVersion();
+        notif.meta = SerializeRequestMeta(meta);
+        if (transport_->BufferRequestStreamNotification(JsonRpcMessage{std::move(notif)}))
+            return;
+    }
+    handler_->SendNotification(notifications::kProgress, std::move(wire));
 }
 
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
+    const bool url_mode = params.mode == "url";
+    const auto caps = GetClientCapabilities();
+    const ElicitationCapability* elicitation =
+        (caps && caps->elicitation) ? &*caps->elicitation : nullptr;
+    const bool declared = elicitation != nullptr &&
+        (url_mode ? elicitation->url.has_value()
+                  : (elicitation->form.has_value() || !elicitation->url.has_value()));
+    if (!declared) {
+        JsonValue missing(JsonValue::object_tag);
+        missing[url_mode ? detail::kUrl : detail::kForm] = JsonValue(JsonValue::object_tag);
+        JsonValue required(JsonValue::object_tag);
+        required[detail::kElicitation] = std::move(missing);
+        JsonValue data(JsonValue::object_tag);
+        data[detail::kRequiredCapabilities] = std::move(required);
+        throw McpError(McpErrorCode::MissingRequiredClientCapability,
+            "Missing required client capabilities: elicitation", std::move(data));
+    }
+
     RequestMeta meta;
     auto vers = handler_->NegotiatedProtocolVersion();
     meta.protocol_version = vers.empty()
@@ -847,7 +977,14 @@ void McpServer::WireTaskHandlers() {
     if (store) {
         handler_->SetRequestHandler(methods::kGetTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
-                if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+                const bool modern =
+                    IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+                if (modern && !TasksExtensionDeclared(GetClientCapabilities(),
+                        handler_->ExtractIncomingMeta(req).client_capabilities)) {
+                    p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
+                    return;
+                }
+                if (modern) {
                     if (auto mcp_name = TryGetMcpName(req)) {
                         try {
                             auto codec = MakeWireCodec(handler_->NegotiatedProtocolVersion());
@@ -870,13 +1007,18 @@ void McpServer::WireTaskHandlers() {
                                  "task not found: " + params.task_id)));
                     return;
                 }
-                p.set_value(MakeGetTaskResultJson(*task, true));
+                p.set_value(MakeGetTaskResultJson(*task, true, modern));
             });
 
         handler_->SetRequestHandler(methods::kUpdateTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+                if (modern && !TasksExtensionDeclared(GetClientCapabilities(),
+                        handler_->ExtractIncomingMeta(req).client_capabilities)) {
+                    p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
+                    return;
+                }
                 if (modern) {
                     if (auto mcp_name = TryGetMcpName(req)) {
                         try {
@@ -930,9 +1072,137 @@ void McpServer::WireTaskHandlers() {
                         SendTaskNotification(*handler_,
                             notifications::kTaskWorking,
                             params.task_id, TaskStatus::Working);
+                        UpdateTaskResult r;
+                        JsonValue ack = SerializeEmptyResult(r);
+                        ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                        p.set_value(std::move(ack));
+                        return;
+                    }
+                    auto resumed_task = store->GetTask(params.task_id);
+                    std::shared_ptr<McpServerTool> resume_tool;
+                    if (resumed_task && resumed_task->tool_name) {
+                        std::shared_lock<std::shared_mutex> lock(registry_mutex_);
+                        auto it = tools_.find(*resumed_task->tool_name);
+                        if (it != tools_.end()) resume_tool = it->second;
+                    }
+                    if (!resumed_task || !resume_tool) {
+                        UpdateTaskResult r;
+                        JsonValue ack = SerializeEmptyResult(r);
+                        ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                        p.set_value(std::move(ack));
+                        return;
+                    }
+                    auto pending = ComputePendingInputKeys(
+                        resumed_task->input_requests, resumed_task->input_responses);
+                    if (!pending.empty()) {
+                        try {
+                            store->ParkTaskForInput(params.task_id,
+                                FilterInputRequests(resumed_task->input_requests, pending));
+                        } catch (const std::exception& e) {
+                            p.set_exception(std::make_exception_ptr(
+                                McpError(McpErrorCode::InternalError,
+                                         std::string("task persist failed: ") + e.what())));
+                            return;
+                        }
+                        UpdateTaskResult r;
+                        JsonValue ack = SerializeEmptyResult(r);
+                        ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                        p.set_value(std::move(ack));
+                        return;
+                    }
+                    CallToolRequestParams resume_params;
+                    resume_params.name = *resumed_task->tool_name;
+                    resume_params.arguments = resumed_task->tool_arguments;
+                    resume_params.input_responses = resumed_task->input_responses;
+                    std::shared_ptr<std::atomic<bool>> resume_flag;
+                    {
+                        std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+                        auto it = running_task_cancel_flags_.find(params.task_id);
+                        if (it == running_task_cancel_flags_.end()) {
+                            resume_flag = std::make_shared<std::atomic<bool>>(false);
+                            running_task_cancel_flags_[params.task_id] = resume_flag;
+                        } else {
+                            resume_flag = it->second;
+                        }
+                    }
+                    auto resume_log = [this](LoggingLevel level, std::string_view data) {
+                        SendLoggingMessage(level, data);
+                    };
+                    RequestContext<CallToolRequestParams> resume_ctx(
+                        *this, req, std::move(resume_params),
+                        std::move(resume_log), resume_flag);
+                    auto resume_promise = std::promise<CallToolResult>();
+                    auto resume_future = resume_promise.get_future();
+                    resume_tool->InvokeAsync(resume_ctx, std::move(resume_promise));
+                    auto retire_resumed_task = [this, &params]() {
+                        std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+                        running_task_cancel_flags_.erase(params.task_id);
+                    };
+                    try {
+                        auto resume_result = resume_future.get();
+                        if (resume_flag->load()) {
+                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                            retire_resumed_task();
+                        } else if (resume_result.input_required) {
+                            std::optional<InputRequests> fresh =
+                                resume_result.input_required->input_requests;
+                            auto remaining = ComputePendingInputKeys(
+                                fresh, resumed_task->input_responses);
+                            InputRequests next_park = remaining.empty()
+                                ? *fresh
+                                : FilterInputRequests(fresh, remaining);
+                            store->ParkTaskForInput(params.task_id, next_park);
+                        } else {
+                            store->UpdateTask(params.task_id,
+                                SerializeCallToolResult(resume_result));
+                            store->SetTaskStatus(params.task_id, TaskStatus::Completed);
+                            retire_resumed_task();
+                        }
+                    } catch (const McpError& e) {
+                        if (resume_flag->load()) {
+                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                        } else {
+                            JsonValue error_payload(JsonValue::object_tag);
+                            error_payload[detail::kCode] =
+                                JsonValue(static_cast<int64_t>(e.Code()));
+                            error_payload[detail::kMessage] =
+                                JsonValue(std::string(e.ErrorMessage()));
+                            if (e.Data()) error_payload[detail::kData] = *e.Data();
+                            store->UpdateTask(params.task_id, error_payload);
+                            store->SetTaskStatus(params.task_id, TaskStatus::Failed);
+                        }
+                        retire_resumed_task();
+                    } catch (const std::exception& e) {
+                        if (resume_flag->load()) {
+                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                        } else {
+                            JsonValue error_payload(JsonValue::object_tag);
+                            error_payload[detail::kCode] = JsonValue(
+                                static_cast<int64_t>(McpErrorCode::InternalError));
+                            error_payload[detail::kMessage] =
+                                JsonValue(std::string(e.what()));
+                            store->UpdateTask(params.task_id, error_payload);
+                            store->SetTaskStatus(params.task_id, TaskStatus::Failed);
+                        }
+                        retire_resumed_task();
+                    } catch (...) {
+                        if (resume_flag->load()) {
+                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                        } else {
+                            JsonValue error_payload(JsonValue::object_tag);
+                            error_payload[detail::kCode] = JsonValue(
+                                static_cast<int64_t>(McpErrorCode::InternalError));
+                            error_payload[detail::kMessage] =
+                                JsonValue(std::string("tool execution failed"));
+                            store->UpdateTask(params.task_id, error_payload);
+                            store->SetTaskStatus(params.task_id, TaskStatus::Failed);
+                        }
+                        retire_resumed_task();
                     }
                     UpdateTaskResult r;
-                    p.set_value(SerializeEmptyResult(r));
+                    JsonValue ack = SerializeEmptyResult(r);
+                    ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                    p.set_value(std::move(ack));
                     return;
                 }
                 try {
@@ -955,13 +1225,20 @@ void McpServer::WireTaskHandlers() {
                         params.result ? TaskStatus::Completed : TaskStatus::Working);
                 }
                 UpdateTaskResult r;
-                p.set_value(SerializeEmptyResult(r));
+                JsonValue ack = SerializeEmptyResult(r);
+                ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                p.set_value(std::move(ack));
             });
 
         handler_->SetRequestHandler(methods::kCancelTask,
             [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
                 const bool modern =
                     IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+                if (modern && !TasksExtensionDeclared(GetClientCapabilities(),
+                        handler_->ExtractIncomingMeta(req).client_capabilities)) {
+                    p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
+                    return;
+                }
                 if (modern) {
                     if (auto mcp_name = TryGetMcpName(req)) {
                         try {
@@ -983,6 +1260,7 @@ void McpServer::WireTaskHandlers() {
                     auto flag_it = running_task_cancel_flags_.find(params.task_id);
                     if (flag_it != running_task_cancel_flags_.end()) {
                         flag_it->second->store(true);
+                        running_task_cancel_flags_.erase(flag_it);
                     }
                 }
                 auto existing = store->GetTask(params.task_id);
@@ -998,7 +1276,9 @@ void McpServer::WireTaskHandlers() {
                     || existing->status == TaskStatus::Cancelled;
                 if (already_terminal) {
                     CancelTaskResult r;
-                    p.set_value(SerializeEmptyResult(r));
+                    JsonValue ack = SerializeEmptyResult(r);
+                    ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                    p.set_value(std::move(ack));
                     return;
                 }
                 try {
@@ -1019,7 +1299,9 @@ void McpServer::WireTaskHandlers() {
                         params.task_id, TaskStatus::Cancelled);
                 }
                 CancelTaskResult r;
-                p.set_value(SerializeEmptyResult(r));
+                JsonValue ack = SerializeEmptyResult(r);
+                ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                p.set_value(std::move(ack));
             });
 
         handler_->SetRequestHandler(methods::kGetTaskPayload,
@@ -1039,7 +1321,7 @@ void McpServer::WireTaskHandlers() {
                                  "task not found: " + params.task_id)));
                     return;
                 }
-                p.set_value(MakeGetTaskResultJson(*task, false));
+                p.set_value(MakeGetTaskResultJson(*task, false, false));
             });
 
         handler_->SetRequestHandler(methods::kListTasks,
@@ -1177,6 +1459,56 @@ void McpServer::HandleCallTool(
     if (req.params) {
         params = DeserializeCallToolRequestParams(*req.params);
     }
+    if (req.meta) {
+        RequestMeta incoming;
+        try {
+            incoming = DeserializeRequestMeta(*req.meta);
+        } catch (const McpError&) {
+            throw;
+        } catch (const std::exception& e) {
+            throw McpError(McpErrorCode::InvalidParams,
+                std::string("invalid _meta: ") + e.what());
+        }
+        if (!params.meta) {
+            params.meta = std::move(incoming);
+        } else {
+            if (!params.meta->progress_token && incoming.progress_token) {
+                params.meta->progress_token = incoming.progress_token;
+            }
+            if (req.meta->Find(detail::kMetaProtocolVersionKey)) {
+                params.meta->protocol_version = incoming.protocol_version;
+            }
+            if (!params.meta->client_info && incoming.client_info) {
+                params.meta->client_info = incoming.client_info;
+            }
+            if (!params.meta->client_capabilities && incoming.client_capabilities) {
+                params.meta->client_capabilities = incoming.client_capabilities;
+            }
+            if (!params.meta->log_level && incoming.log_level) {
+                params.meta->log_level = incoming.log_level;
+            }
+            if (incoming.extensions) {
+                if (!params.meta->extensions) {
+                    params.meta->extensions = incoming.extensions;
+                } else {
+                    for (const auto& [key, value] : incoming.extensions->GetObject()) {
+                        if (!params.meta->extensions->Contains(key)) {
+                            (*params.meta->extensions)[key] = value;
+                        }
+                    }
+                }
+            }
+            if (!params.meta->traceparent && incoming.traceparent) {
+                params.meta->traceparent = incoming.traceparent;
+            }
+            if (!params.meta->tracestate && incoming.tracestate) {
+                params.meta->tracestate = incoming.tracestate;
+            }
+            if (!params.meta->baggage && incoming.baggage) {
+                params.meta->baggage = incoming.baggage;
+            }
+        }
+    }
 
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     auto it = tools_.find(params.name);
@@ -1202,10 +1534,115 @@ void McpServer::HandleCallTool(
     const auto& tool_def = tool->ProtocolTool();
     const bool task_declared = tool_def.execution
         && tool_def.execution->mode == ToolExecutionMode::Task;
+    const bool modern_era =
+        IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+    std::optional<ClientCapabilities> per_request_caps;
+    if (ctx.Params().meta && ctx.Params().meta->client_capabilities) {
+        per_request_caps = ctx.Params().meta->client_capabilities;
+    }
+    const bool tasks_declared = !modern_era
+        || TasksExtensionDeclared(GetClientCapabilities(), per_request_caps);
 
-    if (task_declared && options_.task_store) {
-        const bool modern =
-            IsModernProtocolVersion(handler_->NegotiatedProtocolVersion());
+    if (task_declared && options_.task_store && !tasks_declared
+        && tool_def.execution->task_support == TaskSupport::Required) {
+        throw MissingTasksExtensionError();
+    }
+
+    if (task_declared && options_.task_store && tasks_declared) {
+        const bool modern = modern_era;
+        const bool required_task =
+            tool_def.execution->task_support == TaskSupport::Required;
+
+        if (modern && required_task) {
+            registry_lock.unlock();
+            auto required_promise = std::make_shared<std::promise<CallToolResult>>();
+            auto required_future = required_promise->get_future();
+            tool->InvokeAsync(ctx, std::move(*required_promise));
+            CallToolResult first_result;
+            bool first_failed = false;
+            JsonValue first_error(JsonValue::object_tag);
+            try {
+                first_result = required_future.get();
+            } catch (const McpError& e) {
+                first_failed = true;
+                first_error[detail::kCode] = JsonValue(static_cast<int64_t>(e.Code()));
+                first_error[detail::kMessage] = JsonValue(std::string(e.ErrorMessage()));
+                if (e.Data()) first_error[detail::kData] = *e.Data();
+            } catch (const std::exception& e) {
+                first_failed = true;
+                first_error[detail::kCode] =
+                    JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
+                first_error[detail::kMessage] = JsonValue(std::string(e.what()));
+            } catch (...) {
+                first_failed = true;
+                first_error[detail::kCode] =
+                    JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
+                first_error[detail::kMessage] = JsonValue(std::string("tool execution failed"));
+            }
+            if (!first_failed && first_result.input_required) {
+                if (RequiresSamplingInput(first_result)
+                    && !SamplingDeclared(GetClientCapabilities(), per_request_caps)) {
+                    promise.set_exception(
+                        std::make_exception_ptr(MissingSamplingCapabilityError()));
+                    return;
+                }
+                auto result = std::move(first_result);
+                if (options_.request_state_key) {
+                    JsonValue payload(JsonValue::object_tag);
+                    if (result.input_required->request_state) {
+                        auto parsed =
+                            JsonValue::Parse(*result.input_required->request_state);
+                        if (parsed.IsObject()) payload = parsed;
+                    }
+                    payload["iat"] = JsonValue(
+                        static_cast<int64_t>(std::time(nullptr)));
+                    result.input_required->request_state =
+                        detail::MintRequestState(*options_.request_state_key, payload);
+                }
+                promise.set_value(SerializeCallToolResult(result));
+                return;
+            }
+            auto store = options_.task_store;
+            const std::string task_id = "task-" + std::to_string(next_task_id_++);
+            {
+                std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+                running_task_cancel_flags_[task_id] = cancel_flag;
+            }
+            auto retire_required_task = [this, &task_id]() {
+                std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
+                running_task_cancel_flags_.erase(task_id);
+            };
+            TaskStatus terminal_status = TaskStatus::Completed;
+            try {
+                store->CreateTask(task_id);
+                store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
+                if (cancel_flag->load()) {
+                    store->SetTaskStatus(task_id, TaskStatus::Cancelled);
+                    terminal_status = TaskStatus::Cancelled;
+                } else if (first_failed) {
+                    store->UpdateTask(task_id, first_error);
+                    store->SetTaskStatus(task_id, TaskStatus::Failed);
+                    terminal_status = TaskStatus::Failed;
+                } else {
+                    store->UpdateTask(task_id, SerializeCallToolResult(first_result));
+                    store->SetTaskStatus(task_id, TaskStatus::Completed);
+                }
+            } catch (...) {
+                retire_required_task();
+                throw;
+            }
+            retire_required_task();
+            CreateTaskResult created;
+            created.task_id = task_id;
+            created.status = TaskStatusToWireString(terminal_status);
+            created.ttl_ms = kDefaultTaskTtlMs;
+            created.created_at = MakeIso8601Now();
+            created.last_updated_at = created.created_at;
+            JsonValue created_wire = SerializeCreateTaskResult(created);
+            created_wire.GetObject().erase(std::string(detail::kTask));
+            promise.set_value(std::move(created_wire));
+            return;
+        }
 
         auto store = options_.task_store;
         const std::string task_id = "task-" + std::to_string(next_task_id_++);
@@ -1214,6 +1651,7 @@ void McpServer::HandleCallTool(
             running_task_cancel_flags_[task_id] = cancel_flag;
         }
         store->CreateTask(task_id);
+        store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
         store->SetTaskStatus(task_id, TaskStatus::Working);
         if (!modern) {
             SendTaskNotification(*handler_, notifications::kTaskStatus,
@@ -1223,8 +1661,12 @@ void McpServer::HandleCallTool(
         CreateTaskResult created;
         created.task_id = task_id;
         created.status = "working";
+        created.ttl_ms = kDefaultTaskTtlMs;
         created.created_at = MakeIso8601Now();
-        promise.set_value(SerializeCreateTaskResult(created));
+        created.last_updated_at = created.created_at;
+        JsonValue created_wire = SerializeCreateTaskResult(created);
+        if (modern) created_wire.GetObject().erase(std::string(detail::kTask));
+        promise.set_value(std::move(created_wire));
 
         auto fut = std::async(std::launch::async,
             [this, tool, ctx = std::move(ctx), store, task_id, cancel_flag, modern]() mutable {
@@ -1240,6 +1682,15 @@ void McpServer::HandleCallTool(
                     }
                     retire_task();
                 };
+                auto fail_with = [&](int64_t code, std::string message,
+                        std::optional<JsonValue> data) {
+                    JsonValue error_payload(JsonValue::object_tag);
+                    error_payload[detail::kCode] = JsonValue(code);
+                    error_payload[detail::kMessage] = JsonValue(std::move(message));
+                    if (data) error_payload[detail::kData] = std::move(*data);
+                    store->UpdateTask(task_id, error_payload);
+                    finish(TaskStatus::Failed, true);
+                };
                 auto result_promise = std::make_shared<std::promise<CallToolResult>>();
                 auto result_future = result_promise->get_future();
                 tool->InvokeAsync(ctx, std::move(*result_promise));
@@ -1249,27 +1700,36 @@ void McpServer::HandleCallTool(
                         finish(TaskStatus::Cancelled, false);
                         return;
                     }
-                    if (result.is_error) {
-                        std::string error_text = "tool execution failed";
-                        for (const auto& c : result.content) {
-                            if (auto* t = std::get_if<TextContent>(&c)) {
-                                error_text = t->text;
-                                break;
-                            }
+                    if (modern && result.input_required) {
+                        if (!store->ParkTaskForInput(
+                                task_id, result.input_required->input_requests)) {
+                            retire_task();
+                            return;
                         }
-                        JsonValue error_payload(JsonValue::object_tag);
-                        error_payload["error"] = JsonValue(error_text);
-                        store->UpdateTask(task_id, error_payload);
-                        finish(TaskStatus::Failed, true);
                         return;
                     }
                     store->UpdateTask(task_id, SerializeCallToolResult(result));
                     finish(TaskStatus::Completed, true);
+                } catch (const McpError& e) {
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(e.Code()),
+                            std::string(e.ErrorMessage()), e.Data());
+                    }
+                } catch (const std::exception& e) {
+                    if (cancel_flag->load()) {
+                        finish(TaskStatus::Cancelled, false);
+                    } else {
+                        fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
+                            std::string(e.what()), std::nullopt);
+                    }
                 } catch (...) {
                     if (cancel_flag->load()) {
                         finish(TaskStatus::Cancelled, false);
                     } else {
-                        finish(TaskStatus::Failed, true);
+                        fail_with(static_cast<int64_t>(McpErrorCode::InternalError),
+                            std::string("tool execution failed"), std::nullopt);
                     }
                 }
             });
@@ -1287,12 +1747,36 @@ void McpServer::HandleCallTool(
     auto request_state_key = options_.request_state_key;
     auto fut = std::async(std::launch::async,
         [tool, ctx = std::move(ctx), captured_promise,
-         request_state_key = std::move(request_state_key)]() mutable {
+         request_state_key = std::move(request_state_key),
+         modern_era, per_request_caps,
+         stored_caps = GetClientCapabilities()]() mutable {
             auto result_promise = std::make_shared<std::promise<CallToolResult>>();
             auto result_future = result_promise->get_future();
             tool->InvokeAsync(ctx, std::move(*result_promise));
+            CallToolResult sync_result;
             try {
-                auto result = result_future.get();
+                sync_result = result_future.get();
+            } catch (const McpError& e) {
+                CallToolResult err_result;
+                err_result.is_error = true;
+                err_result.content.push_back(TextContent{"text", e.what()});
+                captured_promise->set_value(SerializeCallToolResult(err_result));
+                return;
+            } catch (...) {
+                CallToolResult err_result;
+                err_result.is_error = true;
+                err_result.content.push_back(TextContent{"text", "internal error"});
+                captured_promise->set_value(SerializeCallToolResult(err_result));
+                return;
+            }
+            if (modern_era && RequiresSamplingInput(sync_result)
+                && !SamplingDeclared(stored_caps, per_request_caps)) {
+                captured_promise->set_exception(
+                    std::make_exception_ptr(MissingSamplingCapabilityError()));
+                return;
+            }
+            try {
+                auto result = std::move(sync_result);
                 if (result.input_required) {
                     if (request_state_key) {
                         JsonValue payload(JsonValue::object_tag);
@@ -1409,6 +1893,22 @@ void McpServer::HandleReadResource(
         if (entry.uri_pattern == params.uri) {
             try {
                 auto result = entry.handler(params.uri);
+                if (result.input_required) {
+                    if (options_.request_state_key) {
+                        JsonValue payload(JsonValue::object_tag);
+                        if (result.input_required->request_state) {
+                            auto parsed =
+                                JsonValue::Parse(*result.input_required->request_state);
+                            if (parsed.IsObject()) payload = parsed;
+                        }
+                        payload["iat"] = JsonValue(
+                            static_cast<int64_t>(std::time(nullptr)));
+                        result.input_required->request_state =
+                            detail::MintRequestState(*options_.request_state_key, payload);
+                    }
+                    promise.set_value(SerializeReadResourceResult(result));
+                    return;
+                }
                 auto hint = GetCacheHint(options_.cache_hints, "resources/read");
                 if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
                 promise.set_value(SerializeReadResourceResult(result));
@@ -1429,6 +1929,22 @@ void McpServer::HandleReadResource(
         if (!variables) continue;
         try {
             auto result = entry.template_handler(params.uri, *variables);
+            if (result.input_required) {
+                if (options_.request_state_key) {
+                    JsonValue payload(JsonValue::object_tag);
+                    if (result.input_required->request_state) {
+                        auto parsed =
+                            JsonValue::Parse(*result.input_required->request_state);
+                        if (parsed.IsObject()) payload = parsed;
+                    }
+                    payload["iat"] = JsonValue(
+                        static_cast<int64_t>(std::time(nullptr)));
+                    result.input_required->request_state =
+                        detail::MintRequestState(*options_.request_state_key, payload);
+                }
+                promise.set_value(SerializeReadResourceResult(result));
+                return;
+            }
             auto hint = GetCacheHint(options_.cache_hints, "resources/read");
             if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
             promise.set_value(SerializeReadResourceResult(result));
@@ -1439,9 +1955,11 @@ void McpServer::HandleReadResource(
         }
     }
 
+    JsonValue data(JsonValue::object_tag);
+    data["uri"] = JsonValue(params.uri);
     promise.set_exception(std::make_exception_ptr(
         McpError(McpErrorCode::InvalidParams,
-                 "resource not found: " + params.uri)));
+                 "resource not found: " + params.uri, std::move(data))));
 }
 
 void McpServer::HandleListPrompts(
@@ -1486,6 +2004,22 @@ void McpServer::HandleGetPrompt(
         if (entry.name == params.name) {
             try {
                 auto result = entry.handler(params.name, params.arguments);
+                if (result.input_required) {
+                    if (options_.request_state_key) {
+                        JsonValue payload(JsonValue::object_tag);
+                        if (result.input_required->request_state) {
+                            auto parsed =
+                                JsonValue::Parse(*result.input_required->request_state);
+                            if (parsed.IsObject()) payload = parsed;
+                        }
+                        payload["iat"] = JsonValue(
+                            static_cast<int64_t>(std::time(nullptr)));
+                        result.input_required->request_state =
+                            detail::MintRequestState(*options_.request_state_key, payload);
+                    }
+                    promise.set_value(SerializeGetPromptResult(result));
+                    return;
+                }
                 promise.set_value(SerializeGetPromptResult(result));
                 return;
             } catch (...) {
@@ -1672,6 +2206,10 @@ void McpServer::HandleDiscover(
     } else {
         result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
     }
+    JsonValue discover_meta(JsonValue::object_tag);
+    discover_meta[detail::kMetaServerInfoKey] =
+        SerializeImplementation(result.server_info);
+    result.meta = std::move(discover_meta);
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }

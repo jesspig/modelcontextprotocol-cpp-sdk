@@ -56,3 +56,7 @@ server->SendResourceListChanged();
 
 - **2026-07-28 and later**: subscriptions made through `subscriptions/listen` carry an explicit filter, so a notification reaches only the subscribers whose filter matches.
 - **2025 and earlier**: `resources/subscribe` has no filter to consult, so the notification is broadcast to the connection.
+
+## Input Requests (input_required)
+
+Resource handlers may also return `input_required` (`ReadResourceResult::input_required`) to start a multi-round input collection; the client retries the read carrying `inputResponses` + `requestState` (same MRTR loop as tool calls, with automatic `request_state` signing when `request_state_key` is configured).

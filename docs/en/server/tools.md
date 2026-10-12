@@ -146,4 +146,4 @@ server->RegisterTool("slow_compute", opts,
     });
 ```
 
-This requires `ServerOptions::task_store` to be configured (the task persistence backend). `tasks/update` accepts `inputResponses` to answer input requests raised mid-execution (mutually exclusive with `result`). See [Extensions](/en/server/extensions) for extension declarations and wire semantics.
+This requires `ServerOptions::task_store` to be configured (the task persistence backend). `tasks/update` accepts `inputResponses` to answer input requests raised mid-execution (mutually exclusive with `result`). The task handle shape differs by era: flat top-level `taskId`/`status` in the 2026 era, nested `task` object retained for compatibility in the 2025 era (the client accepts both). Terminal-state semantics: a normal handler return (including `is_error` results) lands `Completed`; a thrown exception lands `Failed` with the error payload carried inline as `error`. See [Extensions](/en/server/extensions) for extension declarations and wire semantics.

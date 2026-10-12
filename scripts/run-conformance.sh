@@ -9,6 +9,11 @@ PORT="${PORT:-3010}"
 BUILD_PRESET="${BUILD_PRESET:-debug}"
 CONFORMANCE_SPEC_VERSION="${CONFORMANCE_SPEC_VERSION:-2025-11-25}"
 BASELINE="tests/conformance/baseline.yaml"
+case "${CONFORMANCE_SPEC_VERSION}" in
+2026-07-28) BASELINE="tests/conformance/baseline-2026-07-28.yaml" ;;
+2025-11-25) BASELINE="tests/conformance/baseline-2025-11-25.yaml" ;;
+*) BASELINE="tests/conformance/baseline.yaml" ;;
+esac
 CONFORMANCE_PKG="@modelcontextprotocol/conformance@0.2.0-alpha.12"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,7 +23,8 @@ cd "${REPO_ROOT}"
 BIN_DIR="build/${BUILD_PRESET}/examples/conformance"
 resolve_binary() {
     local name="$1"
-    local target_dir="${BIN_DIR}/${name}"
+    local subdir="${name#conformance-}"
+    local target_dir="${BIN_DIR}/${subdir}"
     if [ -f "${target_dir}/${name}.exe" ]; then
         echo "${target_dir}/${name}.exe"
         return 0
@@ -116,6 +122,10 @@ client)
         echo "Error: ${CLIENT_BIN} not found. Build first (see AGENTS.md)."
         exit 1
     fi
+    case "${CLIENT_BIN}" in
+    /*|?:*) ;;
+    *) CLIENT_BIN="${REPO_ROOT}/${CLIENT_BIN}" ;;
+    esac
     if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
         # shellcheck disable=SC2086
         run_referee client --command "${CLIENT_BIN}" \
