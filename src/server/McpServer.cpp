@@ -502,6 +502,7 @@ McpServer::McpServer(
     : transport_(std::move(transport))
     , options_(std::move(options))
 {
+    SetEtagCacheEnabled(options_.enable_etag_cache);
     auto codec = MakeWireCodec(
         options_.protocol_version.value_or(std::string(kLatestProtocolVersion)));
     handler_ = std::make_shared<McpSessionHandler>(
@@ -807,6 +808,32 @@ void McpServer::SendProgress(const ProgressToken& token, double progress,
             return;
     }
     handler_->SendNotification(notifications::kProgress, std::move(wire));
+}
+
+void McpServer::RegisterTrigger(const std::string& id,
+                                std::vector<std::string> types,
+                                const std::string& webhook_url) {
+    triggers_.Register(id, std::move(types), webhook_url);
+}
+
+bool McpServer::UnregisterTrigger(const std::string& id) {
+    return triggers_.Unregister(id);
+}
+
+void McpServer::EmitTriggerEvent(const std::string& type, JsonValue data) {
+    if (type.empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "trigger event type must not be empty");
+    }
+    if (!options_.enable_triggers_events) return;
+    auto matches = triggers_.Match(type);
+    if (matches.empty()) return;
+    JsonValue params = ext::SerializeTriggerEvent(type, data);
+    std::string body = params.Dump();
+    handler_->NotifySubscribers(notifications::kTriggersEvent, std::move(params));
+    for (const auto& match : matches) {
+        if (match.second.webhook_url.empty()) continue;
+        ext::PostTriggerWebhook(match.second.webhook_url, body);
+    }
 }
 
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {

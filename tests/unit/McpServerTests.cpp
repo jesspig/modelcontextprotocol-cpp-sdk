@@ -4341,3 +4341,121 @@ TEST(McpServerTest, FileInputDisabledByDefault) {
 
     CloseFileInputEnv(env);
 }
+
+namespace {
+
+struct TriggerEmitEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+TriggerEmitEnv MakeTriggerEmitEnv(bool enabled) {
+    TriggerEmitEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.enable_triggers_events = enabled;
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+bool SubscribeTriggerStream(TriggerEmitEnv& env, std::string_view subscription_id) {
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    auto future = env.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(params),
+        MetaWithSubscriptionId(subscription_id),
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) return false;
+    return !future.get().Contains("code");
+}
+
+void CloseTriggerEmitEnv(TriggerEmitEnv& env) {
+    env.server->Close();
+    env.client->Close();
+}
+
+} // namespace
+
+TEST(McpServerTest, TriggerEmitDeliversToListeningSubscriber) {
+    auto env = MakeTriggerEmitEnv(true);
+    env.server->RegisterTrigger("trig-1", {"deploy.finished"}, "");
+    ASSERT_TRUE(SubscribeTriggerStream(env, "sub-trig-1"));
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    env.client->SetNotificationHandler(notifications::kTriggersEvent,
+        [&received](const JsonRpcNotification& n) {
+            received.set_value(n);
+        });
+
+    JsonValue data(JsonValue::object_tag);
+    data["status"] = JsonValue("ok");
+    env.server->EmitTriggerEvent("deploy.finished", std::move(data));
+
+    ASSERT_EQ(received_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto notif = received_future.get();
+    EXPECT_EQ(notif.method, std::string(notifications::kTriggersEvent));
+    ASSERT_TRUE(notif.params.has_value());
+    auto* type = notif.params->Find("type");
+    ASSERT_NE(type, nullptr);
+    EXPECT_EQ(type->GetString(), "deploy.finished");
+    auto* payload = notif.params->Find("data");
+    ASSERT_NE(payload, nullptr);
+    auto* status = payload->Find("status");
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(status->GetString(), "ok");
+    ASSERT_TRUE(notif.meta.has_value());
+    auto* sid = notif.meta->Find("io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(sid, nullptr);
+    EXPECT_EQ(sid->GetString(), "sub-trig-1");
+
+    CloseTriggerEmitEnv(env);
+}
+
+TEST(McpServerTest, TriggerEmitDropsWithoutSubscription) {
+    auto env = MakeTriggerEmitEnv(true);
+    env.server->RegisterTrigger("trig-1", {"deploy.finished"}, "");
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    env.client->SetNotificationHandler(notifications::kTriggersEvent,
+        [&received](const JsonRpcNotification& n) {
+            received.set_value(n);
+        });
+
+    JsonValue data(JsonValue::object_tag);
+    data["status"] = JsonValue("ok");
+    env.server->EmitTriggerEvent("deploy.finished", std::move(data));
+
+    EXPECT_EQ(received_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    CloseTriggerEmitEnv(env);
+}
+
+TEST(McpServerTest, TriggerEmitDisabledByDefault) {
+    auto env = MakeTriggerEmitEnv(false);
+    env.server->RegisterTrigger("trig-1", {"deploy.finished"}, "");
+    ASSERT_TRUE(SubscribeTriggerStream(env, "sub-trig-off"));
+
+    std::promise<JsonRpcNotification> received;
+    auto received_future = received.get_future();
+    env.client->SetNotificationHandler(notifications::kTriggersEvent,
+        [&received](const JsonRpcNotification& n) {
+            received.set_value(n);
+        });
+
+    JsonValue data(JsonValue::object_tag);
+    data["status"] = JsonValue("ok");
+    env.server->EmitTriggerEvent("deploy.finished", std::move(data));
+
+    EXPECT_EQ(received_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    CloseTriggerEmitEnv(env);
+}

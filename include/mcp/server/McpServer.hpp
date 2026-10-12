@@ -5,6 +5,7 @@
 #include <mcp/Meta.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
+#include <mcp/ext/Triggers.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
@@ -92,6 +93,11 @@ public:
     void SendProgress(const ProgressToken& token, double progress,
                       std::optional<double> total = std::nullopt,
                       std::optional<std::string> message = std::nullopt);
+    void RegisterTrigger(const std::string& id,
+                         std::vector<std::string> types,
+                         const std::string& webhook_url);
+    bool UnregisterTrigger(const std::string& id);
+    void EmitTriggerEvent(const std::string& type, JsonValue data = {});
 
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
@@ -187,6 +193,7 @@ private:
 
     std::vector<Skill> skills_;
     bool skills_directory_read_{false};
+    ext::TriggerRegistry triggers_;
 
     std::shared_ptr<const ClientCapabilities> client_capabilities_;
     std::shared_ptr<const Implementation> client_info_;

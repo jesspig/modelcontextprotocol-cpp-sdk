@@ -152,7 +152,7 @@ add_library(mcp-server STATIC)
 target_sources(mcp-server PRIVATE
     src/server/McpServer.cpp
     src/server/FileTaskStore.cpp)
-target_link_libraries(mcp-server PUBLIC mcp-protocol)
+target_link_libraries(mcp-server PUBLIC mcp-protocol mcp-ext)
 target_include_directories(mcp-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -201,7 +201,8 @@ add_library(mcp-ext STATIC)
 target_sources(mcp-ext PRIVATE
     src/ext/Apps.cpp
     src/ext/DPoP.cpp
-    src/ext/ServerCard.cpp)
+    src/ext/ServerCard.cpp
+    src/ext/Triggers.cpp)
 target_link_libraries(mcp-ext PUBLIC mcp-core)
 target_include_directories(mcp-ext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-ext PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
