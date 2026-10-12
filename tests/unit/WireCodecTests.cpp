@@ -484,6 +484,194 @@ TEST(WireCodecTest, ErrorDataRoundTrip) {
     EXPECT_FALSE(plain_wire["error"].Contains("data"));
 }
 
+TEST(WireCodecTest, Rev2026InitializeNotInEra) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    EXPECT_FALSE(modern->HasRequestMethod("initialize"));
+    EXPECT_TRUE(legacy->HasRequestMethod("initialize"));
+
+    JsonValue bare(JsonValue::object_tag);
+    bare["method"] = JsonValue("initialize");
+    EXPECT_EQ(modern->ValidateRequest("initialize", bare), WireValidation::NotInEra);
+
+    JsonValue full(JsonValue::object_tag);
+    full["method"] = JsonValue("initialize");
+    JsonValue params(JsonValue::object_tag);
+    params["protocolVersion"] = JsonValue("2026-07-28");
+    params["capabilities"] = JsonValue(JsonValue::object_tag);
+    params["clientInfo"] =
+        SerializeImplementation(Implementation{"test-client", "1.0.0"});
+    full["params"] = std::move(params);
+    EXPECT_EQ(modern->ValidateRequest("initialize", full), WireValidation::NotInEra);
+    EXPECT_EQ(legacy->ValidateRequest("initialize", full), WireValidation::Ok);
+}
+
+TEST(WireCodecTest, Rev2026InitializeModernNegotiatedRejected) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->Start();
+    server->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    bool handled = false;
+    server->SetRequestHandler(methods::kInitialize,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLatestProtocolVersion);
+    meta.client_info = Implementation{"wire-client", "1.0"};
+    auto future = client->SendRequest(methods::kInitialize,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+    EXPECT_FALSE(handled);
+    client->Close();
+    server->Close();
+}
+
+TEST(WireCodecTest, Rev2026InitializeAllowedBeforeNegotiation) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->Start();
+    bool handled = false;
+    server->SetRequestHandler(methods::kInitialize,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] =
+                SerializeImplementation(Implementation{"raw-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLatestProtocolVersion);
+    meta.client_info = Implementation{"wire-client", "1.0"};
+    auto future = client->SendRequest(methods::kInitialize,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    EXPECT_FALSE(result.Contains("code"));
+    EXPECT_TRUE(handled);
+    client->Close();
+    server->Close();
+}
+
+TEST(WireCodecTest, Rev2026MissingMetaRejectedAsInvalidRequest) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->Start();
+    bool handled = false;
+    server->SetRequestHandler(methods::kListTools,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    RequestMeta legacy_meta;
+    legacy_meta.protocol_version = std::string(kLegacyProtocolVersion);
+    auto future = client->SendRequest(methods::kListTools,
+        JsonValue(JsonValue::object_tag), legacy_meta, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidRequest));
+    EXPECT_FALSE(handled);
+    client->Close();
+    server->Close();
+}
+
+TEST(WireCodecTest, Rev2026UnsupportedDeclaredVersionRejected) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->Start();
+    bool handled = false;
+    server->SetRequestHandler(methods::kCallTool,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    RequestMeta meta;
+    meta.protocol_version = "2099-01-01";
+    meta.client_info = Implementation{"wire-client", "1.0"};
+    auto future = client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion));
+    EXPECT_FALSE(handled);
+    ASSERT_TRUE(result.Contains("data"));
+    const JsonValue* supported = result["data"].Find("supported");
+    ASSERT_NE(supported, nullptr);
+    bool lists_latest = false;
+    for (const auto& v : supported->GetArray()) {
+        if (v.IsString() && v.GetString() == std::string(kLatestProtocolVersion))
+            lists_latest = true;
+    }
+    EXPECT_TRUE(lists_latest);
+    const JsonValue* requested = result["data"].Find("requested");
+    ASSERT_NE(requested, nullptr);
+    EXPECT_EQ(requested->GetString(), "2099-01-01");
+    client->Close();
+    server->Close();
+}
+
+TEST(WireCodecTest, Rev2026SamplingCreateMessageNotInEra) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    EXPECT_FALSE(modern->HasRequestMethod(methods::kCreateMessage));
+    EXPECT_TRUE(legacy->HasRequestMethod(methods::kCreateMessage));
+
+    auto pair = InMemoryTransport::CreatePair();
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->Start();
+    server->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    bool handled = false;
+    server->SetRequestHandler(methods::kCreateMessage,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLatestProtocolVersion);
+    meta.client_info = Implementation{"wire-client", "1.0"};
+    auto future = client->SendRequest(methods::kCreateMessage,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+    EXPECT_FALSE(handled);
+    client->Close();
+    server->Close();
+}
+
 TEST(WireCodecTest, VerifyCapabilityObjectShape) {
     const std::pair<std::string_view, std::string_view> cases[] = {
         {methods::kCreateMessage, "sampling"},

@@ -134,7 +134,11 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
             return false;
         }
         const std::string& ref_value = ref->GetString();
-        if (ref_value.empty() || ref_value[0] == '#') {
+        if (!ref_value.empty() && ref_value[0] != '#') {
+            error_out = "remote $ref not dereferenced '" + ref_value + "'";
+            return false;
+        }
+        {
             const JsonValue* target = ResolveSchemaRef(root, ref_value, error_out);
             if (!target) return false;
             for (const JsonValue* visited : ref_chain) {

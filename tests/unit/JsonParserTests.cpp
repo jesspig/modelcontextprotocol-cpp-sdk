@@ -386,3 +386,43 @@ TEST(JsonParserTest, RoundTripDumpIdempotent) {
     std::string dump2 = v2.Dump();
     EXPECT_EQ(dump1, dump2);
 }
+
+TEST(JsonParserTest, SanitizeUtf8KeepsValidText) {
+    EXPECT_EQ(JsonValue::SanitizeUtf8(""), "");
+    EXPECT_EQ(JsonValue::SanitizeUtf8("hello"), "hello");
+    std::string text = "hello \xE4\xB8\x96\xE7\x95\x8C \xF0\x9F\x98\x80";
+    EXPECT_EQ(JsonValue::SanitizeUtf8(text), text);
+}
+
+TEST(JsonParserTest, SanitizeUtf8ReplacesInvalidLeadingBytes) {
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\xFF"), "\xEF\xBF\xBD");
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\x80"), "\xEF\xBF\xBD");
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\xC0"), "\xEF\xBF\xBD");
+}
+
+TEST(JsonParserTest, SanitizeUtf8ReplacesOverlongEncoding) {
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\xC0\x80"), "\xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+TEST(JsonParserTest, SanitizeUtf8ReplacesTruncatedSequence) {
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\xE2\x82"), "\xEF\xBF\xBD\xEF\xBF\xBD");
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\xE2\x82\xAC"), "\xE2\x82\xAC");
+}
+
+TEST(JsonParserTest, SanitizeUtf8ReplacesSurrogateEncoding) {
+    EXPECT_EQ(JsonValue::SanitizeUtf8("\xED\xA0\x80"),
+        "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+TEST(JsonParserTest, SanitizedConformanceContextParses) {
+    std::string raw =
+        "{\"toolCalls\":[{\"name\":\"t\",\"arguments\":{\"q\":\"\xCA\xC0\"}}]}";
+    auto parsed = JsonValue::Parse(JsonValue::SanitizeUtf8(raw));
+    const JsonValue* tool_calls = parsed.Find("toolCalls");
+    ASSERT_NE(tool_calls, nullptr);
+    ASSERT_TRUE(tool_calls->IsArray());
+    ASSERT_EQ(tool_calls->Size(), size_t{1});
+    const JsonValue& call = tool_calls->GetArray()[0];
+    EXPECT_EQ(call.At("name").GetString(), "t");
+    EXPECT_EQ(call.At("arguments").At("q").GetString(), "\xEF\xBF\xBD\xEF\xBF\xBD");
+}

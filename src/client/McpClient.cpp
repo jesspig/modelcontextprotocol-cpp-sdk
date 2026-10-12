@@ -862,7 +862,7 @@ static bool TryFulfillInputRequired(
                 DeserializeListRootsRequestParams(request.params));
             responses[key] = MakeInputResponseFromListRootsResult(roots_result);
         } else {
-            throw McpError(McpErrorCode::MethodNotFound,
+            throw McpError(McpErrorCode::HandlerError,
                 "unsupported input request method: " + request.method);
         }
     }
@@ -918,11 +918,15 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
         auto result_json = future.get();
 
         if (result_json.Contains(detail::kCode) && result_json[detail::kCode].GetInt() < 0) {
+            std::optional<JsonValue> error_data;
+            if (auto* data_value = result_json.Find(detail::kData))
+                error_data = *data_value;
             throw McpError(
                 static_cast<McpErrorCode>(result_json[detail::kCode].GetInt()),
                 result_json.Contains(detail::kMessage)
                     ? result_json[detail::kMessage].GetString()
-                    : "request failed");
+                    : "request failed",
+                std::move(error_data));
         }
 
         JsonValue input_responses(JsonValue::object_tag);

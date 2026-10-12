@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <iostream>
 #include <map>
@@ -27,12 +28,61 @@ bool IsModernConformanceRun() {
     return version != nullptr && std::string_view(version) == kModernSpecVersion;
 }
 
+void AppendUtf8CodePoint(std::string& out, uint32_t code) {
+    if (code < 0x80) {
+        out.push_back(static_cast<char>(code));
+    } else if (code < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else if (code < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    }
+}
+
+std::string ReadEnvironmentText(const char* name) {
+#ifdef _WIN32
+    std::wstring wide_name;
+    for (const char* p = name; *p != '\0'; ++p)
+        wide_name.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+    const wchar_t* wide_value = _wgetenv(wide_name.c_str());
+    if (!wide_value)
+        return std::string();
+    std::string utf8;
+    for (size_t i = 0; wide_value[i] != L'\0'; ++i) {
+        uint32_t code = static_cast<uint32_t>(wide_value[i]);
+        if (code >= 0xD800 && code <= 0xDBFF && wide_value[i + 1] != L'\0') {
+            uint32_t low = static_cast<uint32_t>(wide_value[i + 1]);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                code = 0x10000U + ((code - 0xD800U) << 10) + (low - 0xDC00U);
+                ++i;
+            } else {
+                code = 0xFFFDU;
+            }
+        } else if (code >= 0xD800 && code <= 0xDFFF) {
+            code = 0xFFFDU;
+        }
+        AppendUtf8CodePoint(utf8, code);
+    }
+    return utf8;
+#else
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+#endif
+}
+
 std::vector<std::pair<std::string, JsonValue>> ReadToolCallsContext() {
     std::vector<std::pair<std::string, JsonValue>> calls;
-    const char* raw = std::getenv("MCP_CONFORMANCE_CONTEXT");
-    if (!raw)
+    std::string context_text = ReadEnvironmentText("MCP_CONFORMANCE_CONTEXT");
+    if (context_text.empty())
         return calls;
-    JsonValue parsed = JsonValue::Parse(raw);
+    JsonValue parsed = JsonValue::Parse(JsonValue::SanitizeUtf8(context_text));
     const JsonValue* tool_calls = parsed.Find("toolCalls");
     if (!tool_calls || !tool_calls->IsArray())
         return calls;
@@ -187,7 +237,10 @@ void RunHttpInvalidToolHeadersClient(const std::string& server_url) {
 
 void RunMrtrClient(const std::string& server_url) {
     ClientCapabilities capabilities;
-    capabilities.elicitation = ElicitationCapability{};
+    ElicitationCapability elicitation_capability;
+    elicitation_capability.form =
+        JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    capabilities.elicitation = elicitation_capability;
 
     auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
         capabilities, true);
@@ -196,7 +249,7 @@ void RunMrtrClient(const std::string& server_url) {
                   << params.message << std::endl;
         ElicitResult result;
         result.action = "accept";
-        result.content = JsonValue(JsonValue::Object{{"confirmed", JsonValue(true)}});
+        result.content = JsonValue(JsonValue::Object{});
         return result;
     });
 

@@ -827,3 +827,66 @@ TEST(McpTypesTest, NoHintEmitsZeroPrivate) {
         EXPECT_EQ(jv["cacheScope"].GetString(), "private");
     }
 }
+
+TEST(McpTypesTest, ToolSchemaRemoteRefPreservedVerbatim) {
+    auto wire = JsonValue::Parse(
+        R"({"name":"remote_ref_tool",)"
+        R"("inputSchema":{"$ref":"https://example.com/schemas/address.json",)"
+        R"("type":"object"}})");
+    Tool tool = DeserializeTool(wire);
+    ASSERT_TRUE(tool.input_schema.Contains("$ref"));
+    EXPECT_EQ(tool.input_schema["$ref"].GetString(),
+        "https://example.com/schemas/address.json");
+    JsonValue round_tripped = SerializeTool(tool);
+    EXPECT_EQ(round_tripped["inputSchema"], wire["inputSchema"]);
+}
+
+TEST(McpTypesTest, ToolSchemaLocalRefPreservedVerbatim) {
+    auto wire = JsonValue::Parse(
+        R"({"name":"local_ref_tool",)"
+        R"("inputSchema":{"$defs":{"address":{"type":"object"}},)"
+        R"("properties":{"address":{"$ref":"#/$defs/address"}}}})");
+    Tool tool = DeserializeTool(wire);
+    EXPECT_EQ(tool.input_schema, wire["inputSchema"]);
+    JsonValue round_tripped = SerializeTool(tool);
+    EXPECT_EQ(round_tripped["inputSchema"], wire["inputSchema"]);
+}
+
+TEST(McpTypesTest, ValidatorRejectsRemoteRefWithoutDereferencing) {
+    auto schema = JsonValue::Parse(
+        R"({"$ref":"https://example.com/schemas/address.json"})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue(JsonValue::object_tag), schema, err));
+    EXPECT_NE(err.find("remote"), std::string::npos);
+    EXPECT_NE(err.find("$ref"), std::string::npos);
+}
+
+TEST(McpTypesTest, ValidatorRejectsNestedRemoteRef) {
+    auto schema = JsonValue::Parse(
+        R"({"type":"object",)"
+        R"("properties":{"address":{"$ref":"https://example.com/a.json"}}})");
+    auto instance = JsonValue::Parse(R"({"address":{}})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(instance, schema, err));
+    EXPECT_NE(err.find("remote"), std::string::npos);
+}
+
+TEST(McpTypesTest, ValidatorRejectsUnresolvableLocalRef) {
+    auto schema = JsonValue::Parse(R"({"$ref":"#/$defs/missing"})");
+    std::string err;
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue(JsonValue::object_tag), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorResolvesLocalRef) {
+    auto schema = JsonValue::Parse(
+        R"({"$defs":{"address":{"type":"object",)"
+        R"("properties":{"city":{"type":"string"}},"required":["city"]}},)"
+        R"("properties":{"address":{"$ref":"#/$defs/address"}}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"address":{"city":"x"}})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"address":{}})"), schema, err));
+}
