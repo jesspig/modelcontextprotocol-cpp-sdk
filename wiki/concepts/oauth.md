@@ -48,6 +48,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）触发自动刷新；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
+- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；`GetAccessToken` 刷新整段持 `refresh_mutex_` 为同步阻塞语义待优化；README 的 PKCE/DCR 公开表述待统一（`README.md:96` 与 `README.md:276` 并存）
 
 ## 服务端 Bearer 资源服务器（RFC 6750/9728）
 

@@ -56,3 +56,4 @@ resource: include/mcp/server/ServerOptions.hpp
 - 上条中仅 tasks/skills 报 `MethodNotFound`，apps/server-card 报 `HandlerError`；etag/渐进/文件输入/触发器/dpop 关态不报错，而是走原路（无 etag、全量列表、参数透传、事件丢弃、原 Bearer）；interceptor 为别名，开/关无差异。
 - 开：恢复既有行为——前置条件满足即声明扩展键并放行方法：tasks 需显式开开关（服务端，`task_store` 仍为任务持久化前置）/ 扩展映射含任务键（客户端），skills 需已注册技能且具 resources 能力（服务端），apps 开即声明 `ui` 键并放行 `ui://` 资源读，server_card 开即声明卡片键并开放 `GetServerCard()`。tasks 与 skills 行为细节见 [/concepts/tasks-extension.md](/concepts/tasks-extension.md) 与 [/concepts/skills-extension.md](/concepts/skills-extension.md)。
 - 技能守卫先于时代守卫：开关关闭时无论 modern/legacy 时代均报 `skills extension is disabled`，优先于时代拒绝。
+- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：stateless 客户端 `enable_listen_stream` 默认仍为 true（GET 长连接监听须显式关，仓库内零用例覆盖客户端 stateless=true），是否纳入单连接强制待裁决。
