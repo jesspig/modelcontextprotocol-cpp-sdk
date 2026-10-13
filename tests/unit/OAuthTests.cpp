@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 #include <mcp/test/McpTest.hpp>
+#include <mcp/test/McpTimeout.hpp>
 
 using namespace mcp;
 
@@ -300,7 +301,7 @@ TEST(OAuthTest, PrivateKeyJwtClientCredentialsSendsAssertion) {
         EXPECT_EQ(claims.Find("iss")->GetString(), "jwt-client");
         EXPECT_EQ(claims.Find("sub")->GetString(), "jwt-client");
         EXPECT_EQ(claims.Find("sub")->GetString(), claims.Find("iss")->GetString());
-        EXPECT_EQ(claims.Find("aud")->GetString(), issuer + "/token");
+        EXPECT_EQ(claims.Find("aud")->GetString(), issuer);
         EXPECT_EQ(claims.Find("iat")->GetInt(), 1700000000);
         EXPECT_EQ(claims.Find("exp")->GetInt(), 1700000060);
         EXPECT_FALSE(claims.Find("jti")->GetString().empty());
@@ -720,7 +721,7 @@ TEST(OAuthTest, EmptyAuthCodeRejectedWithoutTokenRequest) {
     server.Stop();
 }
 
-TEST(OAuthTest, TokenResponseMissingIssRejected) {
+TEST(OAuthTest, TokenResponseMissingIssAccepted) {
     auto port = PickFreePort(kTestBasePort + 1120);
     std::string issuer = "http://127.0.0.1:" + std::to_string(port);
 
@@ -738,8 +739,34 @@ TEST(OAuthTest, TokenResponseMissingIssRejected) {
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
     OAuthClientProvider provider(opts);
-    EXPECT_FALSE(provider.AuthenticateClientCredentials());
-    EXPECT_FALSE(provider.HasToken());
+    EXPECT_TRUE(provider.AuthenticateClientCredentials());
+    EXPECT_TRUE(provider.HasToken());
+    EXPECT_EQ(provider.GetAccessToken(), "no-iss-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, TokenResponseMatchingIssAccepted) {
+    auto port = PickFreePort(kTestBasePort + 1122);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"access_token\":\"matching-iss-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    OAuthClientProvider provider(opts);
+    EXPECT_TRUE(provider.AuthenticateClientCredentials());
+    EXPECT_TRUE(provider.HasToken());
+    EXPECT_EQ(provider.GetAccessToken(), "matching-iss-token");
     server.Stop();
 }
 
@@ -763,6 +790,59 @@ TEST(OAuthTest, TokenResponseIssuerMismatchRejected) {
     OAuthClientProvider provider(opts);
     EXPECT_FALSE(provider.AuthenticateClientCredentials());
     EXPECT_FALSE(provider.HasToken());
+    server.Stop();
+}
+
+TEST(OAuthTest, TokenResponseNonStringIssRejected) {
+    auto port = PickFreePort(kTestBasePort + 1135);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"access_token\":\"typed-iss-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"iss\":{\"value\":\"forged\"}}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    OAuthClientProvider provider(opts);
+    EXPECT_FALSE(provider.AuthenticateClientCredentials());
+    EXPECT_FALSE(provider.HasToken());
+    server.Stop();
+}
+
+TEST(OAuthTest, TokenRefreshWithoutIssAccepted) {
+    auto port = PickFreePort(kTestBasePort + 1138);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (req.body.find("grant_type=refresh_token") != std::string::npos) {
+                resp.body = "{\"access_token\":\"refreshed-no-iss\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":3600}";
+            } else {
+                resp.body = "{\"access_token\":\"issued-no-iss\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-one\"}";
+            }
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    OAuthClientProvider provider(opts);
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+    EXPECT_EQ(provider.GetAccessToken(), "refreshed-no-iss");
     server.Stop();
 }
 
@@ -1004,6 +1084,132 @@ TEST(OAuthTest, ConcurrentGetAccessTokenRefreshesOnce) {
     EXPECT_EQ(refresh_calls.load(), 1);
     for (const auto& value : results) EXPECT_EQ(value, "refreshed-token");
 
+    server.Stop();
+}
+
+TEST(OAuthTest, TokenUpdateHandlerReentrantGetAccessTokenDoesNotDeadlock) {
+    auto port = PickFreePort(kTestBasePort + 1174);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (req.body.find("grant_type=refresh_token") != std::string::npos) {
+                resp.body = "{\"access_token\":\"rotated-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+            } else {
+                resp.body = "{\"access_token\":\"short-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-one\",\"iss\":\"" + issuer + "\"}";
+            }
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::mutex seen_mutex;
+    std::vector<std::string> seen;
+    OAuthClientProvider* provider_ptr = nullptr;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    opts.token_update_handler =
+        [&provider_ptr, &seen_mutex, &seen](const TokenContainer& t) {
+            std::lock_guard<std::mutex> lock(seen_mutex);
+            seen.push_back(t.access_token);
+            if (seen.size() < 2 || provider_ptr == nullptr) return;
+            seen.push_back(provider_ptr->GetAccessToken());
+        };
+    OAuthClientProvider provider(opts);
+    provider_ptr = &provider;
+
+    MCP_RUN_WITH_TIMEOUT(std::chrono::seconds(20), [&] {
+        EXPECT_TRUE(provider.AuthenticateClientCredentials());
+        EXPECT_EQ(provider.GetAccessToken(), "rotated-token");
+    });
+
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    ASSERT_TRUE(seen.size() == 3);
+    EXPECT_EQ(seen[0], "short-token");
+    EXPECT_EQ(seen[1], "rotated-token");
+    EXPECT_EQ(seen[2], "rotated-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, ConcurrentWaiterSurvivesRefreshOwnerReentry) {
+    auto port = PickFreePort(kTestBasePort + 1176);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> refresh_calls{0};
+    std::atomic<bool> refresh_started{false};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (req.body.find("grant_type=refresh_token") != std::string::npos) {
+                refresh_calls.fetch_add(1);
+                refresh_started.store(true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                resp.body = "{\"access_token\":\"rotated-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                            "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+            } else {
+                resp.body = "{\"access_token\":\"short-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-one\",\"iss\":\"" + issuer + "\"}";
+            }
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::mutex seen_mutex;
+    std::vector<std::string> seen;
+    OAuthClientProvider* provider_ptr = nullptr;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    opts.token_update_handler =
+        [&provider_ptr, &seen_mutex, &seen](const TokenContainer& t) {
+            std::lock_guard<std::mutex> lock(seen_mutex);
+            seen.push_back(t.access_token);
+            if (seen.size() < 2 || provider_ptr == nullptr) return;
+            seen.push_back(provider_ptr->GetAccessToken());
+        };
+    OAuthClientProvider provider(opts);
+    provider_ptr = &provider;
+
+    std::string waiter_token;
+    std::string owner_token;
+    std::atomic<bool> refresh_failed{false};
+    MCP_RUN_WITH_TIMEOUT(std::chrono::seconds(20), [&] {
+        EXPECT_TRUE(provider.AuthenticateClientCredentials());
+        std::thread waiter([&] {
+            try {
+                while (!refresh_started.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                waiter_token = provider.GetAccessToken();
+            } catch (...) {
+                refresh_failed.store(true);
+            }
+        });
+        try {
+            owner_token = provider.GetAccessToken();
+        } catch (...) {
+            refresh_failed.store(true);
+        }
+        waiter.join();
+    });
+
+    EXPECT_FALSE(refresh_failed.load());
+    EXPECT_EQ(refresh_calls.load(), 1);
+    EXPECT_EQ(owner_token, "rotated-token");
+    EXPECT_EQ(waiter_token, "rotated-token");
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    ASSERT_TRUE(seen.size() == 3);
+    EXPECT_EQ(seen[0], "short-token");
+    EXPECT_EQ(seen[1], "rotated-token");
+    EXPECT_EQ(seen[2], "rotated-token");
     server.Stop();
 }
 

@@ -2,7 +2,7 @@
 # 来源：tests/conformance/baseline.yaml（2026-10-12 摘录，条目逐字一致）。
 # 选用规则：scripts/run-conformance.sh 按 CONFORMANCE_SPEC_VERSION 映射本文件，
 # 未知版本回退 tests/conformance/baseline.yaml。完整归因见 baseline.yaml，本文件只收
-# legacy leg 实际运行的场景条目（server 1 + client 15）。
+# legacy leg 实际运行的场景条目（server 1 + client 1）。
 
 # （server 键：仅 server-sse-multiple-streams 一条。legacy suite 内它以 WARNING
 # 形式 skip（0/0，无 session 时 referee 记 WARNING 不记失败），无条目则 legacy
@@ -28,11 +28,15 @@ client:
     # C++ fixture 可读，无需 TS fetch shim。
     - http-custom-headers
 
-    # --- auth/*（14 个 legacy core 集条目，从 baseline.yaml 逐字摘录，2026-10-12）---
-    # C++ client 无 OAuth 表面，core 集逐个运行 auth 场景时 client 以
-    # Unknown scenario 退出 1，靠本基线放行（requirements 2025-11-25 内共 14 个）。
-    # 完整 31 个见 tests/conformance/baseline.yaml 与 baseline-2026-07-28.yaml。
-    - auth/metadata-var1
-    - auth/metadata-var2
-    - auth/metadata-var3
-    - auth/scope-step-up
+    # --- auth/*：legacy client 条目已全部转绿，2026-10-13 清空---
+    # 2026-10-13 实测（--suite core --spec-version 2025-11-25）：Total 233 passed / 0 failed。
+    # referee 报 stale 4 条，删除证据即该 stale 报告：
+    #   auth/metadata-var1（17 passed）、auth/metadata-var2（17 passed）、
+    #   auth/metadata-var3（17 passed）、auth/scope-step-up（20 passed）。
+    # 前三条成因同 modern leg（ValidateTokenIssuer 由「iss 强制必需」改为
+    # 「存在即校验」，此前 provider 流换 token 阶段恒失败）；
+    # scope-step-up 成因是 SSE 拆除路径——服务端不支持 GET /mcp 时返回 404，
+    # 原 `ListenStateForStatusCode` 把 404 判为 Connecting（可重连），
+    # 触发 5 次退避重连耗尽 referee 的 30s（检查已跑完但进程退不出）。
+    # 本轮将其改判：4xx 视为不支持监听流并静默放弃（对齐既有 405 语义），
+    # 修复后该场景 20 passed 且进程正常退出。
