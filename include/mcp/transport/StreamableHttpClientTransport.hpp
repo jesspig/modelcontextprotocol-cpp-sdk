@@ -25,7 +25,7 @@ struct HttpClientTransportOptions {
     std::string known_session_id;
     std::map<std::string, std::string> additional_headers;
     std::function<std::string(std::string_view www_authenticate)> auth_challenge_handler;
-    bool enable_listen_stream = true;
+    std::optional<bool> enable_listen_stream;
     bool stateless = false;
     std::optional<std::size_t> max_sse_event_bytes = detail::kMaxSseEventBytes;
     detail::HttpRedirectPolicy redirect_policy = detail::HttpRedirectPolicy::SameOriginOnly;

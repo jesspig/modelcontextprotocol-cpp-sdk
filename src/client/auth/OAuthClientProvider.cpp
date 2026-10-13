@@ -96,6 +96,32 @@ std::optional<NetResponse> HttpPostUrl(
     }
 }
 
+class RefreshInFlightGuard {
+public:
+    RefreshInFlightGuard(std::mutex& mutex,
+                        bool& in_flight,
+                        std::condition_variable& finished)
+        : mutex_(mutex)
+        , in_flight_(in_flight)
+        , finished_(finished) {}
+
+    ~RefreshInFlightGuard() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            in_flight_ = false;
+        }
+        finished_.notify_all();
+    }
+
+    RefreshInFlightGuard(const RefreshInFlightGuard&) = delete;
+    RefreshInFlightGuard& operator=(const RefreshInFlightGuard&) = delete;
+
+private:
+    std::mutex& mutex_;
+    bool& in_flight_;
+    std::condition_variable& finished_;
+};
+
 } // anonymous namespace
 
 namespace mcp {
@@ -602,20 +628,34 @@ bool OAuthClientProvider::RefreshTokens() {
     return true;
 }
 
+void OAuthClientProvider::RefreshTokensCoalesced() {
+    for (;;) {
+        std::unique_lock<std::mutex> lock(refresh_mutex_);
+        if (!refresh_in_flight_) {
+            refresh_in_flight_ = true;
+            RefreshInFlightGuard guard(refresh_mutex_, refresh_in_flight_, refresh_cv_);
+            lock.unlock();
+            if (!RefreshTokens())
+                throw McpError(McpErrorCode::InternalError,
+                    "OAuth token refresh failed");
+            return;
+        }
+        refresh_cv_.wait(lock);
+        lock.unlock();
+        auto tokens = token_cache_->GetTokens();
+        if (tokens && TokenResourceMatches(*tokens) && !tokens->WillExpireSoon())
+            return;
+    }
+}
+
 std::string OAuthClientProvider::GetAccessToken() {
-    std::lock_guard<std::mutex> lock(refresh_mutex_);
     auto tokens = token_cache_->GetTokens();
     if (!tokens) return {};
     if (!TokenResourceMatches(*tokens)) return {};
-    if (tokens->WillExpireSoon()) {
-        if (!tokens->refresh_token.empty()) {
-            if (!RefreshTokens()) {
-                throw McpError(McpErrorCode::InternalError,
-                    "OAuth token refresh failed");
-            }
-        }
-        tokens = token_cache_->GetTokens();
-    }
+    if (!tokens->WillExpireSoon() || tokens->refresh_token.empty())
+        return tokens->access_token;
+    RefreshTokensCoalesced();
+    tokens = token_cache_->GetTokens();
     return tokens ? tokens->access_token : std::string{};
 }
 

@@ -145,6 +145,10 @@ ListenState ListenStateForStatusCode(int status_code) {
     return ListenState::Connecting;
 }
 
+bool ShouldListenStream(const HttpClientTransportOptions& options) {
+    return options.enable_listen_stream.value_or(!options.stateless);
+}
+
 inline bool IsInsufficientScopeChallenge(std::string_view www_authenticate) {
     std::string lower;
     lower.reserve(www_authenticate.size());
@@ -349,7 +353,7 @@ private:
         }
     }
     void MaybeStartListenStream(const JsonRpcMessage& message) {
-        if (!options_.enable_listen_stream) return;
+        if (!streamable_http_client_impl::ShouldListenStream(options_)) return;
         auto* notification = AsNotification(message);
         if (!notification || notification->method !=
             streamable_http_client_impl::kInitializedNotificationMethod) {
@@ -1376,7 +1380,7 @@ private:
         }
     }
     void MaybeStartListenStream(const JsonRpcMessage& message) {
-        if (!options_.enable_listen_stream) return;
+        if (!streamable_http_client_impl::ShouldListenStream(options_)) return;
         auto* notification = AsNotification(message);
         if (!notification || notification->method !=
             streamable_http_client_impl::kInitializedNotificationMethod) {

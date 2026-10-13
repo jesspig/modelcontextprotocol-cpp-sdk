@@ -3,13 +3,13 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符与 audience 绑定、RFC 9207 iss 强制校验与发行者绑定、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer, audience]
-timestamp: 2026-10-13T02:00:08+08:00
+timestamp: 2026-10-13T11:03:35+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
 # OAuth 授权流程
 
-`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——整体按单线程使用设计：不使用 `refresh_mutex_` 以外的同步保护。`GetAccessToken` 内部用 `refresh_mutex_` 串行化“读 token → 判断过期 → 刷新 → 写回”整段。因此只有 token 获取/刷新路径受该锁保护，`Authenticate`、`Revoke`、`StepUpAuthorization` 以及 metadata/registration 状态不能据此视为整体线程安全。无 token_cache 时默认 `InMemoryTokenCache`。
+`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——整体按单线程使用设计：除 token 刷新路径外无同步保护。`GetAccessToken` 缓存命中路径**不持任何锁**；仅在需要刷新时经 `RefreshTokensCoalesced` 用 `refresh_mutex_` + `refresh_cv_` + `refresh_in_flight_` 标志做**一次性刷新协调**：抢到标志的线程释放锁后执行 `RefreshTokens`（网络 I/O **不在锁内**），其余线程在条件变量上等待，完成后复查缓存——已新鲜则直接复用，否则自己再抢刷新（失败同样抛错）。因此 N 路并发 `GetAccessToken` 只触发一次刷新请求。`Authenticate`、`Revoke`、`StepUpAuthorization` 以及 metadata/registration 状态不能据此视为整体线程安全。无 token_cache 时默认 `InMemoryTokenCache`。
 
 ## 流程（`Authenticate()`）
 
@@ -45,10 +45,10 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 - 响应缺 `access_token` → 失败，**不回退旧 token**（`RefreshTokens` 亦然）
 - 响应缺 `refresh_token` → 保留旧值（RFC 6749 非轮转）
-- `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）触发自动刷新；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`
+- `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）且有 `refresh_token` 时触发自动刷新；无 `refresh_token` 时直接返回缓存 access_token 不报错；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`（并发调用经 `RefreshTokensCoalesced` 合并为一次请求）
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
-- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；`GetAccessToken` 刷新整段持 `refresh_mutex_` 为同步阻塞语义待优化；README 的 PKCE/DCR 公开表述待统一（`README.md:96` 与 `README.md:276` 并存）
+- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；README 的 PKCE/DCR 公开表述待统一（`README.md:96` 与 `README.md:276` 并存）
 
 ## 服务端 Bearer 资源服务器（RFC 6750/9728）
 

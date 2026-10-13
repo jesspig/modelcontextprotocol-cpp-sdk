@@ -4,6 +4,7 @@
 #include <mcp/ext/DPoP.hpp>
 #include <mcp/McpTypes.hpp>
 
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -74,6 +75,8 @@ private:
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
     bool ParseAndStoreTokenResponse(const JsonValue& json);
 
+    void RefreshTokensCoalesced();
+
     bool ValidateTokenIssuer(const JsonValue& response) const;
 
     bool CodeChallengeS256Supported() const;
@@ -111,6 +114,8 @@ private:
     mutable std::mutex dpop_mutex_;
 
     std::mutex refresh_mutex_;
+    std::condition_variable refresh_cv_;
+    bool refresh_in_flight_ = false;
 };
 
 namespace pkce {

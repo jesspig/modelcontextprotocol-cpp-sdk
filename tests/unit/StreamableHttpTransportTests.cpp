@@ -47,6 +47,7 @@ struct SseBlockParseResult {
 
 SseBlockParseResult ParseSseBlock(const std::string& block);
 ListenState ListenStateForStatusCode(int status_code);
+bool ShouldListenStream(const HttpClientTransportOptions& options);
 std::chrono::milliseconds ReconnectDelayForAttempt(int attempt,
                                                   std::optional<uint64_t> retry_ms);
 std::string EffectiveProtocolVersion(const std::string& negotiated_version);
@@ -153,8 +154,16 @@ TEST(StreamableHttpTransportTest, ServerMcpHeadersNameMismatch) {
 }
 
 TEST(StreamableHttpTransportTest, ClientListenStreamEnabledByDefault) {
+    using mcp::streamable_http_client_impl::ShouldListenStream;
     HttpClientTransportOptions opts;
-    EXPECT_TRUE(opts.enable_listen_stream);
+    EXPECT_FALSE(opts.enable_listen_stream.has_value());
+    EXPECT_TRUE(ShouldListenStream(opts));
+    opts.stateless = true;
+    EXPECT_FALSE(ShouldListenStream(opts));
+    opts.enable_listen_stream = true;
+    EXPECT_TRUE(ShouldListenStream(opts));
+    opts.enable_listen_stream = false;
+    EXPECT_FALSE(ShouldListenStream(opts));
 }
 
 TEST(StreamableHttpTransportTest, SseBlockParseIdAndData) {
@@ -427,6 +436,79 @@ TEST(StreamableHttpTransportTest, ListenStreamStopsAfter405) {
     ASSERT_EQ(get_calls.load(), 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     EXPECT_EQ(get_calls.load(), 1);
+
+    transport->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, StatelessClientSkipsListenStreamByDefault) {
+    auto port = PickFreePort(kTestBasePort + 1352);
+    HttpServer mock(port);
+    std::atomic<int> get_calls{0};
+    mock.SetHandler("POST", "/mcp", [](const HttpRequest&, HttpResponse& resp) {
+        resp.status_code = 202;
+        resp.status_text = "Accepted";
+        resp.body = "{}";
+    });
+    mock.SetHandler("GET", "/mcp", [&](const HttpRequest&, HttpResponse& resp) {
+        get_calls.fetch_add(1);
+        resp.status_code = 405;
+        resp.status_text = "Method Not Allowed";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.stateless = true;
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    JsonRpcNotification initialized;
+    initialized.method = "notifications/initialized";
+    transport->SendMessageAsync(std::move(initialized));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    EXPECT_EQ(get_calls.load(), 0);
+
+    transport->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, StatelessClientForcedListenStreamSendsGet) {
+    auto port = PickFreePort(kTestBasePort + 1354);
+    HttpServer mock(port);
+    std::atomic<int> get_calls{0};
+    mock.SetHandler("POST", "/mcp", [](const HttpRequest&, HttpResponse& resp) {
+        resp.status_code = 202;
+        resp.status_text = "Accepted";
+        resp.body = "{}";
+    });
+    mock.SetHandler("GET", "/mcp", [&](const HttpRequest&, HttpResponse& resp) {
+        get_calls.fetch_add(1);
+        resp.status_code = 405;
+        resp.status_text = "Method Not Allowed";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.stateless = true;
+    opts.enable_listen_stream = true;
+    StreamableHttpClientTransport client(opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    JsonRpcNotification initialized;
+    initialized.method = "notifications/initialized";
+    transport->SendMessageAsync(std::move(initialized));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (get_calls.load() < 1 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_EQ(get_calls.load(), 1);
 
     transport->Close();
     mock.Stop();
@@ -2533,7 +2615,11 @@ TEST(StreamableHttpTransportTest, StatelessSingleConnectionDefaults) {
 
     HttpClientTransportOptions client_opts;
     EXPECT_FALSE(client_opts.stateless);
-    EXPECT_TRUE(client_opts.enable_listen_stream);
+    EXPECT_TRUE(mcp::streamable_http_client_impl::ShouldListenStream(client_opts));
+    client_opts.stateless = true;
+    EXPECT_FALSE(mcp::streamable_http_client_impl::ShouldListenStream(client_opts));
+    client_opts.enable_listen_stream = true;
+    EXPECT_TRUE(mcp::streamable_http_client_impl::ShouldListenStream(client_opts));
 }
 
 TEST(StreamableHttpTransportTest, StatelessDeleteIsRejected) {

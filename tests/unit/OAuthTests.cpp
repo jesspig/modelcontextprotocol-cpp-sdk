@@ -645,6 +645,51 @@ TEST(OAuthTest, TokenRefreshNotifiesHandler) {
     server.Stop();
 }
 
+TEST(OAuthTest, ConcurrentGetAccessTokenRefreshesOnce) {
+    auto port = PickFreePort(kTestBasePort + 1172);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> refresh_calls{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (req.body.find("grant_type=refresh_token") != std::string::npos) {
+                refresh_calls.fetch_add(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                resp.body = "{\"access_token\":\"refreshed-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                            "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+            } else {
+                resp.body = "{\"access_token\":\"short-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-one\",\"iss\":\"" + issuer + "\"}";
+            }
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    OAuthClientProvider provider(opts);
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+
+    std::vector<std::thread> callers;
+    std::vector<std::string> results(4);
+    for (int i = 0; i < 4; ++i) {
+        callers.emplace_back([&provider, &results, i] {
+            results[static_cast<size_t>(i)] = provider.GetAccessToken();
+        });
+    }
+    for (auto& caller : callers) caller.join();
+
+    EXPECT_EQ(refresh_calls.load(), 1);
+    for (const auto& value : results) EXPECT_EQ(value, "refreshed-token");
+
+    server.Stop();
+}
+
 TEST(OAuthTest, AuthClosedLoopBearerChallengeSuccess) {
     auto port = PickFreePort(kTestBasePort + 1180);
     std::string issuer = "http://127.0.0.1:" + std::to_string(port);
