@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-13T03:53:10+08:00
+timestamp: 2026-10-13T11:15:00+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -36,7 +36,7 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 - client modern：383 passed + 保留 10 条目（删 21 条目转绿：`metadata-default`、`basic-cimd`、`scope`×5、`token-endpoint`×3、`pre-registration`、`resource-mismatch`、`offline-access-scope`、`offline-access-not-supported`、`iss`×6 含 normalized、`metadata-issuer-mismatch`；保留 `metadata-var1/var2/var3`、`authorization-server-migration`（部分失败）、`client-credentials-jwt/basic`、`enterprise-managed-authorization`、`dpop`、`dpop-nonce`、`wif-jwt-bearer` 共 10 条）
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-ctest 口径 848 用例全绿，断言 token 3606（原 3605，C-T1 握手断言 +1：`MakeModernTaskEnv` 断言 initialize 回 `MethodNotFound`），分布见 [/tests.md](/tests.md)。
+ctest 口径 848 用例全绿（`51f35d0` 主代理实测），其后两次提交新增用例尚未复跑：静态 `TEST/TEST_F/TEST_P` 口径现为 **854**（848 + `1668e2e` +3：`OAuthTests` +1、`StreamableHttpTransportTests` +2 + `374a591` +3：`McpTypesTests`），断言 token **3631**（3606 + `1668e2e` +16 + `374a591` +9）；ctest 注册口径待主代理 `ctest -N` 复核，逐目标分布见 [/tests.md](/tests.md)。
 
 T11 口径留档：server legacy 67/67、server modern 194+1、client legacy 11+43、client modern 66+68（auth 全走基线时代）。
 
@@ -79,8 +79,8 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 4. `enable_listen_stream` 默认 true：stateless 客户端默认仍持开 GET 监听，须显式关；是否纳入单连接强制待裁决（见 [experimental-flags](/concepts/experimental-flags.md)）
 5. `StepUpAuthorization` 空元数据解引用：无元数据路径存在空解引用风险，待加固；另无 403 链路（见上生产缺口记账）
 6. `GetAccessToken` 持锁同步刷新：刷新整段持 `refresh_mutex_`，同步阻塞语义待优化（见 [oauth](/concepts/oauth.md)）
-7. `MakeModernTaskEnv` 失效 initialize 握手 + 死通知保留：现代任务测试 helper 的握手形态已失效，由 `b7a613e` 改逐请求声明绕行；本分支 C-T1 加一握手断言（initialize 回 `MethodNotFound` 即判失败，`tests/unit/McpServerTests.cpp`），死通知发送保留，helper 本体待修
-8. `unevaluated` 求值近似：`unevaluatedProperties`/`unevaluatedItems` 为近似求值，非完整语义
+7. `MakeModernTaskEnv` 死通知已删、握手守护断言保留：2026 时代服务端丢弃未初始化会话的 `notifications/initialized`，该死通知已从 helper 删除（`tests/unit/McpServerTests.cpp`），现代任务用例改走 `MakeBareModernTaskEnv` 已验证的直连路径——任务门控请求逐请求 `_meta` 声明（`b7a613e` 先例）；helper 仍保留 C-T1 的握手守护断言（initialize 回 `MethodNotFound` 即判失败），引用该 helper 的 12 处用例形态不变
+8. `unevaluatedProperties`/`unevaluatedItems`：按 spec §7.3 注解收集 opt-out 归入忽略注解类，无近似路径——`374a591` 删除 `JsonSchemaValidator.hpp` 内两处近似求值实现，改由三条忽略行为守护测试锁定（`tests/unit/McpTypesTests.cpp`）
 9. ~~README 的 PKCE/DCR 表述待统一~~（本分支已解决：`README.md`/`README_zh.md` 统一为 `PKCE/CIMD（DCR 回退）`，`ad8075a` 前序 + 本分支 `README` 口径；`jwt-bearer` 不支持声明同步更新）
 
 ## 相关页面

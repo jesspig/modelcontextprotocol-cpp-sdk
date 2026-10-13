@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符与 audience 绑定、RFC 9207 iss 强制校验与发行者绑定、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer, audience]
-timestamp: 2026-10-13T11:03:35+08:00
+timestamp: 2026-10-13T11:12:00+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -48,7 +48,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）且有 `refresh_token` 时触发自动刷新；无 `refresh_token` 时直接返回缓存 access_token 不报错；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`（并发调用经 `RefreshTokensCoalesced` 合并为一次请求）
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
-- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；README 的 PKCE/DCR 公开表述待统一（`README.md:96` 与 `README.md:276` 并存）
+- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；~~README 的 PKCE/DCR 公开表述待统一~~（已解决：`README.md:96` 与 `README.md:276` 同批改为 `PKCE/CIMD（DCR 回退）` 口径，`git blame` 两行均归 `ad8075a`；`README.md:276` 同步声明 `jwt-bearer`/`private_key_jwt` 不支持）
 
 ## 服务端 Bearer 资源服务器（RFC 6750/9728）
 

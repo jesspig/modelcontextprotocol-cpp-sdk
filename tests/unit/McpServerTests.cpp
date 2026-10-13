@@ -2304,7 +2304,6 @@ ModernTaskEnv MakeModernTaskEnv() {
     }
     EXPECT_EQ(init_resp["code"].GetInt(),
               static_cast<int64_t>(McpErrorCode::MethodNotFound));
-    env.client->SendNotification(notifications::kInitialized);
     return env;
 }
 

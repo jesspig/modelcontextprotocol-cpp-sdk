@@ -1,15 +1,15 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 18 个测试目标（15 unit + integration/conformance/framework），848 个测试用例（ctest 注册口径，自研测试框架）；静态断言统计 3606；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
+description: 18 个测试目标（15 unit + integration/conformance/framework），854 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，自研测试框架）；静态断言统计 3631；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-10-13T03:53:10+08:00
+timestamp: 2026-10-13T11:18:00+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为 **ctest 注册口径**（本轮 848，原 769；`--gtest_list_tests` 逐二进制求和 848 与 ctest 一致；Tier1 对标分支 11 提交 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` + 过滤修复增量并入既有目标，无新目标）；断言数为静态统计（`(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用；口径为 `tests/**/*.cpp`，不含框架头文件中的宏定义；本轮实测 3606，较上轮 +1——`gap-and-ci-green` 分支 C-T1 在 `MakeModernTaskEnv` 加一握手断言（initialize 回 `MethodNotFound` 即判失败），用例数不动）。
+全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(`/`TEST_P(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F|TEST_P)\('`，口径为 `tests/**/*.cpp`），现为 **854**（T11 收口 769 → `51f35d0` 主代理实测 ctest 注册口径 848 绿，此后 `1668e2e` +3、`374a591` +3 新增用例尚未复跑，ctest 注册口径待 `ctest -N` 复核）；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用，不含框架头文件中的宏定义），现为 **3631**（3606 + `1668e2e` +16 + `374a591` +9；`374a591` 在 `McpTypesTests.cpp` 增 3 用例 / 9 断言的 `unevaluatedProperties`/`unevaluatedItems` 忽略行为守护，`1668e2e` 在 `OAuthTests` 增 1 用例 / 4 断言、`StreamableHttpTransportTests` 增 2 用例 / 12 断言）。
 
 目标数维持 18：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）。
 
@@ -17,11 +17,11 @@ resource: tests/CMakeLists.txt
 
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
-| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests | 176 | 381 |
+| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests | 179 | 390 |
 | mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 65 | 307 |
 | mcp-server-tests | McpServerTests | 95 | 807 |
 | mcp-client-tests | McpClientTests | 76 | 375 |
-| mcp-oauth-tests | OAuthTests | 38 | 132 |
+| mcp-oauth-tests | OAuthTests | 39 | 136 |
 | mcp-transport-tests | TransportTests、MessageChannelTests | 15 | 62 |
 | mcp-net-tests | NetStackTests、WebSocketClientTests | 26 | 55 |
 | mcp-http-tests | HttpServerTests | 41 | 179 |
@@ -29,13 +29,13 @@ resource: tests/CMakeLists.txt
 | mcp-token-cache-tests | FileTokenCacheTests | 5 | 19 |
 | mcp-task-store-tests | FileTaskStoreTests | 15 | 113 |
 | mcp-event-store-tests | FileEventStoreTests | 11 | 48 |
-| mcp-streamable-http-tests | StreamableHttpTransportTests、SessionStoreTests | 78 | 403 |
+| mcp-streamable-http-tests | StreamableHttpTransportTests、SessionStoreTests | 80 | 415 |
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-uri-template-tests | UriTemplateTests | 21 | 133 |
 | mcp-integration-tests | ClientServerRoundTrip、Phase1InteropTests、Phase2ClosureTests | 19 | 113 |
 | mcp-conformance-tests | ProtocolConformance | 123 | 386 |
 | mcp-framework-self-tests | SelfTests | 37 | 76 |
-| **合计** | | **848** | **3606** |
+| **合计** | | **854** | **3631** |
 
 ## 测试注意点
 
@@ -52,7 +52,7 @@ resource: tests/CMakeLists.txt
 - SEP-2243 参数头测试覆盖 `x-mcp-header` 的嵌套属性路径、非法 schema、标准 Base64 哨兵编码、服务端与 body 一致性校验、服务端结果响应头镜像，以及客户端只镜像已注解参数；`ClientOmitsMcpParamHeaders` 仅验证未注解参数不生成头
 - Span hook 测试覆盖未注入回归、服务端请求/传输边界、trace context 传递和拒绝请求的 Begin/End 配对，详见 [/concepts/span-hooks.md](/concepts/span-hooks.md)
 - 期三关键守护测试：Bearer 鉴权 9 用例（无头/非 Bearer 挑战、invalid_token、insufficient_scope、有效 token 透传、元数据端点匿名、未配置零回归、客户端 `auth_challenge_handler` 闭环成功与 scope 不足）；FileEventStore 10 用例（双实例共享、重启恢复、并发写、trim、净化文件名等）；SessionStore 5 用例（外部接管、未知 id 404 `-32009`）；MRTR 端到端 3 用例（`MrtrToolInputRequiredElicitationRoundTrip`、`MrtrMintedRequestStateRoundTrip`、`MrtrForgedRequestStateRejectedWithReason`）；`SendLoggingMessageEncodesLevelAsString`（wire 真 bug 回归）；`ListPromptsIncludesArguments`；`CompleteRequestParamsStandardShape`/`CompleteRequestParamsFlatShapeCompat`；显式能力声明 2 用例
-- 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 18 个测试目标和 769 个 ctest 用例
+- 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 18 个测试目标和 854 个用例
 - 本分支新增守护测试（均并入既有目标）：任务扩展——`WireCodec` 双时代集合与 `ValidateTaskHeaders` 缺 taskId/头失配、`McpServer` modern 头校验与通知抑制/`tasks/update` inputResponses 分支（互斥/状态门）/`tasks/result|list` 现代拒绝、任务存储新字段 roundtrip 与 `AdvanceTaskWithInput` 状态门、`McpClient` 未声明扩展收 task 抛 `HandlerError`/`UpdateTask` 第三参、`CreateTaskResult` 顶层/嵌套双形态；技能扩展——`Skill/SkillResources` 序列化 roundtrip、`RegisterSkill` 非法 uri 拒绝、目录视图派生与 `directoryRead` 门、客户端技能缓存（`use/bypass/refresh` + `max_age_ms`）；HTTP 加固——未知版本头 400 `-32022`、任务头 400、`initialize` 满存 503、会话闲置过期与 `SweepExpired`、EventStore 扫描追加与 10000 上限、监听流 5xx `GivenUp` 与 `retry:` 钳制（450–1000ms）、SSE `FlushSseBuffer` 尾块补派发；OAuth——`application_type` 注册透传、token `resource` 持久化与失配门、issuer 变更清注册/令牌、challenge 加固（超长/非法 URL 拒绝不抛）；服务端 audience 失配 401、客户端 403 仅 `insufficient_scope` 重试
 - 本批（G 系列冻结批）新增守护测试（均并入既有目标，无新目标）：服务端——`CreateTaskResultFlatNoNested`（2026 扁平无嵌套）/`TaskTimestampsPopulated`（创建即置双时间戳）/`ToolErrorMapsToCompleted`（`is_error` 结果入库落 Completed）/`ProtocolErrorMapsToFailedWithError`（`McpError` 按原码内联 error 落 Failed）/`PromptsGetInputRequired`/`ResourceReadInputRequired`（非工具 input_required + 自动签名）/`MetaReachesHandler`（顶层 `_meta` 合并进 params）；客户端——`FlatTaskResultPreferredOverNested`（双形态反序列化顶层优先）/`ElicitationApplyDefaults*`（`applyDefaults` 缺省回填：五字段/禁用透传/保留既有/拒绝忽略/嵌套与变体递归）/`MrtrElicitationApplyDefaultsFillsInputResponses`；传输——`RequestStreamHoldOpenDeliversProgressBeforeResult`/`RequestStreamHoldOpenDeliversMessageBeforeResult`（modern POST 常开按 token 路由缓冲）/`PlainRequestKeepsSingleWriteAndClose`（普通请求仍单写即关）
 - 实验开关门控矩阵（`ad547f9`，服务端 10 开关 / 客户端 3 开关默认全关，基线 748/3145 不动；详见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)）：

@@ -2,7 +2,7 @@
 # 来源：tests/conformance/baseline.yaml（2026-10-12 摘录，条目逐字一致）。
 # 选用规则：scripts/run-conformance.sh 按 CONFORMANCE_SPEC_VERSION 映射本文件，
 # 未知版本回退 tests/conformance/baseline.yaml。完整归因见 baseline.yaml，本文件只收
-# modern leg（--requirements 2026-07-28）实际运行的场景条目（server 0 + client 32）。
+# modern leg（--requirements 2026-07-28）实际运行的场景条目（server 1 + client 10）。
 
 # （server 键：仅 server-stateless 一条。server-sse-multiple-streams 在 modern requirements 内 2/2 通过，
 # 故不入本文件（入则报 stale）；该条目仅留 baseline-2025-11-25.yaml 保 legacy 绿。）
