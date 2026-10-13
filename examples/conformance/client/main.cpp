@@ -44,6 +44,7 @@ bool IsModernConformanceRun() {
     return version != nullptr && std::string_view(version) == kModernSpecVersion;
 }
 
+#ifdef _WIN32
 void AppendUtf8CodePoint(std::string& out, uint32_t code) {
     if (code < 0x80) {
         out.push_back(static_cast<char>(code));
@@ -61,6 +62,7 @@ void AppendUtf8CodePoint(std::string& out, uint32_t code) {
         out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
     }
 }
+#endif
 
 std::string ReadEnvironmentText(const char* name) {
 #ifdef _WIN32

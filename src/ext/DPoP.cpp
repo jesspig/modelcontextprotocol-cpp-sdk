@@ -336,7 +336,7 @@ std::string SignEs256JwtWithPem(std::string_view header_json,
     if (!key) {
         throw McpError(McpErrorCode::InvalidParams, "ES256 private key PEM is not an EC key");
     }
-    if (EC_KEY_get_curve_name(key.get()) != NID_X9_62_prime256v1) {
+    if (EC_GROUP_get_curve_name(EC_KEY_get0_group(key.get())) != NID_X9_62_prime256v1) {
         throw McpError(McpErrorCode::InvalidParams, "ES256 private key must be on the P-256 curve");
     }
     if (EC_KEY_check_key(key.get()) != 1) {
