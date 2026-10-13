@@ -51,7 +51,7 @@ auto server = McpServer::Create(transport, opts);
 | 服务端 | `enable_progressive_discovery` | `tools/list` 支持 `query` 过滤 + `pageSize` 翻页；`listen` 即刷持开，`list_changed` 按订阅缓冲 | `tools/list` 走缓存全量；`listen` 与 `list_changed` 走原路径 |
 | 服务端 | `enable_file_input` | `tools/call` 参数内 `file://`/`resource://` 引用按范围切片并内联小文件（`http(s)` 透传，越界超限回错误） | 参数原样透传 |
 | 服务端 | `enable_triggers_events` | 注册表 + 按类型匹配，经订阅投递触发器事件通知并打 webhook（失败只记 `Warning`） | 发射直接返回，事件静默丢弃 |
-| 服务端 | `enable_dpop` | Bearer 链加 DPoP 证明验签（失败 401 带 nonce，`jti` 防重放；无 OpenSSL 硬报错） | 原 Bearer 链 |
+| 服务端 | `enable_dpop`（`ServerOptions::enable_dpop` **无读取点，不生效**；实际生效门是传输侧 `bearer_auth->enable_dpop`） | 由传输侧 `StreamableHttpServerTransport` 的 Bearer 鉴权配置加 DPoP 证明验签（失败 401 带 nonce，`jti` 防重放；无 OpenSSL 硬报错）；该字段仅在 `ServerOptions` 声明，全仓无读取点 | 原 Bearer 链 |
 | 服务端 | `enable_interceptor_alias` | 别名即实现：`Interceptor` 为 `MessageFilter` 别名，注册转发既有管线，零行为变化；开关无门控 | 同左 |
 | 服务端 | `enable_apps_extension` / `enable_server_card` | 保留：已声明、默认 `false`，暂无门控接线 | 同左 |
 | 客户端 | `enable_tasks_extension` | `extensions` 映射含任务键即声明；`UpdateTask`/`PollTaskToCompletion` 与任务句柄路径生效 | 上述调用抛 `MethodNotFound`（`tasks extension is disabled`） |

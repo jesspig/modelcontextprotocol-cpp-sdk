@@ -1,6 +1,6 @@
 # 更新摘要
 
-- 2026-10-13 — private_key_jwt 客户端断言（ES256）落地：`OAuthClientOptions` 增 `private_key_pem` / `signing_algorithm` / `client_assertion_clock_seconds`，元数据 `token_endpoint_auth_methods_supported` 含 `private_key_jwt` 时三个令牌请求改发 `client_assertion_type` + ES256 签名 `client_assertion`（不再发 `client_secret`）；签名复用新增的 `mcp::ext::dpop::detail::SignEs256JwtWithPem`（与 `CreateProof` 同源、无 OpenSSL 抛 InternalError），测试 +5（结构断言 + 无 OpenSSL 抛错路径 + 未声明时回退 `client_secret_post`），docs 中英与 README 口径同步，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
+- 2026-10-13 — 令牌 issuer 校验修正 + SSE 监听流 4xx 语义 + 夹具接线收口：`ValidateTokenIssuer` 由「token 响应缺 `iss` 即拒」改为「存在即校验」（RFC 9207 §2.4 与 MCP 规范只对**授权响应**的 `iss` 施加义务，原实现属规范误引），fixture 假绿 18→0；`CreateClientAssertion` 的 `aud` 改用 metadata `issuer`（RFC 7523 §3：aud 字符串由 AS 与颁发方带外约定，referee 以 issuer 为约定值）；`GetAccessToken` 同线程重入死锁修复（新增 `refresh_owner_` 短路）；`ListenStateForStatusCode` 4xx 一并不支持监听流 + 200 非 SSE 判不支持（原 404 误落 Connecting 触发 5 次退避重连，legacy `scope-step-up` 挂 30s 由此根治）；`auth/client-credentials-jwt` 与 `auth/dpop`/`auth/dpop-nonce` 夹具从 `untestable` 改为真实流接线；基线按 referee stale 证据删 8 条；ctest 870/870 全绿，modern leg 450 passed、legacy leg 233 passed / 0 failed，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
 
 - 2026-10-13 — Streamable HTTP 客户端逐请求头注入口 + DPoP 发送侧接线：新增 `HttpClientTransportOptions::apply_per_request_headers` / `observe_response_challenge` 两回调（六处发请求点全覆盖、Win32/POSIX 共用判定），401/400 `use_dpop_nonce` 首轮恰好重试一次并重算 proof（与 auth 挑战、HeaderMismatch 刷新共用单一预算），`OAuthClientProvider::ApplyDPoPProofHeader` / `ObserveDPoPNonce` 适配器落地（htu 剥 query、ath 绑定、逐请求新 jti/iat），测试 +6，dpop 页「未接线项」节删除，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
 
@@ -13,7 +13,3 @@
 - 2026-10-13 — T9 单连接语义与可观测锁定：生产零改动（stateless 单连接三元组 + 写完即关 + DELETE 405 + span 全路径配对均已具备），测试 +5（streamable-http +3 默认/405/独立连接、span-hook +2 成功与拒绝 End 回填 trace，待主代理实测），span-hooks 页增 OTel 差异节，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
 
 - 2026-10-13 — T8 Apps 扩展与 Server Card 接线 + tasks 隐式移除：生产 5 文件（ext 双头增扩展标识常量、ServerOptions 增 `server_card`、McpServer 增 `GetServerCard`、McpServer.cpp 能力推导/apps 资源读门/任务四处去隐式），测试 6 处显式化 + 新增矩阵与显式 tasks 两用例（待主代理实测），详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
-
-- 2026-10-12 — 前瞻六开关文档同步（ad547f9 后续批次）：`experimental-flags.md` 六开关去“保留未接线”标注（etag/渐进/文件/触发器/dpop 已实现默认关语义 + 构造期同步节，interceptor 为无门控别名；客户端增至 4 开关），docs 中英 extensions.md 同表镜像，tests.md 仅留用例数待回填占位；只改 6 个 md，详见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)
-
-- 2026-10-11 — 配置分发与部署形态：详见 [/changelog/2026-10-11-log.md](/changelog/2026-10-11-log.md)

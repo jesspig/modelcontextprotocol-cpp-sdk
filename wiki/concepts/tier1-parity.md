@@ -58,14 +58,14 @@ B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-mul
 
 CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/client 双 job 按 `CONFORMANCE_SPEC_VERSION` 选择基线（2026-07-28 → `baseline-2026-07-28.yaml`、2025-11-25 → `baseline-2025-11-25.yaml`，未知回退 `baseline.yaml`）（`b1d529f`）；fallback 对齐同提交。
 
-## 生产缺口记账（A-T2 上报，未静默丢弃）
+## 生产缺口记账（2026-10-13 逐条改判，未静默丢弃）
 
-1. token 响应无 `iss` 致 provider 流拿不到可用 token
-2. `ExchangeCodeForToken` 忽略 auth method/secret
-3. `Discover` 无 PRM 路径插入与 openid 回退
-4. 无传输层 DPoP proof：`StreamableHttpClientTransport` 只发 `Authorization`、不逐请求附 `DPoP` 证明，且 `SetDPoPNonce` 无生产调用点（nonce 无回路），故 `dpop`/`dpop-nonce` fixture 侧只能标 untestable；服务端校验链与开关已具备，见 [dpop](/concepts/dpop.md)
-5. 私钥 jwt 缺失（`client-credentials-jwt`/`wif-jwt-bearer` 仍走基线）
-6. StepUp 无 403 链路
+1. ~~token 响应无 `iss` 致 provider 流拿不到可用 token~~（**已修**）：原 `ValidateTokenIssuer` 要求 token 响应必须带 `iss`，而 MCP 规范与 RFC 9207 §2.4 只对**授权响应**的 `iss` 施加义务（后者明示「clients MAY accept 不带 iss，由本地策略决定」），属规范误引导致的过度收紧。改为「存在即校验」后，modern leg 假绿（fixture 退出码 1 但 referee 判绿）由 18 处降至 4 处，余 4 处为 `iss-*` 场景 fixture 主动拒绝错误 `iss` 的被测语义（referee 判绿）；`metadata-var1/2/3`、`authorization-server-migration` 四条随之转绿删除（referee stale 证据）
+2. ~~`ExchangeCodeForToken` 忽略 auth method/secret~~（**已修**）：`ApplyClientAuthentication` 覆盖 client_credentials、授权码交换、refresh_token 三个令牌请求
+3. ~~`Discover` 无 PRM 路径插入与 openid 回退~~（**已修**）：夹具侧补齐候选 URL 链（根路径优先 + openid 配置回退 + path-based 前置），provider 侧走 `OAuthMetadata::Discover`
+4. 无传输层 DPoP proof：**发送侧已补**（`apply_per_request_headers` / `observe_response_challenge` 两个注入点 + `ApplyDPoPProofHeader` / `ObserveDPoPNonce`，夹具 `DriveDPoPScenario` 已接线真实授权流）；`dpop`/`dpop-nonce` 仍走基线的**唯一原因是本地构建无 OpenSSL**（DPoP proof 与 ES256 签名共用 OpenSSL 后端，无 OpenSSL 时按既定契约抛 `InternalError`，不伪造通过），正向路径待带 OpenSSL 的 CI runner 证实；服务端校验链与开关已具备，见 [dpop](/concepts/dpop.md)
+5. 私钥 jwt（**已实现**）：`client-credentials-jwt` 走基线的唯一原因同样是本地无 OpenSSL。期间修正一处真实缺陷——`CreateClientAssertion` 的 `aud` 原取 metadata `token_endpoint`，而 RFC 7523 §3 第 3 条规定 `aud` 的确切字符串由 AS 与颁发方带外约定（token endpoint 仅为 MAY），官方 referee 以 issuer identifier 为约定值，已改为优先 `issuer`；`wif-jwt-bearer` 本 leg 0 failed 但 referee 未标 stale，暂留兜底
+6. StepUp 无 403 链路：`scope-step-up` 两 leg 均已转绿（modern 24 passed、legacy 20 passed），403 →提权链路可用
 
 ## 非标超集声明
 
@@ -73,15 +73,16 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 
 ## 遗留记账（未静默丢弃）
 
-1. auth 基线现状（fixture 真实流后仅剩失败条目）：modern 保留 10 条（见上四 leg）、legacy 保留 4 条 + `http-custom-headers`；生产 OAuth 表面单测已闭环，未转绿条目归因见上生产缺口记账
+1. auth 基线现状（2026-10-13 实测收口）：modern 保留 6 条、legacy 仅留 `http-custom-headers`；两 leg 的 `did_not_complete` 假绿已清零（modern 4 处 `iss-*` 为主动拒绝的被测语义，referee 判绿）。保留条目均为**结构性不可绿**——`client-credentials-jwt`/`dpop`/`dpop-nonce` 因本地构建无 OpenSSL（ES256 签名与 DPoP proof 共用后端），`client-credentials-basic`/`enterprise-managed-authorization`/`wif-jwt-bearer` 本 leg 0 failed 但 referee 未标 stale（保留兜底，待 stale 报出后删）。完整逐条归因见 [baseline-2026-07-28.yaml](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/blob/develop/tests/conformance/baseline-2026-07-28.yaml) 的 client 段注释
 2. ~~`maxToolInputElements` 未实现~~（已实现：`ServerOptions::max_tool_input_elements` 门在 `tools/call` 入参侧计数，超限回 `is_error` 工具结果而非协议错误——`ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements`，[McpServer.cpp:1993-1998](../../src/server/McpServer.cpp)；`optional` 未设即不限，上限语义见 [experimental-flags](/concepts/experimental-flags.md) 与 `README.md` 「Default upper limits」条）
 3. ~~`ttlMs`/`cacheScope` 客户端消费未验证~~（已实现且有用例：客户端 `McpClient::CacheIfHinted`（[McpClient.cpp:967-982](../../src/client/McpClient.cpp)）兼容两种线格式——2026 时代结果顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，`ttlMs > 0` 才入缓存，`cacheScope` 仅 `"private"` 落 Private 分区、其余按 Public，结果类型另落 `ttl_ms`/`cache_scope` 字段；守护用例见 [response-cache](/concepts/response-cache.md) 与 `tests/unit/McpClientTests.cpp` 的分页/skills/TTL 到期用例）
 4. ~~`enable_listen_stream` 默认 true~~（本分支 `1668e2e` 已改：字段为 `optional<bool>`，未设置时取 `!stateless`——stateful 默认开、stateless 默认关，显式置 `true` 仍可强制开，`ShouldListenStream` 判定见 [StreamableHttpClientTransport.cpp:148-149](../../src/http/StreamableHttpClientTransport.cpp)，`StatelessClientSkipsListenStreamByDefault` / `StatelessClientForcedListenStreamSendsGet` 两用例锁定；口径见 [streamable-http](/transports/streamable-http.md)）
 5. `StepUpAuthorization` 空元数据解引用：无元数据路径存在空解引用风险，待加固；另无 403 链路（见上生产缺口记账）
-6. `GetAccessToken` 持锁同步刷新：刷新整段持 `refresh_mutex_`，同步阻塞语义待优化（见 [oauth](/concepts/oauth.md)）
+6. ~~`GetAccessToken` 持锁同步刷新~~（**已修**）：网络 I/O 已移出 `refresh_mutex_`（`1668e2e` single-flight 合并）；同线程重入死锁亦已消除——新增 `refresh_owner_` 记录持有刷新标志的线程，`token_update_handler` 回调内同线程再调 `GetAccessToken` 时直接返回而不进条件变量等待（原会等自己永久阻塞）。守护用例 `TokenUpdateHandlerReentrantGetAccessTokenDoesNotDeadlock`（超时护栏）与 `ConcurrentWaiterSurvivesRefreshOwnerReentry`（跨线程等待不回归）见 [oauth](/concepts/oauth.md)
 7. `MakeModernTaskEnv` 死通知已删、握手守护断言保留：2026 时代服务端丢弃未初始化会话的 `notifications/initialized`，该死通知已从 helper 删除（`tests/unit/McpServerTests.cpp`），现代任务用例改走 `MakeBareModernTaskEnv` 已验证的直连路径——任务门控请求逐请求 `_meta` 声明（`b7a613e` 先例）；helper 仍保留 C-T1 的握手守护断言（initialize 回 `MethodNotFound` 即判失败），引用该 helper 的 12 处用例形态不变
 8. `unevaluatedProperties`/`unevaluatedItems`：按 spec §7.3 注解收集 opt-out 归入忽略注解类，无近似路径——`374a591` 删除 `JsonSchemaValidator.hpp` 内两处近似求值实现，改由三条忽略行为守护测试锁定（`tests/unit/McpTypesTests.cpp`）
 9. ~~README 的 PKCE/DCR 表述待统一~~（本分支已解决：`README.md`/`README_zh.md` 统一为 `PKCE/CIMD（DCR 回退）`，`ad8075a` 前序 + 本分支 `README` 口径；`jwt-bearer` 不支持声明同步更新）
+10. ~~`auth/scope-step-up` 在 legacy leg 挂 30s 超时~~（**已修**）：根因是 SSE 拆除路径——服务端不支持 `GET /mcp` 时返404，而 `ListenStateForStatusCode` 仅对 405 判 `Unsupported`，404 落 `Connecting` 触发 5 次退避重连，耗尽 referee 的 30s 预算（检查已跑完但进程退不出）。改判为 4xx 视为不支持监听流并静默放弃（对齐既有 405 语义，200 但 content-type 非 SSE 同样判 `Unsupported`；保留 408/429 与 2xx 非 200 为可重连）。属设计契约变更：既有断言 `ListenStateForStatusCode(404) == Connecting` 已同步翻转，并扩充 401/403/400/204/408/429 覆盖。修复后 legacy leg `scope-step-up` 20 passed 且进程正常退出
 
 ## 相关页面
 
