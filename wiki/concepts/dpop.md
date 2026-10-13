@@ -3,7 +3,7 @@ type: Concept
 title: DPoP 证明绑定令牌
 description: DPoP（RFC 9449 / SEP-1932 草案）在本 SDK 的落点：dpop 原语的 JWS 签发与验签链（htm/htu/ath/nonce/iat 窗口 + jti 重放表）、Streamable HTTP 服务端 Bearer 链上的 DPoP 校验门、OAuthClientProvider 发送侧开关与 nonce 接口、传输层逐请求 proof 头注入口与 use_dpop_nonce 单次重试、OpenSSL 可选依赖缺失时的抛错降级语义。
 tags: [dpop, oauth, 安全, sep-1932, rfc9449, 传输, openssl]
-timestamp: 2026-10-13T14:20:00+08:00
+timestamp: 2026-10-13T19:45:00+08:00
 resource: src/ext/DPoP.cpp
 ---
 
@@ -77,7 +77,7 @@ OpenSSL 缺失时 `GenerateKey`/`CreateProof` 抛错的既有失败语义保持�
 
 ## 遗留
 
-- `RegisterClient` 注册体仍未发送 `dpop_jkt`（见上节），DPoP 绑定的动态注册未覆盖
+- `RegisterClient` 注册体仍未发送 `dpop_jkt`（见上节），DPoP 绑定的动态注册未覆盖。已核实官方 referee（`@modelcontextprotocol/conformance@0.2.0-alpha.12` 的 `dist/index.js`）**全包不含 `dpop_jkt` 字样、`/register` handler 直接忽略未知字段**，故 conformance 的 `auth/dpop` 场景不检查该字段；**且当前无法发送**——provider 的 `dpop_key_` 为私有成员且无公开 accessor，取不到 JKT 所需的 x/y，需先给 `OAuthClientProvider` 加公开的 `DPoPKeyThumbprint()` 之类接口。声明 `dpop_bound_access_tokens` 亦未实现（referee 元数据里刻意不广播该字段）
 - conformance 的 `dpop` / `dpop-nonce` 场景夹具接线由另一任务负责（记账见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）
 
 ## 相关页面
