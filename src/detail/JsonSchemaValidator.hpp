@@ -341,16 +341,6 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
                 }
             }
         }
-        if (auto* uneval = schema.Find("unevaluatedProperties")) {
-            for (const auto& [key, val] : obj) {
-                if (has_props && props->Contains(key)) continue;
-                if (PatternCovered(key)) continue;
-                if (!ValidateJsonSchemaWithRoot(val, *uneval, root, depth + 1, ref_chain, error_out)) {
-                    error_out = "property '" + key + "': " + error_out;
-                    return false;
-                }
-            }
-        }
         if (auto* names = schema.Find("propertyNames")) {
             for (const auto& [key, value] : obj) {
                 (void)value;
@@ -417,20 +407,6 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
                                                    depth + 1, ref_chain, error_out)) {
                 error_out = "item " + std::to_string(i) + ": " + error_out;
                 return false;
-            }
-        }
-        if (auto* uneval = schema.Find("unevaluatedItems")) {
-            for (size_t i = 0; i < arr.size(); ++i) {
-                bool covered = false;
-                if (has_prefix && i < prefix->Size()) covered = true;
-                if (items && !items_is_array) covered = true;
-                if (items_is_array && i < items->Size()) covered = true;
-                else if (items_is_array && additional) covered = true;
-                if (covered) continue;
-                if (!ValidateJsonSchemaWithRoot(arr[i], *uneval, root, depth + 1, ref_chain, error_out)) {
-                    error_out = "item " + std::to_string(i) + ": " + error_out;
-                    return false;
-                }
             }
         }
         if (auto* contains = schema.Find("contains")) {
