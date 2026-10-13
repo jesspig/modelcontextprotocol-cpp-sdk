@@ -59,4 +59,12 @@ bool VerifyProof(std::string_view proof,
 
 std::string GenerateNonce(std::size_t random_bytes = 16);
 
+namespace detail {
+
+std::string SignEs256JwtWithPem(std::string_view header_json,
+                                std::string_view payload_json,
+                                std::string_view private_key_pem);
+
+} // namespace detail
+
 } // namespace mcp::ext::dpop

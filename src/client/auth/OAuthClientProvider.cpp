@@ -25,6 +25,14 @@
 
 namespace {
 
+constexpr std::string_view kClientAssertionTypeJwtBearer =
+    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+constexpr std::string_view kPrivateKeyJwtAuthMethod = "private_key_jwt";
+constexpr std::string_view kEs256SigningAlgorithm = "ES256";
+constexpr std::string_view kEs256JwtHeader = R"({"alg":"ES256","typ":"JWT"})";
+constexpr int64_t kClientAssertionLifetimeSeconds = 60;
+constexpr std::size_t kClientAssertionJtiBytes = 16;
+
 std::string UrlEncode(std::string_view input) {
     std::string result;
     result.reserve(input.size() * 3);
@@ -52,6 +60,13 @@ std::string NormalizeResourceUrl(std::string_view url) {
     std::string out(url);
     if (auto hash = out.find('#'); hash != std::string::npos) out.resize(hash);
     if (out.size() > 1 && out.back() == '/') out.pop_back();
+    return out;
+}
+
+std::string DpopHtu(std::string_view url) {
+    std::string out(url);
+    if (auto hash = out.find('#'); hash != std::string::npos) out.resize(hash);
+    if (auto query = out.find('?'); query != std::string::npos) out.resize(query);
     return out;
 }
 
@@ -157,6 +172,8 @@ OAuthMetadata ParseMetadataJson(const JsonValue& json) {
     extract_vec("response_types_supported", meta.response_types_supported);
     extract_vec("grant_types_supported", meta.grant_types_supported);
     extract_vec("code_challenge_methods_supported", meta.code_challenge_methods_supported);
+    extract_vec("token_endpoint_auth_methods_supported",
+                meta.token_endpoint_auth_methods_supported);
 
     return meta;
 }
@@ -302,21 +319,28 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
     if (!metadata_) {
         if (!DiscoverMetadata()) return false;
     }
-    if (!options_.client_id || !options_.client_secret ||
-        options_.client_secret->empty()) {
-        MCP_LOG(Error, "client_credentials requires client_id and client_secret");
+    if (!options_.client_id || options_.client_id->empty()) {
+        MCP_LOG(Error, "client_credentials requires client_id");
         return false;
     }
     std::map<std::string, std::string> form;
     form["grant_type"] = "client_credentials";
     form["client_id"] = *options_.client_id;
-    form["client_secret"] = *options_.client_secret;
     for (auto& s : ResolveScopes()) {
         if (!form["scope"].empty()) form["scope"] += " ";
         form["scope"] += s;
     }
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
+    if (UsesClientAssertion()) {
+        ApplyClientAuthentication(form);
+    } else {
+        if (!options_.client_secret || options_.client_secret->empty()) {
+            MCP_LOG(Error, "client_credentials requires client_secret or an advertised private_key_jwt assertion");
+            return false;
+        }
+        form["client_secret"] = *options_.client_secret;
+    }
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;
@@ -473,6 +497,61 @@ bool OAuthClientProvider::FetchClientMetadataDocument() {
     return true;
 }
 
+bool OAuthClientProvider::PrivateKeyJwtAdvertised() const {
+    if (!metadata_) return false;
+    return std::find(metadata_->token_endpoint_auth_methods_supported.begin(),
+        metadata_->token_endpoint_auth_methods_supported.end(),
+        std::string(kPrivateKeyJwtAuthMethod))
+        != metadata_->token_endpoint_auth_methods_supported.end();
+}
+
+bool OAuthClientProvider::UsesClientAssertion() const {
+    if (!options_.private_key_pem || options_.private_key_pem->empty()) return false;
+    return PrivateKeyJwtAdvertised();
+}
+
+std::string OAuthClientProvider::CreateClientAssertion() const {
+    if (options_.signing_algorithm != std::string(kEs256SigningAlgorithm)) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "OAuth client assertion supports only the ES256 signing algorithm");
+    }
+    std::string client_id = options_.client_id.value_or(
+        registration_ ? registration_->client_id : std::string());
+    if (client_id.empty()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "OAuth private_key_jwt client assertion requires a client_id");
+    }
+    std::string audience = metadata_ ? metadata_->token_endpoint : std::string();
+    if (audience.empty()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "OAuth private_key_jwt client assertion requires a token_endpoint audience");
+    }
+    if (!options_.private_key_pem || options_.private_key_pem->empty()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "OAuth private_key_jwt client assertion requires private_key_pem");
+    }
+    int64_t now_seconds = options_.client_assertion_clock_seconds
+        ? options_.client_assertion_clock_seconds()
+        : ext::dpop::NowSeconds();
+    JsonValue payload(JsonValue::object_tag);
+    payload["iss"] = JsonValue(client_id);
+    payload["sub"] = JsonValue(client_id);
+    payload["aud"] = JsonValue(audience);
+    payload["jti"] = JsonValue(ext::dpop::GenerateNonce(kClientAssertionJtiBytes));
+    payload["iat"] = JsonValue(now_seconds);
+    payload["exp"] = JsonValue(now_seconds + kClientAssertionLifetimeSeconds);
+    return ext::dpop::detail::SignEs256JwtWithPem(
+        kEs256JwtHeader, JsonValue(std::move(payload)).Dump(), *options_.private_key_pem);
+}
+
+void OAuthClientProvider::ApplyClientAuthentication(
+    std::map<std::string, std::string>& form) const
+{
+    if (!UsesClientAssertion()) return;
+    form["client_assertion_type"] = std::string(kClientAssertionTypeJwtBearer);
+    form["client_assertion"] = CreateClientAssertion();
+}
+
 bool OAuthClientProvider::RegisterClient() {
     if (!metadata_->registration_endpoint) return false;
     std::string_view application_type = options_.application_type.empty()
@@ -539,6 +618,7 @@ bool OAuthClientProvider::ExchangeCodeForToken(
     form["code_verifier"] = std::string(code_verifier);
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
+    ApplyClientAuthentication(form);
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;
@@ -587,6 +667,7 @@ bool OAuthClientProvider::RefreshTokens() {
         registration_ ? registration_->client_id : "");
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
+    ApplyClientAuthentication(form);
 
     auto json = HttpPost(metadata_->token_endpoint, form);
     if (json.IsNull()) return false;
@@ -702,6 +783,30 @@ void OAuthClientProvider::SetDPoPNonce(std::string nonce) {
     dpop_nonce_ = std::move(nonce);
 }
 
+void OAuthClientProvider::ApplyDPoPProofHeader(
+    const HttpRequestHeaderContext& context,
+    std::map<std::string, std::string>& headers)
+{
+    if (!options_.enable_dpop) return;
+    if (context.http_method.empty()) return;
+    auto htu = DpopHtu(context.url);
+    if (htu.empty()) return;
+    std::optional<std::string_view> access_token;
+    auto tokens = token_cache_->GetTokens();
+    if (tokens && !tokens->access_token.empty() && TokenResourceMatches(*tokens)) {
+        access_token = tokens->access_token;
+    }
+    std::string proof = BuildDPoPProof(context.http_method, htu, access_token);
+    if (proof.empty()) return;
+    headers["DPoP"] = std::move(proof);
+}
+
+void OAuthClientProvider::ObserveDPoPNonce(std::string_view dpop_nonce) {
+    if (!options_.enable_dpop) return;
+    if (dpop_nonce.empty() || dpop_nonce.size() > 1024) return;
+    SetDPoPNonce(std::string(dpop_nonce));
+}
+
 bool OAuthClientProvider::StepUpAuthorization(
     const std::vector<std::string>& additional_scopes)
 {
@@ -776,6 +881,10 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
         if (!meta.code_challenge_methods_supported.empty() &&
             meta.code_challenge_methods_supported.size() <= 8)
             metadata_->code_challenge_methods_supported = meta.code_challenge_methods_supported;
+        if (!meta.token_endpoint_auth_methods_supported.empty() &&
+            meta.token_endpoint_auth_methods_supported.size() <= 128)
+            metadata_->token_endpoint_auth_methods_supported =
+                meta.token_endpoint_auth_methods_supported;
         EnforceIssuerBinding();
         return true;
     } catch (...) {

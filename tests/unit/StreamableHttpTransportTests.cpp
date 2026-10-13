@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <future>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -20,6 +21,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -1547,6 +1549,225 @@ TEST(StreamableHttpTransportTest, BearerAuthClientLoopInsufficientScope) {
 
     transport->Close();
     server.Close();
+}
+
+namespace {
+
+class ProofRecordingHandler {
+public:
+    void Record(const mcp::HttpRequest& req) {
+        auto it = req.headers.find("dpop");
+        std::lock_guard<std::mutex> lock(mutex_);
+        proofs_.push_back(it == req.headers.end() ? "" : it->second);
+    }
+
+    void RecordProof(const mcp::HttpRequest& req) {
+        auto it = req.headers.find("x-proof");
+        std::lock_guard<std::mutex> lock(mutex_);
+        proofs_.push_back(it == req.headers.end() ? "" : it->second);
+    }
+
+    std::vector<std::string> Take() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return proofs_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::string> proofs_;
+};
+
+} // namespace
+
+TEST(StreamableHttpTransportTest, PerRequestHeadersInjectedOnEveryPost) {
+    auto port = PickFreePort(kTestBasePort + 1790);
+    ProofRecordingHandler recorder;
+    mcp::HttpServer mock(port);
+    mock.SetHandler("POST", "/mcp",
+        [&recorder](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            recorder.RecordProof(req);
+            resp.body = R"({"jsonrpc":"2.0","id":1,"result":{"ok":true}})";
+            resp.headers["content-type"] = "application/json";
+        });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions client_opts;
+    client_opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    client_opts.stateless = true;
+    std::atomic<int> injections{0};
+    std::mutex method_mutex;
+    std::vector<std::string> observed_methods;
+    client_opts.apply_per_request_headers =
+        [&injections, &method_mutex, &observed_methods](
+            const HttpRequestHeaderContext& context,
+            std::map<std::string, std::string>& headers) {
+            std::lock_guard<std::mutex> lock(method_mutex);
+            observed_methods.emplace_back(context.http_method);
+            headers["X-Proof"] = "proof-" +
+                std::to_string(injections.fetch_add(1));
+        };
+    StreamableHttpClientTransport client(client_opts);    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    JsonRpcRequest call;
+    call.method = "ping";
+    call.id = 1;
+    transport->SendMessageAsync(std::move(call));
+
+    std::atomic<bool> got{false};
+    transport->GetMessageChannel().AsyncReceive(
+        [&](std::error_code, JsonRpcMessage) { got.store(true); });
+    WaitUntil(got);
+    ASSERT_TRUE(got.load());
+
+    EXPECT_EQ(injections.load(), 1);
+    {
+        std::lock_guard<std::mutex> lock(method_mutex);
+        ASSERT_EQ(observed_methods.size(), 1u);
+        EXPECT_EQ(observed_methods[0], "POST");
+    }
+    EXPECT_EQ(recorder.Take(), std::vector<std::string>{"proof-0"});
+
+    transport->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, DPoPNonceChallengeRetriesOnceWithFreshProof) {
+    auto port = PickFreePort(kTestBasePort + 1795);
+    ProofRecordingHandler recorder;
+    std::atomic<int> calls{0};
+    mcp::HttpServer mock(port);
+    mock.SetHandler("POST", "/mcp",
+        [&calls, &recorder](const mcp::HttpRequest& req,
+                            mcp::HttpResponse& resp) {
+            recorder.Record(req);
+            if (calls.fetch_add(1) == 0) {
+                resp.status_code = 401;
+                resp.status_text = "Unauthorized";
+                resp.headers["WWW-Authenticate"] =
+                    "DPoP error=\"use_dpop_nonce\"";
+                resp.headers["DPoP-Nonce"] = "server-nonce-1";
+                return;
+            }
+            resp.body = R"({"jsonrpc":"2.0","id":1,"result":{"ok":true}})";
+            resp.headers["content-type"] = "application/json";
+        });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions client_opts;
+    client_opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    client_opts.stateless = true;
+    std::mutex nonce_mutex;
+    std::string observed_nonce;
+    int observed_challenges = 0;
+    std::atomic<int> injections{0};
+    client_opts.observe_response_challenge =
+        [&observed_nonce, &observed_challenges, &nonce_mutex](
+            const HttpResponseChallengeContext& context) {
+            if (context.www_authenticate.find("use_dpop_nonce") ==
+                std::string_view::npos) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(nonce_mutex);
+            ++observed_challenges;
+            observed_nonce.assign(context.dpop_nonce);
+        };
+    client_opts.apply_per_request_headers =
+        [&observed_nonce, &nonce_mutex, &injections](
+            const HttpRequestHeaderContext&,
+            std::map<std::string, std::string>& headers) {
+            std::string suffix;
+            {
+                std::lock_guard<std::mutex> lock(nonce_mutex);
+                if (!observed_nonce.empty()) suffix = "-with-nonce";
+            }
+            headers["DPoP"] = "proof-" +
+                std::to_string(injections.fetch_add(1)) + suffix;
+        };
+    StreamableHttpClientTransport client(client_opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    JsonRpcRequest call;
+    call.method = "ping";
+    call.id = 1;
+    transport->SendMessageAsync(std::move(call));
+
+    std::atomic<bool> got{false};
+    transport->GetMessageChannel().AsyncReceive(
+        [&](std::error_code, JsonRpcMessage) { got.store(true); });
+    WaitUntil(got);
+    ASSERT_TRUE(got.load());
+
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_EQ(injections.load(), 2);
+    {
+        std::lock_guard<std::mutex> lock(nonce_mutex);
+        EXPECT_EQ(observed_challenges, 1);
+        EXPECT_EQ(observed_nonce, "server-nonce-1");
+    }
+    EXPECT_EQ(recorder.Take(), (std::vector<std::string>{
+        "proof-0", "proof-1-with-nonce"}));
+
+    transport->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, DPoPNonceRetryBudgetIsSpentOnce) {
+    auto port = PickFreePort(kTestBasePort + 1796);
+    ProofRecordingHandler recorder;
+    std::atomic<int> calls{0};
+    mcp::HttpServer mock(port);
+    mock.SetHandler("POST", "/mcp",
+        [&calls, &recorder](const mcp::HttpRequest& req,
+                            mcp::HttpResponse& resp) {
+            recorder.Record(req);
+            calls.fetch_add(1);
+            resp.status_code = 401;
+            resp.status_text = "Unauthorized";
+            resp.headers["WWW-Authenticate"] = "DPoP error=\"use_dpop_nonce\"";
+            resp.headers["DPoP-Nonce"] = "server-nonce-x";
+            resp.body =
+                R"({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"nonce still rejected"}})";
+            resp.headers["content-type"] = "application/json";
+        });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions client_opts;
+    client_opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    client_opts.stateless = true;
+    std::atomic<int> injections{0};
+    client_opts.apply_per_request_headers =
+        [&injections](const HttpRequestHeaderContext&,
+                      std::map<std::string, std::string>& headers) {
+            headers["DPoP"] =
+                "proof-" + std::to_string(injections.fetch_add(1));
+        };
+    StreamableHttpClientTransport client(client_opts);
+    auto transport = client.Connect();
+    ASSERT_NE(transport, nullptr);
+
+    JsonRpcRequest call;
+    call.method = "ping";
+    call.id = 1;
+    transport->SendMessageAsync(std::move(call));
+
+    std::atomic<bool> got{false};
+    transport->GetMessageChannel().AsyncReceive(
+        [&](std::error_code, JsonRpcMessage) { got.store(true); });
+    WaitUntil(got);
+    ASSERT_TRUE(got.load());
+
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_EQ(injections.load(), 2);
+    EXPECT_EQ(recorder.Take(), (std::vector<std::string>{
+        "proof-0", "proof-1"}));
+
+    transport->Close();
+    mock.Stop();
 }
 
 namespace {

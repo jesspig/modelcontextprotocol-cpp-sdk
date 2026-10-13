@@ -149,12 +149,56 @@ bool ShouldListenStream(const HttpClientTransportOptions& options) {
     return options.enable_listen_stream.value_or(!options.stateless);
 }
 
-inline bool IsInsufficientScopeChallenge(std::string_view www_authenticate) {
+std::string LowerAscii(std::string_view input) {
     std::string lower;
-    lower.reserve(www_authenticate.size());
-    for (char c : www_authenticate)
+    lower.reserve(input.size());
+    for (char c : input)
         lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return lower.find("insufficient_scope") != std::string::npos;
+    return lower;
+}
+
+inline bool IsInsufficientScopeChallenge(std::string_view www_authenticate) {
+    return LowerAscii(www_authenticate).find("insufficient_scope") !=
+           std::string::npos;
+}
+
+inline constexpr std::size_t kChallengeScanLimit = 4096;
+
+bool RequiresDPoPNonceRetry(int status_code,
+                            std::string_view www_authenticate,
+                            std::string_view body) {
+    if (status_code != 401 && status_code != 400) return false;
+    if (LowerAscii(www_authenticate).find("use_dpop_nonce") != std::string::npos)
+        return true;
+    return LowerAscii(body.substr(0, (std::min)(body.size(), kChallengeScanLimit)))
+               .find("use_dpop_nonce") != std::string::npos;
+}
+
+std::map<std::string, std::string> ResolvePerRequestHeaders(
+    const HttpClientTransportOptions& options,
+    const HttpRequestHeaderContext& context) {
+    std::map<std::string, std::string> headers;
+    if (!options.apply_per_request_headers) return headers;
+    options.apply_per_request_headers(context, headers);
+    return headers;
+}
+
+void ObserveResponseChallenge(
+    const HttpClientTransportOptions& options,
+    const HttpResponseChallengeContext& context) {
+    if (!options.observe_response_challenge) return;
+    options.observe_response_challenge(context);
+}
+
+std::optional<RequestId> RequestIdFromBody(const std::string& body) {
+    try {
+        auto parsed = JsonValue::Parse(body);
+        auto* id = parsed.Find("id");
+        if (!id || id->IsNull()) return std::nullopt;
+        return RequestIdFromJson(*id);
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 inline constexpr std::chrono::milliseconds kListenRetryInitialDelay{1000};
@@ -211,7 +255,7 @@ inline bool RefreshToolAnnotations(const std::string& endpoint,
                                    const std::string& session_id,
                                    const std::string& protocol_version,
                                    const std::string& auth_value,
-                                   const std::map<std::string, std::string>& additional_headers,
+                                   const HttpClientTransportOptions& options,
                                    http_detail::ToolAnnotationCache& cache) {
     detail::net::HttpRequestSpec req;
     req.method = "POST";
@@ -222,10 +266,17 @@ inline bool RefreshToolAnnotations(const std::string& endpoint,
     req.headers["Mcp-Method"] = std::string(methods::kListTools);
     if (!session_id.empty()) req.headers["Mcp-Session-Id"] = session_id;
     if (!protocol_version.empty()) req.headers["MCP-Protocol-Version"] = protocol_version;
-    for (const auto& [header_name, header_value] : additional_headers) {
+    for (const auto& [header_name, header_value] : options.additional_headers) {
         req.headers[header_name] = header_value;
     }
     if (!auth_value.empty()) req.headers["Authorization"] = auth_value;
+    for (const auto& [header_name, header_value] : ResolvePerRequestHeaders(
+             options,
+             HttpRequestHeaderContext{"POST", endpoint,
+                                      HttpRequestPurpose::ToolAnnotationsRefresh,
+                                      RequestId{int64_t(0)}, 0})) {
+        req.headers[header_name] = header_value;
+    }
     req.body = R"({"jsonrpc":"2.0","id":0,"method":"tools/list"})";
     try {
         detail::net::HttpClient client;
@@ -265,6 +316,25 @@ std::wstring ToWideStr(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, 0, s.data(),
                         static_cast<int>(s.size()), &w[0], len);
     return w;
+}
+
+std::string WideToUtf8(const wchar_t* w) {
+    if (!w) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string s(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], len, nullptr, nullptr);
+    return s;
+}
+
+std::string QueryResponseHeader(HINTERNET request, const wchar_t* name) {
+    wchar_t buffer[1024] = {};
+    DWORD size = sizeof(buffer);
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, name, buffer, &size,
+                             nullptr)) {
+        return {};
+    }
+    return WideToUtf8(buffer);
 }
 
 class StreamableHttpSessionTransport : public TransportBase {
@@ -444,6 +514,14 @@ private:
                 hdrs += L"Last-Event-ID: " + ToWideStr(last_event_id_) + L"\r\n";
             }
         }
+        for (const auto& [name, value] : streamable_http_client_impl::
+                 ResolvePerRequestHeaders(
+                     options_,
+                     HttpRequestHeaderContext{"GET", options_.endpoint,
+                                              HttpRequestPurpose::ListenStream,
+                                              std::nullopt, 0})) {
+            hdrs += ToWideStr(name) + L": " + ToWideStr(value) + L"\r\n";
+        }
         WinHttpAddRequestHeaders(hRequest, hdrs.data(),
             static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
 
@@ -603,6 +681,14 @@ private:
 
         std::wstring hdrs = L"Mcp-Session-Id: " +
             ToWideStr(sid) + L"\r\n";
+        for (const auto& [name, value] : streamable_http_client_impl::
+                 ResolvePerRequestHeaders(
+                     options_,
+                     HttpRequestHeaderContext{"DELETE", options_.endpoint,
+                                              HttpRequestPurpose::SessionDelete,
+                                              std::nullopt, 0})) {
+            hdrs += ToWideStr(name) + L": " + ToWideStr(value) + L"\r\n";
+        }
         WinHttpAddRequestHeaders(hRequest, hdrs.data(),
             static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
 
@@ -621,14 +707,6 @@ private:
     }
 
     void DoPost(const std::string& body) {
-        auto wide_to_utf8 = [](const wchar_t* w) -> std::string {
-            if (!w) return {};
-            int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-            if (len <= 0) return {};
-            std::string s(static_cast<size_t>(len - 1), '\0');
-            WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], len, nullptr, nullptr);
-            return s;
-        };
         std::string auth_value;
         std::string current_url = options_.endpoint;
         std::string current_body = body;
@@ -726,6 +804,17 @@ private:
             if (!auth_value.empty()) {
                 hdrs += L"Authorization: " + ToWideStr(auth_value) + L"\r\n";
             }
+            for (const auto& [name, value] : streamable_http_client_impl::
+                     ResolvePerRequestHeaders(
+                         options_,
+                         HttpRequestHeaderContext{
+                             current_method, current_url,
+                             HttpRequestPurpose::MessagePost,
+                             streamable_http_client_impl::RequestIdFromBody(
+                                 current_body),
+                             attempt})) {
+                hdrs += ToWideStr(name) + L": " + ToWideStr(value) + L"\r\n";
+            }
 
             WinHttpAddRequestHeaders(hRequest, hdrs.data(),
                 static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
@@ -763,8 +852,17 @@ private:
             DWORD sid_size = sizeof(sid_buf);
             if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
                     L"Mcp-Session-Id", sid_buf, &sid_size, nullptr)) {
-                StoreSessionId(wide_to_utf8(sid_buf));
+                StoreSessionId(WideToUtf8(sid_buf));
             }
+
+            std::string www_authenticate = QueryResponseHeader(
+                hRequest, L"WWW-Authenticate");
+            streamable_http_client_impl::ObserveResponseChallenge(
+                options_,
+                HttpResponseChallengeContext{
+                    status_ok ? static_cast<int>(status_code) : 0,
+                    www_authenticate,
+                    QueryResponseHeader(hRequest, L"DPoP-Nonce")});
 
             if (status_ok && detail::IsRedirectStatus(static_cast<int>(status_code))) {
                 wchar_t loc_buf[2048] = {};
@@ -773,7 +871,7 @@ private:
                 if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_LOCATION,
                         WINHTTP_HEADER_NAME_BY_INDEX, loc_buf, &loc_size,
                         WINHTTP_NO_HEADER_INDEX)) {
-                    location = wide_to_utf8(loc_buf);
+                    location = WideToUtf8(loc_buf);
                 }
                 bool follow = !location.empty() &&
                     options_.redirect_policy != detail::HttpRedirectPolicy::NoFollow;
@@ -825,29 +923,6 @@ private:
 
             if (status_ok && status_code >= 400)
             {
-                if ((status_code == 401 || status_code == 403) && attempt == 0 &&
-                    options_.auth_challenge_handler) {
-                    wchar_t www_auth[512] = {};
-                    DWORD waSize = sizeof(www_auth);
-                    std::string www_auth_str;
-                    if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM,
-                            L"WWW-Authenticate", www_auth, &waSize, nullptr)) {
-                        www_auth_str = wide_to_utf8(www_auth);
-                    }
-                    bool eligible = (status_code == 401) ||
-                        streamable_http_client_impl::IsInsufficientScopeChallenge(
-                            www_auth_str);
-                    if (eligible) {
-                        auto new_auth = options_.auth_challenge_handler(www_auth_str);
-                        if (!new_auth.empty()) {
-                            auth_value = std::move(new_auth);
-                            WinHttpCloseHandle(hRequest);
-                            WinHttpCloseHandle(hConnect);
-                            WinHttpCloseHandle(hSession);
-                            continue;
-                        }
-                    }
-                }
                 std::string err_body;
                 char ebuf[4096];
                 DWORD eread = 0;
@@ -855,18 +930,41 @@ private:
                     err_body.append(ebuf, eread);
                     eread = 0;
                 }
-                if (status_code == 400 && attempt == 0 &&
-                    streamable_http_client_impl::IsHeaderMismatchBody(err_body)) {
-                    if (streamable_http_client_impl::RefreshToolAnnotations(
+                bool retry = false;
+                std::string next_auth;
+                if (attempt == 0) {
+                    if ((status_code == 401 || status_code == 403) &&
+                        options_.auth_challenge_handler) {
+                        bool eligible = (status_code == 401) ||
+                            streamable_http_client_impl::
+                                IsInsufficientScopeChallenge(www_authenticate);
+                        if (eligible) {
+                            next_auth = options_.auth_challenge_handler(
+                                www_authenticate);
+                            retry = !next_auth.empty();
+                        }
+                    }
+                    if (!retry && streamable_http_client_impl::
+                            RequiresDPoPNonceRetry(
+                                static_cast<int>(status_code), www_authenticate,
+                                err_body)) {
+                        retry = true;
+                    }
+                    if (!retry && status_code == 400 &&
+                        streamable_http_client_impl::IsHeaderMismatchBody(err_body)) {
+                        retry = streamable_http_client_impl::RefreshToolAnnotations(
                             current_url,
                             options_.stateless ? std::string{} : CurrentSessionId(),
-                            NegotiatedVersion(), auth_value,
-                            options_.additional_headers, tool_annotations_)) {
-                        WinHttpCloseHandle(hRequest);
-                        WinHttpCloseHandle(hConnect);
-                        WinHttpCloseHandle(hSession);
-                        continue;
+                            NegotiatedVersion(), auth_value, options_,
+                            tool_annotations_);
                     }
+                }
+                if (retry) {
+                    if (!next_auth.empty()) auth_value = std::move(next_auth);
+                    WinHttpCloseHandle(hRequest);
+                    WinHttpCloseHandle(hConnect);
+                    WinHttpCloseHandle(hSession);
+                    continue;
                 }
                 bool delivered = false;
                 if (!err_body.empty() && err_body.size() <= detail::kMaxMessageSize) {
@@ -928,15 +1026,8 @@ private:
 
             if (isSse) {
                 sse_request_ = hRequest;
-                std::optional<RequestId> request_id;
-                try {
-                    auto pending_body = JsonValue::Parse(current_body);
-                    if (auto* pending_id = pending_body.Find("id");
-                        pending_id && !pending_id->IsNull()) {
-                        request_id = RequestIdFromJson(*pending_id);
-                    }
-                } catch (...) {
-                }
+                std::optional<RequestId> request_id =
+                    streamable_http_client_impl::RequestIdFromBody(current_body);
                 bool resolved = false;
                 std::string sse_body;
                 char sbuf[4096];
@@ -1076,6 +1167,14 @@ private:
             hdrs += L"Mcp-Session-Id: " + ToWideStr(resume_sid) + L"\r\n";
         }
         hdrs += L"Last-Event-ID: " + ToWideStr(resume_id) + L"\r\n";
+        for (const auto& [name, value] : streamable_http_client_impl::
+                 ResolvePerRequestHeaders(
+                     options_,
+                     HttpRequestHeaderContext{"GET", options_.endpoint,
+                                              HttpRequestPurpose::ResumeStream,
+                                              request_id, 0})) {
+            hdrs += ToWideStr(name) + L": " + ToWideStr(value) + L"\r\n";
+        }
         WinHttpAddRequestHeaders(hRequest, hdrs.data(),
             static_cast<DWORD>(hdrs.size()), WINHTTP_ADDREQ_FLAG_ADD);
 
@@ -1448,6 +1547,14 @@ private:
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
         }
+        for (const auto& [name, value] : streamable_http_client_impl::
+                 ResolvePerRequestHeaders(
+                     options_,
+                     HttpRequestHeaderContext{"GET", options_.endpoint,
+                                              HttpRequestPurpose::ListenStream,
+                                              std::nullopt, 0})) {
+            req.headers[name] = value;
+        }
         auto client = std::make_unique<detail::net::HttpClient>();
         {
             std::lock_guard<std::mutex> lk(listen_mutex_);
@@ -1547,6 +1654,14 @@ private:
         req.url = options_.endpoint;
         req.timeout = std::chrono::milliseconds(kHttpRequestTimeoutSeconds * 1000);
         req.headers["Mcp-Session-Id"] = std::move(sid);
+        for (const auto& [name, value] : streamable_http_client_impl::
+                 ResolvePerRequestHeaders(
+                     options_,
+                     HttpRequestHeaderContext{"DELETE", options_.endpoint,
+                                              HttpRequestPurpose::SessionDelete,
+                                              std::nullopt, 0})) {
+            req.headers[name] = value;
+        }
         try {
             detail::net::HttpClient client;
             (void)client.Request(req);
@@ -1604,6 +1719,16 @@ private:
             }
             for (auto& [k, v] : options_.additional_headers)
                 headers[k] = v;
+            for (const auto& [name, value] : streamable_http_client_impl::
+                     ResolvePerRequestHeaders(
+                         options_,
+                         HttpRequestHeaderContext{
+                             "POST", options_.endpoint,
+                             HttpRequestPurpose::MessagePost,
+                             streamable_http_client_impl::RequestIdFromBody(body),
+                             attempt})) {
+                headers[name] = value;
+            }
 
             detail::net::HttpRequestSpec req;
             req.method = "POST";
@@ -1617,15 +1742,8 @@ private:
             detail::net::HttpResponseInfo resp;
             std::string full_body;
             std::string sse_pending;
-            std::optional<RequestId> post_request_id;
-            try {
-                auto pending_body = JsonValue::Parse(body);
-                if (auto* pending_id = pending_body.Find("id");
-                    pending_id && !pending_id->IsNull()) {
-                    post_request_id = RequestIdFromJson(*pending_id);
-                }
-            } catch (...) {
-            }
+            std::optional<RequestId> post_request_id =
+                streamable_http_client_impl::RequestIdFromBody(body);
             bool post_resolved = false;
             try {
                 resp = client.Request(req, [&](std::string_view chunk) {
@@ -1660,30 +1778,46 @@ private:
                 StoreSessionId(std::move(sid));
             }
 
+            std::string www_authenticate =
+                httpclient_posix_impl::GetHeader(resp, "WWW-Authenticate");
+            streamable_http_client_impl::ObserveResponseChallenge(
+                options_,
+                HttpResponseChallengeContext{
+                    resp.status_code, www_authenticate,
+                    httpclient_posix_impl::GetHeader(resp, "DPoP-Nonce")});
+
             if (resp.status_code >= 400) {
-                if ((resp.status_code == 401 || resp.status_code == 403) &&
-                    attempt == 0 && options_.auth_challenge_handler) {
-                    auto www_auth = httpclient_posix_impl::GetHeader(resp, "WWW-Authenticate");
-                    bool eligible = (resp.status_code == 401) ||
-                        streamable_http_client_impl::IsInsufficientScopeChallenge(
-                            www_auth);
-                    if (eligible) {
-                        auto new_auth = options_.auth_challenge_handler(www_auth);
-                        if (!new_auth.empty()) {
-                            auth_value = std::move(new_auth);
-                            continue;
+                bool retry = false;
+                std::string next_auth;
+                if (attempt == 0) {
+                    if ((resp.status_code == 401 || resp.status_code == 403) &&
+                        options_.auth_challenge_handler) {
+                        bool eligible = (resp.status_code == 401) ||
+                            streamable_http_client_impl::
+                                IsInsufficientScopeChallenge(www_authenticate);
+                        if (eligible) {
+                            next_auth = options_.auth_challenge_handler(
+                                www_authenticate);
+                            retry = !next_auth.empty();
                         }
                     }
-                }
-                if (resp.status_code == 400 && attempt == 0 &&
-                    streamable_http_client_impl::IsHeaderMismatchBody(full_body)) {
-                    if (streamable_http_client_impl::RefreshToolAnnotations(
+                    if (!retry && streamable_http_client_impl::
+                            RequiresDPoPNonceRetry(resp.status_code,
+                                                   www_authenticate, full_body)) {
+                        retry = true;
+                    }
+                    if (!retry && resp.status_code == 400 &&
+                        streamable_http_client_impl::IsHeaderMismatchBody(full_body)) {
+                        retry = streamable_http_client_impl::RefreshToolAnnotations(
                             options_.endpoint,
                             options_.stateless ? std::string{} : CurrentSessionId(),
-                            NegotiatedVersion(), auth_value,
-                            options_.additional_headers, tool_annotations_)) {
-                        continue;
+                            NegotiatedVersion(), auth_value, options_,
+                            tool_annotations_);
                     }
+                }
+                if (retry) {
+                    if (!next_auth.empty()) auth_value = std::move(next_auth);
+                    continue;
                 }
                 bool delivered = false;
                 if (!full_body.empty() && full_body.size() <= detail::kMaxMessageSize) {
@@ -1794,6 +1928,14 @@ private:
             resume_req.headers["Mcp-Session-Id"] = std::move(resume_sid);
         }
         resume_req.headers["Last-Event-ID"] = std::move(resume_id);
+        for (const auto& [name, value] : streamable_http_client_impl::
+                 ResolvePerRequestHeaders(
+                     options_,
+                     HttpRequestHeaderContext{"GET", options_.endpoint,
+                                              HttpRequestPurpose::ResumeStream,
+                                              request_id, 0})) {
+            resume_req.headers[name] = value;
+        }
         auto resume_client = std::make_unique<detail::net::HttpClient>();
         {
             std::lock_guard<std::mutex> lk(listen_mutex_);

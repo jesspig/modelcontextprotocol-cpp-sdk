@@ -9,14 +9,25 @@
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include "TestServerUtil.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 #include <mcp/test/McpTest.hpp>
 
 using namespace mcp;
+
+static const char* kTestEs256PrivateKeyPem =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQghQsGvPGMif2reGCQ\n"
+    "wHJKINXk9g1ky3LLtvxpU4UyxFehRANCAAQeMXIdwkqCzhCdxoIHxLjNmhr0ktzK\n"
+    "8yEDCPaBCgpxhUlak78RuSXGlHp/elZywhDYrSDJsYd5uu5eDW4/I18y\n"
+    "-----END PRIVATE KEY-----\n";
 
 TEST(OAuthTest, PkceBase64UrlEncode) {
     std::string input = "test";
@@ -180,6 +191,203 @@ TEST(OAuthTest, ClientCredentialsGrant) {
     server.Stop();
 }
 
+TEST(OAuthTest, SignEs256JwtWithPemProducesCompactAssertion) {
+    try {
+        auto jwt = mcp::ext::dpop::detail::SignEs256JwtWithPem(
+            R"({"alg":"ES256","typ":"JWT"})",
+            R"({"sub":"jwt-client"})",
+            kTestEs256PrivateKeyPem);
+        EXPECT_EQ(std::count(jwt.begin(), jwt.end(), '.'), 2);
+        auto dot = jwt.rfind('.');
+        ASSERT_TRUE(dot != std::string::npos);
+        auto signature = mcp::detail::Base64UrlDecode(jwt.substr(dot + 1));
+        ASSERT_TRUE(signature.has_value());
+        EXPECT_EQ(signature->size(), 64U);
+    } catch (const McpError& e) {
+        EXPECT_TRUE(e.Code() == McpErrorCode::InternalError);
+    }
+}
+
+TEST(OAuthTest, SignEs256JwtWithPemRejectsUnparsableKey) {
+    bool threw = false;
+    try {
+        mcp::ext::dpop::detail::SignEs256JwtWithPem(
+            R"({"alg":"ES256","typ":"JWT"})",
+            R"({"sub":"jwt-client"})",
+            "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n");
+    } catch (const McpError& e) {
+        threw = true;
+        EXPECT_TRUE(e.Code() == McpErrorCode::InvalidParams ||
+                    e.Code() == McpErrorCode::InternalError);
+    }
+    EXPECT_TRUE(threw);
+}
+
+TEST(OAuthTest, PrivateKeyJwtClientCredentialsSendsAssertion) {
+    auto port = PickFreePort(kTestBasePort + 1200);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::string seen_body;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"token_endpoint_auth_methods_supported\":"
+                        "[\"private_key_jwt\",\"none\"]}";
+        });
+    server.SetHandler("POST", "/token",
+        [&seen_body, issuer](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            seen_body = req.body;
+            resp.body = "{\"access_token\":\"jwt-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "jwt-client";
+    opts.private_key_pem = kTestEs256PrivateKeyPem;
+    opts.signing_algorithm = "ES256";
+    opts.client_assertion_clock_seconds = [] { return int64_t{1700000000}; };
+    OAuthClientProvider provider(opts);
+
+    try {
+        ASSERT_TRUE(provider.AuthenticateClientCredentials());
+        EXPECT_NE(seen_body.find(
+            "client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3A"
+            "client-assertion-type%3Ajwt-bearer"), std::string::npos);
+        EXPECT_EQ(seen_body.find("client_secret"), std::string::npos);
+
+        const std::string marker = "client_assertion=";
+        auto value_begin = seen_body.find(marker);
+        ASSERT_TRUE(value_begin != std::string::npos);
+        value_begin += marker.size();
+        auto value_end = seen_body.find('&', value_begin);
+        std::string jwt = seen_body.substr(
+            value_begin,
+            value_end == std::string::npos ? std::string::npos
+                                           : value_end - value_begin);
+
+        auto dot1 = jwt.find('.');
+        ASSERT_TRUE(dot1 != std::string::npos && dot1 > 0);
+        auto dot2 = jwt.find('.', dot1 + 1);
+        ASSERT_TRUE(dot2 != std::string::npos && dot2 > dot1 + 1);
+        EXPECT_EQ(jwt.find('.', dot2 + 1), std::string::npos);
+
+        auto header = mcp::detail::Base64UrlDecode(jwt.substr(0, dot1));
+        auto claims_raw = mcp::detail::Base64UrlDecode(
+            jwt.substr(dot1 + 1, dot2 - dot1 - 1));
+        auto signature = mcp::detail::Base64UrlDecode(jwt.substr(dot2 + 1));
+        ASSERT_TRUE(header.has_value() && claims_raw.has_value() &&
+                    signature.has_value());
+        EXPECT_EQ(signature->size(), 64U);
+
+        auto header_json = JsonValue::Parse(*header);
+        ASSERT_TRUE(header_json.IsObject());
+        ASSERT_TRUE(header_json.Find("alg"));
+        EXPECT_EQ(header_json.Find("alg")->GetString(), "ES256");
+        ASSERT_TRUE(header_json.Find("typ"));
+        EXPECT_EQ(header_json.Find("typ")->GetString(), "JWT");
+
+        auto claims = JsonValue::Parse(*claims_raw);
+        ASSERT_TRUE(claims.IsObject());
+        ASSERT_TRUE(claims.Find("iss") && claims.Find("sub") &&
+                    claims.Find("aud") && claims.Find("jti") &&
+                    claims.Find("iat") && claims.Find("exp"));
+        EXPECT_EQ(claims.Find("iss")->GetString(), "jwt-client");
+        EXPECT_EQ(claims.Find("sub")->GetString(), "jwt-client");
+        EXPECT_EQ(claims.Find("sub")->GetString(), claims.Find("iss")->GetString());
+        EXPECT_EQ(claims.Find("aud")->GetString(), issuer + "/token");
+        EXPECT_EQ(claims.Find("iat")->GetInt(), 1700000000);
+        EXPECT_EQ(claims.Find("exp")->GetInt(), 1700000060);
+        EXPECT_FALSE(claims.Find("jti")->GetString().empty());
+    } catch (const McpError& e) {
+        EXPECT_TRUE(e.Code() == McpErrorCode::InternalError);
+    }
+    server.Stop();
+}
+
+TEST(OAuthTest, PrivateKeyJwtUnadvertisedKeepsClientSecretPost) {
+    auto port = PickFreePort(kTestBasePort + 1210);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::string seen_body;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"token_endpoint_auth_methods_supported\":"
+                        "[\"client_secret_post\",\"none\"]}";
+        });
+    server.SetHandler("POST", "/token",
+        [&seen_body, issuer](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            seen_body = req.body;
+            resp.body = "{\"access_token\":\"secret-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "jwt-client";
+    opts.client_secret = "test-secret";
+    opts.private_key_pem = kTestEs256PrivateKeyPem;
+    OAuthClientProvider provider(opts);
+
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+    EXPECT_NE(seen_body.find("client_secret=test-secret"), std::string::npos);
+    EXPECT_EQ(seen_body.find("client_assertion"), std::string::npos);
+    EXPECT_EQ(provider.GetAccessToken(), "secret-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, PrivateKeyJwtUnsupportedAlgorithmRejectsBeforeTokenRequest) {
+    auto port = PickFreePort(kTestBasePort + 1220);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"token_endpoint_auth_methods_supported\":"
+                        "[\"private_key_jwt\"]}";
+        });
+    server.SetHandler("POST", "/token",
+        [&token_hits](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            token_hits.fetch_add(1);
+            resp.body = R"({"access_token":"should-not-issue"})";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "jwt-client";
+    opts.private_key_pem = kTestEs256PrivateKeyPem;
+    opts.signing_algorithm = "RS256";
+    OAuthClientProvider provider(opts);
+
+    bool threw = false;
+    try {
+        provider.AuthenticateClientCredentials();
+    } catch (const McpError& e) {
+        threw = true;
+        EXPECT_TRUE(e.Code() == McpErrorCode::InvalidParams);
+    }
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(token_hits.load(), 0);
+    server.Stop();
+}
+
 TEST(OAuthTest, RegisterSendsApplicationType) {
     auto port = PickFreePort(kTestBasePort + 900);
     std::string seen_body;
@@ -317,13 +525,122 @@ TEST(OAuthTest, DPoPEnabledBindsSchemeAndProof) {
     EXPECT_EQ(mcp::ext::dpop::ComputeThumbprint("x-value", "y-value"), first_print);
 }
 
+TEST(OAuthTest, DPoPProofHeaderAdapterSkipsWhenDisabled) {
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+
+    OAuthClientProvider provider(opts);
+    std::map<std::string, std::string> headers;
+    provider.ApplyDPoPProofHeader(
+        HttpRequestHeaderContext{"POST", "https://resource.example/mcp?x=1",
+                                 HttpRequestPurpose::MessagePost,
+                                 RequestId{int64_t(7)}, 0},
+        headers);
+    EXPECT_TRUE(headers.find("DPoP") == headers.end());
+
+    provider.ObserveDPoPNonce("ignored-nonce");
+    EXPECT_TRUE(provider.BuildDPoPProof("POST", "https://resource.example/mcp").empty());
+}
+
+TEST(OAuthTest, DPoPProofHeaderAdapterStripsQueryAndVariesPerCall) {
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    TokenContainer tokens;
+    tokens.access_token = "adapter-token";
+    tokens.expires_at = 9999999999999LL;
+    cache->StoreTokens(tokens);
+
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.token_cache = cache;
+    opts.enable_dpop = true;
+
+    OAuthClientProvider provider(opts);
+    HttpRequestHeaderContext context{"POST", "https://resource.example/mcp?code=secret",
+                                     HttpRequestPurpose::MessagePost,
+                                     RequestId{int64_t(9)}, 0};
+
+    std::map<std::string, std::string> first;
+    std::map<std::string, std::string> second;
+    try {
+        provider.ApplyDPoPProofHeader(context, first);
+        provider.ApplyDPoPProofHeader(context, second);
+    } catch (const McpError& e) {
+        EXPECT_TRUE(e.Code() == McpErrorCode::InternalError);
+        return;
+    }
+
+    auto first_proof = first.find("DPoP");
+    auto second_proof = second.find("DPoP");
+    ASSERT_TRUE(first_proof != first.end());
+    ASSERT_TRUE(second_proof != second.end());
+    EXPECT_FALSE(first_proof->second.empty());
+    EXPECT_NE(first_proof->second, second_proof->second);
+
+    auto first_dot = first_proof->second.find('.');
+    auto second_dot = first_proof->second.find('.', first_dot + 1);
+    ASSERT_TRUE(first_dot != std::string::npos);
+    ASSERT_TRUE(second_dot != std::string::npos);
+    auto payload = mcp::detail::Base64UrlDecode(
+        first_proof->second.substr(first_dot + 1, second_dot - first_dot - 1));
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_NE(payload->find("\"htu\":\"https://resource.example/mcp\""),
+              std::string::npos);
+    EXPECT_EQ(payload->find("code=secret"), std::string::npos);
+    EXPECT_NE(payload->find("\"ath\":"), std::string::npos);
+    EXPECT_NE(payload->find("\"jti\":\""), std::string::npos);
+}
+
+TEST(OAuthTest, DPoPNonceObservationFeedsNextProof) {
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    TokenContainer tokens;
+    tokens.access_token = "nonce-token";
+    tokens.expires_at = 9999999999999LL;
+    cache->StoreTokens(tokens);
+
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.token_cache = cache;
+    opts.enable_dpop = true;
+
+    OAuthClientProvider provider(opts);
+    provider.ObserveDPoPNonce("");
+    provider.ObserveDPoPNonce(std::string(2048, 'n'));
+    provider.ObserveDPoPNonce("nonce-abc");
+
+    std::map<std::string, std::string> headers;
+    try {
+        provider.ApplyDPoPProofHeader(
+            HttpRequestHeaderContext{"GET", "https://resource.example/mcp",
+                                     HttpRequestPurpose::ListenStream,
+                                     std::nullopt, 0},
+            headers);
+    } catch (const McpError& e) {
+        EXPECT_TRUE(e.Code() == McpErrorCode::InternalError);
+        return;
+    }
+
+    auto proof = headers.find("DPoP");
+    ASSERT_TRUE(proof != headers.end());
+    auto first_dot = proof->second.find('.');
+    auto second_dot = proof->second.find('.', first_dot + 1);
+    ASSERT_TRUE(first_dot != std::string::npos);
+    ASSERT_TRUE(second_dot != std::string::npos);
+    auto payload = mcp::detail::Base64UrlDecode(
+        proof->second.substr(first_dot + 1, second_dot - first_dot - 1));
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_NE(payload->find("\"nonce\":\"nonce-abc\""), std::string::npos);
+    EXPECT_NE(payload->find("\"htm\":\"GET\""), std::string::npos);
+}
+
 TEST(OAuthTest, DPoPStaleProofRejectedByWindow) {
     int64_t now = mcp::ext::dpop::NowSeconds();
     EXPECT_TRUE(mcp::ext::dpop::IsNonceFresh(now, now));
     EXPECT_TRUE(mcp::ext::dpop::IsNonceFresh(now - 299, now));
     EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now - 301, now));
-    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now - 3600, now));
-    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now + 60, now));
+    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now - 3600, now));    EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now + 60, now));
     EXPECT_FALSE(mcp::ext::dpop::IsNonceFresh(now, now, -1));
 }
 
