@@ -24,6 +24,9 @@
 | `token_cache` | `shared_ptr<ITokenCache>` | 令牌持久化（默认：`InMemoryTokenCache`） |
 | `resource` | `optional<string>` | RFC 8707 资源指示符，随授权请求与令牌请求发送；缺省时回退到已发现元数据的 `resource`，再回退到 `server_url`；解析结果为空则完全不发送该参数；落盘为令牌的 audience，指示符变化时已缓存令牌视为无效 |
 | `application_type` | `string` | 动态注册时发送的 `application_type`（默认 `"native"`） |
+| `private_key_pem` | `optional<string>` | `private_key_jwt` 客户端认证用的 PKCS#8 EC 私钥 PEM（P-256）；与 `client_secret` 互斥，配置后不再发送 `client_secret` |
+| `signing_algorithm` | `string` | 客户端断言签名算法（默认 `"ES256"`，目前仅支持该值，其他值抛 `McpError`） |
+| `client_assertion_clock_seconds` | `function<int64_t()>` | 客户端断言 `iat`/`exp` 取时间的钩子（默认取系统时钟，便于测试注入固定时间） |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
 | `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码、授权服务器回显的 `state` 与可选的 `iss`（`AuthorizationCodeResult{code, state, iss}`），失败时返回 `nullopt` |
 
@@ -75,7 +78,7 @@ auto token = auth->GetAccessToken();
 - **RFC 9207 `iss`**：令牌与刷新响应中的 `iss` 必须存在且与已发现元数据的 issuer 一致，否则拒绝；授权响应侧在 `state` 校验通过之后、换取令牌之前做同样比对——`AuthorizationCodeResult::iss` 有值且与 issuer 不一致即拒绝，未携带则不校验。
 - **发行者绑定**：`issuer` 为必填字段，缺失的授权服务器实现应补齐；当前实现缺失时记警告并继续回退链（先 RFC 8414 直连，再 `server_url` 硬编码默认），未来版本将收紧为直接失败；首次发现绑定 issuer，后续发现 issuer 变化时清空动态注册信息与本地令牌再重绑。
 - **expectedResource 比对**：客户端 `VerifyResourceMatch` 要求发现元数据的 `resource` 与 `server_url` 精确相等或匹配其 scheme+host 前缀（字段缺失/空则放行）；服务端 audience 门（`validate_token_resource` 为 true 且 `expected_resource` 非空时生效）要求令牌 `resource` 非空且与 `expected_resource` 相等，否则 401 `invalid_token`；两端归一化一致（去 `#fragment`、去尾斜杠，见 `NormalizeResourceUrl`），但方向不对称——服务端缺 audience 即拒绝，客户端缺 `resource` 字段即放行。
-- **客户端认证方法**：发送侧仅支持 `none` 与 `client_secret_post`（`client_secret` 随表单发送）；`private_key_jwt` / `jwt-bearer`（client assertion，JWT 断言）暂不支持——`token_endpoint_auth_method` 仅做信息采纳（存入注册信息），不构造任何断言；需要此类方法的服务端请在 SDK 之外自行实现断言流程。
+- **客户端认证方法**：发送侧支持 `none`、`client_secret_post`（`client_secret` 随表单发送）与 `private_key_jwt`——配置 `private_key_pem` 且已发现元数据的 `token_endpoint_auth_methods_supported` 含 `private_key_jwt` 时，三个令牌请求（`client_credentials`、授权码交换、`refresh_token`）改发 `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer` 与 ES256 签名的 `client_assertion`，不再发送 `client_secret`（未配置 `client_secret` 时也不再因此失败）；断言 JWT 头为 `{alg:ES256,typ:JWT}`，载荷为 `{iss,sub,aud,jti,iat,exp}`（`iss`/`sub` 取 `client_id`、`aud` 取元数据的 `token_endpoint`、`exp=iat+60`）。`jwt-bearer`（授权方断言）仍不支持；`token_endpoint_auth_method` 仍仅做信息采纳（存入注册信息）。
 - **CIMD（Client ID Metadata Document）**：仅 `http(s)://` 形态的 `client_id` 按该 URL 拉取并解析客户端元数据（采纳其中的 `token_endpoint_auth_method`，`grant_types`/`redirect_uris` 超 128 项、所载 `client_id` 与请求 URL 不等、已配置 `redirect_uri` 不在文档 `redirect_uris` 之列时拒绝采纳），失败属 best-effort 回退（记录警告并使用已配置的值），不会中断授权流程；动态注册发送 `application_type`（默认 `"native"`）。
 - **挑战加固**：`HandleAuthChallenge` 对超长/非法输入直接返回 false（不抛异常），非法 URL 与失配资源均拒绝合并。
 
@@ -130,4 +133,4 @@ oauth_opts.token_cache = token_cache;
 
 ## 要求
 
-OpenSSL 是**可选依赖**：CMake 通过 `find_package(OpenSSL QUIET)` 探测本机安装，找到后才定义 `MCP_HAVE_OPENSSL` 并链接 `OpenSSL::Crypto`/`OpenSSL::SSL`。未找到时 TLS 被禁用（`TlsSocket::Connect` 抛 `TlsHandshakeFailed`），PKCE 代码验证器生成回退到 `BCryptGenRandom`（Windows）/`std::random_device`（POSIX），SHA-256 使用内置实现——`mcp-client` 与 OAuth 功能仍可编译使用。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由自研网络栈处理）和密码学级随机数提供支持。
+OpenSSL 是**可选依赖**：CMake 通过 `find_package(OpenSSL QUIET)` 探测本机安装，找到后才定义 `MCP_HAVE_OPENSSL` 并链接 `OpenSSL::Crypto`/`OpenSSL::SSL`。未找到时 TLS 被禁用（`TlsSocket::Connect` 抛 `TlsHandshakeFailed`），PKCE 代码验证器生成回退到 `BCryptGenRandom`（Windows）/`std::random_device`（POSIX），SHA-256 使用内置实现——`mcp-client` 与 OAuth 功能仍可编译使用。安装 OpenSSL（`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl`）可同时为 TLS（由自研网络栈处理）、密码学级随机数与 `private_key_jwt`/DPoP 的 ECDSA 签名（ES256）提供支持；缺少 OpenSSL EC 支持时，配置了 `private_key_pem` 的 `private_key_jwt` 断言与 DPoP 证明都会抛 `McpError`（InternalError）。

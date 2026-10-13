@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-13T11:15:00+08:00
+timestamp: 2026-10-13T11:18:04+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -63,7 +63,7 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 1. token 响应无 `iss` 致 provider 流拿不到可用 token
 2. `ExchangeCodeForToken` 忽略 auth method/secret
 3. `Discover` 无 PRM 路径插入与 openid 回退
-4. 无传输层 DPoP proof（`dpop`/`dpop-nonce` fixture 侧只能标 untestable）
+4. 无传输层 DPoP proof：`StreamableHttpClientTransport` 只发 `Authorization`、不逐请求附 `DPoP` 证明，且 `SetDPoPNonce` 无生产调用点（nonce 无回路），故 `dpop`/`dpop-nonce` fixture 侧只能标 untestable；服务端校验链与开关已具备，见 [dpop](/concepts/dpop.md)
 5. 私钥 jwt 缺失（`client-credentials-jwt`/`wif-jwt-bearer` 仍走基线）
 6. StepUp 无 403 链路
 
@@ -74,9 +74,9 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 ## 遗留记账（未静默丢弃）
 
 1. auth 基线现状（fixture 真实流后仅剩失败条目）：modern 保留 10 条（见上四 leg）、legacy 保留 4 条 + `http-custom-headers`；生产 OAuth 表面单测已闭环，未转绿条目归因见上生产缺口记账
-2. `maxToolInputElements` 未实现：工具输入元素数上限缺口，待排期
-3. `ttlMs`/`cacheScope` 客户端消费未验证：服务端附带字段已具备，客户端消费路径无验证覆盖
-4. `enable_listen_stream` 默认 true：stateless 客户端默认仍持开 GET 监听，须显式关；是否纳入单连接强制待裁决（见 [experimental-flags](/concepts/experimental-flags.md)）
+2. ~~`maxToolInputElements` 未实现~~（已实现：`ServerOptions::max_tool_input_elements` 门在 `tools/call` 入参侧计数，超限回 `is_error` 工具结果而非协议错误——`ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements`，[McpServer.cpp:1993-1998](../../src/server/McpServer.cpp)；`optional` 未设即不限，上限语义见 [experimental-flags](/concepts/experimental-flags.md) 与 `README.md` 「Default upper limits」条）
+3. ~~`ttlMs`/`cacheScope` 客户端消费未验证~~（已实现且有用例：客户端 `McpClient::CacheIfHinted`（[McpClient.cpp:967-982](../../src/client/McpClient.cpp)）兼容两种线格式——2026 时代结果顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，`ttlMs > 0` 才入缓存，`cacheScope` 仅 `"private"` 落 Private 分区、其余按 Public，结果类型另落 `ttl_ms`/`cache_scope` 字段；守护用例见 [response-cache](/concepts/response-cache.md) 与 `tests/unit/McpClientTests.cpp` 的分页/skills/TTL 到期用例）
+4. ~~`enable_listen_stream` 默认 true~~（本分支 `1668e2e` 已改：字段为 `optional<bool>`，未设置时取 `!stateless`——stateful 默认开、stateless 默认关，显式置 `true` 仍可强制开，`ShouldListenStream` 判定见 [StreamableHttpClientTransport.cpp:148-149](../../src/http/StreamableHttpClientTransport.cpp)，`StatelessClientSkipsListenStreamByDefault` / `StatelessClientForcedListenStreamSendsGet` 两用例锁定；口径见 [streamable-http](/transports/streamable-http.md)）
 5. `StepUpAuthorization` 空元数据解引用：无元数据路径存在空解引用风险，待加固；另无 403 链路（见上生产缺口记账）
 6. `GetAccessToken` 持锁同步刷新：刷新整段持 `refresh_mutex_`，同步阻塞语义待优化（见 [oauth](/concepts/oauth.md)）
 7. `MakeModernTaskEnv` 死通知已删、握手守护断言保留：2026 时代服务端丢弃未初始化会话的 `notifications/initialized`，该死通知已从 helper 删除（`tests/unit/McpServerTests.cpp`），现代任务用例改走 `MakeBareModernTaskEnv` 已验证的直连路径——任务门控请求逐请求 `_meta` 声明（`b7a613e` 先例）；helper 仍保留 C-T1 的握手守护断言（initialize 回 `MethodNotFound` 即判失败），引用该 helper 的 12 处用例形态不变
@@ -89,6 +89,7 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 - [/concepts/version-negotiation.md](/concepts/version-negotiation.md) — 协商双轨
 - [/concepts/mrtr.md](/concepts/mrtr.md) — MRTR
 - [/concepts/oauth.md](/concepts/oauth.md) — OAuth
+- [/concepts/dpop.md](/concepts/dpop.md) — DPoP 验签链与逐请求 proof 缺口
 - [/concepts/experimental-flags.md](/concepts/experimental-flags.md) — 实验开关
 - [/transports/streamable-http.md](/transports/streamable-http.md) — 传输语义
 - [/transports/websocket.md](/transports/websocket.md) — 非标超集

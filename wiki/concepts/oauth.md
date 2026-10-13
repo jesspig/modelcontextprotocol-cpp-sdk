@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: OAuth 授权流程
-description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、RFC 8707 资源指示符与 audience 绑定、RFC 9207 iss 强制校验与发行者绑定、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
-tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer, audience]
-timestamp: 2026-10-13T11:12:00+08:00
+description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、private_key_jwt 客户端断言（ES256）、RFC 8707 资源指示符与 audience 绑定、RFC 9207 iss 强制校验与发行者绑定、刷新/吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
+tags: [oauth, pkce, 安全, rfc8707, rfc9207, cimd, bearer, audience, private_key_jwt]
+timestamp: 2026-10-13T11:20:43+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -14,10 +14,10 @@ resource: src/client/auth/OAuthClientProvider.cpp
 ## 流程（`Authenticate()`）
 
 1. `DiscoverMetadata`：PRM-first——先 RFC 9728 `/.well-known/oauth-protected-resource`，经 `authorization_servers[0]` 定位授权服务器后再取其 RFC 8414 元数据（AS 文档缺 `resource` 时沿用 PRM 文档的值）；逐级失败记 Warning 回退（PRM→RFC 8414 直连→硬编码 `/authorize` + `/token` + issuer=server_url），全程不硬挂
-2. `client_id` 已配置时先 `FetchClientMetadataDocument`（**CIMD**：仅 `http(s)://` 形态的 `client_id` 视为文档 URL（[OAuthClientProvider.cpp:154](../../src/client/auth/OAuthClientProvider.cpp)），先过 `IsSafeHttpUrl` 再 GET，文档超 1MB（`kMaxDcrBytes`）、非对象、所载 `client_id` 与请求 URL 不等、`grant_types`/`redirect_uris` 超 128 项、已配置 `redirect_uri` 非空却不在文档 `redirect_uris` 之列时一律记 Warning/Error 并回退已配置值、不中断授权流；文档中的 `token_endpoint_auth_method`（非空字符串）会被采纳进注册信息）；仅当**无** `client_id` 且 metadata 有 registration_endpoint 时才 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client", application_type}`，`application_type` 取 `OAuthClientOptions::application_type`，空时回退 `"native"`）
+2. `client_id` 已配置时先 `FetchClientMetadataDocument`（**CIMD**：仅 `http(s)://` 形态的 `client_id` 视为文档 URL（[OAuthClientProvider.cpp:440](../../src/client/auth/OAuthClientProvider.cpp)），先过 `IsSafeHttpUrl` 再 GET，文档超 1MB（`kMaxDcrBytes`）、非对象、所载 `client_id` 与请求 URL 不等、`grant_types`/`redirect_uris` 超 128 项、已配置 `redirect_uri` 非空却不在文档 `redirect_uris` 之列时一律记 Warning/Error 并回退已配置值、不中断授权流；文档中的 `token_endpoint_auth_method`（非空字符串）会被采纳进注册信息）；仅当**无** `client_id` 且 metadata 有 registration_endpoint 时才 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client", application_type}`，`application_type` 取 `OAuthClientOptions::application_type`，空时回退 `"native"`）
 3. 缓存 token 未过期直接成功（**先做 audience 检查**：缓存 `resource` 与当前 `ResolveResourceIndicator()` 失配时清空缓存并视为无 token）；过期但有 refresh_token → `RefreshTokens`；否则授权码流
 
-另提供 `AuthenticateClientCredentials()`（client_credentials grant）：要求 `client_id` + `client_secret`，POST `grant_type=client_credentials`，同样强制 `iss` 校验（[OAuthClientProvider.cpp:275](../../src/client/auth/OAuthClientProvider.cpp)）。
+另提供 `AuthenticateClientCredentials()`（client_credentials grant）：要求 `client_id`，并要求 `client_secret` 或可用的 `private_key_jwt` 断言二者之一，POST `grant_type=client_credentials`，同样强制 `iss` 校验（[OAuthClientProvider.cpp:318](../../src/client/auth/OAuthClientProvider.cpp)）。
 
 ## 授权码流
 
@@ -37,7 +37,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - `DiscoverMetadata`：`issuer` 为必填字段（缺失的服务端实现应补齐），当前实现缺失时记 Warning 并继续回退链（未来收紧为直接失败）；成功后经 `EnforceIssuerBinding`——首次绑定 `bound_issuer_`，后续发现 issuer 变化时清空动态注册信息与本地令牌再重绑（防授权服务器迁移劫持）
 - `ScopeFilter`（`OAuthClientOptions::scope_filter`，空即原样发送）：返回值替换授权 URL（`StartAuthorizationFlow`）与 `client_credentials` 令牌请求中的 `scope`；刷新请求不带 `scope`（缺落盘值沿用旧值），提权（`StepUpAuthorization`）合并后同样经该钩子生效
 - `expectedResource` 比对（双端同归一化 `NormalizeResourceUrl`：去 `#fragment`、去尾斜杠）：客户端 `VerifyResourceMatch` 要求元数据 `resource` 与 `server_url` 精确相等或匹配 scheme+host 前缀（缺失/空放行）；服务端 audience 门（`validate_token_resource && expected_resource 非空`）要求令牌 `resource` 非空且相等（[StreamableHttpServerTransport.cpp:542](../../src/http/StreamableHttpServerTransport.cpp)，DPoP 路径同门在 505 行），失配 401 `invalid_token`；方向不对称（服务端缺 audience 拒绝，客户端缺字段放行）
-- 客户端认证方法声明（仅文档层）：发送侧仅 `none`/`client_secret_post`；`private_key_jwt`/`jwt-bearer` 断言暂不支持，`token_endpoint_auth_method` 仅信息采纳不构造断言
+- 客户端认证方法（发送侧）：`none`、`client_secret_post`（`client_secret` 随表单）与 `private_key_jwt`——`UsesClientAssertion()` 要求 `OAuthClientOptions::private_key_pem` 非空**且**已发现元数据的 `token_endpoint_auth_methods_supported`（新字段，`ParseMetadataJson` 提取、`HandleAuthChallenge` 回填上限 128）含 `private_key_jwt`；命中时 `ApplyClientAuthentication` 向 `client_credentials`、授权码交换、`refresh_token` 三个令牌请求追加 `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer` 与 ES256 签名的 `client_assertion`，且不再发送 `client_secret`（`AuthenticateClientCredentials` 的 `client_secret` 必填校验同步放宽，见 [OAuthClientProvider.cpp:318](../../src/client/auth/OAuthClientProvider.cpp)）。断言由 `CreateClientAssertion` 构造：头 `{alg:ES256,typ:JWT}`，载荷 `{iss,sub,aud,jti,iat,exp}`（`iss`/`sub` = `client_id`，`aud` = metadata `token_endpoint`，`exp = iat+60`，`jti` 取 `ext::dpop::GenerateNonce(16)`，`iat` 走可注入钩子 `client_assertion_clock_seconds`、缺省取 `ext::dpop::NowSeconds()`），载荷经 `JsonValue` 构造（键有序、转义可靠），签名复用 `mcp::ext::dpop::detail::SignEs256JwtWithPem`（PEM 私钥解析 → P-256 校验 → ES256 签名，见 [DPoP.hpp:62](../../include/mcp/ext/DPoP.hpp)）。`signing_algorithm` 非 `ES256`、`client_id`/`audience`/`private_key_pem` 缺失、PEM 不可解析或非 P-256 一律抛 `McpError(InvalidParams)`；无 OpenSSL 时签名抛 `InternalError`（与 DPoP 同语义，详见 [/concepts/dpop.md](/concepts/dpop.md)）。`jwt-bearer`（授权方断言）仍不支持，`token_endpoint_auth_method` 仍仅信息采纳不构造断言
 - `VerifyResourceMatch` 归一化后比较（`NormalizeResourceUrl`：去 `#fragment`、去尾斜杠）：`OAuthMetadata.resource` 字段须与 `options_.server_url` **精确相等**或匹配其 **scheme+host** 前缀；字段缺失/空则放行；不匹配抛 `McpError(InternalError)`
 - `HandleAuthChallenge`（RFC 9728）不再抛异常、失败一律返回 false：长度上限（整头 4096、metadata URL 2048、响应体 64KB）、`IsSafeHttpUrl`（http/https、≤2048 字符、无控制字符）卡住 metadata URL 与回填的 issuer/authorization_endpoint/token_endpoint（非法直接拒绝），`VerifyResourceMatch` 失败转 false，数组字段设上限（scopes/response_types/grant_types ≤128、code_challenge_methods ≤8），全程 try/catch 兜底
 
@@ -48,7 +48,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）且有 `refresh_token` 时触发自动刷新；无 `refresh_token` 时直接返回缓存 access_token 不报错；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`（并发调用经 `RefreshTokensCoalesced` 合并为一次请求）
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
-- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；~~README 的 PKCE/DCR 公开表述待统一~~（已解决：`README.md:96` 与 `README.md:276` 同批改为 `PKCE/CIMD（DCR 回退）` 口径，`git blame` 两行均归 `ad8075a`；`README.md:276` 同步声明 `jwt-bearer`/`private_key_jwt` 不支持）
+- T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固；~~README 的 PKCE/DCR 公开表述待统一~~（已解决：`README.md:96` 与 `README.md:276` 同批改为 `PKCE/CIMD（DCR 回退）` 口径，`git blame` 两行均归 `ad8075a`；`README.md:277` 的 `jwt-bearer` 条目本轮同步改判——`private_key_jwt` 已支持、`jwt-bearer` 授权方断言仍不支持）
 
 ## 服务端 Bearer 资源服务器（RFC 6750/9728）
 
@@ -58,6 +58,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - POST/GET 入口挑战：无头/非 Bearer → 401 + `WWW-Authenticate: Bearer resource_metadata="<url>"`；校验失败 → 401 + `error="invalid_token"`；`required_scopes` 未被 token scopes 全覆盖 → 403 + `error="insufficient_scope", scope="..."`；**audience 门**（`validate_token_resource` 默认为 true 且 `expected_resource` 非空时生效）：`result.resource` 与 `expected_resource` 归一化（去 `#fragment`/尾斜杠）不等 → 401 + `error="invalid_token"`（与 scope 缺口的 403 分流：audience 失配走 401）
 - `serve_metadata_endpoint` 注册匿名 `GET /.well-known/oauth-protected-resource`（RFC 9728 文档：`resource`/`authorization_servers`/`scopes_supported`/`bearer_methods_supported`）
 - 未配置时零回归（无任何鉴权路径）；wire 细节见 [/transports/streamable-http.md](../transports/streamable-http.md)；客户端侧对接入口为 `auth_challenge_handler`（401 必重试；403 仅 `WWW-Authenticate` 含 `insufficient_scope`（大小写不敏感）时重试，其余 403 不重试）
+- 客户端 DPoP 发送侧：`OAuthClientProvider::ApplyDPoPProofHeader(context, headers)` 与 `ObserveDPoPNonce(nonce)` 可直接绑到传输的 `apply_per_request_headers` / `observe_response_challenge` 回调（每个 POST 签发全新 jti/iat/htu 的 proof，htu 剥 query；401/400 `use_dpop_nonce` 触发一次重试并重算 proof），依赖 OpenSSL，详见 [/concepts/dpop.md](/concepts/dpop.md)
 
 ## 相关页面
 

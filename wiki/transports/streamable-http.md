@@ -1,9 +1,9 @@
 ---
 type: Transport
 title: Streamable HTTP 传输
-description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战与 audience 校验、外部 SessionStore 会话接管（含容量上限与闲置过期）、任务头校验、版本头主动校验、x-mcp-header 参数头、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 503/504 语义。
-tags: [transport, http, streamable, stateless, winhttp, sse, bearer, audience]
-timestamp: 2026-10-13T11:03:35+08:00
+description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战与 audience 校验、外部 SessionStore 会话接管（含容量上限与闲置过期）、任务头校验、版本头主动校验、x-mcp-header 参数头、逐请求头注入口与 use_dpop_nonce 单次重试、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 503/504 语义。
+tags: [transport, http, streamable, stateless, winhttp, sse, bearer, audience, dpop]
+timestamp: 2026-10-13T14:20:00+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -34,7 +34,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 
 ## 客户端
 
-- 选项：`endpoint / transport_mode（默认 AutoDetect）/ name / known_session_id / additional_headers / auth_challenge_handler`（RFC 9728：**401 必触发**回调；403 仅 `WWW-Authenticate` 含 `insufficient_scope`（大小写不敏感）时触发，其余 403 直接按错误体处理——返回非空 Authorization 头则**恰好重试一次**）/ `enable_listen_stream`（`optional<bool>`，**未设置 = 自动**：由 `streamable_http_client_impl::ShouldListenStream` 判定——有值取其值，否则取 `!stateless`，即 **stateful 默认 true、stateless 默认 false**；stateless 对齐 Tier1 单连接语义，每请求独立连接、不额外挂 GET 长流；显式置 `true` 仍可强制开启，置 `false` 一律关闭）/ `stateless`（**默认 false**：true 时不发送 `Mcp-Session-Id`/`Last-Event-ID`、不处理会话接管、不发送 DELETE、默认不开 GET 监听，纯无状态对端专用）
+- 选项：`endpoint / transport_mode（默认 AutoDetect）/ name / known_session_id / additional_headers / auth_challenge_handler`（RFC 9728：**401 必触发**回调；403 仅 `WWW-Authenticate` 含 `insufficient_scope`（大小写不敏感）时触发，其余 403 直接按错误体处理——返回非空 Authorization 头则**恰好重试一次**）/ `apply_per_request_headers`（**默认未设置**；`function<void(const HttpRequestHeaderContext&, map<string,string>&)>`，**每次发请求前**调用一次，含重试与内部补发（tools/list 注解刷新），入参见 [/concepts/dpop.md](/concepts/dpop.md) 逐请求 proof 一节；写出顺序在 `additional_headers` 与 `Authorization` **之后**，故可覆盖二者；Win32/POSIX 共用 `ResolvePerRequestHeaders` 判定，行为一致）/ `observe_response_challenge`（**默认未设置**；`function<void(const HttpResponseChallengeContext&)>`，**每个响应**（含 2xx/SSE）调用一次，带 `status_code` / `www_authenticate` / `dpop_nonce`，视图仅在本次调用内有效）/ `use_dpop_nonce` 单次重试（**401 或 400** 且挑战串或响应体前 4KB 含 `use_dpop_nonce` 时，**首轮恰好重试一次**并重算 proof；与 auth 挑战重试、400 `HeaderMismatch` 刷新**共用同一预算**）/ `enable_listen_stream`（`optional<bool>`，**未设置 = 自动**：由 `streamable_http_client_impl::ShouldListenStream` 判定——有值取其值，否则取 `!stateless`，即 **stateful 默认 true、stateless 默认 false**；stateless 对齐 Tier1 单连接语义，每请求独立连接、不额外挂 GET 长流；显式置 `true` 仍可强制开启，置 `false` 一律关闭）/ `stateless`（**默认 false**：true 时不发送 `Mcp-Session-Id`/`Last-Event-ID`、不处理会话接管、不发送 DELETE、默认不开 GET 监听，纯无状态对端专用）
 - `HttpTransportMode`：`AutoDetect` / `StreamableHttp` / `Sse`——注意 `Connect()` 始终固定走 Streamable HTTP，`transport_mode` 字段当前**无运行时读取点**（仅声明与测试引用）；SSE 模式由用户直接选用 `SseClientTransport`，"AutoDetect 失败回落 SSE" 未实现
 - **平台双实现**：Win32 用 WinHTTP（`#pragma comment(lib, "winhttp.lib")`），POSIX 用自研 `detail::net::HttpClient`；**Request 走 `send_thread_ + send_queue_` 串行队列**，Notification/Response 改为 `LaunchImmediatePost` **独立即时 POST**（短命 detached 线程 `mcp-post`，`shared_from_this` 保活、HTTP 超时兜底线程寿命）——否则 server→client 请求场景（如 elicitation 挂起的 tools/call 等完成通知）互等死锁；Win32 会话 `Start()` 补 `SetConnected()`（与 POSIX 对齐，状态机不再恒为 Initial）
 - **IPv6 Host 头**（detail/net/HttpClient.cpp，POSIX 分支）：Host 含 `:` 时自动加方括号 `[v6]` 形式

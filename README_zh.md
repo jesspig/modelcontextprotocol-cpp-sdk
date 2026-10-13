@@ -179,6 +179,7 @@ auto result = client->CallTool("echo",
 - CIMD 客户端标识与 DCR 回退（`client_id` 为 `http(s)://` URL 时拉取客户端元数据文档；仅未配置 `client_id` 时动态注册）
 - Token 刷新和撤销
 - 可插拔 Token 缓存（`ITokenCache`），内置持久化 `FileTokenCache`
+- DPoP（RFC 9449）：Streamable HTTP 资源服务器侧已实现证明校验——默认关，按部署用实验开关 `enable_dpop`（`StreamableHttpServerOptions::bearer_auth->enable_dpop`）开启，且需 OpenSSL；客户端侧可切换绑定授权方案并签发证明（`OAuthClientOptions::enable_dpop`），但传输层尚未逐请求附加 `DPoP` 证明
 
 ```cpp
 OAuthClientOptions oauth_opts;
@@ -259,8 +260,8 @@ build/debug/examples/EchoServer/EchoServer
 | `server/discover` | 现代时代永不经 `initialize` 协商（CHANGELOG §1.2.0）；`server/discover` 定稿并带现代客户端支持；stdio 按传输 era lock，Streamable HTTP 走无会话现代路径（[methods.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/methods.rb)） | Auto 模式按传输分类回退（[version-negotiation](wiki/concepts/version-negotiation.md)） |
 | 多轮请求 | SEP-2322 `input_required` 结果（`inputRequests`/`inputResponses` + `requestState`），legacy 线上亦可履行（CHANGELOG §0.24.0/§1.2.0）；`resultType` 仅 `complete`/`input_required`（[result_type.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/result_type.rb)） | `InputRequiredResult` + elicitation 循环（[mrtr](wiki/concepts/mrtr.md)）；另有任务句柄专用的 `task` 结果类型 |
 | 请求头 | 发送 SEP-2243 `Mcp-Method`/`Mcp-Name`，`x-mcp-header` 参数镜像为 `Mcp-Param-*`（CHANGELOG §0.22.0/§1.2.0；[mcp_param_headers.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/client/mcp_param_headers.rb)）；现代路径强制要求 `Mcp-Method` | `Mcp-Name` 校验含 tasks `taskId` 比对（[mcp-param-headers](wiki/concepts/mcp-param-headers.md)、[tasks-extension](wiki/concepts/tasks-extension.md)） |
-| 缓存 | 服务端标注 SEP-2549 `ttlMs`/`cacheScope`（CHANGELOG §0.24.0/§1.2.0）；`lib/mcp/client/` 下未见客户端响应缓存【假设：未实现，待源码核实】 | 客户端响应缓存，TTL + public/private 双分区（[response-cache](wiki/concepts/response-cache.md)） |
-| 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/CIMD（DCR 回退）+ `FileTokenCache`，服务端 Bearer 鉴权（见上文 OAuth 支持） |
+| 缓存 | 服务端标注 SEP-2549 `ttlMs`/`cacheScope`（CHANGELOG §0.24.0/§1.2.0）；无客户端响应缓存——`lib/mcp/client/` 下仅 elicitation、http、mcp_param_headers、modern_envelope、oauth（+oauth/ 子目录）、paginated_result、stdio、tool，且 `client/http.rb` 全文无 `ttlMs`/`cacheScope`/缓存命中逻辑（2026-10-13 对 `main` 分支核实） | 客户端响应缓存，同时消费 2026 时代顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，TTL + public/private 双分区（[response-cache](wiki/concepts/response-cache.md)） |
+| 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/CIMD（DCR 回退）+ `FileTokenCache`，服务端 Bearer 鉴权，可选的服务端 DPoP 证明校验（[dpop](wiki/concepts/dpop.md)；见上文 OAuth 支持） |
 | 任务（SEP-2663） | 未实现——“remains planned”（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，[#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)） | `tasks/get\|update\|cancel` 双时代 + `FileTaskStore`（[tasks-extension](wiki/concepts/tasks-extension.md)） |
 | 技能（SEP-2640） | 未实现【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`，仅 2026 时代（[skills-extension](wiki/concepts/skills-extension.md)） |
 
@@ -270,8 +271,8 @@ build/debug/examples/EchoServer/EchoServer
 
 - **应用界面渲染**——服务器推送的 UI 组件不渲染，仅作不透明数据透传。
 - **EMA**——未实现 EMA 协商，对端回退到基线能力协商。
-- **DPoP**——DPoP 绑定令牌既不发送也不校验，上文 OAuth 支持中的 Bearer 令牌路径仍为受支持流程。
-- **jwt-bearer**——不支持 `jwt-bearer` / `private_key_jwt` 客户端认证，公开客户端 PKCE/CIMD 流程仍为受支持路径。
+- **DPoP 客户端逐请求证明**——服务端证明校验已实现（默认关，实验开关 `enable_dpop`，需 OpenSSL，见上文 OAuth 支持），但传输层从不逐请求附加 `DPoP` 证明，服务端下发的 `DPoP-Nonce` 也未回灌做 nonce 重试，故 DPoP 绑定令牌尚不能驱动 Streamable HTTP 会话；开关关闭时纯 Bearer 路径行为不变（[dpop](wiki/concepts/dpop.md)）。
+- **jwt-bearer**——已支持 `private_key_jwt` 客户端认证（配置 `private_key_pem` 且授权服务器在 `token_endpoint_auth_methods_supported` 中声明 `private_key_jwt` 时，向令牌请求发送 ES256 客户端断言；需 OpenSSL），但不支持授权方 `jwt-bearer` 授权，公开客户端 PKCE/CIMD 流程仍为受支持路径。
 - **ETag**——不存储、不比对 `ETag` / `If-None-Match` 校验器，缓存响应仅按 TTL 治理。
 - **渐进式发现**——未实现增量能力发现，恒用完整 `server/discover`（现代）/ `initialize`（遗留）握手。
 - **文件上传**——未实现可续传文件上传原语，文件内容仅经现有工具/资源载荷流转。
