@@ -1269,6 +1269,7 @@ std::unique_ptr<McpClient> ConnectBearerClient(const std::string& server_url,
     auto transport = http_transport.Connect();
     ClientOptions options;
     options.client_info = Implementation{std::string("test-client"), "1.0.0"};
+    options.max_total_timeout = std::chrono::seconds(10);
     options.connect_mode = IsModernConformanceRun() ? ConnectMode::Auto
                                                     : ConnectMode::Legacy;
     options.capabilities = ClientCapabilities{};
@@ -1296,6 +1297,7 @@ std::unique_ptr<McpClient> ConnectDPoPClient(const std::string& server_url,
     auto transport = http_transport.Connect();
     ClientOptions options;
     options.client_info = Implementation{std::string("test-client"), "1.0.0"};
+    options.max_total_timeout = std::chrono::seconds(10);
     options.connect_mode = IsModernConformanceRun() ? ConnectMode::Auto
                                                     : ConnectMode::Legacy;
     options.capabilities = ClientCapabilities{};
