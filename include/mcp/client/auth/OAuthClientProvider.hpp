@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace mcp {
@@ -134,6 +135,7 @@ private:
     std::mutex refresh_mutex_;
     std::condition_variable refresh_cv_;
     bool refresh_in_flight_ = false;
+    std::thread::id refresh_owner_;
 };
 
 namespace pkce {

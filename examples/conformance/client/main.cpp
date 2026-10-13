@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <iostream>
@@ -862,29 +863,48 @@ std::string OriginOf(const std::string& url) {
     return path == std::string::npos ? url : url.substr(0, path);
 }
 
-std::string Rfc9728PrmUrl(const std::string& server_url) {
-    std::string origin = OriginOf(server_url);
-    std::string path = server_url.size() > origin.size()
-        ? server_url.substr(origin.size())
-        : "/";
-    if (!path.empty() && path.back() == '/' && path.size() > 1)
-        path.pop_back();
-    if (path.empty() || path == "/")
-        return origin + "/.well-known/oauth-protected-resource";
-    return origin + "/.well-known/oauth-protected-resource" + path;
-}
-
-std::string Rfc8414AsDocUrl(const std::string& as_base, bool openid) {
-    std::string origin = OriginOf(as_base);
-    std::string path = as_base.size() > origin.size()
-        ? as_base.substr(origin.size())
+std::string TrimmedPath(const std::string& url) {
+    std::string origin = OriginOf(url);
+    std::string path = url.size() > origin.size()
+        ? url.substr(origin.size())
         : std::string();
     while (!path.empty() && path.back() == '/') path.pop_back();
-    std::string middle = openid
-        ? "/.well-known/openid-configuration"
-        : "/.well-known/oauth-authorization-server";
-    if (path.empty()) return origin + middle;
-    return origin + middle + path;
+    return path;
+}
+
+constexpr std::string_view kPrmSuffix = "/.well-known/oauth-protected-resource";
+constexpr std::string_view kAsSuffix = "/.well-known/oauth-authorization-server";
+constexpr std::string_view kOidcSuffix = "/.well-known/openid-configuration";
+
+std::vector<std::string> Rfc9728PrmUrlCandidates(const std::string& server_url) {
+    std::string origin = OriginOf(server_url);
+    std::string path = TrimmedPath(server_url);
+    std::vector<std::string> candidates;
+    candidates.push_back(path.empty() || path == "/"
+        ? origin + std::string(kPrmSuffix)
+        : origin + std::string(kPrmSuffix) + path);
+    std::string root_form = origin + std::string(kPrmSuffix);
+    if (candidates.front() != root_form) candidates.push_back(root_form);
+    return candidates;
+}
+
+std::vector<std::string> AuthorizationServerDocUrlCandidates(
+    const std::string& as_base) {
+    std::string origin = OriginOf(as_base);
+    std::string path = TrimmedPath(as_base);
+    std::vector<std::string> candidates;
+    candidates.push_back(origin + std::string(kAsSuffix) + path);
+    candidates.push_back(origin + std::string(kOidcSuffix) + path);
+    if (!path.empty() && path != "/") {
+        candidates.push_back(origin + path + std::string(kAsSuffix));
+        candidates.push_back(origin + path + std::string(kOidcSuffix));
+    }
+    std::vector<std::string> unique;
+    for (const auto& candidate : candidates) {
+        if (std::find(unique.begin(), unique.end(), candidate) == unique.end())
+            unique.push_back(candidate);
+    }
+    return unique;
 }
 
 std::string NormalizeAuthResource(std::string value) {
@@ -940,6 +960,14 @@ bool ParseJsonBody(const RawHttpResult& result, JsonValue& document) {
     return document.IsObject();
 }
 
+bool FetchAuthorizationServerMetadata(const std::string& as_base,
+    JsonValue& metadata) {
+    for (const auto& url : AuthorizationServerDocUrlCandidates(as_base)) {
+        if (ParseJsonBody(ConformanceHttpGet(url), metadata)) return true;
+    }
+    return false;
+}
+
 struct DiscoveredAuth {
     std::string prm_url;
     std::string prm_resource;
@@ -967,10 +995,19 @@ bool DiscoverAuthFlow(const std::string& server_url,
     std::string prm_url = prm_override;
     if (prm_url.empty())
         prm_url = QuotedChallengeValue(www_auth, "resource_metadata");
-    if (prm_url.empty()) prm_url = Rfc9728PrmUrl(server_url);
-    auth.prm_url = prm_url;
     JsonValue prm;
-    if (!ParseJsonBody(ConformanceHttpGet(prm_url), prm)) return false;
+    if (prm_url.empty()) {
+        for (const auto& candidate : Rfc9728PrmUrlCandidates(server_url)) {
+            if (ParseJsonBody(ConformanceHttpGet(candidate), prm)) {
+                prm_url = candidate;
+                break;
+            }
+        }
+    } else if (!ParseJsonBody(ConformanceHttpGet(prm_url), prm)) {
+        return false;
+    }
+    if (prm_url.empty()) return false;
+    auth.prm_url = prm_url;
     auth.prm_resource = JsonStringField(prm, "resource");
     auth.prm_scopes = JsonStringList(prm, "scopes_supported");
     std::vector<std::string> servers = JsonStringList(prm,
@@ -980,16 +1017,8 @@ bool DiscoverAuthFlow(const std::string& server_url,
     while (!auth.as_base.empty() && auth.as_base.back() == '/')
         auth.as_base.pop_back();
     JsonValue metadata;
-    bool found = false;
-    for (bool openid : {false, true}) {
-        RawHttpResult doc =
-            ConformanceHttpGet(Rfc8414AsDocUrl(auth.as_base, openid));
-        if (ParseJsonBody(doc, metadata)) {
-            found = true;
-            break;
-        }
-    }
-    if (!found) return false;
+    if (!FetchAuthorizationServerMetadata(auth.as_base, metadata))
+        return false;
     auth.issuer = JsonStringField(metadata, "issuer");
     auth.auth_endpoint = JsonStringField(metadata, "authorization_endpoint");
     auth.token_endpoint = JsonStringField(metadata, "token_endpoint");
@@ -1014,52 +1043,99 @@ std::vector<std::string> SelectAuthScopes(const DiscoveredAuth& auth) {
 }
 
 std::string ExtractAuthState(std::string_view url);
+std::unique_ptr<McpClient> ConnectBearerClient(const std::string& server_url,
+    const std::string& scheme, const std::string& token);
+bool ManualRegister(const DiscoveredAuth& auth,
+    const std::vector<std::string>& grant_types, std::string& client_id,
+    std::string& client_secret);
 
-bool RunProviderAuthFlow(const DiscoveredAuth& auth,
+bool AuthenticateForAttempt(const DiscoveredAuth& auth,
     const std::vector<std::string>& scopes,
+    const std::string& preset_client_id, bool decline_bad_iss,
+    const std::string& server_url) {
+    std::string seen_url;
+    std::string client_id = preset_client_id;
+    std::string client_secret;
+    if (client_id.empty() && !auth.registration_endpoint.empty() &&
+        !ManualRegister(auth, {}, client_id, client_secret)) {
+        std::cerr << "Dynamic client registration failed before provider "
+                     "flow"
+                  << std::endl;
+        return false;
+    }
+    OAuthClientOptions oauth_options;
+    oauth_options.server_url = auth.as_base;
+    if (!auth.prm_resource.empty())
+        oauth_options.resource = auth.prm_resource;
+    oauth_options.redirect_uri = "http://localhost/callback";
+    oauth_options.scopes = scopes;
+    if (!client_id.empty()) oauth_options.client_id = client_id;
+    if (!client_secret.empty()) oauth_options.client_secret = client_secret;
+    oauth_options.authorization_redirect_handler =
+        [&seen_url](std::string_view url) {
+            seen_url = std::string(url);
+        };
+    oauth_options.authorization_code_callback =
+        [&seen_url, &auth, decline_bad_iss]()
+            -> std::optional<AuthorizationCodeResult> {
+            RawHttpResult reached = ConformanceHttpGet(seen_url);
+            std::string location = RawHttpHeader(reached, "location");
+            std::string code = location.empty()
+                ? "conformance-test-code"
+                : QueryValue(location, "code");
+            if (code.empty()) code = "conformance-test-code";
+            if (decline_bad_iss) {
+                bool has_iss = HasQueryKey(location, "iss");
+                std::string iss = QueryValue(location, "iss");
+                if (auth.iss_supported) {
+                    if (!has_iss || iss != auth.issuer) return std::nullopt;
+                } else if (has_iss && iss != auth.issuer) {
+                    return std::nullopt;
+                }
+            }
+            AuthorizationCodeResult result;
+            result.code = code;
+            result.state = ExtractAuthState(seen_url);
+            return result;
+        };
+    auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
+    bool authenticated = provider->Authenticate();
+    std::string access_token = provider->GetAccessToken();
+    if (!authenticated || access_token.empty()) {
+        std::cerr << "OAuth provider flow did not yield an access token "
+                     "(authenticated="
+                  << (authenticated ? "true" : "false") << ", token="
+                  << (access_token.empty() ? "absent" : "present") << ")"
+                  << std::endl;
+        return false;
+    }
+    auto client = ConnectBearerClient(server_url, "Bearer", access_token);
+    try {
+        auto tools = client->ListTools();
+        std::cout << "OAuth provider flow bearer tools listed ("
+                  << tools.tools.size() << ")" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "OAuth provider flow bearer call rejected: " << e.what()
+                  << std::endl;
+        client->Close();
+        return false;
+    }
+    client->Close();
+    return true;
+}
+
+bool RunProviderAuthFlow(const std::string& server_url,
+    const DiscoveredAuth& auth, const std::vector<std::string>& scopes,
     const std::string& preset_client_id, bool decline_bad_iss, int attempts) {
     for (int attempt = 0; attempt < attempts; ++attempt) {
-        std::string seen_url;
-        OAuthClientOptions oauth_options;
-        oauth_options.server_url = auth.as_base;
-        if (!auth.prm_resource.empty())
-            oauth_options.resource = auth.prm_resource;
-        oauth_options.redirect_uri = "http://localhost/callback";
-        oauth_options.scopes = scopes;
-        if (!preset_client_id.empty())
-            oauth_options.client_id = preset_client_id;
-        oauth_options.authorization_redirect_handler =
-            [&seen_url](std::string_view url) {
-                seen_url = std::string(url);
-            };
-        oauth_options.authorization_code_callback =
-            [&seen_url, &auth, decline_bad_iss]()
-                -> std::optional<AuthorizationCodeResult> {
-                RawHttpResult reached = ConformanceHttpGet(seen_url);
-                std::string location = RawHttpHeader(reached, "location");
-                std::string code = location.empty()
-                    ? "conformance-test-code"
-                    : QueryValue(location, "code");
-                if (code.empty()) code = "conformance-test-code";
-                if (decline_bad_iss) {
-                    bool has_iss = HasQueryKey(location, "iss");
-                    std::string iss = QueryValue(location, "iss");
-                    if (auth.iss_supported) {
-                        if (!has_iss || iss != auth.issuer) return std::nullopt;
-                    } else if (has_iss && iss != auth.issuer) {
-                        return std::nullopt;
-                    }
-                }
-                AuthorizationCodeResult result;
-                result.code = code;
-                result.state = ExtractAuthState(seen_url);
-                return result;
-            };
-        auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
-        bool authenticated = provider->Authenticate();
+        if (!AuthenticateForAttempt(auth, scopes, preset_client_id,
+                decline_bad_iss, server_url)) {
+            std::cout << "OAuth provider flow attempt " << (attempt + 1)
+                      << " produced no usable token" << std::endl;
+            return false;
+        }
         std::cout << "OAuth provider flow attempt " << (attempt + 1)
-                  << (authenticated ? " stored a token" : " reached mock")
-                  << std::endl;
+                  << " stored a usable token" << std::endl;
     }
     return true;
 }
@@ -1110,23 +1186,61 @@ bool ManualAuthorize(const DiscoveredAuth& auth, const std::string& client_id,
     return !location.empty();
 }
 
-bool ManualToken(const DiscoveredAuth& auth,
-    const std::map<std::string, std::string>& fields,
-    const std::string& basic_credentials, std::string& access_token) {
+std::string EncodeFormFields(
+    const std::map<std::string, std::string>& fields) {
     std::string body;
     for (const auto& [key, value] : fields) {
         if (!body.empty()) body.push_back('&');
         body += FormEncode(key) + "=" + FormEncode(value);
     }
+    return body;
+}
+
+bool ManualToken(const DiscoveredAuth& auth,
+    const std::map<std::string, std::string>& fields,
+    const std::string& basic_credentials, std::string& access_token) {
     std::map<std::string, std::string> headers;
     if (!basic_credentials.empty())
         headers["Authorization"] = "Basic " + basic_credentials;
     RawHttpResult response = ConformanceHttpPost(auth.token_endpoint,
-        "application/x-www-form-urlencoded", body, headers);
+        "application/x-www-form-urlencoded", EncodeFormFields(fields), headers);
     JsonValue document;
     if (!ParseJsonBody(response, document)) return false;
     access_token = JsonStringField(document, "access_token");
     return !access_token.empty();
+}
+
+constexpr int kDpopTokenAttempts = 2;
+constexpr int64_t kDpopTokenLifetimeMs = 3600 * 1000;
+
+bool ManualDpopToken(const DiscoveredAuth& auth,
+    const std::map<std::string, std::string>& fields,
+    const std::shared_ptr<OAuthClientProvider>& provider,
+    std::string& access_token) {
+    std::string body = EncodeFormFields(fields);
+    for (int attempt = 0; attempt < kDpopTokenAttempts; ++attempt) {
+        std::string proof =
+            provider->BuildDPoPProof("POST", auth.token_endpoint);
+        if (proof.empty()) return false;
+        std::map<std::string, std::string> headers;
+        headers["DPoP"] = std::move(proof);
+        RawHttpResult response = ConformanceHttpPost(auth.token_endpoint,
+            "application/x-www-form-urlencoded", body, headers);
+        if (response.status >= 200 && response.status < 300) {
+            JsonValue document;
+            if (!ParseJsonBody(response, document)) return false;
+            access_token = JsonStringField(document, "access_token");
+            return !access_token.empty();
+        }
+        std::string nonce = RawHttpHeader(response, "DPoP-Nonce");
+        if (nonce.empty()) return false;
+        provider->ObserveDPoPNonce(nonce);
+    }
+    return false;
+}
+
+void ResetDPoPNonce(const std::shared_ptr<OAuthClientProvider>& provider) {
+    provider->SetDPoPNonce(std::string());
 }
 
 std::map<std::string, std::string> AuthCodeTokenFields(
@@ -1153,7 +1267,35 @@ std::unique_ptr<McpClient> ConnectBearerClient(const std::string& server_url,
     auto transport = http_transport.Connect();
     ClientOptions options;
     options.client_info = Implementation{std::string("test-client"), "1.0.0"};
-    options.connect_mode = ConnectMode::Auto;
+    options.connect_mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                    : ConnectMode::Legacy;
+    options.capabilities = ClientCapabilities{};
+    options.enable_tasks_extension = true;
+    options.enable_skills_extension = true;
+    return McpClient::Create(transport, options);
+}
+
+std::unique_ptr<McpClient> ConnectDPoPClient(const std::string& server_url,
+    const std::string& token,
+    const std::shared_ptr<OAuthClientProvider>& provider) {
+    HttpClientTransportOptions transport_options;
+    transport_options.endpoint = server_url;
+    transport_options.additional_headers["Authorization"] = "DPoP " + token;
+    transport_options.apply_per_request_headers =
+        [provider](const HttpRequestHeaderContext& context,
+                   std::map<std::string, std::string>& headers) {
+            provider->ApplyDPoPProofHeader(context, headers);
+        };
+    transport_options.observe_response_challenge =
+        [provider](const HttpResponseChallengeContext& context) {
+            provider->ObserveDPoPNonce(context.dpop_nonce);
+        };
+    StreamableHttpClientTransport http_transport(transport_options);
+    auto transport = http_transport.Connect();
+    ClientOptions options;
+    options.client_info = Implementation{std::string("test-client"), "1.0.0"};
+    options.connect_mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                    : ConnectMode::Legacy;
     options.capabilities = ClientCapabilities{};
     options.enable_tasks_extension = true;
     options.enable_skills_extension = true;
@@ -1226,16 +1368,8 @@ bool FetchAsEndpoints(const std::string& as_base, DiscoveredAuth& auth) {
     while (!auth.as_base.empty() && auth.as_base.back() == '/')
         auth.as_base.pop_back();
     JsonValue metadata;
-    bool found = false;
-    for (bool openid : {false, true}) {
-        RawHttpResult doc =
-            ConformanceHttpGet(Rfc8414AsDocUrl(auth.as_base, openid));
-        if (ParseJsonBody(doc, metadata)) {
-            found = true;
-            break;
-        }
-    }
-    if (!found) return false;
+    if (!FetchAuthorizationServerMetadata(auth.as_base, metadata))
+        return false;
     auth.issuer = JsonStringField(metadata, "issuer");
     auth.auth_endpoint = JsonStringField(metadata, "authorization_endpoint");
     auth.token_endpoint = JsonStringField(metadata, "token_endpoint");
@@ -1262,9 +1396,8 @@ bool DriveProviderAuthScenario(const std::string& server_url,
         scenario == "auth/iss-unexpected" ||
         scenario == "auth/iss-normalized";
     int attempts = scenario == "auth/scope-retry-limit" ? 3 : 1;
-    RunProviderAuthFlow(auth, SelectAuthScopes(auth), preset, decline,
-        attempts);
-    return true;
+    return RunProviderAuthFlow(server_url, auth, SelectAuthScopes(auth),
+        preset, decline, attempts);
 }
 
 bool DriveRejectScenario(const std::string& server_url,
@@ -1405,6 +1538,108 @@ bool DriveManualAuthScenario(const std::string& server_url,
     return false;
 }
 
+bool DriveClientCredentialsJwtScenario(const std::string& server_url,
+    const JsonValue& context) {
+    std::string client_id = ContextString(context, "client_id");
+    std::string client_secret = ContextString(context, "client_secret");
+    std::string signing_algorithm = ContextString(context, "signing_algorithm");
+    std::string private_key_pem = ContextString(context, "private_key_pem");
+    if (client_id.empty() || private_key_pem.empty()) return false;
+    DiscoveredAuth auth;
+    if (!DiscoverAuthFlow(server_url, std::string(), auth)) return false;
+    std::cout << "Auth discovery done (auth/client-credentials-jwt)"
+              << std::endl;
+    OAuthClientOptions oauth_options;
+    oauth_options.server_url = auth.as_base;
+    if (!auth.prm_resource.empty()) oauth_options.resource = auth.prm_resource;
+    oauth_options.redirect_uri = "http://localhost/callback";
+    oauth_options.client_id = client_id;
+    if (!client_secret.empty()) oauth_options.client_secret = client_secret;
+    oauth_options.scopes = SelectAuthScopes(auth);
+    oauth_options.signing_algorithm = signing_algorithm;
+    oauth_options.private_key_pem = std::move(private_key_pem);
+    auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
+    if (!provider->AuthenticateClientCredentials()) {
+        std::cerr << "client_credentials private_key_jwt flow did not yield a "
+                     "token"
+                  << std::endl;
+        return false;
+    }
+    std::string access_token = provider->GetAccessToken();
+    if (access_token.empty()) {
+        std::cerr << "client_credentials private_key_jwt flow stored no access "
+                     "token"
+                  << std::endl;
+        return false;
+    }
+    auto client = ConnectBearerClient(server_url, "Bearer", access_token);
+    try {
+        auto tools = client->ListTools();
+        std::cout << "client_credentials JWT tools listed ("
+                  << tools.tools.size() << ")" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "client_credentials JWT bearer call rejected: " << e.what()
+                  << std::endl;
+        client->Close();
+        return false;
+    }
+    client->Close();
+    return true;
+}
+
+bool DriveDPoPScenario(const std::string& server_url,
+    std::string_view scenario) {
+    DiscoveredAuth auth;
+    if (!DiscoverAuthFlow(server_url, std::string(), auth)) return false;
+    std::cout << "Auth discovery done (" << scenario << ")" << std::endl;
+    std::string client_id, client_secret;
+    if (!ManualRegister(auth, {}, client_id, client_secret)) return false;
+    auto token_cache = std::make_shared<InMemoryTokenCache>();
+    OAuthClientOptions oauth_options;
+    oauth_options.server_url = auth.as_base;
+    if (!auth.prm_resource.empty()) oauth_options.resource = auth.prm_resource;
+    oauth_options.redirect_uri = "http://localhost/callback";
+    oauth_options.client_id = client_id;
+    oauth_options.enable_dpop = true;
+    oauth_options.token_cache = token_cache;
+    auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
+    std::string scope_text;
+    for (const auto& scope : SelectAuthScopes(auth)) {
+        if (!scope_text.empty()) scope_text += " ";
+        scope_text += scope;
+    }
+    std::string verifier, location;
+    if (!ManualAuthorize(auth, client_id, scope_text, verifier, location))
+        return false;
+    std::string code = QueryValue(location, "code");
+    if (code.empty()) return false;
+    std::string token;
+    if (!ManualDpopToken(auth, AuthCodeTokenFields(auth, client_id, code,
+            verifier, scope_text), provider, token))
+        return false;
+    ResetDPoPNonce(provider);
+    TokenContainer tokens;
+    tokens.access_token = token;
+    tokens.token_type = "DPoP";
+    tokens.expires_at =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() +
+        kDpopTokenLifetimeMs;
+    token_cache->StoreTokens(tokens);
+    auto client = ConnectDPoPClient(server_url, token, provider);
+    try {
+        auto tools = client->ListTools();
+        std::cout << "DPoP tools listed (" << tools.tools.size() << ")"
+                  << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "DPoP request rejected: " << e.what() << std::endl;
+        client->Close();
+        return false;
+    }
+    client->Close();
+    return true;
+}
+
 bool DriveStepUpScenario(const std::string& server_url) {
     DiscoveredAuth auth;
     if (!DiscoverAuthFlow(server_url, std::string(), auth)) return false;
@@ -1458,12 +1693,6 @@ bool DriveMigrationScenario(const std::string& server_url) {
             verifier, "mcp:basic"), std::string(), token))
         return false;
     auto first_client = ConnectBearerClient(server_url, "Bearer", token);
-    auto tools = first_client->ListTools();
-    if (!FindTool(tools, "test-tool")) return false;
-    try {
-        first_client->CallTool("test-tool", JsonValue(JsonValue::Object{}));
-    } catch (...) {
-    }
     first_client->Close();
     JsonValue prm;
     if (!ParseJsonBody(ConformanceHttpGet(auth.prm_url), prm)) return false;
@@ -1488,6 +1717,10 @@ bool DriveMigrationScenario(const std::string& server_url) {
         return false;
     auto second_client =
         ConnectBearerClient(server_url, "Bearer", second_token);
+    if (!FindTool(second_client->ListTools(), "test-tool")) {
+        second_client->Close();
+        return false;
+    }
     second_client->CallTool("test-tool", JsonValue(JsonValue::Object{}));
     second_client->Close();
     std::cout << "Auth migration done" << std::endl;
@@ -1501,8 +1734,8 @@ bool DriveLegacyAuthScenario(const std::string& server_url,
         DiscoveredAuth auth;
         if (!FetchAsEndpoints(origin, auth)) return false;
         auth.prm_resource = server_url;
-        RunProviderAuthFlow(auth, {}, std::string(), false, 1);
-        return true;
+        return RunProviderAuthFlow(server_url, auth, {}, std::string(), false,
+            1);
     }
     RawHttpResult response = ConformanceHttpPost(origin + "/register",
         "application/json",
@@ -1515,8 +1748,7 @@ bool DriveLegacyAuthScenario(const std::string& server_url,
     DiscoveredAuth auth;
     auth.as_base = origin;
     auth.prm_resource = server_url;
-    RunProviderAuthFlow(auth, {}, client_id, false, 1);
-    return true;
+    return RunProviderAuthFlow(server_url, auth, {}, client_id, false, 1);
 }
 
 void RunAuthClient(const std::string& server_url, std::string_view scenario) {
@@ -1567,13 +1799,10 @@ void RunAuthClient(const std::string& server_url, std::string_view scenario) {
         scenario == "auth/2025-03-26-oauth-endpoint-fallback") {
         completed = DriveLegacyAuthScenario(server_url, scenario);
     } else if (scenario == "auth/client-credentials-jwt") {
-        std::cerr << "untestable: private_key_jwt assertion minting is not "
-                     "available to the fixture"
-                  << std::endl;
+        completed = DriveClientCredentialsJwtScenario(server_url,
+            ReadConformanceContext());
     } else if (scenario == "auth/dpop" || scenario == "auth/dpop-nonce") {
-        std::cerr << "untestable: per-request DPoP proofs need transport "
-                     "support the fixture cannot inject"
-                  << std::endl;
+        completed = DriveDPoPScenario(server_url, scenario);
     } else {
         std::cerr << "Unknown auth scenario: " << scenario << std::endl;
     }

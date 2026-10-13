@@ -21,6 +21,7 @@
 #include <optional>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 
 namespace {
@@ -115,15 +116,18 @@ class RefreshInFlightGuard {
 public:
     RefreshInFlightGuard(std::mutex& mutex,
                         bool& in_flight,
+                        std::thread::id& owner,
                         std::condition_variable& finished)
         : mutex_(mutex)
         , in_flight_(in_flight)
+        , owner_(owner)
         , finished_(finished) {}
 
     ~RefreshInFlightGuard() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             in_flight_ = false;
+            owner_ = std::thread::id{};
         }
         finished_.notify_all();
     }
@@ -134,6 +138,7 @@ public:
 private:
     std::mutex& mutex_;
     bool& in_flight_;
+    std::thread::id& owner_;
     std::condition_variable& finished_;
 };
 
@@ -395,8 +400,13 @@ void OAuthClientProvider::EnforceIssuerBinding() {
 bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     if (!metadata_) return false;
     auto* it = response.Find("iss");
-    if (!it || !it->IsString()) {
-        MCP_LOG(Error, "OAuth token response missing required 'iss' claim (RFC 9207)");
+    if (!it) {
+        MCP_LOG(Warning,
+            "OAuth token response carries no 'iss' claim; accepted per local policy (RFC 9207 leaves it optional)");
+        return true;
+    }
+    if (!it->IsString()) {
+        MCP_LOG(Error, "OAuth token response 'iss' claim is present but not a string");
         return false;
     }
     if (it->GetString() != metadata_->issuer) {
@@ -521,10 +531,12 @@ std::string OAuthClientProvider::CreateClientAssertion() const {
         throw McpError(McpErrorCode::InvalidParams,
             "OAuth private_key_jwt client assertion requires a client_id");
     }
-    std::string audience = metadata_ ? metadata_->token_endpoint : std::string();
+    std::string audience;
+    if (metadata_) audience = metadata_->issuer;
+    if (audience.empty() && metadata_) audience = metadata_->token_endpoint;
     if (audience.empty()) {
         throw McpError(McpErrorCode::InvalidParams,
-            "OAuth private_key_jwt client assertion requires a token_endpoint audience");
+            "OAuth private_key_jwt client assertion requires an issuer audience");
     }
     if (!options_.private_key_pem || options_.private_key_pem->empty()) {
         throw McpError(McpErrorCode::InvalidParams,
@@ -714,11 +726,18 @@ void OAuthClientProvider::RefreshTokensCoalesced() {
         std::unique_lock<std::mutex> lock(refresh_mutex_);
         if (!refresh_in_flight_) {
             refresh_in_flight_ = true;
-            RefreshInFlightGuard guard(refresh_mutex_, refresh_in_flight_, refresh_cv_);
+            refresh_owner_ = std::this_thread::get_id();
+            RefreshInFlightGuard guard(refresh_mutex_, refresh_in_flight_,
+                                       refresh_owner_, refresh_cv_);
             lock.unlock();
             if (!RefreshTokens())
                 throw McpError(McpErrorCode::InternalError,
                     "OAuth token refresh failed");
+            return;
+        }
+        if (refresh_owner_ == std::this_thread::get_id()) {
+            MCP_LOG(Warning,
+                "OAuth token refresh re-entered on the refreshing thread; serving the pending token without waiting");
             return;
         }
         refresh_cv_.wait(lock);
