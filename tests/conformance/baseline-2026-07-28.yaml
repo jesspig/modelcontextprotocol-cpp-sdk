@@ -19,31 +19,21 @@ server:
 
 client:
     # --- auth/*：fixture 真实 OAuth 流已接线，剩余条目均为结构性不可绿---
-    # 2026-10-13 实测（--requirements 2026-07-28）：Total 450 passed / 9 failed。
-    # 本轮删除 4 条，删除证据均为 referee stale 报告（已变绿）：
-    #   auth/metadata-var1（17 passed）、auth/metadata-var2（17 passed）、
-    #   auth/metadata-var3（17 passed）、auth/authorization-server-migration（27 passed）。
-    # 变绿成因：`OAuthClientProvider::ValidateTokenIssuer` 由「iss 强制必需」改为
-    # 「存在即校验」（MCP 规范与 RFC 9207 §2.4 只对**授权响应**的 iss 施加义务，
-    # token 响应的 iss 非必需），此前 provider 流在换 token 阶段恒失败，
-    # 造成 18 处「fixture 退出码 1 但 referee 判绿」的假绿；修复后归零 4 处
-    # （余 4 处 iss-* 的主动拒绝是被测语义，referee 判绿，属正确行为）。
+    # 2026-10-13 两轮删除（均有 referee 变绿证据）：
+    #   第一轮（4 条）：metadata-var1/var2/var3/migration — ValidateTokenIssuer
+    #     由「iss 强制必需」改「存在即校验」后转绿（referee stale 报告）。
+    #   第二轮（3 条）：client-credentials-jwt/dpop/dpop-nonce — WSL Linux
+    #     + OpenSSL 3.5.5 实测三场景 checks.json 全 SUCCESS（0 FAILURE / 0 WARNING）：
+    #       cc-jwt 35 checks（client-credentials-jwt-verified SUCCESS）、
+    #       dpop 50 checks（sep-1932-client-* 三项 SUCCESS）、
+    #       dpop-nonce 62 checks（上述 + sep-1932-client-{as,rs}-nonce SUCCESS）。
+    #     此前保留原因「本地无 OpenSSL」已由 WSL 环境消除。
     #
-    # 以下 6 条保留，各有结构性原因（非「待生产落地」）：
-    #   - auth/client-credentials-jwt（3 passed / 1 failed）：ES256 断言签名
-    #     需 OpenSSL。本地无 OpenSSL 时按既定契约抛 McpError(InternalError)，
-    #     不绕过签名伪造通过；正向路径只能由带 OpenSSL 的 CI runner 证实。
-    #   - auth/dpop（7 passed / 3 failed）、auth/dpop-nonce（7 passed / 5 failed）：
-    #     同上，DPoP proof 生成与 ES256 共用 OpenSSL 后端，无 OpenSSL 时抛错。
-    #     夹具接线已完成（见 examples/conformance/client/main.cpp 的
-    #     DriveDPoPScenario），非「未接线」。
+    # 以下 3 条保留（非「待生产落地」）：
     #   - auth/client-credentials-basic（6 passed）、auth/enterprise-managed-authorization
     #     （7 passed）、auth/wif-jwt-bearer（6 passed）：三者本 leg 均 0 failed，
     #     但 referee 未标 stale（其「通过」判定口径与摘要 passed 计数不一致），
     #     删除会失去基线兜底故暂留；后续 referee 报 stale 时再删，禁臆测删除。
-    - auth/client-credentials-jwt
     - auth/client-credentials-basic
     - auth/enterprise-managed-authorization
-    - auth/dpop
-    - auth/dpop-nonce
     - auth/wif-jwt-bearer

@@ -113,21 +113,17 @@ client:
     # --- auth/*：fallback 跟随 per-leg，仅收两 leg 真源仍未绿的条目 ---
     # 2026-10-13 对账：per-leg 两文件均已按 referee stale 证据清空转绿条目，
     # 本 fallback 与之逐字一致，仅保留
-    #   - client-credentials-jwt / dpop / dpop-nonce（无 OpenSSL 构建下结构性不可绿，
-    #     见 baseline-2026-07-28.yaml client 段逐条归因）
     #   - client-credentials-basic / enterprise-managed-authorization / wif-jwt-bearer
     #     （本 leg 0 failed 但 referee 未标 stale，暂留兜底，见上）
     # 另 http-custom-headers 仅 legacy leg 保留（Windows 非 ASCII context 致
     # JsonValue::Parse 报 invalid UTF-8，Linux CI 预期通过），真源见
     # baseline-2025-11-25.yaml。
-    # 已删的 25 个 auth 条目（metadata-default、basic-cimd、scope×5、
+    # 已删的 28 个 auth 条目（metadata-default、basic-cimd、scope×5、
     # token-endpoint×3、pre-registration、resource-mismatch、offline-access×2、
     # authorization-server-migration、iss×6、metadata-issuer-mismatch、
-    # metadata-var1/var2/var3、scope-step-up）均在 referee 报 stale 后删除，
-    # 禁恢复。
-    - auth/client-credentials-jwt
+    # metadata-var1/var2/var3、scope-step-up、client-credentials-jwt、
+    # dpop、dpop-nonce）均在 referee 报 stale 或 Linux+OpenSSL 实测
+    # checks.json 全 SUCCESS 后删除，禁恢复。
     - auth/client-credentials-basic
     - auth/enterprise-managed-authorization
-    - auth/dpop
-    - auth/dpop-nonce
     - auth/wif-jwt-bearer
