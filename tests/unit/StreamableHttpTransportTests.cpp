@@ -351,7 +351,13 @@ TEST(StreamableHttpTransportTest, ListenStateForStatusCode) {
     EXPECT_TRUE(ListenStateForStatusCode(200) == ListenState::Streaming);
     EXPECT_TRUE(ListenStateForStatusCode(500) == ListenState::GivenUp);
     EXPECT_TRUE(ListenStateForStatusCode(503) == ListenState::GivenUp);
-    EXPECT_TRUE(ListenStateForStatusCode(404) == ListenState::Connecting);
+    EXPECT_TRUE(ListenStateForStatusCode(404) == ListenState::Unsupported);
+    EXPECT_TRUE(ListenStateForStatusCode(401) == ListenState::Unsupported);
+    EXPECT_TRUE(ListenStateForStatusCode(403) == ListenState::Unsupported);
+    EXPECT_TRUE(ListenStateForStatusCode(400) == ListenState::Unsupported);
+    EXPECT_TRUE(ListenStateForStatusCode(204) == ListenState::Connecting);
+    EXPECT_TRUE(ListenStateForStatusCode(408) == ListenState::Connecting);
+    EXPECT_TRUE(ListenStateForStatusCode(429) == ListenState::Connecting);
 }
 
 TEST(StreamableHttpTransportTest, ListenStreamDeliversNotification) {

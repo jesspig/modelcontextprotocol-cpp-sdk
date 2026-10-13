@@ -140,9 +140,11 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
 
 ListenState ListenStateForStatusCode(int status_code) {
     if (status_code == 200) return ListenState::Streaming;
-    if (status_code == 405) return ListenState::Unsupported;
     if (status_code >= 500 && status_code <= 599) return ListenState::GivenUp;
-    return ListenState::Connecting;
+    if (status_code >= 200 && status_code <= 299)
+        return ListenState::Connecting;
+    if (status_code == 408 || status_code == 429) return ListenState::Connecting;
+    return ListenState::Unsupported;
 }
 
 bool ShouldListenStream(const HttpClientTransportOptions& options) {
@@ -557,7 +559,7 @@ private:
             isSse = (wcsstr(contentType, L"text/event-stream") != nullptr);
         }
         if (!isSse) {
-            return finish(ListenState::Connecting);
+            return finish(ListenState::Unsupported);
         }
 
         listen_state_ = ListenState::Streaming;
