@@ -82,17 +82,11 @@ server:
     - server-stateless
 
 client:
-    # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
-    # fixture 有对应场景注册且逻辑正确（列工具→按 context 逐个调用），
-    # 但 Windows 下 MCP_CONFORMANCE_CONTEXT 经 getenv 取回时非 ASCII
-    # （世界）与字面控制字符致 JsonValue::Parse 报 invalid UTF-8，
-    # client 退出 1。CI Linux（UTF-8 locale）下预期通过；若 CI modern
-    # invocation 报本条目 stale，即为变绿证据，届时删除。
-    # 旧“fetch-shim/注入点依赖”归因错误：context 系经环境变量下发，
-    # C++ fixture 可读，无需 TS fetch shim。
-    - http-custom-headers
-
     # --- 已删 client 条目（逐条证据，结论以最新复跑为准）---
+    # http-custom-headers：fallback 跟随 modern per-leg 删除
+    # （baseline-2026-07-28.yaml client 段已无此条目；原注释以“CI modern
+    # invocation 报 stale”为删除证据，legacy 条目仍保留于
+    # baseline-2025-11-25.yaml）。最终以 leg 复跑确认为准。
     # sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
     # 本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
     # event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报
@@ -116,48 +110,20 @@ client:
     # C++ client 未观测到该调用，2026-10-12 复跑 0/1 unexpected。
     # 基线只减不增：待主会话归因后再议是否入基线，本次不动条目。
     #
-    # --- auth/*（C++ client 无 OAuth 表面，全部 untestable）---
-    # 注意旧注释“core 不选择 auth”已证伪：core/active 逐个运行 auth
-    # 场景，client 以 Unknown scenario 退出 1，靠本基线放行。
-    # requirements 集共 31 个 auth 场景（2026 requirements 新增 11 个：
-    # resource-mismatch、offline-access-scope、offline-access-not-supported、
-    # authorization-server-migration、iss-supported、iss-not-advertised、
-    # iss-supported-missing、iss-wrong-issuer、iss-unexpected、
-    # iss-normalized、metadata-issuer-mismatch），C++ 侧同样无表面，
-    # 同样 unknown 退出 1。2026-10-12 复跑输出中 expected 命中 25 auth +
-    # http-custom-headers；另 6 个新 auth（client-credentials-jwt/basic、
-    # enterprise-managed-authorization、dpop、dpop-nonce、wif-jwt-bearer）
-    # 同样 unknown 退出 1，终判 unexpected 仅 sep-2322 与
-    # json-schema-ref-no-deref 两项（见上），与 auth 无关。
-    # 待 OAuth client 表面落地（生产）或 referee 收敛后重审。
-    - auth/metadata-default
-    - auth/metadata-var1
-    - auth/metadata-var2
-    - auth/metadata-var3
-    - auth/basic-cimd
-    - auth/scope-from-www-authenticate
-    - auth/scope-from-scopes-supported
-    - auth/scope-omitted-when-undefined
-    - auth/scope-step-up
-    - auth/scope-retry-limit
-    - auth/token-endpoint-auth-basic
-    - auth/token-endpoint-auth-post
-    - auth/token-endpoint-auth-none
-    - auth/pre-registration
-    - auth/resource-mismatch
-    - auth/offline-access-scope
-    - auth/offline-access-not-supported
-    - auth/authorization-server-migration
-    - auth/iss-supported
-    - auth/iss-not-advertised
-    - auth/iss-supported-missing
-    - auth/iss-wrong-issuer
-    - auth/iss-unexpected
-    - auth/iss-normalized
-    - auth/metadata-issuer-mismatch
-    - auth/client-credentials-jwt
+    # --- auth/*：fallback 跟随 per-leg，仅收两 leg 真源仍未绿的条目 ---
+    # 2026-10-13 对账：per-leg 两文件均已按 referee stale 证据清空转绿条目，
+    # 本 fallback 与之逐字一致，仅保留
+    #   - client-credentials-basic / enterprise-managed-authorization / wif-jwt-bearer
+    #     （本 leg 0 failed 但 referee 未标 stale，暂留兜底，见上）
+    # 另 http-custom-headers 仅 legacy leg 保留（Windows 非 ASCII context 致
+    # JsonValue::Parse 报 invalid UTF-8，Linux CI 预期通过），真源见
+    # baseline-2025-11-25.yaml。
+    # 已删的 28 个 auth 条目（metadata-default、basic-cimd、scope×5、
+    # token-endpoint×3、pre-registration、resource-mismatch、offline-access×2、
+    # authorization-server-migration、iss×6、metadata-issuer-mismatch、
+    # metadata-var1/var2/var3、scope-step-up、client-credentials-jwt、
+    # dpop、dpop-nonce）均在 referee 报 stale 或 Linux+OpenSSL 实测
+    # checks.json 全 SUCCESS 后删除，禁恢复。
     - auth/client-credentials-basic
     - auth/enterprise-managed-authorization
-    - auth/dpop
-    - auth/dpop-nonce
     - auth/wif-jwt-bearer

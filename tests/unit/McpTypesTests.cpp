@@ -1044,6 +1044,51 @@ TEST(McpTypesTest, ValidatorPrefixItems) {
         JsonValue::Parse(R"(["a",1,"extra"])"), schema, err));
 }
 
+TEST(McpTypesTest, ValidatorUnevaluatedPropertiesIgnored) {
+    auto schema = JsonValue::Parse(
+        R"({"properties":{"a":{"type":"string"}},"unevaluatedProperties":false})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":"x","b":1})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1})"), schema, err));
+    auto typed = JsonValue::Parse(R"({"unevaluatedProperties":{"type":"string"}})");
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":1})"), typed, err));
+}
+
+TEST(McpTypesTest, ValidatorUnevaluatedPropertiesIgnoredAcrossInPlaceApplicators) {
+    auto schema = JsonValue::Parse(
+        R"({"$defs":{"extra":{"type":"string"}},)"
+        R"("allOf":[{"properties":{"a":{"type":"string"}},)"
+        R"("unevaluatedProperties":false}],)"
+        R"("anyOf":[{"properties":{"b":{"$ref":"#/$defs/extra"}}},)"
+        R"({"properties":{"b":{"type":"integer"}}}],)"
+        R"("dependentSchemas":{"c":{"properties":{"d":{"type":"string"}}}},)"
+        R"("unevaluatedProperties":{"type":"integer"}})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":"s","b":2,"c":1,"d":"t","e":[1]})"), schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"a":"s","b":2,"c":1,"d":5})"), schema, err));
+}
+
+TEST(McpTypesTest, ValidatorUnevaluatedItemsIgnored) {
+    auto schema = JsonValue::Parse(R"({"unevaluatedItems":false})");
+    std::string err;
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"([1,2,3])"), schema, err));
+    auto strict = JsonValue::Parse(
+        R"({"prefixItems":[{"type":"string"},{"type":"integer"}],)"
+        R"("unevaluatedItems":false})");
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"(["a",1])"), strict, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"(["a",1,"extra"])"), strict, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"(["a","b"])"), strict, err));
+}
+
 TEST(McpTypesTest, ValidatorIntegerAcceptsIntegralDouble) {
     auto schema = JsonValue::Parse(R"({"type":"integer"})");
     std::string err;

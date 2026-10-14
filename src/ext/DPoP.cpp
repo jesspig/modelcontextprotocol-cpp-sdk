@@ -10,7 +10,7 @@
 #elif defined(__has_include)
 #if __has_include(<openssl/ec.h>) && __has_include(<openssl/ecdsa.h>) && \
     __has_include(<openssl/evp.h>) && __has_include(<openssl/obj_mac.h>) && \
-    __has_include(<openssl/rand.h>)
+    __has_include(<openssl/pem.h>) && __has_include(<openssl/rand.h>)
 #define MCP_DPOP_HAVE_OPENSSL 1
 #endif
 #endif
@@ -27,7 +27,9 @@
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
+#include <openssl/evp.h>
 #include <openssl/obj_mac.h>
+#include <openssl/pem.h>
 #include <openssl/rand.h>
 #endif
 
@@ -213,10 +215,20 @@ struct DpopSigDeleter {
     void operator()(ECDSA_SIG* sig) const noexcept { ECDSA_SIG_free(sig); }
 };
 
+struct DpopBioDeleter {
+    void operator()(BIO* bio) const noexcept { BIO_free(bio); }
+};
+
+struct DpopEvpPkeyDeleter {
+    void operator()(EVP_PKEY* pkey) const noexcept { EVP_PKEY_free(pkey); }
+};
+
 using DpopEcKeyPtr = std::unique_ptr<EC_KEY, DpopEcKeyDeleter>;
 using DpopBnPtr = std::unique_ptr<BIGNUM, DpopBnDeleter>;
 using DpopPointPtr = std::unique_ptr<EC_POINT, DpopPointDeleter>;
 using DpopSigPtr = std::unique_ptr<ECDSA_SIG, DpopSigDeleter>;
+using DpopBioPtr = std::unique_ptr<BIO, DpopBioDeleter>;
+using DpopEvpPkeyPtr = std::unique_ptr<EVP_PKEY, DpopEvpPkeyDeleter>;
 
 std::string DpopBnToFixed32(const BIGNUM* bn) {
     unsigned char buf[32];
@@ -242,6 +254,100 @@ std::string DpopRandomBase64Url(std::size_t bytes) {
         throw McpError(McpErrorCode::InternalError, "DPoP random generation failed");
     }
     return DpopBase64Url(raw);
+}
+
+std::string DpopSignEs256Raw(std::string_view private_scalar,
+                             std::string_view signing_input) {
+    if (private_scalar.empty() || signing_input.empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 signing requires key and input");
+    }
+    std::string digest = mcp::detail::Sha256::Hash(signing_input);
+    DpopEcKeyPtr ec(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+    if (!ec) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    DpopBnPtr priv = DpopBinToBn(private_scalar);
+    const EC_GROUP* group = EC_KEY_get0_group(ec.get());
+    if (!group) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    DpopPointPtr pub(EC_POINT_new(group));
+    if (!pub) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    if (EC_POINT_mul(group, pub.get(), priv.get(), nullptr, nullptr, nullptr) != 1) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    if (EC_KEY_set_private_key(ec.get(), priv.get()) != 1 ||
+        EC_KEY_set_public_key(ec.get(), pub.get()) != 1) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    DpopSigPtr sig(ECDSA_do_sign(
+        reinterpret_cast<const unsigned char*>(digest.data()),
+        static_cast<int>(digest.size()), ec.get()));
+    if (!sig) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    const BIGNUM* r = nullptr;
+    const BIGNUM* s = nullptr;
+    ECDSA_SIG_get0(sig.get(), &r, &s);
+    if (!r || !s) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    std::string raw_sig = DpopBnToFixed32(r);
+    raw_sig += DpopBnToFixed32(s);
+    return raw_sig;
+}
+
+std::string DpopPrivateScalarToFixed32(const EC_KEY* key) {
+    const BIGNUM* priv = EC_KEY_get0_private_key(key);
+    if (!priv) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 private key has no scalar");
+    }
+    unsigned char priv_buf[32];
+    if (BN_bn2binpad(priv, priv_buf, sizeof(priv_buf)) != static_cast<int>(sizeof(priv_buf))) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 private key scalar must be 32 bytes");
+    }
+    return std::string(reinterpret_cast<const char*>(priv_buf), sizeof(priv_buf));
+}
+
+std::string SignEs256JwtWithPem(std::string_view header_json,
+                                std::string_view payload_json,
+                                std::string_view private_key_pem)
+{
+    if (header_json.empty() || payload_json.empty() || private_key_pem.empty()) {
+        throw McpError(McpErrorCode::InvalidParams,
+                       "ES256 JWT signing requires header, payload and private key PEM");
+    }
+    std::string signing_input = DpopBase64Url(header_json);
+    signing_input += ".";
+    signing_input += DpopBase64Url(payload_json);
+
+    DpopBioPtr bio(BIO_new_mem_buf(private_key_pem.data(),
+                                   static_cast<int>(private_key_pem.size())));
+    if (!bio) {
+        throw McpError(McpErrorCode::InternalError, "ES256 signing failed");
+    }
+    DpopEvpPkeyPtr pkey(PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
+    if (!pkey) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 private key PEM is not parsable");
+    }
+    DpopEcKeyPtr key(EVP_PKEY_get1_EC_KEY(pkey.get()));
+    if (!key) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 private key PEM is not an EC key");
+    }
+    if (EC_GROUP_get_curve_name(EC_KEY_get0_group(key.get())) != NID_X9_62_prime256v1) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 private key must be on the P-256 curve");
+    }
+    if (EC_KEY_check_key(key.get()) != 1) {
+        throw McpError(McpErrorCode::InvalidParams, "ES256 private key PEM is not a valid EC key");
+    }
+    std::string raw_sig =
+        DpopSignEs256Raw(DpopPrivateScalarToFixed32(key.get()), signing_input);
+    std::string jwt = signing_input;
+    jwt += ".";
+    jwt += DpopBase64Url(raw_sig);
+    return jwt;
 }
 
 } // namespace detail
@@ -320,42 +426,7 @@ std::string CreateProof(const EcP256Jwk& key,
     std::string signing_input = detail::DpopBase64Url(header);
     signing_input += ".";
     signing_input += detail::DpopBase64Url(payload);
-    std::string digest = mcp::detail::Sha256::Hash(signing_input);
-
-    detail::DpopEcKeyPtr ec(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
-    if (!ec) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    detail::DpopBnPtr priv = detail::DpopBinToBn(*decoded);
-    const EC_GROUP* group = EC_KEY_get0_group(ec.get());
-    if (!group) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    detail::DpopPointPtr pub(EC_POINT_new(group));
-    if (!pub) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    if (EC_POINT_mul(group, pub.get(), priv.get(), nullptr, nullptr, nullptr) != 1) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    if (EC_KEY_set_private_key(ec.get(), priv.get()) != 1 ||
-        EC_KEY_set_public_key(ec.get(), pub.get()) != 1) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    detail::DpopSigPtr sig(ECDSA_do_sign(
-        reinterpret_cast<const unsigned char*>(digest.data()),
-        static_cast<int>(digest.size()), ec.get()));
-    if (!sig) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    const BIGNUM* r = nullptr;
-    const BIGNUM* s = nullptr;
-    ECDSA_SIG_get0_sig(sig.get(), &r, &s);
-    if (!r || !s) {
-        throw McpError(McpErrorCode::InternalError, "DPoP signing failed");
-    }
-    std::string raw_sig = detail::DpopBnToFixed32(r);
-    raw_sig += detail::DpopBnToFixed32(s);
+    std::string raw_sig = detail::DpopSignEs256Raw(*decoded, signing_input);
     std::string proof = signing_input;
     proof += ".";
     proof += detail::DpopBase64Url(raw_sig);
@@ -493,6 +564,17 @@ bool VerifyProof(std::string_view,
     throw McpError(McpErrorCode::InternalError,
                    "DPoP requires OpenSSL EC support, which is not available in this build");
 }
+
+namespace detail {
+
+std::string SignEs256JwtWithPem(std::string_view,
+                                std::string_view,
+                                std::string_view) {
+    throw McpError(McpErrorCode::InternalError,
+                   "ES256 JWT signing requires OpenSSL EC support, which is not available in this build");
+}
+
+} // namespace detail
 
 #endif
 

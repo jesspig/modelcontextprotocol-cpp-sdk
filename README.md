@@ -93,7 +93,7 @@ Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-proto
 - **mcp-transport** — Transport implementations: StdioServerTransport, StdioClientTransport, SseClientTransport, InMemoryTransport, WebSocketClientTransport, StreamableHttpServerTransport, StreamableHttpClientTransport. Platform-specific I/O in `detail/` (posix, win32).
 - **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation with timeout, `MessageFilter` pipeline.
 - **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation, subscription management.
-- **mcp-client** — `McpClient` with server discovery (`server/discover` → initialize fallback), version negotiation, OAuth (PKCE/DCR), MRTR (InputRequired loop), tool cache, `FileTokenCache`.
+- **mcp-client** — `McpClient` with server discovery (`server/discover` → initialize fallback), version negotiation, OAuth (PKCE/CIMD with DCR fallback), MRTR (InputRequired loop), tool cache, `FileTokenCache`.
 - **mcp-http** — HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence), `StreamableHttpServerTransport`, `StreamableHttpClientTransport`.
 
 ### All transports
@@ -175,9 +175,10 @@ auto result = client->CallTool("echo",
 The client supports the MCP OAuth authorization flow:
 
 - **Authorization Code + PKCE** flow with S256 code challenge
-- Dynamic Client Registration (DCR)
+- CIMD client identity with DCR fallback (an `http(s)://` `client_id` is fetched as a client metadata document; dynamic registration only when no `client_id` is configured)
 - Token refresh and revocation
 - Pluggable token cache (`ITokenCache`), persistent `FileTokenCache` included
+- DPoP (RFC 9449): server-side proof verification on the Streamable HTTP resource server — off by default, turned on per deployment with the experimental `enable_dpop` switch (`StreamableHttpServerOptions::bearer_auth->enable_dpop`), and requires OpenSSL; the client side can bind the authorization scheme and mint proofs (`OAuthClientOptions::enable_dpop`), but transports do not yet attach a per-request `DPoP` proof
 
 ```cpp
 OAuthClientOptions oauth_opts;
@@ -261,8 +262,8 @@ Implementation notes on the official Ruby SDK (`mcp` gem, `main` branch as of 20
 | `server/discover` | Modern era never negotiated via `initialize` (CHANGELOG §1.2.0); `server/discover` finalized with modern client support; per-transport era lock on stdio, sessionless modern path on Streamable HTTP ([methods.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/methods.rb)) | Auto mode with transport-classified fallback ([version-negotiation](wiki/concepts/version-negotiation.md)) |
 | MRTR | SEP-2322 `input_required` results with `inputRequests`/`inputResponses` + `requestState`, fulfilled on the legacy wire too (CHANGELOG §0.24.0/§1.2.0); `resultType` is only `complete`/`input_required` ([result_type.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/result_type.rb)) | `InputRequiredResult` + elicitation loop ([mrtr](wiki/concepts/mrtr.md)); additional `task` resultType for task handles |
 | Headers | Sends SEP-2243 `Mcp-Method`/`Mcp-Name`, mirrors `x-mcp-header` params into `Mcp-Param-*` (CHANGELOG §0.22.0/§1.2.0; [mcp_param_headers.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/client/mcp_param_headers.rb)); `Mcp-Method` required on the modern path | `Mcp-Name` validation incl. tasks `taskId` check ([mcp-param-headers](wiki/concepts/mcp-param-headers.md), [tasks-extension](wiki/concepts/tasks-extension.md)) |
-| Cache | Server stamps SEP-2549 `ttlMs`/`cacheScope` (CHANGELOG §0.24.0/§1.2.0); no client-side response cache found under `lib/mcp/client/`【假设：未实现，待源码核实】 | Client response cache with TTL + public/private partitions ([response-cache](wiki/concepts/response-cache.md)) |
-| Auth | Full OAuth 2.1 client (DCR, PKCE, CIMD, `client_credentials`, `private_key_jwt`, `jwt-bearer`, RFC 9207 `iss`, PRM-first discovery; CHANGELOG §0.17.0–§1.6.0) + server resource-server protection ([README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)) | PKCE/DCR + `FileTokenCache`, server Bearer auth (see OAuth Support above) |
+| Cache | Server stamps SEP-2549 `ttlMs`/`cacheScope` (CHANGELOG §0.24.0/§1.2.0); no client-side response cache: `lib/mcp/client/` holds only elicitation, http, mcp_param_headers, modern_envelope, oauth(+oauth/), paginated_result, stdio, tool, and `client/http.rb` matches no `ttlMs`/`cacheScope`/cache-hit logic (verified 2026-10-13 against `main`) | Client response cache consuming both the 2026 top-level `ttlMs`/`cacheScope` and the 2025 nested `cacheHint`, with TTL + public/private partitions ([response-cache](wiki/concepts/response-cache.md)) |
+| Auth | Full OAuth 2.1 client (DCR, PKCE, CIMD, `client_credentials`, `private_key_jwt`, `jwt-bearer`, RFC 9207 `iss`, PRM-first discovery; CHANGELOG §0.17.0–§1.6.0) + server resource-server protection ([README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)) | PKCE/CIMD (DCR fallback) + `FileTokenCache`, server Bearer auth, opt-in server-side DPoP proof verification ([dpop](wiki/concepts/dpop.md); see OAuth Support above) |
 | Tasks (SEP-2663) | Not implemented — "remains planned" ([ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md), [#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)) | `tasks/get\|update\|cancel` dual-era + `FileTaskStore` ([tasks-extension](wiki/concepts/tasks-extension.md)) |
 | Skills (SEP-2640) | Not implemented【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`, 2026-only ([skills-extension](wiki/concepts/skills-extension.md)) |
 
@@ -272,8 +273,8 @@ The following items are explicitly declared unsupported in this round; when a pe
 
 - **Apps UI rendering** — server-pushed UI components are not rendered and pass through as opaque data only.
 - **EMA** — EMA negotiation is not implemented and peers fall back to baseline capability negotiation.
-- **DPoP** — DPoP-bound tokens are neither sent nor validated, and the Bearer-token path in OAuth Support above remains the supported flow.
-- **jwt-bearer** — `jwt-bearer` / `private_key_jwt` client authentication is not supported, and the public-client PKCE/DCR flow remains the supported path.
+- **DPoP client-side per-request proofs** — server-side proof verification is implemented (off by default, experimental `enable_dpop`, requires OpenSSL; see OAuth Support above), but transports never attach a per-request `DPoP` proof and the server-issued `DPoP-Nonce` is not fed back for a nonce retry, so DPoP-bound tokens cannot yet drive a Streamable HTTP session; with the switch off the plain Bearer path is unchanged ([dpop](wiki/concepts/dpop.md)).
+- **jwt-bearer** — `private_key_jwt` client authentication is supported (an ES256 client assertion is sent on the token requests when `private_key_pem` is configured and the authorization server advertises `private_key_jwt` in `token_endpoint_auth_methods_supported`; requires OpenSSL), while the authorization-owner `jwt-bearer` grant is not, and the public-client PKCE/CIMD flow remains the supported path.
 - **ETags** — `ETag` / `If-None-Match` validators are not stored or compared, and cached responses are governed by TTL only.
 - **Progressive discovery** — incremental capability discovery is not implemented, and the full `server/discover` (modern) / `initialize` (legacy) handshake is always used.
 - **File Uploads** — resumable file-upload primitives are not implemented, and file content moves through existing tool/resource payloads only.

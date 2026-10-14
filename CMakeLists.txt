@@ -203,7 +203,7 @@ target_sources(mcp-ext PRIVATE
     src/ext/DPoP.cpp
     src/ext/ServerCard.cpp
     src/ext/Triggers.cpp)
-target_link_libraries(mcp-ext PUBLIC mcp-core)
+target_link_libraries(mcp-ext PUBLIC mcp-core mcp-transport)
 target_include_directories(mcp-ext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET mcp-ext PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-ext PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})

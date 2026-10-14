@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace mcp::detail::json {
 
@@ -83,9 +84,35 @@ private:
         char c = input_[pos_];
         switch (c) {
         case '{':
-            return ParseObject();
         case '[':
-            return ParseArray();
+            return ParseContainer();
+        case '"':
+            return JsonValue(ParseString());
+        case 't':
+        case 'f':
+        case 'n':
+            return ParseLiteral();
+        case '-':
+        case '0':
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7':
+        case '8':
+        case '9':
+            return ParseNumber();
+        default:
+            Fail("unexpected character");
+        }
+    }
+
+    JsonValue ParseScalarValue() {
+        if (pos_ >= input_.size()) Fail("unexpected end of input");
+        char c = input_[pos_];
+        switch (c) {
         case '"':
             return JsonValue(ParseString());
         case 't':
@@ -144,77 +171,127 @@ private:
         return count;
     }
 
-    JsonValue ParseObject() {
-        if (++depth_ > kMaxDepth) Fail("nesting depth exceeds " + std::to_string(kMaxDepth));
-        ++pos_;
-        JsonValue::Object obj;
-        while (true) {
-            SkipWhitespace();
-            if (pos_ >= input_.size()) Fail("unexpected end of object");
-            char c = input_[pos_];
-            if (c == '}') {
-                ++pos_;
-                break;
-            }
-            if (c != '"') Fail("expected object key");
-            std::string key = ParseString();
-            SkipWhitespace();
-            if (pos_ >= input_.size() || input_[pos_] != ':') Fail("expected ':'");
+    JsonValue ParseContainer() {
+        struct Frame {
+            bool is_object;
+            JsonValue::Array items;
+            JsonValue::Object members;
+            std::string key;
+            int phase;
+        };
+        std::vector<Frame> stack;
+        stack.reserve(64);
+        auto push_frame = [&](bool is_object) {
+            if (stack.size() >= static_cast<size_t>(kMaxDepth))
+                Fail("nesting depth exceeds " + std::to_string(kMaxDepth));
+            Frame frame;
+            frame.is_object = is_object;
+            frame.phase = 0;
             ++pos_;
-            SkipWhitespace();
-            obj.emplace(std::move(key), ParseValue());
-            SkipWhitespace();
-            if (pos_ >= input_.size()) Fail("unexpected end of object");
-            c = input_[pos_];
-            if (c == ',') {
-                ++pos_;
-                SkipWhitespace();
-                if (pos_ >= input_.size()) Fail("unexpected end of object");
-                if (input_[pos_] == '}') Fail("trailing comma");
-                continue;
+            if (!is_object) frame.items.reserve(EstimateElementCount(input_, pos_));
+            stack.push_back(std::move(frame));
+        };
+        auto complete_value = [&](JsonValue child) {
+            Frame& parent = stack.back();
+            if (parent.is_object) {
+                parent.members.emplace(std::move(parent.key), std::move(child));
+                parent.key.clear();
+            } else {
+                parent.items.push_back(std::move(child));
             }
-            if (c == '}') {
-                ++pos_;
-                break;
-            }
-            Fail("expected ',' or '}'");
-        }
-        --depth_;
-        return JsonValue(std::move(obj));
-    }
-
-    JsonValue ParseArray() {
-        if (++depth_ > kMaxDepth) Fail("nesting depth exceeds " + std::to_string(kMaxDepth));
-        ++pos_;
-        JsonValue::Array arr;
-        arr.reserve(EstimateElementCount(input_, pos_));
+            parent.phase = 2;
+        };
+        push_frame(input_[pos_] == '{');
         while (true) {
             SkipWhitespace();
-            if (pos_ >= input_.size()) Fail("unexpected end of array");
+            if (pos_ >= input_.size()) {
+                if (stack.back().is_object) Fail("unexpected end of object");
+                Fail("unexpected end of array");
+            }
             char c = input_[pos_];
-            if (c == ']') {
-                ++pos_;
-                break;
+            if (stack.back().is_object) {
+                Frame& top = stack.back();
+                if (top.phase == 0) {
+                    if (c == '}') {
+                        ++pos_;
+                        JsonValue built(std::move(top.members));
+                        stack.pop_back();
+                        if (stack.empty()) return built;
+                        complete_value(std::move(built));
+                        continue;
+                    }
+                    if (c != '"') Fail("expected object key");
+                    top.key = ParseString();
+                    SkipWhitespace();
+                    if (pos_ >= input_.size() || input_[pos_] != ':') Fail("expected ':'");
+                    ++pos_;
+                    top.phase = 1;
+                    continue;
+                }
+                if (top.phase == 1) {
+                    if (c == '{' || c == '[') {
+                        push_frame(c == '{');
+                        continue;
+                    }
+                    JsonValue child = ParseScalarValue();
+                    complete_value(std::move(child));
+                    continue;
+                }
+                if (c == ',') {
+                    ++pos_;
+                    SkipWhitespace();
+                    if (pos_ >= input_.size()) Fail("unexpected end of object");
+                    if (input_[pos_] == '}') Fail("trailing comma");
+                    top.phase = 0;
+                    continue;
+                }
+                if (c == '}') {
+                    ++pos_;
+                    JsonValue built(std::move(top.members));
+                    stack.pop_back();
+                    if (stack.empty()) return built;
+                    complete_value(std::move(built));
+                    continue;
+                }
+                Fail("expected ',' or '}'");
+            } else {
+                Frame& top = stack.back();
+                if (top.phase == 2) {
+                    if (c == ',') {
+                        ++pos_;
+                        SkipWhitespace();
+                        if (pos_ >= input_.size()) Fail("unexpected end of array");
+                        if (input_[pos_] == ']') Fail("trailing comma");
+                        top.phase = 1;
+                        continue;
+                    }
+                    if (c == ']') {
+                        ++pos_;
+                        JsonValue built(std::move(top.items));
+                        stack.pop_back();
+                        if (stack.empty()) return built;
+                        complete_value(std::move(built));
+                        continue;
+                    }
+                    Fail("expected ',' or ']'");
+                }
+                if (c == ']') {
+                    if (top.phase == 1) Fail("trailing comma");
+                    ++pos_;
+                    JsonValue built(std::move(top.items));
+                    stack.pop_back();
+                    if (stack.empty()) return built;
+                    complete_value(std::move(built));
+                    continue;
+                }
+                if (c == '{' || c == '[') {
+                    push_frame(c == '{');
+                    continue;
+                }
+                JsonValue child = ParseScalarValue();
+                complete_value(std::move(child));
             }
-            arr.push_back(ParseValue());
-            SkipWhitespace();
-            if (pos_ >= input_.size()) Fail("unexpected end of array");
-            c = input_[pos_];
-            if (c == ',') {
-                ++pos_;
-                SkipWhitespace();
-                if (pos_ >= input_.size()) Fail("unexpected end of array");
-                if (input_[pos_] == ']') Fail("trailing comma");
-                continue;
-            }
-            if (c == ']') {
-                ++pos_;
-                break;
-            }
-            Fail("expected ',' or ']'");
         }
-        --depth_;
-        return JsonValue(std::move(arr));
     }
 
     std::string ParseString() {
@@ -424,7 +501,6 @@ private:
 
     std::string_view input_;
     size_t pos_ = 0;
-    int depth_ = 0;
 };
 
 JsonValue ParseDocument(std::string_view json) {
