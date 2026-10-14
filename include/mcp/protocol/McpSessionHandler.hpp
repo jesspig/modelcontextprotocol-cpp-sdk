@@ -120,7 +120,7 @@ private:
     void OnError(const JsonRpcErrorResponse& err);
     void OnNotification(const JsonRpcNotification& notif);
 
-    bool VerifyCapability(const JsonRpcRequest& req, const std::string& required);
+    std::optional<ErrorData> VerifyCapability(const JsonRpcRequest& req, const std::string& required);
     void EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future);
 
     struct PendingResponse {

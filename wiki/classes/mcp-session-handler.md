@@ -3,7 +3,7 @@ type: Class
 title: McpSessionHandler
 description: JSON-RPC 引擎：消息分发、请求/响应关联、idle/总量双超时检查、取消、过滤器管线。
 tags: [protocol, jsonrpc, 超时, 并发, meta]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-14T18:07:07+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -32,7 +32,8 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - 响应回发：`EnqueueResponse` 入队（锁内检查 `closed_`，已关闭直接丢弃），单一 `response_worker_` 线程经 `response_queue_`（`deque<std::function>`）+ `response_cv_` 消费；任务先 `wait_for(0)` 快检（同步 handler 零延迟），未就绪则 10ms 间隔轮询 promise（`kResponsePollInterval`），`closed_` 时中止（保证 Close 不阻塞）。`SendResponseAsync`/`ReapCompletedResponses` 已删除
 - `SendRequest` 注册 pending 后复查 `closed_`：已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:536](../../src/protocol/McpSessionHandler.cpp)）
 - `SendRequest` 双 era meta：modern era 把 `SerializeRequestMeta(meta)` 信封写入 `req.meta`（序列化层落 `params._meta`）；legacy era 仅当带 progressToken 时写 `params._meta.progressToken`（[McpSessionHandler.cpp:508](../../src/protocol/McpSessionHandler.cpp)）
-- `RequiredClientCapability`：`createMessage→sampling`、`listRoots→roots`；缺失回 `MissingRequiredClientCapability`（data 含 `requiredCapabilities`）
+- `RequiredClientCapability`：`createMessage→sampling`、`listRoots→roots`；缺失回 `MissingRequiredClientCapability`（data 含 `requiredCapabilities`）；`VerifyCapability` 只判定不发送，返回 `optional<ErrorData>` 由调用方经 `reject` 闭包统一收尾（[McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp)）
+- 拒收路径 span 先行：`OnRequest` 内局部 `reject` 闭包显式发 ServerRequest End（`failed=true`、trace 回填）→ 置 `span_open=false`（抑制栈上 guard 重发）→ `SendErrorResponse`；9 处 early-return（含两处 handler 异常 catch）全走该闭包，成功路径与 `DeliverResponse` 未动（[McpSessionHandler.cpp:344](../../src/protocol/McpSessionHandler.cpp)）
 
 ## 其他
 

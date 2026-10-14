@@ -341,6 +341,16 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
             InvokeSpan(handler, event, SpanPhase::End);
         }
     } span_guard{span_handler_, req, span_open};
+    auto reject = [&](McpErrorCode code, std::string_view message,
+                      std::optional<JsonValue> data = std::nullopt) {
+        if (span_handler_) {
+            auto event = MakeServerRequestEvent(req, SpanPhase::End, true);
+            AttachTraceFromRequest(event, req);
+            InvokeSpan(span_handler_, event, SpanPhase::End);
+        }
+        span_open = false;
+        SendErrorResponse(req.id, code, message, std::move(data));
+    };
 
     std::shared_ptr<WireCodec> codec;
     {
@@ -359,24 +369,24 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     auto validation = codec->ValidateRequest(req.method, validation_view);
     if (validation == WireValidation::NotInEra &&
         (req.method != methods::kInitialize || IsJuly2026OrLater())) {
-        SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
+        reject(McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
     if (validation == WireValidation::Invalid) {
-        SendErrorResponse(req.id, McpErrorCode::InvalidRequest, "invalid request: " + req.method);
+        reject(McpErrorCode::InvalidRequest, "invalid request: " + req.method);
         return;
     }
 
     if (req.meta && req.method != methods::kInitialize) {
         if (const char* field = InvalidMetaField(*req.meta)) {
-            SendErrorResponse(req.id, McpErrorCode::InvalidParams,
+            reject(McpErrorCode::InvalidParams,
                 std::string("invalid _meta field: ") + field);
             return;
         }
         if (auto* declared = req.meta->Find(detail::kMetaProtocolVersionKey)) {
             const std::string requested = declared->GetString();
             if (!IsVersionSupported(requested)) {
-                SendErrorResponse(req.id, McpErrorCode::UnsupportedProtocolVersion,
+                reject(McpErrorCode::UnsupportedProtocolVersion,
                     "unsupported protocol version: " + requested,
                     MakeVersionErrorData(requested));
                 return;
@@ -397,12 +407,18 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
     }
     if (!handler) {
-        SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
+        reject(McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
 
     auto required_cap = RequiredClientCapability(req.method);
-    if (required_cap && !VerifyCapability(req, *required_cap)) return;
+    if (required_cap) {
+        if (auto capability_error = VerifyCapability(req, *required_cap)) {
+            reject(capability_error->code, capability_error->message,
+                std::move(capability_error->data));
+            return;
+        }
+    }
 
     if (request_state_verifier_ && req.params) {
         auto* rs = req.params->Find(detail::kRequestState);
@@ -410,7 +426,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
             if (!request_state_verifier_(rs->GetString())) {
                 JsonValue data(JsonValue::object_tag);
                 data[detail::kReason] = JsonValue("invalid_request_state");
-                SendErrorResponse(req.id, McpErrorCode::InvalidParams,
+                reject(McpErrorCode::InvalidParams,
                     "invalid requestState", std::move(data));
                 return;
             }
@@ -430,11 +446,11 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         handler(req, std::move(*promise));
     } catch (const McpError& e) {
         EraseIncomingCancellationFlag(cancel_key);
-        SendErrorResponse(req.id, e.Code(), std::string(e.what()), e.Data());
+        reject(e.Code(), std::string(e.what()), e.Data());
         return;
     } catch (const std::exception& e) {
         EraseIncomingCancellationFlag(cancel_key);
-        SendErrorResponse(req.id, McpErrorCode::InternalError, std::string("handler error: ") + e.what());
+        reject(McpErrorCode::InternalError, std::string("handler error: ") + e.what());
         return;
     }
 
@@ -442,19 +458,21 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     EnqueueResponse(req, std::move(future));
 }
 
-bool McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::string& required) {
+std::optional<ErrorData> McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::string& required) {
     auto meta = ExtractIncomingMeta(req);
-    if (meta.client_capabilities && HasCapability(*meta.client_capabilities, required)) return true;
-    if (client_capabilities_ && HasCapability(*client_capabilities_, required)) return true;
+    if (meta.client_capabilities && HasCapability(*meta.client_capabilities, required)) return std::nullopt;
+    if (client_capabilities_ && HasCapability(*client_capabilities_, required)) return std::nullopt;
 
     JsonValue data(JsonValue::object_tag);
     JsonValue capability(JsonValue::object_tag);
     JsonValue required_caps(JsonValue::object_tag);
     required_caps[std::string_view(required)] = std::move(capability);
     data[detail::kRequiredCapabilities] = std::move(required_caps);
-    SendErrorResponse(req.id, McpErrorCode::MissingRequiredClientCapability,
-        "missing required client capability: " + required, std::move(data));
-    return false;
+    ErrorData error;
+    error.code = McpErrorCode::MissingRequiredClientCapability;
+    error.message = "missing required client capability: " + required;
+    error.data = std::move(data);
+    return error;
 }
 
 void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future) {

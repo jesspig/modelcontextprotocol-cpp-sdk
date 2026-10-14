@@ -3,7 +3,7 @@ type: Concept
 title: Span 观测钩子
 description: 无 OpenTelemetry 依赖的同步 span 事件钩子，覆盖服务端请求、传输接收和传输发送边界。
 tags: [可观测性, span, traceparent, tracestate, baggage]
-timestamp: 2026-10-13T02:09:29+08:00
+timestamp: 2026-10-14T18:07:07+08:00
 resource: include/mcp/SpanHooks.hpp
 ---
 
@@ -22,6 +22,12 @@ resource: include/mcp/SpanHooks.hpp
 - `McpSessionHandler::SetSpanHandler` 必须在 `Start()` 前调用；`ClientOptions::span_handler` 会在 `McpClient` 启动会话前注入同一钩子。
 - 钩子在发射事件的线程同步执行，调用方必须保证线程安全、不得抛出异常，也不得在钩子内调用 `Close()`。
 - 未设置钩子时不创建事件对象，不增加这些路径的构造、分配或间接调用；设置后每个 Begin 都有对应 End，包括请求被拒绝的路径。
+
+## 拒收路径的 End 先行语义
+
+- `OnRequest` 内拒收 early-return 一律走局部 `reject` 闭包：显式发 ServerRequest End（`failed=true`，trace context 原样回填）→ 置 `span_open=false`（抑制函数返回时栈上 guard 重发）→ 最后 `SendErrorResponse`。共 9 处（含两处 handler 异常 catch），与 `DeliverResponse` 三分支“先 `finish_span` 再 `SendMessage`”同序，成功路径与 `DeliverResponse` 一字未动
+- 此前拒收路径是先 `SendErrorResponse`、栈上 guard 析构才补发 End，错误已上通道而 End 尚未发射，构成跨线程竞态——CI `windows-2022-debug` 上 `SpanHookTest.RejectedRequestEndPairsWithTraceContext` 因此出现 End 计数 0 vs 1 的偶发失败
+- `VerifyCapability` 为配合该语义由“内部直接发送 + 返回 bool”改为“只判定不发送”，返回 `optional<ErrorData>`，由调用方经 `reject` 统一收尾（声明见 `McpSessionHandler.hpp`）
 
 ## 验证
 
