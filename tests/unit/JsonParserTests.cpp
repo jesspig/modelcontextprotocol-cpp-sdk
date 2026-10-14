@@ -426,3 +426,55 @@ TEST(JsonParserTest, SanitizedConformanceContextParses) {
     EXPECT_EQ(call.At("name").GetString(), "t");
     EXPECT_EQ(call.At("arguments").At("q").GetString(), "\xEF\xBF\xBD\xEF\xBF\xBD");
 }
+
+TEST(JsonParserTest, DeepNesting1000CopyConstructSucceeds) {
+    std::string json(1000, '[');
+    json.append(1000, ']');
+    auto parsed = JsonValue::Parse(json);
+    JsonValue copy(parsed);
+    const JsonValue* current = &copy;
+    for (int i = 0; i < 1000; ++i) {
+        ASSERT_TRUE(current->IsArray());
+        if (i < 999) {
+            ASSERT_EQ(current->Size(), size_t{1});
+            current = &current->GetArray()[0];
+        } else {
+            EXPECT_EQ(current->Size(), size_t{0});
+        }
+    }
+}
+
+TEST(JsonParserTest, DeepNesting1000CopyAssignSucceeds) {
+    std::string json(1000, '[');
+    json.append(1000, ']');
+    auto parsed = JsonValue::Parse(json);
+    JsonValue copy;
+    copy = parsed;
+    const JsonValue* current = &copy;
+    for (int i = 0; i < 1000; ++i) {
+        ASSERT_TRUE(current->IsArray());
+        if (i < 999) {
+            ASSERT_EQ(current->Size(), size_t{1});
+            current = &current->GetArray()[0];
+        } else {
+            EXPECT_EQ(current->Size(), size_t{0});
+        }
+    }
+}
+
+TEST(JsonParserTest, DeepNesting1000MoveConstructSucceeds) {
+    std::string json(1000, '[');
+    json.append(1000, ']');
+    auto parsed = JsonValue::Parse(json);
+    JsonValue moved(std::move(parsed));
+    const JsonValue* current = &moved;
+    for (int i = 0; i < 1000; ++i) {
+        ASSERT_TRUE(current->IsArray());
+        if (i < 999) {
+            ASSERT_EQ(current->Size(), size_t{1});
+            current = &current->GetArray()[0];
+        } else {
+            EXPECT_EQ(current->Size(), size_t{0});
+        }
+    }
+}

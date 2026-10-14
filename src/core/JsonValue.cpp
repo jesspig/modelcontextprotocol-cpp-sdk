@@ -371,6 +371,118 @@ void JsonValue::PushBack(JsonValue val) {
     GetArray().push_back(std::move(val));
 }
 
+JsonValue::~JsonValue() {
+    if (IsArray()) {
+        if (std::get<Array>(data_).empty()) {
+            return;
+        }
+    } else if (IsObject()) {
+        if (std::get<Object>(data_).empty()) {
+            return;
+        }
+    } else {
+        return;
+    }
+    std::vector<JsonValue> stack;
+    if (IsArray()) {
+        Array moved = std::move(std::get<Array>(data_));
+        data_.emplace<std::nullptr_t>(nullptr);
+        stack.reserve(moved.size() + 1);
+        for (auto& child : moved) {
+            stack.push_back(std::move(child));
+        }
+    } else {
+        Object moved = std::move(std::get<Object>(data_));
+        data_.emplace<std::nullptr_t>(nullptr);
+        stack.reserve(moved.size() + 1);
+        for (auto& entry : moved) {
+            stack.push_back(std::move(entry.second));
+        }
+    }
+    while (!stack.empty()) {
+        JsonValue node = std::move(stack.back());
+        stack.pop_back();
+        if (node.IsArray()) {
+            Array& arr = std::get<Array>(node.data_);
+            for (auto& child : arr) {
+                stack.push_back(std::move(child));
+            }
+        } else if (node.IsObject()) {
+            Object& obj = std::get<Object>(node.data_);
+            for (auto& entry : obj) {
+                stack.push_back(std::move(entry.second));
+            }
+        }
+    }
+}
+
+JsonValue::JsonValue(const JsonValue& other) : data_(nullptr) {
+    if (!other.IsArray() && !other.IsObject()) {
+        data_ = other.data_;
+        return;
+    }
+    std::vector<std::pair<const JsonValue*, JsonValue*>> stack;
+    if (other.IsArray()) {
+        const Array& src = std::get<Array>(other.data_);
+        data_.emplace<Array>();
+        Array& dst = std::get<Array>(data_);
+        dst.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            dst.emplace_back(nullptr);
+        }
+        stack.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            stack.emplace_back(&src[i], &dst[i]);
+        }
+    } else {
+        const Object& src = std::get<Object>(other.data_);
+        data_.emplace<Object>();
+        Object& dst = std::get<Object>(data_);
+        stack.reserve(src.size());
+        for (const auto& entry : src) {
+            auto pos = dst.emplace(entry.first, nullptr).first;
+            stack.emplace_back(&entry.second, &pos->second);
+        }
+    }
+    while (!stack.empty()) {
+        auto work = stack.back();
+        stack.pop_back();
+        const JsonValue* src = work.first;
+        JsonValue* dst = work.second;
+        if (!src->IsArray() && !src->IsObject()) {
+            dst->data_ = src->data_;
+        } else if (src->IsArray()) {
+            const Array& sarr = std::get<Array>(src->data_);
+            dst->data_.emplace<Array>();
+            Array& darr = std::get<Array>(dst->data_);
+            darr.reserve(sarr.size());
+            for (size_t i = 0; i < sarr.size(); ++i) {
+                darr.emplace_back(nullptr);
+            }
+            for (size_t i = 0; i < sarr.size(); ++i) {
+                stack.emplace_back(&sarr[i], &darr[i]);
+            }
+        } else {
+            const Object& sobj = std::get<Object>(src->data_);
+            dst->data_.emplace<Object>();
+            Object& dobj = std::get<Object>(dst->data_);
+            for (const auto& entry : sobj) {
+                auto pos = dobj.emplace(entry.first, nullptr).first;
+                stack.emplace_back(&entry.second, &pos->second);
+            }
+        }
+    }
+}
+
+JsonValue& JsonValue::operator=(const JsonValue& other) {
+    if (this == &other) {
+        return *this;
+    }
+    JsonValue tmp(other);
+    data_.swap(tmp.data_);
+    return *this;
+}
+
 bool JsonValue::operator==(const JsonValue& other) const {
     return data_ == other.data_;
 }

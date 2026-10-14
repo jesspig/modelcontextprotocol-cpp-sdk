@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-14T15:08:03+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -15,7 +15,8 @@ resource: src/core/JsonValue.cpp
 
 - `JsonValue` 基于 `std::variant<nullptr_t, bool, int64_t, double, string, Array, Object>`；无 uint64/float 类型（[JsonValue.hpp](../../include/mcp/JsonValue.hpp)）
 - `Dump()` 手写序列化：NaN/Inf 输出 `null`，double 经 `std::to_chars` 输出最短往返表示（`chars_format::general`，**locale 无关**；MSVC/glibc≥11 或 `__cpp_lib_to_chars` 启用，否则回退 `snprintf` 的 `max_digits10`（17 位）格式，[JsonValue.cpp](../../src/core/JsonValue.cpp)）
-- 解析用自研递归下降解析器（[JsonParser.cpp](../../src/core/JsonParser.cpp)，`mcp::detail::json`）；深度上限 512，数字超界分类（uint64 超 int64 抛 `DeserializeFailed`，其余语法/范围错误抛 `ParseError`，消息带 offset）；浮点 `from_chars` 下溢（如 `1e-400`）返回 0.0，**仅非有限值才报 "number out of range"**；`Parse` 失败抛 `McpError`
+- 解析用自研解析器（[JsonParser.cpp](../../src/core/JsonParser.cpp)，`mcp::detail::json`，`vector<Frame>` 显式栈迭代实现）；深度 1000 层嵌套数组期望成功（`JsonParserTest.DeepNesting1000Succeeds`，原上限 512 见 [/changelog/2026-10-12-log.md](../changelog/2026-10-12-log.md)），数字超界分类（uint64 超 int64 抛 `DeserializeFailed`，其余语法/范围错误抛 `ParseError`，消息带 offset）；浮点 `from_chars` 下溢（如 `1e-400`）返回 0.0，**仅非有限值才报 "number out of range"**；`Parse` 失败抛 `McpError`
+- `JsonValue` 递归值类型的析构与拷贝为显式工作栈迭代实现（防深层嵌套栈溢出，CI `windows-2022-debug` 上 `DeepNesting1000Succeeds` SEGFAULT 的根因；`DumpValue` 与 `operator==` 仍递归但单层帧小、无深层用例，暂不在范围），显式默认移动；详见 [/classes/json-value.md](../classes/json-value.md)
 - 非 const `operator[]` 缺失键时单次 `emplace` 插入 null 并返回引用；const 版本抛 `DeserializeFailed`（[JsonValue.cpp:287-299](../../src/core/JsonValue.cpp)）
 - 详见 [/classes/json-value.md](../classes/json-value.md)
 

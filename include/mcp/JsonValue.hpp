@@ -43,6 +43,12 @@ public:
     JsonValue(ObjectTag) : data_(Object{}) {}
     JsonValue(ArrayTag)  : data_(Array{}) {}
 
+    ~JsonValue();
+    JsonValue(const JsonValue& other);
+    JsonValue& operator=(const JsonValue& other);
+    JsonValue(JsonValue&& other) noexcept = default;
+    JsonValue& operator=(JsonValue&& other) noexcept = default;
+
     static JsonValue Parse(std::string_view json);
 
     static std::string SanitizeUtf8(std::string_view text);

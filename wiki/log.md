@@ -1,5 +1,7 @@
 # 更新摘要
 
+- 2026-10-14 — JsonValue 迭代式析构/深拷贝修复记入知识库（纯文档，代码并行中）：CI `windows-2022-debug` 上 `JsonParserTest.DeepNesting1000Succeeds` SEGFAULT，根因为解析已迭代（`JsonParser.cpp` 的 `vector<Frame>` 显式栈）但 `JsonValue` 递归值类型的隐式析构/拷贝按层递归；修复为显式工作栈的迭代式析构与深拷贝、显式默认移动，保持 1000 层成功语义（`DumpValue` 与 `operator==` 仍递归但帧小、无深层用例，暂不在范围）；改 `classes/json-value.md` 与 `modules/core.md` 两页 + frontmatter，详见 [/changelog/2026-10-14-log.md](/changelog/2026-10-14-log.md)
+
 - 2026-10-13 — 令牌 issuer 校验修正 + SSE 监听流 4xx 语义 + 夹具接线收口：`ValidateTokenIssuer` 由「token 响应缺 `iss` 即拒」改为「存在即校验」（RFC 9207 §2.4 与 MCP 规范只对**授权响应**的 `iss` 施加义务，原实现属规范误引），fixture 假绿 18→0；`CreateClientAssertion` 的 `aud` 改用 metadata `issuer`（RFC 7523 §3：aud 字符串由 AS 与颁发方带外约定，referee 以 issuer 为约定值）；`GetAccessToken` 同线程重入死锁修复（新增 `refresh_owner_` 短路）；`ListenStateForStatusCode` 4xx 一并不支持监听流 + 200 非 SSE 判不支持（原 404 误落 Connecting 触发 5 次退避重连，legacy `scope-step-up` 挂 30s 由此根治）；`auth/client-credentials-jwt` 与 `auth/dpop`/`auth/dpop-nonce` 夹具从 `untestable` 改为真实流接线；基线按 referee stale 证据删 8 条；ctest 870/870 全绿，modern leg 450 passed、legacy leg 233 passed / 0 failed，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
 
 - 2026-10-13 — Streamable HTTP 客户端逐请求头注入口 + DPoP 发送侧接线：新增 `HttpClientTransportOptions::apply_per_request_headers` / `observe_response_challenge` 两回调（六处发请求点全覆盖、Win32/POSIX 共用判定），401/400 `use_dpop_nonce` 首轮恰好重试一次并重算 proof（与 auth 挑战、HeaderMismatch 刷新共用单一预算），`OAuthClientProvider::ApplyDPoPProofHeader` / `ObserveDPoPNonce` 适配器落地（htu 剥 query、ath 绑定、逐请求新 jti/iat），测试 +6，dpop 页「未接线项」节删除，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
@@ -11,5 +13,3 @@
 - 2026-10-13 — T11 文档收尾与遗留记账（纯文档）：新建 Tier1 技术对标声明页 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)（TS v2.3.1/Python v2.3.0/C# v2.2.0/Go v1.8.0/Rust v3.5.1，仅技术对标、无官方 Tier 申报意向；WebSocket 非标超集；9 项遗留记账），tests.md 口径 848/3605（分布已回填） + 四 leg（server legacy 67/67、server modern 194+1、client legacy 11+43、client modern 66+68）+ 专项（request_state 5/5、`$ref` 1/1、schema 9/9），`http-custom-headers` 18/18 已删基线，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
 
 - 2026-10-13 — T9 单连接语义与可观测锁定：生产零改动（stateless 单连接三元组 + 写完即关 + DELETE 405 + span 全路径配对均已具备），测试 +5（streamable-http +3 默认/405/独立连接、span-hook +2 成功与拒绝 End 回填 trace，待主代理实测），span-hooks 页增 OTel 差异节，详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
-
-- 2026-10-13 — T8 Apps 扩展与 Server Card 接线 + tasks 隐式移除：生产 5 文件（ext 双头增扩展标识常量、ServerOptions 增 `server_card`、McpServer 增 `GetServerCard`、McpServer.cpp 能力推导/apps 资源读门/任务四处去隐式），测试 6 处显式化 + 新增矩阵与显式 tasks 两用例（待主代理实测），详见 [/changelog/2026-10-13-log.md](/changelog/2026-10-13-log.md)
