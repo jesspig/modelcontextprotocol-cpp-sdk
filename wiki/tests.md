@@ -1,15 +1,15 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 18 个测试目标（15 unit + integration/conformance/framework），870 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，自研测试框架）；静态断言统计 3790；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
+description: 18 个测试目标（15 unit + integration/conformance/framework），874 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，自研测试框架）；静态断言统计 3762；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
 tags: [test, framework, ctest, conformance]
-timestamp: 2026-10-13T11:18:00+08:00
+timestamp: 2026-10-15T01:30:00+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(`/`TEST_P(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F|TEST_P)\('`，口径为 `tests/**/*.cpp`），现为 **870**，与 `ctest -N` 注册口径精确一致（854 → 本轮 +16）；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用，不含框架头文件中的宏定义），现为 **3790**（3631 → +159）。本轮增量全部落在既有目标：`OAuthTests` +13 用例 / +89 断言（token 响应 `iss` 三态 + 非字符串 `iss` + refresh 无 `iss` + `GetAccessToken` 同线程重入不死锁 + 跨线程等待不回归 + 其余为 `private_key_jwt` 与 auth 闭环既有用例扩充）、`StreamableHttpTransportTests` +3 用例 / +27 断言（`ListenStateForStatusCode` 断言扩充 401/403/400/204/408/429）。全量 `ctest --preset debug` 870/870 全绿（实测 176s）。
+全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(`/`TEST_P(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F|TEST_P)\('`，口径为 `tests/**/*.cpp`），现为 **874**，与 `ctest -N` 注册口径精确一致（873 → 本轮 +1）；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用，不含框架头文件中的宏定义），现为 **3762**（3757 → 本轮 +5）。本轮增量：`StreamableHttpTransportTests` +1 用例 / +5 断言（`NotificationBroadcastWaitsForSseListener`：通知在无 SSE 监听者时有界等待、监听者注册后投递——守护 SSE 流注册竞态修复，无修复时两处断言均失败）。注：10-14 两轮（JsonValue 迭代式析构、span 拒收修复）未同步本页，本轮按实测逐行回填表格（`mcp-core-tests` 179→182 / 390→399、`mcp-oauth-tests` 225→226 系前两轮遗留偏差，非本轮增量）。全量 `ctest`（串行，`--timeout 120`）874 注册 / 873 通过：唯一未过 `FileEventStoreTest.ConcurrentAppendKeepsOrder` 为本机文件锁环境既有挂起（修复前对照同样挂起，与本轮无关；CI 常规环境无此现象）。
 
 目标数维持 18：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）。
 
@@ -17,11 +17,11 @@ resource: tests/CMakeLists.txt
 
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
-| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests | 179 | 390 |
+| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests | 182 | 399 |
 | mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 65 | 307 |
 | mcp-server-tests | McpServerTests | 95 | 807 |
 | mcp-client-tests | McpClientTests | 76 | 375 |
-| mcp-oauth-tests | OAuthTests | 52 | 225 |
+| mcp-oauth-tests | OAuthTests | 52 | 226 |
 | mcp-transport-tests | TransportTests、MessageChannelTests | 15 | 62 |
 | mcp-net-tests | NetStackTests、WebSocketClientTests | 26 | 55 |
 | mcp-http-tests | HttpServerTests | 41 | 179 |
@@ -29,13 +29,13 @@ resource: tests/CMakeLists.txt
 | mcp-token-cache-tests | FileTokenCacheTests | 5 | 19 |
 | mcp-task-store-tests | FileTaskStoreTests | 15 | 113 |
 | mcp-event-store-tests | FileEventStoreTests | 11 | 48 |
-| mcp-streamable-http-tests | StreamableHttpTransportTests、SessionStoreTests | 83 | 442 |
+| mcp-streamable-http-tests | StreamableHttpTransportTests、SessionStoreTests | 84 | 447 |
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-uri-template-tests | UriTemplateTests | 21 | 133 |
 | mcp-integration-tests | ClientServerRoundTrip、Phase1InteropTests、Phase2ClosureTests | 19 | 113 |
 | mcp-conformance-tests | ProtocolConformance | 123 | 386 |
 | mcp-framework-self-tests | SelfTests | 37 | 76 |
-| **合计** | | **870** | **3790** |
+| **合计** | | **874** | **3762** |
 
 ## 测试注意点
 
@@ -92,6 +92,7 @@ resource: tests/CMakeLists.txt
 - **`auth/scope-retry-limit` modern leg 偶发挂起（已修）**：fixture 在 `server/discover timed out`（Auto 协商探测超时）后进程不退出，偶发、拖长单次 leg 约 6 分钟需强杀。**根因**（2026-10-14 定位）：`McpSessionHandler::max_total_timeout_` 默认 `0`（禁用，见 [McpSessionHandler.hpp:170](../../include/mcp/protocol/McpSessionHandler.hpp)）时 `absolute_deadlines_` 不登记，而 per-request deadline 会被服务端的 progress 通知不断延长（`ResetTimeoutByProgressToken`，该行为由 `McpClientTest.TotalTimeoutDisabledAllowsProgressExtension` 锁定为既定设计）——服务端只发 progress 不发最终响应时 request 永不超时，主线程永久等 future。**诊断方法**：`/proc/<pid>/task/*/wchan` 确认 4 线程 futex（健康等待）+ 1 线程 nanosleep（timeout 轮询）、无 I/O；把 fixture stderr 重定向到按 PID 命名的文件以绕过 referee 的 socket 全缓冲后，读到卡住进程真实日志——`CheckTimeouts` 持续运行但 `pending` 恒 1 且不超时、`OnResponse` 从未调用。**修复**：fixture 的 `ConnectBearerClient` 与 `ConnectDPoPClient` 显式设 `max_total_timeout = 10s`（< referee 30s 预算）。修复后 referee 正常收尾 EXIT=0，Close 链完整执行
 - CI 配置：server/client 双 job `node-version: 22`（referee 依赖 Node 22+ 的 `fs.globSync`）；server 就绪探测为 POST（`probe_ready()`，`--max-time 2`）——旧 `curl GET /mcp` 探测会建立 SSE 长流，`--max-time` 必然超时（退出码 28）
 - 本地复现：`scripts/run-conformance.sh server|client`（`CONFORMANCE_SPEC_VERSION` 默认 `2025-11-25`，`2026-07-28` 时自动切 stateless/requirements/probe）；GATE1 修一处 client leg 缺陷：`--command` 此前传相对路径，经 referee `shell:true` spawn 在 Windows 下全败，现转绝对路径（`resolve_binary` 定位逻辑不动，与 CI 工作流的 `${GITHUB_WORKSPACE}` 绝对路径一致），server leg 直启不受影响
+- **`tools-call-with-progress` legacy 腿首条通知丢失（已修，2026-10-15）**：CI run 23（a351749）`conformance server (2025-11-25)` 腿 `1 passed, 1 failed`（unexpected，两 attempt 均如此），断言 "Expected at least 3 progress notifications, got 2"——首条 progress=0 被静默丢弃。**根因**：SSE 流注册竞态，`SendMessageAsync` 通知只广播给瞬间已注册客户端，注册在 GET 连接线程写 endpoint 帧之后（[HttpServerImpl.cpp:480](../src/http/HttpServerImpl.cpp)），裁判客户端异步开流后立即发 `tools/call`，工具入口零延迟的首条通知早于注册。**修复**：有界等待从仅 `IsRequest` 扩到 `IsRequest || IsNotification`（50ms 步长/2s 预算，modern hold-open 缓冲路径不受影响）。**修复后实测**（主代理本地，Windows）：server legacy 连跑 3/3 `67 passed, 0 failed` + 基线通过（修复前 4/4 失败）；上一全绿提交 ef1e26a 打同补丁后 2/2 同样 67/67；server modern `--requirements 2026-07-28` exit=0 基线通过（`tasks-lifecycle` 的 `sep-2663-tasks-get-status-failed` 1 失败为既有问题——无修复时 2/2 同样失败，且属 extension 不计分场景）。新增守护用例 `StreamableHttpTransportTest.NotificationBroadcastWaitsForSseListener`（无修复时两处断言均失败）。详见 [/changelog/2026-10-15-log.md](/changelog/2026-10-15-log.md) 与仓库根 `CI-失败分析-run-38557995243.md`
 
 ## 相关页面
 

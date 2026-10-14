@@ -1994,6 +1994,51 @@ struct SseStreamReader {
     }
 };
 
+struct SseGetReader {
+    mcp::detail::net::HttpClient client;
+    std::mutex mutex;
+    std::string chunks;
+    std::promise<void> endpoint_seen;
+    std::promise<void> notification_seen;
+    std::thread worker;
+    ~SseGetReader() {
+        client.Close();
+        if (worker.joinable()) worker.join();
+    }
+    void Start(uint16_t port, std::string_view needle) {
+        mcp::detail::net::HttpRequestSpec req;
+        req.method = "GET";
+        req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        req.headers["Accept"] = "text/event-stream";
+        req.timeout = std::chrono::seconds(10);
+        worker = std::thread([this, req, needle = std::string(needle)] {
+            try {
+                client.Request(req, [&](std::string_view chunk) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    chunks.append(chunk.data(), chunk.size());
+                    if (chunks.find("event: endpoint") != std::string::npos) {
+                        try {
+                            endpoint_seen.set_value();
+                        } catch (...) {
+                        }
+                    }
+                    if (chunks.find(needle) != std::string::npos) {
+                        try {
+                            notification_seen.set_value();
+                        } catch (...) {
+                        }
+                    }
+                });
+            } catch (...) {
+            }
+        });
+    }
+    void Stop() {
+        client.Close();
+        if (worker.joinable()) worker.join();
+    }
+};
+
 } // namespace
 
 TEST(StreamableHttpTransportTest, RequestStreamHoldOpenDeliversProgressBeforeResult) {
@@ -2087,6 +2132,47 @@ TEST(StreamableHttpTransportTest, PlainRequestKeepsSingleWriteAndClose) {
 
     server.Close();
     consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, NotificationBroadcastWaitsForSseListener) {
+    auto port = PickFreePort(kTestBasePort + 2065);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    opts.enable_legacy_sse = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::promise<void> sent;
+    auto sent_future = sent.get_future();
+    std::thread sender([&] {
+        JsonRpcNotification progress;
+        progress.method = "notifications/progress";
+        JsonValue progress_params(JsonValue::object_tag);
+        progress_params["progressToken"] = JsonValue("tok-listener");
+        progress_params["progress"] = JsonValue(0.0);
+        progress.params = std::move(progress_params);
+        server.SendMessageAsync(JsonRpcMessage(std::move(progress)));
+        sent.set_value();
+    });
+
+    EXPECT_EQ(sent_future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    SseGetReader listener;
+    listener.Start(port, "tok-listener");
+    ASSERT_EQ(listener.endpoint_seen.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+
+    EXPECT_EQ(sent_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    EXPECT_EQ(listener.notification_seen.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+
+    listener.Stop();
+    server.Close();
+    sender.join();
 }
 
 TEST(StreamableHttpTransportTest, DPoPBoundTokenRequiresMatchingProof) {

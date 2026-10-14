@@ -1224,17 +1224,19 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
 
     if (TryBufferRequestStreamNotification(message)) return;
 
-    if (IsRequest(message) && http_server_ &&
+    if ((IsRequest(message) || IsNotification(message)) && http_server_ &&
         http_server_->SseClientCount() == 0) {
         std::string wait_method;
         if (const auto* pending = std::get_if<JsonRpcRequest>(&message))
             wait_method = pending->method;
+        else if (const auto* outgoing = AsNotification(message))
+            wait_method = outgoing->method;
         auto waited = std::chrono::milliseconds(0);
         while (http_server_->SseClientCount() == 0) {
             if (GetState() == TransportState::Disconnected)
                 break;
             if (waited >= kSseListenerWaitBudget) {
-                MCP_LOG(Warning, "server-initiated request '" + wait_method +
+                MCP_LOG(Warning, "server-initiated message '" + wait_method +
                     "' broadcast with no SSE listener");
                 break;
             }
