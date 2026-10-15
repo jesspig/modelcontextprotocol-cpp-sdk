@@ -1082,7 +1082,9 @@ TEST(OAuthTest, ConcurrentGetAccessTokenRefreshesOnce) {
     for (auto& caller : callers) caller.join();
 
     EXPECT_EQ(refresh_calls.load(), 1);
-    for (const auto& value : results) EXPECT_EQ(value, "refreshed-token");
+    for (const auto& value : results) {
+        EXPECT_EQ(value, "refreshed-token");
+    }
 
     server.Stop();
 }
