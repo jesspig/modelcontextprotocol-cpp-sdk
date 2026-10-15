@@ -146,3 +146,5 @@ client->SubscribeAsync(subs);
 1. **Auto**（默认）：探测 `server/discover`，回退至 `initialize` 握手
 2. **Pin**：强制指定版本（通过 `pin_protocol_version`，未设置时默认使用 `kLatestProtocolVersion`）
 3. **Legacy**：仅使用 `initialize` 握手
+
+`Auto` 按传输分类回退：stdio 类（`InMemory`/`Stdio`）探测失败回退 `initialize`，网络类抛错；`-32022` 且 `supported` 含最新版本时 corrective 重试一次，二次拒绝为硬错误。

@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、progress 推送、requestState 签发、任务后台执行（含双时代分流与 inputResponses 推进）、技能注册与目录读取、URL elicitation 与回调四层接线。
 tags: [server, 门面, 注册, 回调, progress, tasks, skills, elicitation]
-timestamp: 2026-10-12T14:37:46+08:00
+timestamp: 2026-10-15T13:14:29+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -49,11 +49,12 @@ resource: include/mcp/server/McpServer.hpp
 - **变更通知分发**：`SendToolListChanged()` / `SendResourceListChanged()` / `SendPromptListChanged()` 经 `SendListChangedNotification` **按时代分派**——现代版本走 `NotifySubscribers`（只发订阅了对应 filter 的订阅者），2025 及更早版本直接广播；`SendResourceUpdated(uri)`（[McpServer.hpp:88](../../include/mcp/server/McpServer.hpp)）发布 `notifications/resources/updated`，以 uri 作为订阅过滤键，只投递给订阅了该资源的订阅者
 - `SendLoggingMessage`：低于当前级别直接丢弃，logger 固定 `"mcp-server"`；wire `level` 为官方字符串（`SerializeLoggingLevel`）——原数字直写已修正；modern 协商版本下先经 `BufferRequestStreamNotification` 广播进全部 hold-open 请求流（命中则不再走 `SendNotification`）
 - **requestState 签发**：`options_.request_state_key` 配置时（无显式 verifier）构造期接线内置 HMAC 校验器（`detail::VerifyRequestState`，`request_state_ttl` 控制 `iat` 过期，0 禁用）；`HandleCallTool` 异步段对 `input_required` 结果自动 `MintRequestState` 后返回；校验失败回 `InvalidParams` + `data.reason="invalid_request_state"`
-- `DeriveCapabilities`：`options_.declare_logging`/`declare_completions` 显式声明对应能力（默认 false，不派生）；`options_.task_store` 配置时声明扩展 `io.modelcontextprotocol/tasks`（空对象，由 `SerializeTasksExtensionSettings` 生成）；`skills_` 非空**且** `capabilities_.resources` 具备时声明扩展 `io.modelcontextprotocol/skills`（`{directoryRead?: true}`，仅 `SetSkillsDirectoryRead(true)` 后携带该键）
+- `DeriveCapabilities`：`options_.declare_logging`/`declare_completions` 显式声明对应能力（默认 false，不派生）；`options_.enable_tasks_extension` 为真时声明扩展 `io.modelcontextprotocol/tasks`（空对象，由 `SerializeTasksExtensionSettings` 生成，[McpServer.cpp:1637](../../src/server/McpServer.cpp)；`task_store` 存在仅决定三处理器是否接线，关时入口回 `MethodNotFound "tasks extension is disabled"`）；`options_.enable_skills_extension` 为真**且** `skills_` 非空**且** `capabilities_.resources` 具备时声明扩展 `io.modelcontextprotocol/skills`（`{directoryRead?: true}`，仅 `SetSkillsDirectoryRead(true)` 后携带该键，[McpServer.cpp:1655](../../src/server/McpServer.cpp)；关时三处理器入口回 `MethodNotFound "skills extension is disabled"`）
 - `Elicit`：无 config 时超时 600s；结果 `code` 为负抛 McpError
 - `ElicitUrl(url, message, timeout=600s)`（URL elicitation，SEP-1034）：legacy 时代发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_`（`PendingUrlElicitation`：promise + completed 标志）后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`，连接关闭经 `AbandonPendingUrlElicitation` 以错误结算。modern 时代不走该等待——直接抛 `UrlElicitationInputRequired`（携 `inputRequests["elicitation"]` 的 `elicitation/create` 入参，不含 `elicitationId`），由 `HandleCallTool` 三路径捕获后转为 `InputRequiredResult`（`request_state_key` 配置时同步签 `request_state`），客户端经 `SetUrlElicitationHandler` 承接、经 `tasks/update` `inputResponses` 履行；legacy 的 `elicitation/complete` 通知处理器在 modern 下直接返回
 - `SetCacheable(resolver)` / `ServerOptions::cache_hint_resolver`：按方法动态解析 `CacheHint` 的逃生钩子（`ResolveCacheHint` 优先调钩子，未命中才查 `options_.cache_hints` 静态表；构造期从 `ServerOptions` 接线，运行时可经 `SetCacheable` 替换，`cache_hook_mutex_` 保护）
 - `ServerOptions` 新增旋钮：`supported_protocol_versions`（窄化 discover/initialize/`_meta` 门控三处，见 [/concepts/version-negotiation.md](../concepts/version-negotiation.md)）、`subscriptions_enabled`（默认 true，关闭则 `subscriptions/listen` 不可用）、`max_tool_input_elements`（工具参数元素数上限，超限回 `is_error` 工具结果）
+- **六开关门控位置**：etag 构造期同步（`SetEtagCacheEnabled(options_.enable_etag_cache)`，[McpServer.cpp:510](../../src/server/McpServer.cpp)）、触发器发射门（`EmitTriggerEvent` 开头，关直接 return，[McpServer.cpp:832](../../src/server/McpServer.cpp)）、渐进发现（`HandleListTools` 开头，关走缓存快照路径，[McpServer.cpp:1690](../../src/server/McpServer.cpp)）、文件输入（`HandleCallTool` 参数解析段，关跳过 file 引用消解，[McpServer.cpp:1824](../../src/server/McpServer.cpp)）、apps `ui://` 读门（`HandleReadResource` 内 `HasAppsUriScheme` 分支，关报 `HandlerError "apps extension is disabled"`，[McpServer.cpp:2432](../../src/server/McpServer.cpp)）、server-card 获取门（`GetServerCard` 开头，关报 `HandlerError "server card is disabled"`，[McpServer.cpp:2917](../../src/server/McpServer.cpp)）；注意 apps/server-card 关态为 `HandlerError` 而非 `MethodNotFound`
 - `GetClientCapabilities()/GetClientInfo()` 返回 `shared_ptr<const T>`；`GetNegotiatedProtocolVersion()` 返回 `std::string`（转发自 handler）
 
 ## URI 模板已知限制

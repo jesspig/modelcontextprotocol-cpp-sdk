@@ -29,6 +29,8 @@ The client supports the MCP OAuth authorization flow for servers that require au
 | `client_assertion_clock_seconds` | `function<int64_t()>` | Clock hook providing the client assertion `iat`/`exp` (defaults to the system clock; lets tests inject a fixed time) |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | Callback to open the authorization URL |
 | `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | Callback returning the authorization code, the echoed `state`, and the optional `iss` (`AuthorizationCodeResult{code, state, iss}`), `nullopt` on failure |
+| `enable_dpop` | `bool` | DPoP switch (default `false`): proofs are minted and server `DPoP-Nonce` values observed only when on (requires OpenSSL) |
+| `token_update_handler` | `function<void(const TokenContainer&)>` | Notification callback fired after tokens are stored/refreshed |
 
 ## Setup
 
@@ -61,15 +63,15 @@ auto token = auth->GetAccessToken();
 
 | Method | Description |
 |--------|-------------|
-| `Authenticate()` | Full OAuth flow: discover → register → authorize → token exchange |
-| `GetAccessToken()` | Returns valid access token, auto-refreshes if expiring soon; throws `McpError` (InternalError) on refresh failure |
-| `RefreshTokens()` | Force-refresh using stored refresh token |
+| `Authenticate()` | Full OAuth flow: discover → register → authorize → token exchange (returns `bool`) |
+| `GetAccessToken()` | Returns valid access token, auto-refreshes if expiring soon; throws `McpError` (InternalError) on refresh failure; concurrent refreshes coalesce into one flight, owner re-entry short-circuits |
+| `RefreshTokens()` | Force-refresh using stored refresh token (returns `bool`); concurrent refreshes coalesce into one flight, owner re-entry short-circuits |
 | `IsAuthenticated()` | Check if stored token is present and not expired |
 | `HasToken()` | Check if any token exists (may be expired) |
 | `GetAuthorizationHeader()` | Returns `"Bearer {token}"` string |
-| `StepUpAuthorization(scopes)` | Re-authorize with additional scopes |
-| `AuthenticateClientCredentials()` | Client credentials grant (RFC 6749 §4.4) for service-to-service scenarios without user interaction |
-| `HandleAuthChallenge(www_authenticate)` | Handles a 401/403 authentication challenge header (RFC 9728); retries the original request on success |
+| `StepUpAuthorization(scopes)` | Re-authorize with additional scopes (returns `bool`) |
+| `AuthenticateClientCredentials()` | Client credentials grant (RFC 6749 §4.4) for service-to-service scenarios without user interaction (returns `bool`) |
+| `HandleAuthChallenge(www_authenticate)` | Handles a 401/403 authentication challenge header (RFC 9728); retries the original request on success (returns `bool`) |
 | `Revoke()` | Best-effort call to the RFC 7009 revocation endpoint (when `revocation_endpoint` is configured); clears local tokens regardless of outcome |
 
 ## Resource Indicator and Issuer Validation
@@ -91,6 +93,25 @@ The client has two integration points:
 
 - `HttpClientTransportOptions::auth_challenge_handler` (see [Transports](/en/guide/transports)): always invoked on 401, invoked on 403 only when `WWW-Authenticate` contains `insufficient_scope`; returning a non-empty `Authorization` header retries the request exactly once. Inside the callback you can delegate to `OAuthClientProvider::HandleAuthChallenge(www_authenticate)` to parse the challenge and obtain a fresh token.
 - `HandleAuthChallenge(www_authenticate)` (returns `bool`): parses the metadata URL from the challenge per RFC 9728 to discover the authorization server and re-runs the authorization flow when needed.
+
+## DPoP Sending-Side Wiring
+
+With `OAuthClientOptions::enable_dpop` on, bind `ApplyDPoPProofHeader`/`ObserveDPoPNonce` to the two `HttpClientTransportOptions` callbacks to drive a DPoP session:
+
+```cpp
+http_opts.apply_per_request_headers =
+    [auth](const HttpRequestHeaderContext& ctx,
+           std::map<std::string, std::string>& headers) {
+        auth->ApplyDPoPProofHeader(ctx, headers);
+    };
+http_opts.observe_response_challenge =
+    [auth](const HttpResponseChallengeContext& ctx) {
+        auth->ObserveDPoPNonce(ctx.dpop_nonce);
+    };
+```
+
+- `htu` is derived from `context.url` with query and fragment stripped before the proof is minted, `htm` comes from `context.http_method`; each call mints a fresh proof, so `jti`/`iat` are new per request.
+- On 401/400 with `use_dpop_nonce` in `WWW-Authenticate` or the first 4KB of the response body, the request is retried exactly once (single budget shared with the `auth_challenge_handler` retry).
 
 ## PKCE Helpers
 

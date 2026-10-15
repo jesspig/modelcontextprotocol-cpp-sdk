@@ -178,7 +178,7 @@ The client supports the MCP OAuth authorization flow:
 - CIMD client identity with DCR fallback (an `http(s)://` `client_id` is fetched as a client metadata document; dynamic registration only when no `client_id` is configured)
 - Token refresh and revocation
 - Pluggable token cache (`ITokenCache`), persistent `FileTokenCache` included
-- DPoP (RFC 9449): server-side proof verification on the Streamable HTTP resource server — off by default, turned on per deployment with the experimental `enable_dpop` switch (`StreamableHttpServerOptions::bearer_auth->enable_dpop`), and requires OpenSSL; the client side can bind the authorization scheme and mint proofs (`OAuthClientOptions::enable_dpop`), but transports do not yet attach a per-request `DPoP` proof
+- DPoP (RFC 9449): server-side proof verification on the Streamable HTTP resource server — off by default, turned on per deployment with the experimental `enable_dpop` switch (`StreamableHttpServerOptions::bearer_auth->enable_dpop`), and requires OpenSSL; the client side can bind the authorization scheme and mint proofs (`OAuthClientOptions::enable_dpop`), but transports attach per-request `DPoP` proof when `apply_per_request_headers`/`observe_response_challenge` are bound via `ApplyDPoPProofHeader`/`ObserveDPoPNonce`
 
 ```cpp
 OAuthClientOptions oauth_opts;
@@ -273,7 +273,7 @@ The following items are explicitly declared unsupported in this round; when a pe
 
 - **Apps UI rendering** — server-pushed UI components are not rendered and pass through as opaque data only.
 - **EMA** — EMA negotiation is not implemented and peers fall back to baseline capability negotiation.
-- **DPoP client-side per-request proofs** — server-side proof verification is implemented (off by default, experimental `enable_dpop`, requires OpenSSL; see OAuth Support above), but transports never attach a per-request `DPoP` proof and the server-issued `DPoP-Nonce` is not fed back for a nonce retry, so DPoP-bound tokens cannot yet drive a Streamable HTTP session; with the switch off the plain Bearer path is unchanged ([dpop](wiki/concepts/dpop.md)).
+- **DPoP client-side per-request proofs** — server-side proof verification is implemented (off by default, experimental `enable_dpop`, requires OpenSSL; see OAuth Support above); without the two callbacks above no proof is attached, while configured callbacks drive a DPoP session with a single `use_dpop_nonce` retry; with the switch off the plain Bearer path is unchanged ([dpop](wiki/concepts/dpop.md)).
 - **jwt-bearer** — `private_key_jwt` client authentication is supported (an ES256 client assertion is sent on the token requests when `private_key_pem` is configured and the authorization server advertises `private_key_jwt` in `token_endpoint_auth_methods_supported`; requires OpenSSL), while the authorization-owner `jwt-bearer` grant is not, and the public-client PKCE/CIMD flow remains the supported path.
 - **ETags** — `ETag` / `If-None-Match` validators are not stored or compared, and cached responses are governed by TTL only.
 - **Progressive discovery** — incremental capability discovery is not implemented, and the full `server/discover` (modern) / `initialize` (legacy) handshake is always used.
