@@ -29,6 +29,8 @@
 | `client_assertion_clock_seconds` | `function<int64_t()>` | 客户端断言 `iat`/`exp` 取时间的钩子（默认取系统时钟，便于测试注入固定时间） |
 | `authorization_redirect_handler` | `function<void(string_view url)>` | 打开授权 URL 的回调 |
 | `authorization_code_callback` | `function<optional<AuthorizationCodeResult>()>` | 返回授权码、授权服务器回显的 `state` 与可选的 `iss`（`AuthorizationCodeResult{code, state, iss}`），失败时返回 `nullopt` |
+| `enable_dpop` | `bool` | DPoP 开关（默认 `false`）：开启后才签发证明并观察服务端 `DPoP-Nonce`（需 OpenSSL） |
+| `token_update_handler` | `function<void(const TokenContainer&)>` | 令牌落盘/刷新后通知回调 |
 
 ## 设置
 
@@ -61,8 +63,8 @@ auto token = auth->GetAccessToken();
 | 方法 | 描述 |
 |--------|-------------|
 | `Authenticate()` | 完整 OAuth 流程：发现 → 注册 → 授权 → 令牌交换（返回 `bool` 指示成败） |
-| `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新；刷新失败抛出 `McpError`（InternalError） |
-| `RefreshTokens()` | 使用存储的刷新令牌强制刷新（返回 `bool`） |
+| `GetAccessToken()` | 返回有效的访问令牌，将在过期前自动刷新；刷新失败抛出 `McpError`（InternalError）；并发刷新单飞一次、owner 重入短路 |
+| `RefreshTokens()` | 使用存储的刷新令牌强制刷新（返回 `bool`）；并发刷新单飞一次、owner 重入短路 |
 | `IsAuthenticated()` | 检查令牌是否存在且未过期 |
 | `HasToken()` | 检查是否存在任何令牌（可能已过期） |
 | `GetAuthorizationHeader()` | 返回 `"Bearer {token}"` 字符串 |
@@ -103,6 +105,25 @@ http_opts.auth_challenge_handler =
         return auth->GetAuthorizationHeader();
     };
 ```
+
+## DPoP 发送侧接线
+
+`OAuthClientOptions::enable_dpop` 开启后，将 `ApplyDPoPProofHeader`/`ObserveDPoPNonce` 绑定到 `HttpClientTransportOptions` 的两个回调即可驱动 DPoP 会话：
+
+```cpp
+http_opts.apply_per_request_headers =
+    [auth](const HttpRequestHeaderContext& ctx,
+           std::map<std::string, std::string>& headers) {
+        auth->ApplyDPoPProofHeader(ctx, headers);
+    };
+http_opts.observe_response_challenge =
+    [auth](const HttpResponseChallengeContext& ctx) {
+        auth->ObserveDPoPNonce(ctx.dpop_nonce);
+    };
+```
+
+- `htu` 取 `context.url` 并剥掉 query 与 fragment 后签发证明，`htm` 取 `context.http_method`；每次调用重新签发，`jti`/`iat` 逐请求全新。
+- 401/400 且 `WWW-Authenticate` 或响应体前 4KB 含 `use_dpop_nonce` 时恰好重试一次（单次预算，与 `auth_challenge_handler` 重试共用）。
 
 ## PKCE 辅助函数
 

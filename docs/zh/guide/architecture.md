@@ -32,7 +32,7 @@ JSON-RPC 引擎（`McpSessionHandler`）：基于 `MessageChannel` 的异步消�
 
 ### mcp-client（STATIC）
 
-`McpClient`：服务器发现（`server/discover` → initialize 回退）、版本协商、工具缓存、MRTR（通过 `SendRequestWithMrtr` 的 InputRequired 循环）、OAuth（PKCE、DCR、令牌刷新/撤销、`FileTokenCache`）。
+`McpClient`：服务器发现（`server/discover` → initialize 回退）、版本协商、工具缓存、MRTR（通过 `SendRequestWithMrtr` 的 InputRequired 循环）、OAuth（PKCE、DCR、令牌刷新/撤销、`FileTokenCache`、`private_key_jwt` 断言、可选 DPoP 逐请求 proof）。
 
 ### mcp-http（STATIC）
 

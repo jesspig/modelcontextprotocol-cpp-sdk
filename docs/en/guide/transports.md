@@ -71,14 +71,22 @@ Controls how the HTTP client transport connects:
 | `known_session_id`     | `std::string`                           | `""`            | Session ID for resumption     |
 | `additional_headers`   | `std::map<std::string, std::string>`    | `{}`            | Extra HTTP headers            |
 | `auth_challenge_handler` | `std::function<std::string(std::string_view www_authenticate)>` | `nullptr` | Always called on 401; called on 403 only when `WWW-Authenticate` contains `insufficient_scope` (RFC 9728 — other 403s are handled as error bodies); a non-empty `Authorization` header retries exactly once |
+| `apply_per_request_headers` | `std::function<void(const HttpRequestHeaderContext&, std::map<std::string,std::string>&)>` | `nullptr` | Invoked once before every request send (including retries and internally re-issued posts); the callback writes extra headers into the writable `headers` (applied after static `additional_headers` and `Authorization`); bind `OAuthClientProvider::ApplyDPoPProofHeader` to attach a per-request `DPoP` proof |
+| `observe_response_challenge` | `std::function<void(const HttpResponseChallengeContext&)>` | `nullptr` | Invoked once per response (including 2xx and SSE) with `status_code`/`www_authenticate`/`dpop_nonce`; bind `OAuthClientProvider::ObserveDPoPNonce` to feed the nonce back |
+| `enable_listen_stream` | `optional<bool>` | unset → `!stateless` | GET SSE listen-stream switch; unset means on for stateful, off for stateless |
 | `stateless` | `bool` | `false` | For purely stateless peers: no `Mcp-Session-Id` / `Last-Event-ID` headers, no DELETE |
+| `max_sse_event_bytes` | `optional<size_t>` | 1 MB | Per-SSE-event cap |
+| `redirect_policy` | `HttpRedirectPolicy` | `SameOriginOnly` | Redirect policy (`FollowAll`/`SameOriginOnly`/`NoFollow`) |
+| `max_redirects` | `int` | `5` | Maximum redirect hops |
+
+Listen-stream state mapping: 4xx (including 404/405) and "200 but non-SSE content-type" count as server-not-supporting-listen-stream (`Unsupported`, silently given up); 408/429 and non-200 2xx keep the backoff reconnect path. The `use_dpop_nonce` retry (exactly once on 401/400 when the challenge or the first 4KB of the body carries the marker) shares one single budget with the `auth_challenge_handler` retry.
 
 ### `StreamableHttpServerOptions`
 | Field                  | Type                               | Default      | Description                          |
 |------------------------|------------------------------------|--------------|--------------------------------------|
 | `port`                 | `uint16_t`                         | `3001`       | HTTP server port                     |
 | `endpoint`             | `std::string`                      | `"/mcp"`     | HTTP endpoint path                   |
-| `host`                 | `std::string`                      | `""`         | Listen bind address; empty = all interfaces, accepts IPv4/IPv6 literals |
+| `host`                 | `std::string`                      | `""`         | Listen bind address; empty = all IPv4 interfaces only, accepts IPv4/IPv6 literals |
 | `stateless`            | `bool`                             | `true`       | 2026-07-28 stateless mode            |
 | `enable_legacy_sse`    | `bool`                             | `false`      | Serve SSE stream on GET (when off, no GET is registered and listen streams/replay are unavailable) |
 | `sse_keep_alive_ms`    | `int`                              | `15000`      | SSE keepalive comment-frame interval in ms; `0` disables |
@@ -101,6 +109,7 @@ Once `bearer_auth` is set, `StreamableHttpServerTransport` runs the bearer auth 
 | `validate_token_resource`  | `bool`                                     | Whether to validate the audience (default `true`)         |
 | `authorization_servers`    | `vector<string>`                           | Authorization servers written into the metadata document |
 | `serve_metadata_endpoint`  | `bool`                                     | Register `GET /.well-known/oauth-protected-resource` (no auth); default `true` |
+| `enable_dpop`              | `bool`                                     | DPoP proof-verification switch (default `false`): takes effect only after `bearer_auth` is configured; when on, the `DPoP` scheme and proof header are required, failures return 401 carrying `DPoP-Nonce` |
 
 Outcomes on both the POST and GET (SSE) paths: a missing or malformed `Authorization: Bearer` header → `401` challenge; `verify` returning `ok=false` → `401` with `error="invalid_token"`; an audience mismatch (validation enabled and `expected_resource` non-empty) → `401` with `error="invalid_token"`; a token missing any `required_scopes` entry → `403` with `error="insufficient_scope"`. When `bearer_auth` is unconfigured, behavior is exactly as before — zero regression. For the client-side counterpart see [OAuth Support](/en/client/oauth).
 
@@ -120,3 +129,4 @@ struct Pair {
 
 - **No sessions**: Each request is independent; the response is correlated synchronously via `std::promise` with a 30-second timeout.
 - **No SSE**: No SSE broadcast or `EventStore` append; only responses correlated to pending requests are delivered via JSON.
+- **Listener wait**: before broadcasting server-initiated requests and notifications the server checks for GET listeners — with zero listeners it waits up to 2s only when `!stateless || enable_legacy_sse` (the hold-open POST stream mode under `stateless` skips the wait); hold-open request-stream notifications are filtered by the buffer verdict first and never enter the wait.

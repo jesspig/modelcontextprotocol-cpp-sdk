@@ -85,7 +85,7 @@ client->SetElicitationHandler(
     });
 ```
 
-The client dispatches on each input request's `method`: `elicitation/create` → `ElicitationHandler`, `sampling/createMessage` → `SamplingHandler`, `roots/list` → `RootsHandler`. An unregistered handler or an unknown method raises `McpError` (`MethodNotFound`).
+The client dispatches on each input request's `method`: `elicitation/create` → `ElicitationHandler`, `sampling/createMessage` → `SamplingHandler`, `roots/list` → `RootsHandler` (`SamplingHandler`/`RootsHandler` are deprecated, new code uses `ElicitationHandler`). An unregistered handler or an unknown method raises `McpError` (`MethodNotFound`).
 
 `inputResponses` values are **bare results** (elicitation: `{action, content}`, sampling: `{role, content, model, stopReason}`, roots: `{roots}`) with no `resultType` / `meta` envelope.
 

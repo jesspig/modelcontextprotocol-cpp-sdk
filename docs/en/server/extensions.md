@@ -45,7 +45,7 @@ The 10 `ServerOptions` flags and 4 `ClientOptions` flags all default to `false` 
 
 | Side | Flag | On | Off |
 |------|------|----|-----|
-| Server | `enable_tasks_extension` | Declares the tasks extension; `tasks/get\|update\|cancel` and taskified `tools/call` take effect | Without `task_store`, the corresponding methods return `MethodNotFound` (`tasks extension is disabled`); with only `task_store` set, implicitly enabled with a `Warning` (0.3.5→0.3.8 transition, see below) |
+| Server | `enable_tasks_extension` | Declares the tasks extension; `tasks/get\|update\|cancel` and taskified `tools/call` take effect | Without `task_store`, the corresponding methods return `MethodNotFound` (`tasks extension is disabled`); with only `task_store` set, no longer declared — explicit `enable_tasks_extension=true` is required (implicit path removed, see below) |
 | Server | `enable_skills_extension` | With at least one registered skill and the resources capability, declares the skills extension; `skills/list\|get` and `directory/read` take effect | All three methods return `MethodNotFound` (`skills extension is disabled`); no implicit path |
 | Server | `enable_etag_cache` | List results carry a content-hash `etag` (skipped past the 8 MB cap); on a `notModified` reply clients fall back to the stored body, sending `ifNoneMatch` via the meta extensions | No `etag` attached; client store access short-circuits, unconditional sends |
 | Server | `enable_progressive_discovery` | `tools/list` supports `query` filtering + `pageSize` paging; `listen` flushes and holds open, `list_changed` buffers per subscription | `tools/list` serves the cached full set; `listen` and `list_changed` use the legacy paths |
@@ -59,4 +59,4 @@ The 10 `ServerOptions` flags and 4 `ClientOptions` flags all default to `false` 
 | Client | `enable_progressive_discovery` | `SearchTools` paging requests carry `query`/`pageSize` | Paged aggregation still works but without `query`/`pageSize` |
 | Client | `enable_apps_extension` | Reserved: declared, default `false`, no gating wired yet | Same as left |
 
-Compatibility transition (0.3.5→0.3.8, scope given by this task): `TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` are both marked `[[deprecated]]`, directing users to set the flags explicitly; only tasks has a real implicit path (setting just `task_store` enables it, accompanied by a `Warning` log), while skills has no implicit path and must be enabled explicitly.
+Compatibility transition (0.3.5→0.3.8, scope given by this task): `TasksImplicitlyEnabled()` / `SkillsImplicitlyEnabled()` are both marked `[[deprecated]]`, directing users to set the flags explicitly; the implicit path has been removed — setting just `task_store` no longer declares the tasks extension and logs no `Warning`, explicit `enable_tasks_extension=true` is required; skills has no implicit path and must be enabled explicitly.

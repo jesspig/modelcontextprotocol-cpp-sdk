@@ -71,7 +71,15 @@ IClientTransport（连接工厂）
 | `known_session_id`  | `std::string`                            | `""`         | 用于恢复的会话 ID       |
 | `additional_headers`| `std::map<std::string, std::string>`     | `{}`         | 附加 HTTP 头            |
 | `auth_challenge_handler` | `function<string(string_view www_authenticate)>` | `nullptr` | 401 必回调、`WWW-Authenticate` 含 `insufficient_scope` 的 403 才回调（RFC 9728，其余 403 按错误体处理）；返回非空 `Authorization` 头则恰好重试一次 |
+| `apply_per_request_headers` | `function<void(const HttpRequestHeaderContext&, map<string,string>&)>` | `nullptr` | 每次发请求前调用一次（含重试与内部补发），回调把追加头写进可写 `headers`（覆盖静态 `additional_headers` 与 `Authorization` 之后）；可直接绑定 `OAuthClientProvider::ApplyDPoPProofHeader` 逐请求附加 `DPoP` 证明 |
+| `observe_response_challenge` | `function<void(const HttpResponseChallengeContext&)>` | `nullptr` | 每个响应调用一次（含 2xx 与 SSE），入参含 `status_code`/`www_authenticate`/`dpop_nonce`；可直接绑定 `OAuthClientProvider::ObserveDPoPNonce` 回灌 nonce |
+| `enable_listen_stream` | `optional<bool>` | 未设置时 `!stateless` | GET SSE 监听流开关；未设置时 stateful 默认开、stateless 默认关 |
 | `stateless` | `bool` | `false` | 纯无状态对端专用：不发送 `Mcp-Session-Id` / `Last-Event-ID`，不发送 DELETE |
+| `max_sse_event_bytes` | `optional<size_t>` | 1 MB | SSE 单事件上限 |
+| `redirect_policy` | `HttpRedirectPolicy` | `SameOriginOnly` | 重定向策略（`FollowAll`/`SameOriginOnly`/`NoFollow`） |
+| `max_redirects` | `int` | `5` | 最大重定向次数 |
+
+监听流状态判定：4xx（一律，含 404/405）与「200 但 content-type 非 SSE」视为服务器不支持监听流（`Unsupported`，静默放弃）；408/429 与 2xx 非 200 仍走退避重连。`use_dpop_nonce` 重试（401/400 且挑战或响应体前 4KB 含该标记时恰好一次）与 `auth_challenge_handler` 重试共用同一单次预算。
 
 ### `StreamableHttpServerOptions`
 | 字段               | 类型                               | 默认值          | 描述                          |
@@ -101,6 +109,7 @@ IClientTransport（连接工厂）
 | `validate_token_resource` | `bool`                                   | 是否校验 audience（默认 `true`）                  |
 | `authorization_servers`   | `vector<string>`                         | 授权服务器列表，写入元数据文档                    |
 | `serve_metadata_endpoint` | `bool`                                   | 注册 `GET /.well-known/oauth-protected-resource`（免鉴权），默认 `true` |
+| `enable_dpop` | `bool` | DPoP 证明校验开关（默认 `false`）：先配置 `bearer_auth` 才生效，开启后要求 `DPoP` 方案与证明头，失败返回 401 并携带 `DPoP-Nonce` |
 
 POST 与 GET（SSE）两条路径上的结果一致：缺失或格式错误的 `Authorization: Bearer` 头 → `401` 挑战并引用 `resource_metadata_url`；`verify` 返回 `ok=false` → `401` 携带 `error="invalid_token"`；audience 失配（启用校验且 `expected_resource` 非空）→ `401` 携带 `error="invalid_token"`；令牌未覆盖任一 `required_scopes` → `403` 携带 `error="insufficient_scope"`。未配置 `bearer_auth` 时行为与之前完全一致，零回归。客户端侧对接见 [OAuth 鉴权](/zh/client/oauth)。
 
@@ -120,3 +129,4 @@ struct Pair {
 
 - **无会话**：每个请求独立；通过 `std::promise` 同步关联响应，超时时间 30 秒。
 - **无 SSE**：不进行 SSE 广播或 `EventStore` 追加；仅与待处理请求关联的响应通过 JSON 交付。
+- **监听者等待**：服务端在 server-initiated 请求与通知广播前判断有无 GET 监听者——仅当 `!stateless || enable_legacy_sse` 时零监听者等待至多 2s（`stateless` 持开 POST 流模式跳过等待）；持开请求流通知由缓冲裁决先行过滤，不进等待。

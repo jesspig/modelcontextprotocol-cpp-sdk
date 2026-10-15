@@ -3,7 +3,7 @@ type: Concept
 title: 版本协商
 description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、supportedVersions 交集、codec 重建、HTTP 版本头自学习与主动校验、tasks/skills 双时代门控。
 tags: [协议, 版本, 协商, 2026, tasks, skills]
-timestamp: 2026-10-12T14:37:46+08:00
+timestamp: 2026-10-15T13:14:29+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -18,7 +18,7 @@ resource: include/mcp/client/VersionNegotiation.hpp
 - `server/discover` 支持版本为 `EffectiveSupportedVersions()`（默认 `kProtocolVersions` 全表 5 个，`ServerOptions::supported_protocol_versions` 非空时窄化，见下节），并**无条件置 `initialized_=true`**；服务端 `HandleDiscover` 总是回 `serverInfo`（`options_.server_info` 缺失回退 `{"mcp-server", kSdkVersion}`）；discover 响应**解析侧**（客户端 `DeserializeDiscoverResult`）对 `serverInfo` 容缺——顶层缺失时从 `_meta["io.modelcontextprotocol/serverInfo"]` 提取（官方 TS 服务器即此形态，[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）
 - **客户端 discover 响应的版本交集**（[McpClient.cpp](../../src/client/McpClient.cpp)）：`DeclaresSharedClientVersion` 判定响应 `supportedVersions` 与客户端支持表（`kProtocolVersions`）是否相交——字段缺失/非数组视为**未声明**，接受探测版本；`SelectSharedVersion` 从交集中取客户端支持的**最新**版本（数组从新到旧找第一个命中）；声明的列表为空或无交集则回退 `initialize`；仅字段未声明时保留探测版本（服务器应答探测即隐式接受）
 - 每次协商后 `SetNegotiatedProtocolVersion` 重建 WireCodec（`shared_ptr<WireCodec>` + `codec_mutex_`，`shared_mutex` 内整体交换 `negotiated_version_` 与 `codec_`，线程安全，消息循环运行中可调用）；`NegotiatedProtocolVersion()` 锁下拷贝返回 `std::string`
-- **`initialize` 在 2026 时代豁免**：入站验证遇 `NotInEra` 时仅拒绝非 initialize 请求，现代服务端仍须应答遗留握手（[McpSessionHandler.cpp:396](../../src/protocol/McpSessionHandler.cpp)）
+- **`initialize` 仅 legacy era 豁免**：入站验证遇 `NotInEra` 时，仅 legacy era（`IsJuly2026OrLater()` 为假）才放行 `initialize`；modern era 下 `initialize` 同样可被拒（回 `MethodNotFound`，[McpSessionHandler.cpp:370](../../src/protocol/McpSessionHandler.cpp)，era 判定 [McpSessionHandler.hpp:109](../../include/mcp/protocol/McpSessionHandler.hpp)）
 
 ## 服务端拒绝不受支持版本
 

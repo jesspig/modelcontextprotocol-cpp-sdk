@@ -86,7 +86,7 @@ client->SetElicitationHandler(
     });
 ```
 
-客户端按每个输入请求的 `method` 分派：`elicitation/create` → `ElicitationHandler`，`sampling/createMessage` → `SamplingHandler`，`roots/list` → `RootsHandler`。对应 handler 未注册或方法未知时抛 `McpError`（`MethodNotFound`）。
+客户端按每个输入请求的 `method` 分派：`elicitation/create` → `ElicitationHandler`，`sampling/createMessage` → `SamplingHandler`，`roots/list` → `RootsHandler`（`SamplingHandler`/`RootsHandler` 已废弃，新代码用 `ElicitationHandler`）。对应 handler 未注册或方法未知时抛 `McpError`（`MethodNotFound`）。
 
 `inputResponses` 的值是**裸结果**（elicitation 为 `{action, content}`，sampling 为 `{role, content, model, stopReason}`，roots 为 `{roots}`），不带 `resultType` / `meta` 信封。
 

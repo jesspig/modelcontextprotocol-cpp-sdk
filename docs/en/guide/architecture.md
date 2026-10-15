@@ -32,7 +32,7 @@ JSON-RPC engine (`McpSessionHandler`): async message loop over `MessageChannel`,
 
 ### mcp-client (STATIC)
 
-`McpClient`: server discovery (`server/discover` → initialize fallback), version negotiation, tool cache, MRTR (InputRequired loop via `SendRequestWithMrtr`), OAuth (PKCE, DCR, token refresh/revocation, `FileTokenCache`).
+`McpClient`: server discovery (`server/discover` → initialize fallback), version negotiation, tool cache, MRTR (InputRequired loop via `SendRequestWithMrtr`), OAuth (PKCE, DCR, token refresh/revocation, `FileTokenCache`, `private_key_jwt` assertions, optional per-request DPoP proofs).
 
 ### mcp-http (STATIC)
 

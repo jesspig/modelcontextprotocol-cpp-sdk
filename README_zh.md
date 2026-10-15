@@ -179,7 +179,7 @@ auto result = client->CallTool("echo",
 - CIMD 客户端标识与 DCR 回退（`client_id` 为 `http(s)://` URL 时拉取客户端元数据文档；仅未配置 `client_id` 时动态注册）
 - Token 刷新和撤销
 - 可插拔 Token 缓存（`ITokenCache`），内置持久化 `FileTokenCache`
-- DPoP（RFC 9449）：Streamable HTTP 资源服务器侧已实现证明校验——默认关，按部署用实验开关 `enable_dpop`（`StreamableHttpServerOptions::bearer_auth->enable_dpop`）开启，且需 OpenSSL；客户端侧可切换绑定授权方案并签发证明（`OAuthClientOptions::enable_dpop`），但传输层尚未逐请求附加 `DPoP` 证明
+- DPoP（RFC 9449）：Streamable HTTP 资源服务器侧已实现证明校验——默认关，按部署用实验开关 `enable_dpop`（`StreamableHttpServerOptions::bearer_auth->enable_dpop`）开启，且需 OpenSSL；客户端侧可切换绑定授权方案并签发证明（`OAuthClientOptions::enable_dpop`），但当 `apply_per_request_headers`/`observe_response_challenge` 经 `ApplyDPoPProofHeader`/`ObserveDPoPNonce` 绑定后，传输层逐请求附加 `DPoP` 证明
 
 ```cpp
 OAuthClientOptions oauth_opts;
@@ -271,7 +271,7 @@ build/debug/examples/EchoServer/EchoServer
 
 - **应用界面渲染**——服务器推送的 UI 组件不渲染，仅作不透明数据透传。
 - **EMA**——未实现 EMA 协商，对端回退到基线能力协商。
-- **DPoP 客户端逐请求证明**——服务端证明校验已实现（默认关，实验开关 `enable_dpop`，需 OpenSSL，见上文 OAuth 支持），但传输层从不逐请求附加 `DPoP` 证明，服务端下发的 `DPoP-Nonce` 也未回灌做 nonce 重试，故 DPoP 绑定令牌尚不能驱动 Streamable HTTP 会话；开关关闭时纯 Bearer 路径行为不变（[dpop](wiki/concepts/dpop.md)）。
+- **DPoP 客户端逐请求证明**——服务端证明校验已实现（默认关，实验开关 `enable_dpop`，需 OpenSSL，见上文 OAuth 支持）；未配置上述两回调时不附证明，已配置时可驱动 DPoP 会话并单次 `use_dpop_nonce` 重试；开关关闭时纯 Bearer 路径行为不变（[dpop](wiki/concepts/dpop.md)）。
 - **jwt-bearer**——已支持 `private_key_jwt` 客户端认证（配置 `private_key_pem` 且授权服务器在 `token_endpoint_auth_methods_supported` 中声明 `private_key_jwt` 时，向令牌请求发送 ES256 客户端断言；需 OpenSSL），但不支持授权方 `jwt-bearer` 授权，公开客户端 PKCE/CIMD 流程仍为受支持路径。
 - **ETag**——不存储、不比对 `ETag` / `If-None-Match` 校验器，缓存响应仅按 TTL 治理。
 - **渐进式发现**——未实现增量能力发现，恒用完整 `server/discover`（现代）/ `initialize`（遗留）握手。

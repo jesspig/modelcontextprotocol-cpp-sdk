@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-10-12T14:37:46+08:00
+timestamp: 2026-10-15T13:14:29+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -17,7 +17,7 @@ resource: src/server/McpServer.cpp
 - `PromptOptions::arguments`（`optional<vector<PromptArgument>>`，链式 `Arguments()`）：`prompts/list` 输出提示词参数声明，配合补全请求官方线格式 `{ref, argument:{name,value}}`（序列化修正见 [/modules/protocol.md](protocol.md)）
 - 任务不注册，由 `ServerOptions::task_store` 驱动
 - `RegisterTool` 保存工具 `inputSchema`；`ResolveToolParamAnnotations(method, name)` 解析合法 `x-mcp-header` 属性路径，供 Streamable HTTP 的 `resolve_param_annotations` 校验 `Mcp-Param-*` 头与 `tools/call` body 一致（详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)）
-- 能力推导（[McpServer.cpp](../../src/server/McpServer.cpp)）：有工具→`tools`（list_changed）、有资源→`resources`（subscribe + list_changed）、有提示词→`prompts`、`declare_logging`/`declare_completions` 显式声明 `logging`/`completions`（默认 false，不派生）、有 task_store→`extensions = {}`
+- 能力推导（[McpServer.cpp](../../src/server/McpServer.cpp)）：有工具→`tools`（list_changed）、有资源→`resources`（subscribe + list_changed）、有提示词→`prompts`、`declare_logging`/`declare_completions` 显式声明 `logging`/`completions`（默认 false，不派生）、`enable_tasks_extension` 为真→声明 `io.modelcontextprotocol/tasks`（空对象；`task_store` 存在仅决定三处理器是否接线，关时入口回 `MethodNotFound "tasks extension is disabled"`）、`enable_skills_extension` 为真且 `skills_` 非空且有 `resources` 能力→声明 `io.modelcontextprotocol/skills`（关时入口回 `MethodNotFound "skills extension is disabled"`）
 
 ## WireHandlers 方法清单
 
@@ -28,7 +28,7 @@ resource: src/server/McpServer.cpp
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）、`notifications/elicitation/complete`（唤醒 URL elicitation 等待）
 - **WireExtensionHandlers**：`server/extensions/list`
-- **WireTaskHandlers**：`tasks/get|update|cancel`（2025 与 2026 双时代均可用，modern 下头校验 + 按订阅路由）与 `tasks/result|list`（仅 2025，modern 回 `MethodNotFound`）——仅 `options_.task_store` 存在时注册；语义见 [/classes/mcp-server.md](../classes/mcp-server.md)（任务分流）与 [/concepts/tasks-extension.md](../concepts/tasks-extension.md)
+- **WireTaskHandlers**：`tasks/get|update|cancel`（2025 与 2026 双时代均可用，modern 下头校验 + 按订阅路由）与 `tasks/result|list`（仅 2025，modern 回 `MethodNotFound`）——仅 `options_.task_store` 存在时接线，三处理器入口另查 `enable_tasks_extension`（关回 `MethodNotFound "tasks extension is disabled"`）；语义见 [/classes/mcp-server.md](../classes/mcp-server.md)（任务分流）与 [/concepts/tasks-extension.md](../concepts/tasks-extension.md)
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
 `initialized_` 守卫经 `RequireInitialized(initialized, modern_era, promise)` 统一判定：**modern era（2026-07-28）直接放行**（Pin-to-2026/纯 modern 客户端无 initialize 握手也可调用），legacy era 未初始化才回 `InvalidRequest "Server not initialized"`；`initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 不经此守卫。
@@ -61,6 +61,7 @@ resource: src/server/McpServer.cpp
 - `resources/read` 两轮遍历（[McpServer.cpp:1228](../../src/server/McpServer.cpp)）：第一轮**静态资源优先**（跳过 `is_template`，`uri_pattern == uri` 精确匹配调 `handler(uri)`）；未命中再逐模板 `detail::UriTemplate::Parse` + `Match`，命中调 `template_handler(uri, variables)`（变量名→pct-decoded 值，[McpServer.hpp:171](../../include/mcp/server/McpServer.hpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`。命中分支同样回填 `resources/read` 的 cache hint
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）
+- **六开关门控位置**：etag 构造期同步（`SetEtagCacheEnabled(options_.enable_etag_cache)`，[McpServer.cpp:510](../../src/server/McpServer.cpp)）、触发器发射门（`EmitTriggerEvent` 开头，关直接 return，[McpServer.cpp:832](../../src/server/McpServer.cpp)）、渐进发现（`HandleListTools` 开头，关走缓存快照路径，[McpServer.cpp:1690](../../src/server/McpServer.cpp)）、文件输入（`HandleCallTool` 参数解析段，关跳过 file 引用消解，[McpServer.cpp:1824](../../src/server/McpServer.cpp)）、apps `ui://` 读门（`HandleReadResource` 内 `HasAppsUriScheme` 分支，关报 `HandlerError "apps extension is disabled"`，[McpServer.cpp:2432](../../src/server/McpServer.cpp)）、server-card 获取门（`GetServerCard` 开头，关报 `HandlerError "server card is disabled"`，[McpServer.cpp:2917](../../src/server/McpServer.cpp)）；注意 apps/server-card 关态为 `HandlerError` 而非 `MethodNotFound`
 
 ## requestState 签发（MRTR）
 
