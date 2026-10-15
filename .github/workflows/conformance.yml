@@ -24,6 +24,8 @@ jobs:
         spec: ['2025-11-25', '2026-07-28']
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
 
       - uses: actions/setup-node@v6
         with:
@@ -128,6 +130,8 @@ jobs:
         spec: ['2025-11-25', '2026-07-28']
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
 
       - uses: actions/setup-node@v6
         with:
