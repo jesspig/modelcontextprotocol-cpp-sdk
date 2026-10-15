@@ -3,7 +3,7 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/McpCore.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <future>

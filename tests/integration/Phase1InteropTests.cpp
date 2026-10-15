@@ -8,7 +8,7 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include <mcp/test/McpTimeout.hpp>
 #include "../unit/TestServerUtil.hpp"
 
@@ -61,7 +61,7 @@ void RegisterProgressTool(McpServer& server, std::shared_ptr<std::atomic<bool>> 
 
 } // namespace
 
-struct Phase1InMemoryFixture : mcp::test::TestCase {
+struct Phase1InMemoryFixture : ::testing::Test {
     std::unique_ptr<McpServer> server;
     std::unique_ptr<McpClient> client;
     std::thread server_thread;
@@ -134,7 +134,7 @@ TEST_F(Phase1InMemoryFixture, RootsListChangedRoundTrip) {
     });
 }
 
-struct Phase1HttpFixture : mcp::test::TestCase {
+struct Phase1HttpFixture : ::testing::Test {
     uint16_t port = 0;
     std::shared_ptr<StreamableHttpServerTransport> server_transport;
     std::unique_ptr<McpServer> server;

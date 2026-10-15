@@ -1,6 +1,7 @@
 #include <mcp/storage/FileTaskStore.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
+#include <mcp/test/McpTestInfo.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -8,7 +9,7 @@
 
 using namespace mcp;
 
-struct FileTaskStoreTest : mcp::test::TestCase {
+struct FileTaskStoreTest : ::testing::Test {
     std::filesystem::path store_path;
 
     void SetUp() override {

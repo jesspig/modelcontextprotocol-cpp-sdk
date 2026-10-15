@@ -2,7 +2,7 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include <mcp/test/McpTimeout.hpp>
 
 #include <thread>
@@ -10,7 +10,7 @@
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
-struct ClientServerFixture : mcp::test::TestCase {
+struct ClientServerFixture : ::testing::Test {
     std::unique_ptr<McpServer> server;
     std::unique_ptr<McpClient> client;
     std::thread server_thread;

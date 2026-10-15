@@ -5,7 +5,7 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/Methods.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include <mcp/test/McpTimeout.hpp>
 
 #include <chrono>

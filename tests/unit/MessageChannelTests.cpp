@@ -1,7 +1,7 @@
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/JsonRpc.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <future>

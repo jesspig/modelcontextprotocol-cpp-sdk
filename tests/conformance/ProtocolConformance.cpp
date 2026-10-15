@@ -1,8 +1,7 @@
 #include <mcp/McpCore.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 
-#include <mcp/test/McpTest.hpp>
-#include <mcp/test/McpTrace.hpp>
+#include <gtest/gtest.h>
 
 #include <iterator>
 
@@ -927,7 +926,14 @@ TEST(Conformance, InputRequestsRejectsEntryWithoutMethod) {
     jv["broken"] = JsonValue(JsonValue::object_tag);
     jv["broken"]["params"] = JsonValue(JsonValue::object_tag);
 
-    EXPECT_THROW_MSG(DeserializeInputRequests(jv), McpError, "method");
+    try {
+        DeserializeInputRequests(jv);
+        FAIL() << "expected McpError";
+    } catch (const McpError& e) {
+        EXPECT_NE(std::string(e.what()).find("method"), std::string::npos);
+    } catch (...) {
+        FAIL() << "expected McpError";
+    }
 }
 
 TEST(Conformance, InputRequestsAcceptsEntryWithoutParamsObject) {
@@ -951,13 +957,27 @@ TEST(Conformance, InputRequestsRejectsEntryWithNonObjectParams) {
     with_string["broken"] = JsonValue(JsonValue::object_tag);
     with_string["broken"]["method"] = "roots/list";
     with_string["broken"]["params"] = "x";
-    EXPECT_THROW_MSG(DeserializeInputRequests(with_string), McpError, "params");
+    try {
+        DeserializeInputRequests(with_string);
+        FAIL() << "expected McpError";
+    } catch (const McpError& e) {
+        EXPECT_NE(std::string(e.what()).find("params"), std::string::npos);
+    } catch (...) {
+        FAIL() << "expected McpError";
+    }
 
     JsonValue with_number(JsonValue::object_tag);
     with_number["broken"] = JsonValue(JsonValue::object_tag);
     with_number["broken"]["method"] = "roots/list";
     with_number["broken"]["params"] = 1;
-    EXPECT_THROW_MSG(DeserializeInputRequests(with_number), McpError, "params");
+    try {
+        DeserializeInputRequests(with_number);
+        FAIL() << "expected McpError";
+    } catch (const McpError& e) {
+        EXPECT_NE(std::string(e.what()).find("params"), std::string::npos);
+    } catch (...) {
+        FAIL() << "expected McpError";
+    }
 }
 
 TEST(Conformance, CallToolRequestWithInputResponses) {

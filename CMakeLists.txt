@@ -214,10 +214,16 @@ endforeach()
 
 if(MCP_BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests/framework)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest/CMakeLists.txt")
+        message(FATAL_ERROR
+            "[mcp] googletest submodule missing — run: git submodule update --init third_party/googletest")
+    endif()
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
     add_subdirectory(tests)
     foreach(_t
-        mcp-test mcp-test-main mcp-framework-self-tests
         mcp-core-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
         mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
