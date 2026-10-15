@@ -28,7 +28,7 @@ auto client = McpClient::Create(transport, opts);
 | `max_total_timeout` | `chrono::seconds` | Total budget for a single request (default `0` = unlimited; progress extensions cannot push a pending request past this deadline) |
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR elicitation config: `auto_fulfill=true`, `max_rounds=10`, `round_timeout=600s` |
 | `input_required_config.max_total_timeout` | `chrono::seconds` | Hard budget for the whole MRTR flow (default `0` = unlimited; `round_timeout` applies per round) |
-| `extensions` | `optional<JsonValue>` | Protocol extension declarations |
+| `extensions` | `optional<JsonValue>` | Protocol extension declarations (in the 2026 era, receiving task results requires `"io.modelcontextprotocol/tasks"`, otherwise `HandlerError` is thrown) |
 
 ## Making Requests
 
@@ -36,9 +36,20 @@ auto client = McpClient::Create(transport, opts);
 // List tools (with optional cursor for pagination)
 auto tools = client->ListTools();
 
+// Aggregate all pages in one call (until next_cursor is empty; throws McpError if pages do not converge within 64 pages)
+auto all_tools = client->ListToolsAll();
+auto all_resources = client->ListResourcesAll();
+auto all_templates = client->ListResourceTemplatesAll();
+auto all_prompts = client->ListPromptsAll();
+
 // Call a tool (with optional arguments, RequestOptions, and MRTR support)
 auto result = client->CallTool("echo",
     JsonValue(JsonValue::Object{{"text", "Hello"}}));
+
+// Taskified tool call: returns immediately with a task handle when the peer returns a task,
+// then follow up with GetTask / PollTaskToCompletion / CancelTask
+auto task = client->CallToolAsTask("long_running",
+    JsonValue(JsonValue::Object{{"input", "..."}}));
 
 // Read a resource (with CacheableRequestOptions)
 auto resource = client->ReadResource("file:///config.json");
@@ -68,12 +79,18 @@ client->SubscribeResource("file:///config.json");
 client->UnsubscribeResource("file:///config.json");
 
 // Task operations
-auto task = client->GetTask("task-123");
+auto status = client->GetTask("task-123");
 client->UpdateTask("task-123", result_json);
+client->UpdateTask("task-123", std::nullopt, input_responses_json);  // answer the task's input request (mutually exclusive with result)
 client->CancelTask("task-123", "no longer needed");
 
 // Poll task until completion (with configurable interval and timeout)
 auto completed = client->PollTaskToCompletion("task-123");
+
+// Skill operations (2026-era; listing supports cursors, reads accept cache options)
+auto skills = client->ListSkills();
+auto skill = client->GetSkill("skill://conformance-weather/SKILL.md");
+auto dir = client->ReadDirectory("skill://conformance-weather");
 ```
 
 ## Server-to-Client Handlers
@@ -94,6 +111,12 @@ client->SetNotificationHandler("custom/notification",
         // Handle server-sent notifications
     });
 
+// URL-mode elicitation: direct the user to an out-of-band URL to complete the action
+client->SetUrlElicitationHandler(
+    [](const ElicitRequestParams& params) {
+        // params.mode == "url", with params.url and params.elicitation_id
+    });
+
 client->SetLoggingHandler(
     [](const LoggingMessageNotificationParams& params) {
         // Handle logging messages from server
@@ -101,6 +124,8 @@ client->SetLoggingHandler(
 ```
 
 Deprecated (SEP-2577): `SetSamplingHandler` and `SetRootsHandler` are no longer available (`sampling/createMessage` and `roots/list` only exist in the 2025 era); use `SetElicitationHandler` instead.
+
+Enabling `applyDefaults` in the client capabilities (`ClientOptions::capabilities` elicitation declaration) makes missing fields auto-filled from the request schema's `default` values when the result is `accept` with object content (recursing into nested objects and `anyOf`/`oneOf` variants).
 
 ## Subscriptions
 
@@ -120,3 +145,5 @@ The client auto-negotiates the protocol version:
 1. **Auto** (default): Probe `server/discover`, fallback to `initialize` handshake
 2. **Pin**: Force a specific version (via `pin_protocol_version`, defaults to latest `kLatestProtocolVersion`)
 3. **Legacy**: Only `initialize` handshake
+
+`Auto` falls back by transport class: stdio-like transports (`InMemory`/`Stdio`) fall back to `initialize` on probe failure while network transports throw; on `-32022` with `supported` containing the latest version a single corrective retry is issued, a second rejection is a hard error.

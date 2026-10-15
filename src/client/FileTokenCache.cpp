@@ -1,5 +1,3 @@
-// FileTokenCache.cpp
-// File-based OAuth token cache with DPAPI encryption (Windows) or plaintext storage (POSIX)
 #include <mcp/JsonValue.hpp>
 #include <mcp/storage/FileTokenCache.hpp>
 #include <mcp/Log.hpp>
@@ -99,6 +97,8 @@ void FileTokenCache::Load() {
         if (auto* v = json.Find("refresh_token")) tc.refresh_token = v->GetString();
         if (auto* v = json.Find("token_type")) tc.token_type = v->GetString();
         if (auto* v = json.Find("expires_at")) tc.expires_at = v->GetInt();
+        if (auto* v = json.Find("resource"); v && v->IsString() && !v->GetString().empty())
+            tc.resource = v->GetString();
         if (auto* v = json.Find("scopes"); v && v->IsArray()) {
             for (const auto& s : v->GetArray())
                 tc.scopes.push_back(s.GetString());
@@ -119,6 +119,8 @@ void FileTokenCache::Load() {
         if (auto* v = json.Find("refresh_token")) tc.refresh_token = v->GetString();
         if (auto* v = json.Find("token_type")) tc.token_type = v->GetString();
         if (auto* v = json.Find("expires_at")) tc.expires_at = v->GetInt();
+        if (auto* v = json.Find("resource"); v && v->IsString() && !v->GetString().empty())
+            tc.resource = v->GetString();
         if (auto* v = json.Find("scopes"); v && v->IsArray()) {
             for (const auto& s : v->GetArray())
                 tc.scopes.push_back(s.GetString());
@@ -147,6 +149,8 @@ void FileTokenCache::Save() {
     obj["refresh_token"] = JsonValue(tokens_->refresh_token);
     obj["token_type"] = JsonValue(tokens_->token_type);
     obj["expires_at"] = JsonValue(static_cast<int64_t>(tokens_->expires_at));
+    if (tokens_->resource && !tokens_->resource->empty())
+        obj["resource"] = JsonValue(*tokens_->resource);
     {
         JsonValue::Array scopes_arr;
         for (const auto& s : tokens_->scopes)

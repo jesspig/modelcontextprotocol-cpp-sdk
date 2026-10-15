@@ -1,6 +1,4 @@
 #pragma once
-// McpApi.hpp — 自研测试框架 API（无断言宏，供 gtest 见证用例等无冲突引入）
-
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -19,7 +17,6 @@
 
 namespace mcp::test {
 
-// ── 致命失败与跳过 ──
 namespace detail {
 
 inline bool& FatalFailureFlag() {
@@ -90,7 +87,6 @@ private:
     std::vector<TestEntry> entries_;
 };
 
-// ── 套件生命周期钩子（TEST_F 引用，TEST 传空钩子）──
 namespace detail {
 
 template <typename T, typename = void>
@@ -126,7 +122,6 @@ void AssertionFailure(const char* file, int line,
                       std::string_view val_a, std::string_view val_b);
 void AssertionFailure(const char* file, int line, std::string_view message);
 
-// ── 全局环境与监听器 ──
 class Environment {
 public:
     virtual ~Environment() = default;
@@ -147,7 +142,6 @@ struct TestResult {
 using TestEndListener = std::function<void(const TestResult&)>;
 void AddTestEndListener(TestEndListener listener);
 
-// ── ToString ──
 template <typename T>
 std::string ToString(const T& v);
 inline std::string ToString(const std::string& v);
@@ -181,7 +175,6 @@ struct HasAdlPrintTo<T, std::void_t<decltype(AdlPrintTo(std::declval<const T&>()
                                                        static_cast<std::ostream*>(nullptr), 0))>>
     : std::true_type {};
 
-// fallback 声明在 trait 之后：检测点仅 int 重载可见，缺失 PrintTo 判定为假
 template <typename T>
 void AdlPrintTo(const T&, std::ostream*, long) {}
 
@@ -200,7 +193,7 @@ struct IsExpandableContainer
 }  // namespace detail
 
 template <typename T>
-std::string ToStringImplContainer(const T& v, std::true_type) {  // 容器展开
+std::string ToStringImplContainer(const T& v, std::true_type) {
     std::string result = "[";
     bool first = true;
     for (const auto& item : v) {
@@ -213,12 +206,12 @@ std::string ToStringImplContainer(const T& v, std::true_type) {  // 容器展开
 }
 
 template <typename T>
-std::string ToStringImplContainer(const T&, std::false_type) {  // 兜底：类型名
+std::string ToStringImplContainer(const T&, std::false_type) {
     return "<" + std::string(typeid(T).name()) + ">";
 }
 
 template <typename T>
-std::string ToStringImplStream(const T& v, std::true_type) {  // ostream 可打印
+std::string ToStringImplStream(const T& v, std::true_type) {
     std::ostringstream os;
     os << v;
     return os.str();
@@ -230,7 +223,7 @@ std::string ToStringImplStream(const T& v, std::false_type) {
 }
 
 template <typename T>
-std::string ToStringImplPrintTo(const T& v, std::true_type) {  // 用户 ADL PrintTo
+std::string ToStringImplPrintTo(const T& v, std::true_type) {
     std::ostringstream os;
     detail::AdlPrintTo(v, &os, 0);
     return os.str();
@@ -242,7 +235,7 @@ std::string ToStringImplPrintTo(const T& v, std::false_type) {
 }
 
 template <typename T>
-std::string ToStringImpl(const T& v, std::true_type) {  // 枚举
+std::string ToStringImpl(const T& v, std::true_type) {
     return std::to_string(static_cast<long long>(v));
 }
 

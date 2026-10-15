@@ -1,15 +1,4 @@
 #!/bin/bash
-# 本地复现 .github/workflows/conformance.yml 的官方 conformance 驱动行为。
-# 用法: scripts/run-conformance.sh [server|client] [透传给 conformance CLI 的额外参数...]
-# 环境变量: PORT (默认 3010, 仅 server 模式), BUILD_PRESET (默认 debug),
-#           CONFORMANCE_SPEC_VERSION (与 conformance.yml env 同名, 有默认兜底)
-#
-# 前置: 先完成配置与构建，例如
-#   cmake --preset debug -DMCP_BUILD_CONFORMANCE=ON -DMCP_BUILD_EXAMPLES=ON
-#   cmake --build --preset debug --target conformance-server conformance-client
-#
-# 退出码语义由 referee 的 expected-failures 机制保证：
-# 基线外失败 -> 非 0（真回归）；过期基线条目 -> 非 0（须删条目）。
 
 set -e
 
@@ -20,21 +9,22 @@ PORT="${PORT:-3010}"
 BUILD_PRESET="${BUILD_PRESET:-debug}"
 CONFORMANCE_SPEC_VERSION="${CONFORMANCE_SPEC_VERSION:-2025-11-25}"
 BASELINE="tests/conformance/baseline.yaml"
-CONFORMANCE_PKG="@modelcontextprotocol/conformance@0.2.0-alpha.11"
+case "${CONFORMANCE_SPEC_VERSION}" in
+2026-07-28) BASELINE="tests/conformance/baseline-2026-07-28.yaml" ;;
+2025-11-25) BASELINE="tests/conformance/baseline-2025-11-25.yaml" ;;
+*) BASELINE="tests/conformance/baseline.yaml" ;;
+esac
+CONFORMANCE_PKG="@modelcontextprotocol/conformance@0.2.0-alpha.12"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
 BIN_DIR="build/${BUILD_PRESET}/examples/conformance"
-# CMake 为每个 conformance 目标单独建同名目录，可执行文件位于
-# build/<preset>/examples/conformance/<target>/<target>[.exe]，与
-# .github/workflows/conformance.yml 中使用的路径一致。
-# 旧布局将可执行文件平铺在 examples/conformance/ 下，保留回退以兼容。
-# Windows 构建产物带 .exe 后缀，Linux/macOS 无后缀。
 resolve_binary() {
     local name="$1"
-    local target_dir="${BIN_DIR}/${name}"
+    local subdir="${name#conformance-}"
+    local target_dir="${BIN_DIR}/${subdir}"
     if [ -f "${target_dir}/${name}.exe" ]; then
         echo "${target_dir}/${name}.exe"
         return 0
@@ -43,7 +33,6 @@ resolve_binary() {
         echo "${target_dir}/${name}"
         return 0
     fi
-    # 回退路径的提示必须走 stderr：stdout 被调用方用于捕获路径。
     if [ -f "${BIN_DIR}/${name}.exe" ]; then
         echo "Warning: ${target_dir} not found; falling back to legacy layout ${BIN_DIR}" >&2
         echo "${BIN_DIR}/${name}.exe"
@@ -65,21 +54,29 @@ case "${MODE}" in
 server)
     SERVER_BIN="$(resolve_binary conformance-server)"
     if [ ! -f "${SERVER_BIN}" ]; then
-        echo "Error: ${SERVER_BIN} not found. Build first (see header comments)."
+        echo "Error: ${SERVER_BIN} not found. Build first (see AGENTS.md)."
         exit 1
     fi
     SERVER_URL="http://localhost:${PORT}/mcp"
 
-    # 端口被占即拒跑：就绪探测无法区分本进程与残留监听者，残留进程会让
-    # conformance 对旧代码跑出假结论（对齐 TS run-server-conformance.sh）。
     if (: > "/dev/tcp/localhost/${PORT}") 2>/dev/null; then
         echo "Error: port ${PORT} is already in use."
         echo "Stop the stale process first or set PORT to a free port."
         exit 1
     fi
 
+    if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
+        SERVER_ARGS="--stateless"
+        SPEC_ARGS="--requirements 2026-07-28"
+        PROBE_BODY='{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{}}'
+    else
+        SERVER_ARGS=""
+        SPEC_ARGS="--spec-version ${CONFORMANCE_SPEC_VERSION}"
+        PROBE_BODY='{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"'${CONFORMANCE_SPEC_VERSION}'","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}'
+    fi
+
     echo "Starting conformance test server on port ${PORT}..."
-    "${SERVER_BIN}" --port "${PORT}" &
+    "${SERVER_BIN}" --port "${PORT}" ${SERVER_ARGS} &
     SERVER_PID=$!
 
     cleanup() {
@@ -92,12 +89,11 @@ server)
     echo "Waiting for server to be ready..."
     MAX_RETRIES=30
     RETRY_COUNT=0
-    # 选 initialize：当前单 leg server 为 legacy 有状态模式，必有 JSON 应答；POST 探测不会像 GET 一样建立 SSE 长流导致 --max-time 误超时。
     probe_ready() {
         curl -s --max-time 2 -X POST "${SERVER_URL}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
-            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"'${CONFORMANCE_SPEC_VERSION}'","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
+            -d "${PROBE_BODY}" \
             > /dev/null 2>&1
     }
     while ! probe_ready; do
@@ -114,23 +110,35 @@ server)
     done
 
     echo "Server is ready. Running conformance tests..."
+    # shellcheck disable=SC2086
     run_referee server --url "${SERVER_URL}" \
-        --spec-version "${CONFORMANCE_SPEC_VERSION}" \
+        ${SPEC_ARGS} \
         --expected-failures "${BASELINE}" \
         "$@"
     ;;
 client)
     CLIENT_BIN="$(resolve_binary conformance-client)"
     if [ ! -f "${CLIENT_BIN}" ]; then
-        echo "Error: ${CLIENT_BIN} not found. Build first (see header comments)."
+        echo "Error: ${CLIENT_BIN} not found. Build first (see AGENTS.md)."
         exit 1
     fi
-    # client 模式由 referee 自带 per-scenario test server 驱动 C++ client。
-    run_referee client --command "${CLIENT_BIN}" \
-        --suite core \
-        --spec-version "${CONFORMANCE_SPEC_VERSION}" \
-        --expected-failures "${BASELINE}" \
-        "$@"
+    case "${CLIENT_BIN}" in
+    /*|?:*) ;;
+    *) CLIENT_BIN="${REPO_ROOT}/${CLIENT_BIN}" ;;
+    esac
+    if [ "${CONFORMANCE_SPEC_VERSION}" = "2026-07-28" ]; then
+        # shellcheck disable=SC2086
+        run_referee client --command "${CLIENT_BIN}" \
+            --requirements 2026-07-28 \
+            --expected-failures "${BASELINE}" \
+            "$@"
+    else
+        run_referee client --command "${CLIENT_BIN}" \
+            --suite core \
+            --spec-version "${CONFORMANCE_SPEC_VERSION}" \
+            --expected-failures "${BASELINE}" \
+            "$@"
+    fi
     ;;
 *)
     echo "Usage: $0 [server|client] [extra conformance args...]"

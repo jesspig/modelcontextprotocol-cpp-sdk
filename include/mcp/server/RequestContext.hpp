@@ -1,9 +1,8 @@
-// RequestContext.hpp - Request context with params, logging, and per-request log level
-
 #pragma once
 
 #include <mcp/Export.hpp>
 
+#include <mcp/Content.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/McpTypes.hpp>
@@ -19,7 +18,6 @@ namespace mcp {
 
 class McpServer;
 
-// ── RequestContext (对应 C# RequestContext<TParams>) ──
 template <typename TParams>
 class MCP_API RequestContext {
 public:
@@ -39,8 +37,15 @@ public:
     {
         if (jsonrpc_request_.meta) {
             auto* lv = jsonrpc_request_.meta->Find("io.modelcontextprotocol/logLevel");
-            if (lv && lv->IsInt()) {
-                log_level_ = static_cast<LoggingLevel>(lv->GetInt());
+            if (lv) {
+                if (lv->IsInt()) {
+                    log_level_ = static_cast<LoggingLevel>(lv->GetInt());
+                } else if (lv->IsString()) {
+                    try {
+                        log_level_ = DeserializeLoggingLevel(*lv);
+                    } catch (...) {
+                    }
+                }
             }
         }
     }

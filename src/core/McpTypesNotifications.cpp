@@ -1,12 +1,8 @@
-// McpTypesNotifications.cpp — Notification params serialization
-
 #include <mcp/McpTypes.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
 namespace mcp {
-
-// ── SubscriptionFilter ──
 
 JsonValue SerializeSubscriptionFilter(const SubscriptionFilter& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -35,8 +31,6 @@ SubscriptionFilter DeserializeSubscriptionFilter(const JsonValue& j) {
     return v;
 }
 
-// ── SubscriptionsListenRequestParams ──
-
 JsonValue SerializeSubscriptionsListenRequestParams(const SubscriptionsListenRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kNotifications] = SerializeSubscriptionFilter(v.notifications);
@@ -52,8 +46,6 @@ SubscriptionsListenRequestParams DeserializeSubscriptionsListenRequestParams(con
     return v;
 }
 
-// ── SubscriptionsAcknowledgedNotificationParams ──
-
 JsonValue SerializeSubscriptionsAcknowledgedNotificationParams(const SubscriptionsAcknowledgedNotificationParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kNotifications] = SerializeSubscriptionFilter(v.notifications);
@@ -65,8 +57,6 @@ SubscriptionsAcknowledgedNotificationParams DeserializeSubscriptionsAcknowledged
     v.notifications = DeserializeSubscriptionFilter(j[detail::kNotifications]);
     return v;
 }
-
-// ── ProgressNotificationParams ──
 
 JsonValue SerializeProgressNotificationParams(const ProgressNotificationParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -91,8 +81,6 @@ ProgressNotificationParams DeserializeProgressNotificationParams(const JsonValue
     return v;
 }
 
-// ── LoggingMessageNotificationParams ──
-
 JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotificationParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kLevel] = SerializeLoggingLevel(v.level);
@@ -108,8 +96,6 @@ LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(con
     v.data = j[detail::kData];
     return v;
 }
-
-// ── TaskStatusNotificationParams ──
 
 JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v) {
     JsonValue obj(JsonValue::object_tag);

@@ -1,5 +1,3 @@
-// SseClientTransport.cpp — SSE client transport implementation
-
 #include <mcp/detail/SseEventParser.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
@@ -14,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -23,10 +22,19 @@
 
 namespace mcp {
 
-namespace {
+namespace sse_client_impl {
 
 constexpr std::chrono::milliseconds kBackoffBase(1000);
 constexpr std::chrono::milliseconds kBackoffCap(30000);
+constexpr std::chrono::milliseconds kReconnectWaitFloor(450);
+constexpr std::chrono::milliseconds kReconnectWaitCeiling(1000);
+
+std::chrono::milliseconds ReconnectDelayForAttempt(int attempt, std::optional<uint64_t> retry_ms);
+
+} // namespace sse_client_impl
+
+namespace {
+
 constexpr std::chrono::milliseconds kSseClientIdleTimeout(5 * 60 * 1000);
 constexpr int kMaxReconnectAttempts = 2;
 
@@ -56,8 +64,8 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
 struct SseEvent {
     std::string event_type;
     std::string data;
-    std::string id;   // from the "id:" line
-    std::optional<uint64_t> retry_ms;   // from the "retry:" line
+    std::string id;
+    std::optional<uint64_t> retry_ms;
 };
 
 SseEvent ParseSseEvent(const std::string& block) {
@@ -66,7 +74,6 @@ SseEvent ParseSseEvent(const std::string& block) {
 
     detail::ForEachSseLine(block, [&evt](std::string_view line) {
         detail::SseFieldLine field;
-        // 冒号后无负载的字段行（如裸 "data:"）在本侧历来被忽略。
         if (!detail::ParseSseFieldLine(line, field) || !field.has_payload) return;
 
         if (field.name == "event") {
@@ -90,12 +97,11 @@ SseEvent ParseSseEvent(const std::string& block) {
 
 class SseClientSessionTransport final : public TransportBase {
 public:
-    SseClientSessionTransport(std::string server_url, std::string name)
+    SseClientSessionTransport(SseClientTransportOptions options)
         : TransportBase()
         , http_client_(std::make_unique<detail::net::HttpClient>())
         , post_client_(std::make_unique<detail::net::HttpClient>())
-        , server_url_(std::move(server_url))
-        , name_(std::move(name))
+        , options_(std::move(options))
     {
     }
 
@@ -119,15 +125,12 @@ public:
                 send_cv_.notify_one();
             }
 
-            // Closing both clients unblocks the SSE read and POST sends
             if (post_client_)
                 post_client_->Close();
             if (http_client_)
                 http_client_->Close();
         }
 
-        // Join unconditionally: the SSE read thread may have exited on its own
-        // (reconnect exhaustion / oversize), so Close() must not be short-circuited
         detail::JoinThreadSafely(send_thread_);
         detail::JoinThreadSafely(sse_thread_);
 
@@ -154,9 +157,11 @@ private:
         while (running_) {
             detail::net::HttpRequestSpec req;
             req.method = "GET";
-            req.url = server_url_;
+            req.url = options_.server_url;
             req.timeout = kSseClientIdleTimeout;
             req.headers["Accept"] = "text/event-stream";
+            req.redirect_policy = options_.redirect_policy;
+            req.max_redirects = options_.max_redirects;
             if (!last_event_id_.empty()) {
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
@@ -165,11 +170,10 @@ private:
                 if (!chunk.empty()) {
                     sse_buffer_.append(chunk.data(), chunk.size());
 
-                    if (sse_buffer_.size() > detail::kMaxMessageSize) {
+                    if (sse_buffer_.size() > SseEventLimit()) {
                         sse_buffer_.clear();
-                        NotifyError("message size exceeds maximum allowed size");
+                        NotifyError("SSE event size exceeds maximum allowed size");
                         running_.store(false);
-                        // Closing the client aborts the blocking recv in Request()
                         http_client_->Close();
                         return;
                     }
@@ -189,19 +193,14 @@ private:
                 if (!running_) break;
             }
 
-            // The stream ended. Exit on explicit Close, otherwise back off
-            // and reconnect (the server replays missed events via
-            // Last-Event-ID).
+            FlushSseBuffer();
+
             if (!running_) break;
             if (reconnect_attempts >= kMaxReconnectAttempts) break;
             ++reconnect_attempts;
             if (!WaitForReconnect(reconnect_attempts)) break;
         }
 
-        // The SSE read thread exited on its own (reconnect exhaustion/oversize);
-        // leave running_ untouched so Close() performs the full teardown.
-        // Close the channel first, then wake SendLoop, whose wait predicate
-        // also checks the channel state.
         if (channel_) channel_->Close();
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
@@ -211,11 +210,7 @@ private:
     }
 
     bool WaitForReconnect(int attempt) {
-        auto delay = kBackoffBase;
-        for (int i = 1; i < attempt; ++i)
-            delay = (std::min)(delay * 3 / 2, kBackoffCap);
-        if (retry_ms_.has_value())
-            delay = std::chrono::milliseconds(*retry_ms_);
+        auto delay = sse_client_impl::ReconnectDelayForAttempt(attempt, retry_ms_);
         auto deadline = std::chrono::steady_clock::now() + delay;
         while (std::chrono::steady_clock::now() < deadline) {
             if (!running_.load()) return false;
@@ -229,8 +224,6 @@ private:
         if (evt.retry_ms.has_value()) {
             retry_ms_ = evt.retry_ms;
         }
-        // Comment-only frames (e.g. keepalive ": ping") carry no event
-        // fields; skip them so Last-Event-ID is not reset.
         if (evt.event_type == "message" && evt.data.empty() && evt.id.empty() &&
             !evt.retry_ms.has_value()) {
             return;
@@ -242,13 +235,13 @@ private:
         if (evt.event_type == "endpoint") {
             try {
                 std::lock_guard<std::mutex> lock(send_mutex_);
-                endpoint_url_ = ResolveEndpoint(server_url_, evt.data);
+                endpoint_url_ = ResolveEndpoint(options_.server_url, evt.data);
             } catch (const std::exception& e) {
                 NotifyError(std::string("invalid endpoint URL: ") + e.what());
             }
         } else if (evt.event_type == "message" && !evt.data.empty()) {
-            if (evt.data.size() > detail::kMaxMessageSize) {
-                NotifyError("message size exceeds maximum allowed size");
+            if (evt.data.size() > SseEventLimit()) {
+                NotifyError("SSE event size exceeds maximum allowed size");
                 return;
             }
             try {
@@ -258,6 +251,28 @@ private:
                 NotifyError(std::string("SSE parse error: ") + e.what());
             }
         }
+    }
+
+    void FlushSseBuffer() {
+        if (sse_buffer_.empty())
+            return;
+        std::string pending = std::move(sse_buffer_);
+        sse_buffer_.clear();
+        auto last_nl = pending.find_last_of('\n');
+        if (last_nl == std::string::npos)
+            return;
+        std::string_view complete(pending.data(), last_nl);
+        bool resumable = false;
+        detail::ForEachSseLine(complete, [&resumable](std::string_view line) {
+            detail::SseFieldLine field;
+            if (!detail::ParseSseFieldLine(line, field) || !field.has_payload)
+                return;
+            if (field.name == "id" || field.name == "retry")
+                resumable = true;
+        });
+        if (!resumable)
+            return;
+        DispatchSseEvent(std::string(complete));
     }
 
     void SendLoop() {
@@ -291,16 +306,22 @@ private:
         req.url = endpoint;
         req.headers["Content-Type"] = "application/json";
         req.body = body;
+        req.redirect_policy = options_.redirect_policy;
+        req.max_redirects = options_.max_redirects;
         try {
             post_client_->Request(req);
         } catch (...) {
         }
     }
 
+    std::size_t SseEventLimit() const {
+        return options_.max_sse_event_bytes.value_or(
+            (std::numeric_limits<std::size_t>::max)());
+    }
+
     std::unique_ptr<detail::net::HttpClient> http_client_;
     std::unique_ptr<detail::net::HttpClient> post_client_;
-    std::string server_url_;
-    std::string name_;
+    SseClientTransportOptions options_;
     std::string endpoint_url_;
     std::string sse_buffer_;
     std::string last_event_id_;
@@ -317,18 +338,49 @@ private:
 
 } // namespace
 
+namespace sse_client_impl {
+
+std::chrono::milliseconds ReconnectDelayForAttempt(int attempt, std::optional<uint64_t> retry_ms) {
+    std::chrono::milliseconds wait = kBackoffBase;
+    for (int i = 1; i < attempt; ++i)
+        wait = (std::min)(wait * 3 / 2, kBackoffCap);
+    if (retry_ms.has_value()) {
+        uint64_t raw = *retry_ms;
+        if (raw <= static_cast<uint64_t>(kReconnectWaitFloor.count()))
+            wait = kReconnectWaitFloor;
+        else if (raw >= static_cast<uint64_t>(kReconnectWaitCeiling.count()))
+            wait = kReconnectWaitCeiling;
+        else
+            wait = std::chrono::milliseconds(raw);
+    }
+    if (wait < kReconnectWaitFloor)
+        wait = kReconnectWaitFloor;
+    if (wait > kReconnectWaitCeiling)
+        wait = kReconnectWaitCeiling;
+    return wait;
+}
+
+} // namespace sse_client_impl
+
 SseClientTransport::SseClientTransport(std::string_view server_url, std::string_view name)
-    : server_url_(server_url)
-    , name_(name.empty() ? std::string("sse") : std::string(name))
+    : options_()
 {
+    options_.server_url = std::string(server_url);
+    options_.name = name.empty() ? std::string("sse") : std::string(name);
+}
+
+SseClientTransport::SseClientTransport(SseClientTransportOptions options)
+    : options_(std::move(options))
+{
+    if (options_.name.empty()) options_.name = "sse";
 }
 
 SseClientTransport::~SseClientTransport() = default;
 
-std::string_view SseClientTransport::Name() const { return name_; }
+std::string_view SseClientTransport::Name() const { return options_.name; }
 
 std::shared_ptr<ITransport> SseClientTransport::Connect() {
-    auto session = std::make_shared<SseClientSessionTransport>(server_url_, name_);
+    auto session = std::make_shared<SseClientSessionTransport>(options_);
     session->Start();
     return session;
 }

@@ -23,6 +23,7 @@
 - [一致性测试](#一致性测试)
 - [示例](#示例)
 - [相关项目](#相关项目)
+- [不支持声明](#不支持声明)
 - [许可证](#许可证)
 
 </details>
@@ -93,7 +94,7 @@ ctest --preset debug --output-on-failure
 - **mcp-transport** — 传输层实现：StdioServerTransport、StdioClientTransport、SseClientTransport、InMemoryTransport、WebSocketClientTransport、StreamableHttpServerTransport、StreamableHttpClientTransport。平台相关 I/O 在 `detail/` 目录下（posix、win32）。
 - **mcp-protocol** — `McpSessionHandler`（JSON-RPC 引擎）、双时代 `WireCodec`（2025-11-25 / 2026-07-28）、请求/响应关联与超时、`MessageFilter` 管道。
 - **mcp-server** — `McpServer`，含工具/资源/提示词注册、`IMcpTaskStore`（含 `FileTaskStore`）、MRTR（`InputRequiredResult`）、服务器到客户端的 elicit、订阅管理。
-- **mcp-client** — `McpClient`，含服务器发现（`server/discover` → initialize 回退）、版本协商、OAuth（PKCE/DCR）、MRTR（InputRequired 循环）、工具缓存、`FileTokenCache`。
+- **mcp-client** — `McpClient`，含服务器发现（`server/discover` → initialize 回退）、版本协商、OAuth（PKCE/CIMD，DCR 回退）、MRTR（InputRequired 循环）、工具缓存、`FileTokenCache`。
 - **mcp-http** — 用于 Streamable HTTP 模式的 HTTP 服务器：`HttpServer`、`EventStore`（SSE 事件持久化）、`StreamableHttpServerTransport`、`StreamableHttpClientTransport`。
 
 ### 所有传输层
@@ -175,9 +176,10 @@ auto result = client->CallTool("echo",
 客户端支持 MCP OAuth 授权流程：
 
 - **授权码 + PKCE** 流程，使用 S256 代码挑战
-- 动态客户端注册（DCR）
+- CIMD 客户端标识与 DCR 回退（`client_id` 为 `http(s)://` URL 时拉取客户端元数据文档；仅未配置 `client_id` 时动态注册）
 - Token 刷新和撤销
 - 可插拔 Token 缓存（`ITokenCache`），内置持久化 `FileTokenCache`
+- DPoP（RFC 9449）：Streamable HTTP 资源服务器侧已实现证明校验——默认关，按部署用实验开关 `enable_dpop`（`StreamableHttpServerOptions::bearer_auth->enable_dpop`）开启，且需 OpenSSL；客户端侧可切换绑定授权方案并签发证明（`OAuthClientOptions::enable_dpop`），但当 `apply_per_request_headers`/`observe_response_challenge` 经 `ApplyDPoPProofHeader`/`ObserveDPoPNonce` 绑定后，传输层逐请求附加 `DPoP` 证明
 
 ```cpp
 OAuthClientOptions oauth_opts;
@@ -236,14 +238,57 @@ build/debug/examples/EchoServer/EchoServer
 
 本 SDK 参考了官方 MCP 协议规范和参考实现：
 
-| 语言       | 仓库                                                            |
-|-----------|----------------------------------------------------------------|
-| Python    | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) |
-| TypeScript| [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) |
-| Go        | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) |
-| C#        | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) |
-| Java      | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) |
-| Rust      | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) |
+| 语言       | 仓库                                                            | 分级    |
+|-----------|----------------------------------------------------------------|--------|
+| Python    | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) | Tier 1 |
+| TypeScript| [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) | Tier 1 |
+| Go        | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) | Tier 1 |
+| C#        | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) | Tier 1 |
+| Rust      | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) | Tier 1 |
+| Java      | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) | Tier 2 |
+| Ruby      | [modelcontextprotocol/ruby-sdk](https://github.com/modelcontextprotocol/ruby-sdk) | Tier 1 |
+
+> 分级依据[官方 SDK 列表（2026-07-28 修订版）](https://modelcontextprotocol.io/docs/2026-07-28/sdk)：Java 仍为 Tier 2，Ruby 为新晋 Tier 1 成员，故保留原六 SDK 口径并增补 Ruby 行。分级规则见 [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers)——Tasks 等协议扩展任何分级均不强制要求。
+
+### Ruby SDK 对照注记
+
+官方 Ruby SDK（`mcp` gem，2026-10-11 時 `main` 分支现状；最新发布 `1.7.0`，日期 2026-10-05，见 [CHANGELOG.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/CHANGELOG.md) 与 [version.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/version.rb)）相对本 SDK 的分维度实现要点：
+
+| 维度 | Ruby（`mcp` gem） | 本 SDK |
+|------|------------------|--------|
+| 规范版本 | 2025-06-18、2025-11-25、2026-07-28（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，Current Status） | 2024-11-05…2026-07-28，双时代编解码（见上文协议版本） |
+| `server/discover` | 现代时代永不经 `initialize` 协商（CHANGELOG §1.2.0）；`server/discover` 定稿并带现代客户端支持；stdio 按传输 era lock，Streamable HTTP 走无会话现代路径（[methods.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/methods.rb)） | Auto 模式按传输分类回退（[version-negotiation](wiki/concepts/version-negotiation.md)） |
+| 多轮请求 | SEP-2322 `input_required` 结果（`inputRequests`/`inputResponses` + `requestState`），legacy 线上亦可履行（CHANGELOG §0.24.0/§1.2.0）；`resultType` 仅 `complete`/`input_required`（[result_type.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/result_type.rb)） | `InputRequiredResult` + elicitation 循环（[mrtr](wiki/concepts/mrtr.md)）；另有任务句柄专用的 `task` 结果类型 |
+| 请求头 | 发送 SEP-2243 `Mcp-Method`/`Mcp-Name`，`x-mcp-header` 参数镜像为 `Mcp-Param-*`（CHANGELOG §0.22.0/§1.2.0；[mcp_param_headers.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/client/mcp_param_headers.rb)）；现代路径强制要求 `Mcp-Method` | `Mcp-Name` 校验含 tasks `taskId` 比对（[mcp-param-headers](wiki/concepts/mcp-param-headers.md)、[tasks-extension](wiki/concepts/tasks-extension.md)） |
+| 缓存 | 服务端标注 SEP-2549 `ttlMs`/`cacheScope`（CHANGELOG §0.24.0/§1.2.0）；无客户端响应缓存——`lib/mcp/client/` 下仅 elicitation、http、mcp_param_headers、modern_envelope、oauth（+oauth/ 子目录）、paginated_result、stdio、tool，且 `client/http.rb` 全文无 `ttlMs`/`cacheScope`/缓存命中逻辑（2026-10-13 对 `main` 分支核实） | 客户端响应缓存，同时消费 2026 时代顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，TTL + public/private 双分区（[response-cache](wiki/concepts/response-cache.md)） |
+| 认证 | 完整 OAuth 2.1 客户端（DCR、PKCE、CIMD、`client_credentials`、`private_key_jwt`、`jwt-bearer`、RFC 9207 `iss`、PRM 优先发现；CHANGELOG §0.17.0–§1.6.0）+ 服务端资源服务器保护（[README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)） | PKCE/CIMD（DCR 回退）+ `FileTokenCache`，服务端 Bearer 鉴权，可选的服务端 DPoP 证明校验（[dpop](wiki/concepts/dpop.md)；见上文 OAuth 支持） |
+| 任务（SEP-2663） | 未实现——“remains planned”（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，[#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)） | `tasks/get\|update\|cancel` 双时代 + `FileTaskStore`（[tasks-extension](wiki/concepts/tasks-extension.md)） |
+| 技能（SEP-2640） | 未实现【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`，仅 2026 时代（[skills-extension](wiki/concepts/skills-extension.md)） |
+
+## 不支持声明
+
+以下条目在本轮明确声明为不支持；当对端发送它们时，本 SDK 优雅降级（忽略未知字段或回退到基线路径），而不会中断会话。
+
+- **应用界面渲染**——服务器推送的 UI 组件不渲染，仅作不透明数据透传。
+- **EMA**——未实现 EMA 协商，对端回退到基线能力协商。
+- **DPoP 客户端逐请求证明**——服务端证明校验已实现（默认关，实验开关 `enable_dpop`，需 OpenSSL，见上文 OAuth 支持）；未配置上述两回调时不附证明，已配置时可驱动 DPoP 会话并单次 `use_dpop_nonce` 重试；开关关闭时纯 Bearer 路径行为不变（[dpop](wiki/concepts/dpop.md)）。
+- **jwt-bearer**——已支持 `private_key_jwt` 客户端认证（配置 `private_key_pem` 且授权服务器在 `token_endpoint_auth_methods_supported` 中声明 `private_key_jwt` 时，向令牌请求发送 ES256 客户端断言；需 OpenSSL），但不支持授权方 `jwt-bearer` 授权，公开客户端 PKCE/CIMD 流程仍为受支持路径。
+- **ETag**——不存储、不比对 `ETag` / `If-None-Match` 校验器，缓存响应仅按 TTL 治理。
+- **渐进式发现**——未实现增量能力发现，恒用完整 `server/discover`（现代）/ `initialize`（遗留）握手。
+- **文件上传**——未实现可续传文件上传原语，文件内容仅经现有工具/资源载荷流转。
+- **服务器卡片**——不呈现服务器卡片，握手中的 `serverInfo` 仍为身份来源。
+
+### 本轮破坏性变更
+
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。
+
+- **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
+- **`_meta` 省略**——空的每请求 `_meta` 改为线上了省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。
+- **重定向收紧**——HTTP 重定向处理比遗留行为更严格。迁移：默认策略 `HttpRedirectPolicy::SameOriginOnly`（同 scheme/host/port，允许 `http`→`https` 升级；跨源跳转被拒绝且剥离 `Authorization` 头，`301`/`302` POST 转 GET，`303` 一律转 GET）；经 `HttpRequestSpec::redirect_policy`（`FollowAll`/`NoFollow`）与 `max_redirects`（默认 5）逐调用覆盖，或经 `SseClientTransportOptions` / `HttpClientTransportOptions` 逐传输覆盖。
+- **默认上限**——对端省略对应限制时适用内置默认上限。迁移：HTTP 响应 8 MB（`HttpRequestSpec::max_response_bytes`）、SSE 事件 1 MB（SSE/Streamable HTTP 客户端选项的 `max_sse_event_bytes`）、CIMD 文档 1 MB（硬上限，best-effort 回退）、stdio 帧 8 MB（`StdioClientTransportOptions::max_frame_bytes` / `StdioServerTransport` 构造参数）、服务端请求体 4 MB（`max_request_body_bytes`）、工具参数 `ServerOptions::max_tool_input_elements`（超限返回 `is_error` 工具结果而非协议错误）、技能 manifest 512 文件 / 16 MB 总量（客户端 `CheckSkillLimits`）；对端确需超限时调大对应旋钮，或对载荷分片/分页。
+- **异步取消**——`notifications/cancelled` 投递异步，与被取消调用无序。迁移：待处理请求回调现跑在分离线程（仅线程创建失败时回退内联），调用方须按最终一致处理取消——handler 保持幂等并轮询 `RequestContext::IsCancellationRequested()` 协作退出，不得假设取消先于响应到达。
+
+> 来源：[官方 SDK 列表（2026-07-28 修订版）](https://modelcontextprotocol.io/docs/2026-07-28/sdk)；[SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers)——实验性功能与协议扩展（如 Tasks、MCP Apps）任何分级均不强制要求。
 
 ## 许可证
 

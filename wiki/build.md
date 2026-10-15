@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL）。
 tags: [cmake, ninja, unity, lto, conformance]
-timestamp: 2026-09-20T17:13:14+08:00
+timestamp: 2026-10-15T13:14:29+08:00
 resource: CMakePresets.json
 ---
 
@@ -25,7 +25,7 @@ ctest --preset debug --output-on-failure
 | 项 | 值 |
 |----|----|
 | 预设 | `debug` / `release`（对应 buildPresets/testPresets 各 2 枚） |
-| 默认关闭 | `MCP_BUILD_TESTS`、`MCP_BUILD_EXAMPLES`（预设中 tests=ON）、`MCP_BUILD_CONFORMANCE`（conformance-server fixture，`examples/conformance/server`；CI conformance job 与 `-DMCP_BUILD_EXAMPLES=ON` 同开） |
+| 默认关闭 | `MCP_BUILD_TESTS`、`MCP_BUILD_EXAMPLES`、`MCP_BUILD_CONFORMANCE` 三开关在 `CMakeLists.txt:52-54` 默认全 OFF；预设仅置 `MCP_BUILD_TESTS=ON` / `MCP_BUILD_EXAMPLES=OFF`（无 `CONFORMANCE`，见 `CMakePresets.json:9-14`）；CI conformance job 双开（`conformance.yml:38`），`CMakeLists.txt:234-238` 以 `NOT EXAMPLES` 防 client fixture 重加 |
 | Werror | 仅 `-DMCP_WERROR=ON`（CI 自动添加；MSVC `/WX`） |
 | `MCP_IS_CI` | 由环境变量 `CI` 定义与否决定 |
 | job pool | 自动调优：compile = `min(mem/1500MB, cpu-2)`（下限 1）、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
@@ -33,7 +33,7 @@ ctest --preset debug --output-on-failure
 ## 不易察觉的事实
 
 - **Unity（jumbo）构建默认开启**，`-DMCP_UNITY_BUILD=OFF` 覆盖；批大小 `min(mem/500MB, (cpu+1)/2)` 下限 2，单核自动禁用
-- `mcp-transport` 与 `mcp-protocol` 显式关闭 Unity（匿名命名空间符号冲突）；`mcp-client` 用 `UNITY_BUILD_UNIQUE_ID ON`（OAuth 符号）
+- Unity 开关按目标分化（`CMakeLists.txt:114-209`）：`mcp-core` / `mcp-server` / `mcp-client` / `mcp-http` / `mcp-ext` 全开，`mcp-transport` 与 `mcp-protocol` 显式关闭（匿名命名空间符号冲突）；`mcp-client` 另用 `UNITY_BUILD_UNIQUE_ID ON`（OAuth 符号）
 - **编译器自动探测**在 `project()` 之前：Win 找 clang-cl（LLVM 两个安装路径），Linux/macOS 按序找 `clang++-19...clang++`；`CMAKE_CXX_COMPILER` 已设置则跳过
 - **LTO 仅 Release**：clang-cl/MSVC 走 LTCG，Clang 走 ThinLTO，GCC 走 IPO
 - **缓存**：sccache > ccache（ccache 跳过 MSVC）
@@ -51,8 +51,9 @@ ctest --preset debug --output-on-failure
 
 ## CI 工作流（.github/workflows/）
 
-- `ci.yml`（**8 job**：Windows/Linux-clang/Linux-gcc/macOS × debug/release，fail-fast false）：actions 升版——checkout/cache @v5；**删除 Setup Ninja 步骤**（GitHub 镜像预装）；sccache 统一 `mozilla-actions/sccache-action@v0.0.11`（node24 兼容，替换 v0.0.7）三平台，`SCCACHE_DIR` 统一 `~/.cache/sccache`（缓存路径单一化，Windows 不再用 `AppData\Local\Mozilla\sccache`）；OpenSSL：Linux 显式 `libssl-dev`、macOS `brew install openssl`（`HOMEBREW_NO_AUTO_UPDATE`/`HOMEBREW_NO_INSTALL_CLEANUP`）、**Windows 删除 choco openssl**（镜像预装，Configure 阶段自动探测 `C:\Program Files\OpenSSL*` 传 `OPENSSL_ROOT_DIR`）
-- `conformance.yml`（官方 conformance suite，push/PR 到 `develop`）：server/client 双 job，referee pin `@modelcontextprotocol/conformance@0.2.0-alpha.11`，双 leg 均 `--spec-version 2025-11-25` + `--expected-failures tests/conformance/baseline.yaml`（退出码语义由 referee 保证，不用 `continue-on-error`）；本地复现 `scripts/run-conformance.sh server|client`，fixture 与基线说明见 [/tests.md](tests.md)
+- `ci.yml`（**1 build job × 8 矩阵**：Windows/Linux-clang/Linux-gcc/macOS × debug/release，`ci.yml:13-36`，fail-fast false；conformance 另见 `conformance.yml:18,122` 的 server/client 双 job × 双 spec 共 4 leg）：actions 升版——checkout/cache @v5；**删除 Setup Ninja 步骤**（GitHub 镜像预装）；sccache 统一 `mozilla-actions/sccache-action@v0.0.11`（node24 兼容，替换 v0.0.7）三平台，`SCCACHE_DIR` 统一 `~/.cache/sccache`（缓存路径单一化，Windows 不再用 `AppData\Local\Mozilla\sccache`）；OpenSSL：Linux 显式 `libssl-dev`、macOS `brew install openssl`（`HOMEBREW_NO_AUTO_UPDATE`/`HOMEBREW_NO_INSTALL_CLEANUP`）、**Windows 删除 choco openssl**（镜像预装，Configure 阶段自动探测 `C:\Program Files\OpenSSL*` 传 `OPENSSL_ROOT_DIR`）
+- `678a733 fix(构建)`（OpenSSL 3.5 兼容与 Linux 链接顺序）：`EC_KEY_get_curve_name`（3.5 已移除）→ `EC_GROUP_get_curve_name(EC_KEY_get0_group(…))`；`mcp-ext` 补声明 `mcp-transport` 依赖（`Triggers.cpp` 用 `HttpClient`，GNU ld 单向扫描致未定义引用）；`AppendUtf8CodePoint` 加 `#ifdef _WIN32`（仅 Windows 宽字符环境变量转换路径使用，Linux `-Werror` 报未使用）
+- `conformance.yml`（官方 conformance suite，push/PR 到 `develop`）：server/client 双 job，referee pin `@modelcontextprotocol/conformance@0.2.0-alpha.12`（`conformance.yml:14`，alpha 通道最新；requirements 内核与 alpha.11 一致，升级只收 referee 修补）；按 `CONFORMANCE_SPEC_VERSION` 映射 per-leg 基线与参数（`conformance.yml:59-62`、`run-conformance.sh:11-17`，未知版本回退 `tests/conformance/baseline.yaml`，见 `baseline.yaml:6`）：2026 切 `--stateless` + `--requirements 2026-07-28`（modern），2025 走 `--spec-version`（legacy 有状态 wire）；退出码语义由 referee 保证，不用 `continue-on-error`；本地复现 `scripts/run-conformance.sh server|client`，fixture 与基线说明见 [/tests.md](/tests.md)
 - `docs.yml`（VitePress 发布）：触发分支 `master`（唯一允许分支，参见 AGENTS.md docs.yml 部署分支铁律）；pnpm/action-setup@v5、setup-node@v5、cache@v5、configure-pages@v6、upload-pages-artifact@v4、deploy-pages@v5；cache key 修正为 `hashFiles('docs/**', 'docs/pnpm-lock.yaml')`（原路径错误导致缓存永不命中）
 
 ## 相关页面

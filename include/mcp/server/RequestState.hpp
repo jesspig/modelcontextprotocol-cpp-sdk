@@ -1,5 +1,3 @@
-// RequestState.hpp - HMAC-protected requestState mint/verify helpers (MRTR)
-
 #pragma once
 
 #include <mcp/JsonValue.hpp>
@@ -15,7 +13,6 @@
 namespace mcp {
 namespace detail {
 
-// ── Hex encoding of raw bytes ──
 inline std::string HexEncode(std::string_view raw) {
     static constexpr char kHex[] = "0123456789abcdef";
     std::string out;
@@ -27,7 +24,6 @@ inline std::string HexEncode(std::string_view raw) {
     return out;
 }
 
-// ── HMAC-SHA256 (RFC 2104), built on the standalone Sha256 ──
 inline std::string HmacSha256(std::string_view key, std::string_view data) {
     std::string block = key.size() > 64 ? Sha256::Hash(key) : std::string(key);
     block.resize(64, '\0');
@@ -44,7 +40,6 @@ inline std::string HmacSha256(std::string_view key, std::string_view data) {
     return Sha256::Hash(outer_input);
 }
 
-// Wire format: <base64url(payload_json)>.<hex(hmac_sha256(key, payload_json))>
 inline std::string MintRequestState(std::string_view key, const JsonValue& payload) {
     std::string payload_str = payload.Dump();
     std::string sig = HexEncode(HmacSha256(key, payload_str));
@@ -54,8 +49,6 @@ inline std::string MintRequestState(std::string_view key, const JsonValue& paylo
     return state;
 }
 
-// Constant-time signature check; when ttl > 0 the payload must carry an
-// integer "iat" (unix seconds) no older than ttl.
 inline bool VerifyRequestState(
     std::string_view key, std::string_view state, JsonValue& out_payload,
     std::chrono::seconds ttl = std::chrono::seconds(0))
@@ -87,10 +80,6 @@ inline bool VerifyRequestState(
     return true;
 }
 
-// Untrusted payload peek (signature is enforced by the verifier seam before
-// the tool handler runs; this is for handlers reading their own round data).
-// Accepts both minted "<base64url>.<sig>" states and bare JSON payloads
-// (servers without a minting key pass handler states through verbatim).
 inline std::optional<JsonValue> DecodeRequestStatePayload(std::string_view state) {
     if (state.find('.') == std::string_view::npos) {
         try {

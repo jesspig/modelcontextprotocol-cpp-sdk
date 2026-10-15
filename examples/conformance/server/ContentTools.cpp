@@ -1,5 +1,3 @@
-// ContentTools.cpp — content-shaped and schema-shaped conformance tools
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/McpError.hpp>
@@ -236,15 +234,18 @@ CallToolResult ToolWithProgress(const ToolContext& ctx)
 
 CallToolResult LoggingTool(const ToolContext& ctx)
 {
-    if (ctx.Params().meta && ctx.Params().meta->log_level
-        && static_cast<int>(LoggingLevel::Info) >= static_cast<int>(*ctx.Params().meta->log_level)) {
+    std::optional<LoggingLevel> level;
+    if (ctx.Params().meta && ctx.Params().meta->log_level) {
+        level = *ctx.Params().meta->log_level;
+    }
+    if (level
+        && static_cast<int>(LoggingLevel::Info) >= static_cast<int>(*level)) {
         ctx.Log(LoggingLevel::Info,
             "test_logging_tool ran (delivered only when the request set _meta.logLevel)");
     }
     return MakeTextResult("logged through the request-scoped, logLevel-gated channel");
 }
 
-// V7 placeholder: a plain successful call for the response-stream check.
 CallToolResult StreamingElicitation(const ToolContext&)
 {
     return MakeTextResult("stream observed: result frames only, no top-level requests");

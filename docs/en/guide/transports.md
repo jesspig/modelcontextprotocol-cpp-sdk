@@ -12,7 +12,7 @@
 
 The Streamable HTTP transport implements the MCP Streamable HTTP specification. Each session uses an internal `StreamableHttpSessionTransport` (wrapping `ITransport`) with its own message channel and background thread.
 
-**Request flow**: Client sends a JSON-RPC message via HTTP POST. In **stateless** mode, the server processes the request synchronously and responds with a JSON response (correlated via `std::promise` with a 30-second timeout). In **session** mode, the server returns `202 Accepted` and delivers results asynchronously through SSE (via a separate GET endpoint). The server validates `Mcp-Method` and `Mcp-Name` headers against the body (SEP-2243), echoes them back on the response, and extracts `Mcp-Param-*` headers into `_meta.x-mcp-headers`.
+**Request flow**: Client sends a JSON-RPC message via HTTP POST. In **stateless** mode, the server processes the request synchronously and responds with a JSON response (correlated via `std::promise` with a 30-second timeout). In **session** mode, the server returns `202 Accepted` and delivers results asynchronously through SSE (via a separate GET endpoint). The server validates `Mcp-Method` and `Mcp-Name` headers against the body (SEP-2243), echoes them back on the response, and extracts `Mcp-Param-*` headers into `_meta.x-mcp-headers`. For `tasks/get`, `tasks/update`, and `tasks/cancel`, `Mcp-Name` is taken from `params.taskId` (missing or mismatched values → 400). A non-empty `MCP-Protocol-Version` outside the supported table returns 400 (`-32022`); responses always carry an `mcp-protocol-version` header (falling back to the default version when absent).
 
 **SSE read loop**: On the client side, if the POST response includes SSE events (e.g., session-mode results), a background thread reads chunks, splits on `\n\n` delimiters, parses `data:` lines, and enqueues `JsonRpcMessage` into the `MessageChannel`.
 
@@ -70,19 +70,28 @@ Controls how the HTTP client transport connects:
 | `name`                 | `std::string`                           | `""`            | Transport name                |
 | `known_session_id`     | `std::string`                           | `""`            | Session ID for resumption     |
 | `additional_headers`   | `std::map<std::string, std::string>`    | `{}`            | Extra HTTP headers            |
-| `auth_challenge_handler` | `std::function<std::string(std::string_view www_authenticate)>` | `nullptr` | Called with `WWW-Authenticate` on 401/403 (RFC 9728); a non-empty `Authorization` header retries exactly once |
+| `auth_challenge_handler` | `std::function<std::string(std::string_view www_authenticate)>` | `nullptr` | Always called on 401; called on 403 only when `WWW-Authenticate` contains `insufficient_scope` (RFC 9728 — other 403s are handled as error bodies); a non-empty `Authorization` header retries exactly once |
+| `apply_per_request_headers` | `std::function<void(const HttpRequestHeaderContext&, std::map<std::string,std::string>&)>` | `nullptr` | Invoked once before every request send (including retries and internally re-issued posts); the callback writes extra headers into the writable `headers` (applied after static `additional_headers` and `Authorization`); bind `OAuthClientProvider::ApplyDPoPProofHeader` to attach a per-request `DPoP` proof |
+| `observe_response_challenge` | `std::function<void(const HttpResponseChallengeContext&)>` | `nullptr` | Invoked once per response (including 2xx and SSE) with `status_code`/`www_authenticate`/`dpop_nonce`; bind `OAuthClientProvider::ObserveDPoPNonce` to feed the nonce back |
+| `enable_listen_stream` | `optional<bool>` | unset → `!stateless` | GET SSE listen-stream switch; unset means on for stateful, off for stateless |
+| `stateless` | `bool` | `false` | For purely stateless peers: no `Mcp-Session-Id` / `Last-Event-ID` headers, no DELETE |
+| `max_sse_event_bytes` | `optional<size_t>` | 1 MB | Per-SSE-event cap |
+| `redirect_policy` | `HttpRedirectPolicy` | `SameOriginOnly` | Redirect policy (`FollowAll`/`SameOriginOnly`/`NoFollow`) |
+| `max_redirects` | `int` | `5` | Maximum redirect hops |
+
+Listen-stream state mapping: 4xx (including 404/405) and "200 but non-SSE content-type" count as server-not-supporting-listen-stream (`Unsupported`, silently given up); 408/429 and non-200 2xx keep the backoff reconnect path. The `use_dpop_nonce` retry (exactly once on 401/400 when the challenge or the first 4KB of the body carries the marker) shares one single budget with the `auth_challenge_handler` retry.
 
 ### `StreamableHttpServerOptions`
 | Field                  | Type                               | Default      | Description                          |
 |------------------------|------------------------------------|--------------|--------------------------------------|
 | `port`                 | `uint16_t`                         | `3001`       | HTTP server port                     |
 | `endpoint`             | `std::string`                      | `"/mcp"`     | HTTP endpoint path                   |
-| `host`                 | `std::string`                      | `""`         | Listen bind address; empty = all interfaces, accepts IPv4/IPv6 literals |
+| `host`                 | `std::string`                      | `""`         | Listen bind address; empty = all IPv4 interfaces only, accepts IPv4/IPv6 literals |
 | `stateless`            | `bool`                             | `true`       | 2026-07-28 stateless mode            |
-| `enable_legacy_sse`    | `bool`                             | `true`       | Serve SSE stream on GET              |
+| `enable_legacy_sse`    | `bool`                             | `false`      | Serve SSE stream on GET (when off, no GET is registered and listen streams/replay are unavailable) |
 | `sse_keep_alive_ms`    | `int`                              | `15000`      | SSE keepalive comment-frame interval in ms; `0` disables |
 | `event_store`          | `std::shared_ptr<EventStore>`      | `nullptr`    | Event store for resumption; defaults to the built-in in-memory store when unset — plug in `FileEventStore` for a custom implementation |
-| `session_store`        | `std::shared_ptr<SessionStore>`    | `nullptr`    | External session store (session mode only); instances sharing the same store can adopt each other's sessions |
+| `session_store`        | `std::shared_ptr<SessionStore>`    | `nullptr`    | External session store (session mode only); instances sharing the same store can adopt each other's sessions; unknown/expired session ids return 404 with `-32009` (SessionExpired); persisted on successful `initialize` (503 when the 10000-session cap is full), sessions expire after 30 minutes idle |
 | `bearer_auth`          | `std::optional<BearerAuthConfig>`  | `std::nullopt` | Bearer auth config (RFC 6750/9728); see below |
 | `server_name`          | `std::string`                      | `"mcp-server"` | Server name for discovery         |
 | `server_version`       | `std::string`                      | `kSdkVersion` | Server version for discovery         |
@@ -92,14 +101,17 @@ Once `bearer_auth` is set, `StreamableHttpServerTransport` runs the bearer auth 
 
 | Field                      | Type                                       | Description                                             |
 |----------------------------|--------------------------------------------|---------------------------------------------------------|
-| `verify`                   | `function<AuthResult(const std::string&)>` | Required; returns `AuthResult{ok, scopes}` — `ok=false` rejects with `401 error="invalid_token"` |
+| `verify`                   | `function<AuthResult(const std::string&)>` | Required; returns `AuthResult{ok, scopes, resource}` (`resource` is the audience carried by the token) — `ok=false` rejects with `401 error="invalid_token"` |
 | `resource_metadata_url`    | `std::string`                              | Full URL of the protected-resource metadata document; also referenced by the `WWW-Authenticate` challenge |
 | `scopes_supported`         | `vector<string>`                           | Scopes advertised in the metadata document               |
 | `required_scopes`          | `vector<string>`                           | Token scopes must cover all of them; empty disables scope checks (missing scopes → 403) |
+| `expected_resource`        | `std::string`                              | Expected audience; empty disables audience checks         |
+| `validate_token_resource`  | `bool`                                     | Whether to validate the audience (default `true`)         |
 | `authorization_servers`    | `vector<string>`                           | Authorization servers written into the metadata document |
 | `serve_metadata_endpoint`  | `bool`                                     | Register `GET /.well-known/oauth-protected-resource` (no auth); default `true` |
+| `enable_dpop`              | `bool`                                     | DPoP proof-verification switch (default `false`): takes effect only after `bearer_auth` is configured; when on, the `DPoP` scheme and proof header are required, failures return 401 carrying `DPoP-Nonce` |
 
-Outcomes on both the POST and GET (SSE) paths: a missing or malformed `Authorization: Bearer` header → `401` challenge; `verify` returning `ok=false` → `401` with `error="invalid_token"`; a token missing any `required_scopes` entry → `403` with `error="insufficient_scope"`. When `bearer_auth` is unconfigured, behavior is exactly as before — zero regression. For the client-side counterpart see [OAuth Support](/en/client/oauth).
+Outcomes on both the POST and GET (SSE) paths: a missing or malformed `Authorization: Bearer` header → `401` challenge; `verify` returning `ok=false` → `401` with `error="invalid_token"`; an audience mismatch (validation enabled and `expected_resource` non-empty) → `401` with `error="invalid_token"`; a token missing any `required_scopes` entry → `403` with `error="insufficient_scope"`. When `bearer_auth` is unconfigured, behavior is exactly as before — zero regression. For the client-side counterpart see [OAuth Support](/en/client/oauth).
 
 ### `InMemoryTransport::Pair`
 ```cpp
@@ -109,7 +121,7 @@ struct Pair {
 };
 ```
 
-> ¹ SSE server-side is provided through `StreamableHttpServerTransport` when `enable_legacy_sse` is `true` (default), which serves an SSE stream on the same endpoint via HTTP GET.
+> ¹ SSE server-side is provided through `StreamableHttpServerTransport` when `enable_legacy_sse` is `true` (default `false`), which serves an SSE stream on the same endpoint via HTTP GET.
 
 ## Stateless Mode
 
@@ -117,3 +129,4 @@ struct Pair {
 
 - **No sessions**: Each request is independent; the response is correlated synchronously via `std::promise` with a 30-second timeout.
 - **No SSE**: No SSE broadcast or `EventStore` append; only responses correlated to pending requests are delivered via JSON.
+- **Listener wait**: before broadcasting server-initiated requests and notifications the server checks for GET listeners — with zero listeners it waits up to 2s only when `!stateless || enable_legacy_sse` (the hold-open POST stream mode under `stateless` skips the wait); hold-open request-stream notifications are filtered by the buffer verdict first and never enter the wait.

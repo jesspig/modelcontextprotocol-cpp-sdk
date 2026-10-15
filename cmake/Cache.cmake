@@ -1,8 +1,3 @@
-# ====================================================================
-# Compiler cache: sccache / ccache auto-detection.
-# 完全自动：优先 sccache (支持 MSVC)，回退 ccache (GCC/Clang only)
-# ====================================================================
-
 find_program(MCP_SCCACHE NAMES sccache)
 find_program(MCP_CCACHE NAMES ccache)
 
@@ -11,7 +6,6 @@ set(_cache_program "")
 if(MCP_SCCACHE)
     set(_cache_program "${MCP_SCCACHE}")
 elseif(NOT MSVC AND MCP_CCACHE)
-    # ccache 不支持 MSVC
     set(_cache_program "${MCP_CCACHE}")
 endif()
 

@@ -1,5 +1,3 @@
-// HttpServer.cpp — HTTP server implementation (self-hosted)
-
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 
@@ -10,7 +8,6 @@
 
 namespace mcp {
 
-// HttpServer.hpp 前向声明的 PIMPL：即自研实现（公共 API 零改动）
 struct HttpServerImpl : detail::http_server_impl::Impl {
     using detail::http_server_impl::Impl::Impl;
 };
@@ -43,8 +40,6 @@ void HttpServer::Stop() {
     if (!running_.exchange(false)) return;
     auto impl = std::atomic_load(&impl_);
     if (impl) {
-        // Stopper thread so Stop() may be called from a connection/callback
-        // thread without self-joining.
         std::thread stopper([impl]() {
             impl->Stop();
         });
@@ -62,12 +57,18 @@ void HttpServer::SetHandler(std::string_view method, std::string_view path,
     handlers_[{std::string(method), std::string(path)}] = std::move(handler);
 }
 
-// ── SSE client management ──
 HttpServer::SseClientId HttpServer::AddSseClient(
     std::function<void(std::string_view)> send_fn)
 {
     auto impl = std::atomic_load(&impl_);
     return impl ? impl->AddSseClient(std::move(send_fn)) : 0;
+}
+
+HttpServer::SseClientId HttpServer::AddSseClient(
+    std::function<void(std::string_view)> send_fn, std::string tag)
+{
+    auto impl = std::atomic_load(&impl_);
+    return impl ? impl->AddSseClient(std::move(send_fn), std::move(tag)) : 0;
 }
 
 void HttpServer::RemoveSseClient(SseClientId id) {
@@ -78,6 +79,13 @@ void HttpServer::RemoveSseClient(SseClientId id) {
 void HttpServer::BroadcastSse(std::string_view event) {
     auto impl = std::atomic_load(&impl_);
     if (impl) impl->BroadcastSse(event);
+}
+
+void HttpServer::BroadcastSse(
+    std::string_view event,
+    const std::function<bool(const std::string&)>& accept) {
+    auto impl = std::atomic_load(&impl_);
+    if (impl) impl->BroadcastSse(event, accept);
 }
 
 std::size_t HttpServer::SseClientCount() const {

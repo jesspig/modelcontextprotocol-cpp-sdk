@@ -1,5 +1,3 @@
-// JsonValue.cpp — JsonValue parsing and serialization implementation
-
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
@@ -17,8 +15,6 @@ namespace mcp::detail {
 namespace json {
 JsonValue ParseDocument(std::string_view json);
 }
-
-// ── Hand-written JSON serializer ──
 
 namespace {
 
@@ -96,7 +92,6 @@ static size_t EstimateSize(const JsonValue& jv, int indent) {
     return 8;
 }
 
-// Recursively serialize a JsonValue to JSON text with optional indentation.
 static void DumpValue(std::string& out, const JsonValue& jv, int indent, int depth) {
     auto indent_line = [&]() {
         int n = depth * indent;
@@ -178,8 +173,6 @@ static void DumpValue(std::string& out, const JsonValue& jv, int indent, int dep
 
 } // namespace mcp::detail
 
-// ── JsonValue public methods ──
-
 namespace mcp {
 
 namespace {
@@ -208,14 +201,60 @@ JsonValue JsonValue::Parse(std::string_view json) {
     return detail::json::ParseDocument(json);
 }
 
+std::string JsonValue::SanitizeUtf8(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    size_t i = 0;
+    while (i < text.size()) {
+        unsigned char b0 = static_cast<unsigned char>(text[i]);
+        if (b0 < 0x80) {
+            out.push_back(static_cast<char>(b0));
+            ++i;
+            continue;
+        }
+        size_t cont = 0;
+        unsigned char lo = 0x80;
+        unsigned char hi = 0xBF;
+        bool lead_ok = true;
+        if (b0 >= 0xC2 && b0 <= 0xDF) {
+            cont = 1;
+        } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+            cont = 2;
+            if (b0 == 0xE0) lo = 0xA0;
+            else if (b0 == 0xED) hi = 0x9F;
+        } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+            cont = 3;
+            if (b0 == 0xF0) lo = 0x90;
+            else if (b0 == 0xF4) hi = 0x8F;
+        } else {
+            lead_ok = false;
+        }
+        bool seq_ok = lead_ok && i + cont < text.size();
+        if (seq_ok) {
+            unsigned char b1 = static_cast<unsigned char>(text[i + 1]);
+            seq_ok = b1 >= lo && b1 <= hi;
+            for (size_t k = 2; seq_ok && k <= cont; ++k) {
+                unsigned char c = static_cast<unsigned char>(text[i + k]);
+                seq_ok = (c & 0xC0) == 0x80;
+            }
+        }
+        if (seq_ok) {
+            out.append(text.data() + i, cont + 1);
+            i += cont + 1;
+        } else {
+            out += "\xEF\xBF\xBD";
+            ++i;
+        }
+    }
+    return out;
+}
+
 std::string JsonValue::Dump(int indent) const {
     std::string out;
     out.reserve(detail::EstimateSize(*this, indent));
     detail::DumpValue(out, *this, indent, 0);
     return out;
 }
-
-// ── Accessors ──
 
 bool JsonValue::GetBool() const {
     if (!IsBool())
@@ -330,6 +369,118 @@ JsonValue& JsonValue::At(std::string_view key) {
 
 void JsonValue::PushBack(JsonValue val) {
     GetArray().push_back(std::move(val));
+}
+
+JsonValue::~JsonValue() {
+    if (IsArray()) {
+        if (std::get<Array>(data_).empty()) {
+            return;
+        }
+    } else if (IsObject()) {
+        if (std::get<Object>(data_).empty()) {
+            return;
+        }
+    } else {
+        return;
+    }
+    std::vector<JsonValue> stack;
+    if (IsArray()) {
+        Array moved = std::move(std::get<Array>(data_));
+        data_.emplace<std::nullptr_t>(nullptr);
+        stack.reserve(moved.size() + 1);
+        for (auto& child : moved) {
+            stack.push_back(std::move(child));
+        }
+    } else {
+        Object moved = std::move(std::get<Object>(data_));
+        data_.emplace<std::nullptr_t>(nullptr);
+        stack.reserve(moved.size() + 1);
+        for (auto& entry : moved) {
+            stack.push_back(std::move(entry.second));
+        }
+    }
+    while (!stack.empty()) {
+        JsonValue node = std::move(stack.back());
+        stack.pop_back();
+        if (node.IsArray()) {
+            Array& arr = std::get<Array>(node.data_);
+            for (auto& child : arr) {
+                stack.push_back(std::move(child));
+            }
+        } else if (node.IsObject()) {
+            Object& obj = std::get<Object>(node.data_);
+            for (auto& entry : obj) {
+                stack.push_back(std::move(entry.second));
+            }
+        }
+    }
+}
+
+JsonValue::JsonValue(const JsonValue& other) : data_(nullptr) {
+    if (!other.IsArray() && !other.IsObject()) {
+        data_ = other.data_;
+        return;
+    }
+    std::vector<std::pair<const JsonValue*, JsonValue*>> stack;
+    if (other.IsArray()) {
+        const Array& src = std::get<Array>(other.data_);
+        data_.emplace<Array>();
+        Array& dst = std::get<Array>(data_);
+        dst.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            dst.emplace_back(nullptr);
+        }
+        stack.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            stack.emplace_back(&src[i], &dst[i]);
+        }
+    } else {
+        const Object& src = std::get<Object>(other.data_);
+        data_.emplace<Object>();
+        Object& dst = std::get<Object>(data_);
+        stack.reserve(src.size());
+        for (const auto& entry : src) {
+            auto pos = dst.emplace(entry.first, nullptr).first;
+            stack.emplace_back(&entry.second, &pos->second);
+        }
+    }
+    while (!stack.empty()) {
+        auto work = stack.back();
+        stack.pop_back();
+        const JsonValue* src = work.first;
+        JsonValue* dst = work.second;
+        if (!src->IsArray() && !src->IsObject()) {
+            dst->data_ = src->data_;
+        } else if (src->IsArray()) {
+            const Array& sarr = std::get<Array>(src->data_);
+            dst->data_.emplace<Array>();
+            Array& darr = std::get<Array>(dst->data_);
+            darr.reserve(sarr.size());
+            for (size_t i = 0; i < sarr.size(); ++i) {
+                darr.emplace_back(nullptr);
+            }
+            for (size_t i = 0; i < sarr.size(); ++i) {
+                stack.emplace_back(&sarr[i], &darr[i]);
+            }
+        } else {
+            const Object& sobj = std::get<Object>(src->data_);
+            dst->data_.emplace<Object>();
+            Object& dobj = std::get<Object>(dst->data_);
+            for (const auto& entry : sobj) {
+                auto pos = dobj.emplace(entry.first, nullptr).first;
+                stack.emplace_back(&entry.second, &pos->second);
+            }
+        }
+    }
+}
+
+JsonValue& JsonValue::operator=(const JsonValue& other) {
+    if (this == &other) {
+        return *this;
+    }
+    JsonValue tmp(other);
+    data_.swap(tmp.data_);
+    return *this;
 }
 
 bool JsonValue::operator==(const JsonValue& other) const {

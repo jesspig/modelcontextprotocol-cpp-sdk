@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 并发与生命周期
-description: 线程模型（消息循环/超时检查/响应回发）、Close self-join 陷阱、异步 handler 收尾。
+description: 线程模型（消息循环/超时检查/响应回发、Streamable HTTP 监听流按 stateless 判默认）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-09-20T19:34:31+08:00
+timestamp: 2026-10-13T11:10:48+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -18,7 +18,7 @@ resource: include/mcp/detail/ThreadUtils.hpp
 | McpSessionHandler | 消息循环线程 + 超时检查线程（100ms 轮询）+ **响应回发线程**（response_worker_） |
 | Stdio 传输 | 读循环线程 |
 | SSE 客户端 | SSE 读线程 + 发送线程 |
-| Streamable HTTP 客户端 | 发送线程（请求 POST 队列 + 同步读 POST 的 SSE 响应）+ 监听线程（`enable_listen_stream` 默认开启，`notifications/initialized` 后拉起 GET SSE，最多 5 次重连）+ 通知/响应走短命 detached POST 线程 |
+| Streamable HTTP 客户端 | 发送线程（请求 POST 队列 + 同步读 POST 的 SSE 响应）+ 监听线程（`enable_listen_stream` 未设置时按 `!stateless` 判定——stateful 默认开、stateless 默认关，`notifications/initialized` 后拉起 GET SSE，最多 5 次重连）+ 通知/响应走短命 detached POST 线程 |
 | HttpServer | accept 线程 + 每连接线程（上限 256）+ SSE keepalive 线程 |
 
 ## 响应回发机制（response_worker_）

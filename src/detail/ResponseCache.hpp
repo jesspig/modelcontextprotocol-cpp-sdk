@@ -1,5 +1,4 @@
 #pragma once
-// ResponseCache.hpp — client-side response cache keyed by method + context (SEP-2549)
 #include <mcp/JsonValue.hpp>
 
 #include <algorithm>
@@ -15,12 +14,6 @@ namespace mcp { namespace detail {
 inline constexpr char kCacheScopePublic[] = "public";
 inline constexpr char kCacheScopePrivate[] = "private";
 
-// Client-side cache for list/read results declared with a ttlMs cache hint.
-// Keys combine the method with pagination/uri context; entries are partitioned
-// by cache scope so private results never leak into the public partition and
-// are dropped when the connection closes. Reads consult both partitions with
-// public precedence: the single-connection model may satisfy a key from either
-// scope. TTLs are clamped to 24h and expired entries are evicted lazily.
 class ResponseCache {
 public:
     enum class Scope { Public, Private };
@@ -36,8 +29,6 @@ public:
             std::move(value), now + (std::min)(ttl, kMaxTtl), now};
     }
 
-    // Returns the cached value from either partition (public first), or
-    // nullopt when absent, expired, or older than max_age.
     std::optional<JsonValue> GetAny(std::string_view key,
         std::optional<std::chrono::milliseconds> max_age = std::nullopt)
     {
@@ -46,7 +37,6 @@ public:
         return Lookup(private_entries_, key, max_age);
     }
 
-    // Invalidates one key in both partitions (e.g. resources/updated for a uri).
     void Invalidate(std::string_view key) {
         std::lock_guard<std::mutex> lock(mutex_);
         public_entries_.erase(std::string(key));

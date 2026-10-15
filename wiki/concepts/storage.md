@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-09-20T19:34:31+08:00
+timestamp: 2026-10-15T13:14:29+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -36,7 +36,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 ## SessionStore 会话记录抽象
 
-`SessionStore`（[SessionStore.hpp](../../include/mcp/http/SessionStore.hpp)）：`Save/Load/Remove` 会话记录 `SessionRecord{protocol_version, created_at_ms}`，键为会话 id。`InMemorySessionStore`（mutex map）为默认实现；stateful 模式注入 `StreamableHttpServerOptions::session_store` 后会话可被共享 store 的其他实例接管（[/transports/streamable-http.md](../transports/streamable-http.md)），未知会话 id 回 404 + `-32009`。
+`SessionStore`（[SessionStore.hpp](../../include/mcp/http/SessionStore.hpp)）：`Save/Load/Remove` 会话记录 `SessionRecord{protocol_version, created_at_ms, last_seen_ms}`，键为会话 id。`last_seen_ms` 为 0 时按写入时刻回填（`TrySave` 内 `stored.last_seen_ms = now`）；`InMemorySessionStore`（mutex map）为默认实现，闲置超 `kSessionIdleTimeoutMs`（30 分钟，[Limits.hpp](../../include/mcp/transport/detail/Limits.hpp)）即过期——`TrySave` 先 `SweepExpiredLocked` 再判满（满回 false，`Save` 转抛 `runtime_error("session store is full")`，上限 `kMaxHttpSessions = 10000`），`Load` 命中即刷新 `last_seen_ms = now`、过期则删除并回 `nullopt`；`Size()` 返回当前 map 规模，`SweepExpired()` 返回本轮清除条数（基类默认均回 0）。stateful 模式注入 `StreamableHttpServerOptions::session_store` 后会话可被共享 store 的其他实例接管（[/transports/streamable-http.md](../transports/streamable-http.md)），未知会话 id 回 404 + `-32009`。
 
 ## FileTaskStore 双锁结构
 

@@ -1,13 +1,9 @@
-// McpTypesTools.cpp — Tool/resource/prompt type serialization
-
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
 namespace mcp {
-
-// ── ToolAnnotations ──
 
 JsonValue SerializeToolAnnotations(const ToolAnnotations& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -29,8 +25,6 @@ ToolAnnotations DeserializeToolAnnotations(const JsonValue& j) {
     return v;
 }
 
-// ── ToolExecution ──
-
 JsonValue SerializeToolExecution(const ToolExecution& v) {
     JsonValue obj(JsonValue::object_tag);
     switch (v.mode) {
@@ -42,6 +36,11 @@ JsonValue SerializeToolExecution(const ToolExecution& v) {
                 "SerializeToolExecution: unknown mode: " + std::to_string(static_cast<int>(v.mode)));
     }
     detail::SerializeOptional(obj, "humanUse", v.human_use);
+    if (v.task_support == TaskSupport::Required) {
+        obj["taskSupport"] = JsonValue("required");
+    } else if (v.task_support == TaskSupport::Optional) {
+        obj["taskSupport"] = JsonValue("optional");
+    }
     return obj;
 }
 
@@ -57,10 +56,13 @@ ToolExecution DeserializeToolExecution(const JsonValue& j) {
                 std::string("DeserializeToolExecution: unknown mode string: '") + s + "'");
     }
     detail::DeserializeOptional(j, "humanUse", v.human_use);
+    if (auto* ts = j.Find("taskSupport"); ts && ts->IsString()) {
+        const auto& s = ts->GetString();
+        if (s == "required") v.task_support = TaskSupport::Required;
+        else if (s == "optional") v.task_support = TaskSupport::Optional;
+    }
     return v;
 }
-
-// ── ResourceAnnotations ──
 
 JsonValue SerializeResourceAnnotations(const ResourceAnnotations& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -84,8 +86,6 @@ ResourceAnnotations DeserializeResourceAnnotations(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kLastModified, v.last_modified);
     return v;
 }
-
-// ── Tool ──
 
 JsonValue SerializeTool(const Tool& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -118,8 +118,6 @@ Tool DeserializeTool(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── Resource ──
 
 JsonValue SerializeResource(const Resource& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -157,8 +155,6 @@ Resource DeserializeResource(const JsonValue& j) {
     return v;
 }
 
-// ── ResourceTemplate ──
-
 JsonValue SerializeResourceTemplate(const ResourceTemplate& v) {
     JsonValue obj(JsonValue::object_tag);
     obj["uriTemplate"] = JsonValue(v.uri_template);
@@ -193,8 +189,6 @@ ResourceTemplate DeserializeResourceTemplate(const JsonValue& j) {
     return v;
 }
 
-// ── PromptArgument ──
-
 JsonValue SerializePromptArgument(const PromptArgument& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kName] = JsonValue(v.name);
@@ -210,8 +204,6 @@ PromptArgument DeserializePromptArgument(const JsonValue& j) {
     detail::DeserializeOptional(j, "required", v.required);
     return v;
 }
-
-// ── Prompt ──
 
 JsonValue SerializePrompt(const Prompt& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -248,8 +240,6 @@ Prompt DeserializePrompt(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── PromptMessage ──
 
 JsonValue SerializePromptMessage(const PromptMessage& v) {
     JsonValue obj(JsonValue::object_tag);

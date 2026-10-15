@@ -1,5 +1,3 @@
-// WebSocketClient.cpp — RFC 6455 WebSocket 客户端
-
 #include <transport/detail/net/WebSocketClient.hpp>
 #include <transport/detail/net/NetIoUtil.hpp>
 #include <transport/detail/net/Sha1.hpp>

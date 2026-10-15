@@ -1,5 +1,3 @@
-// WebSocketClientTransport.cpp — WebSocket client transport implementation
-
 #include <mcp/transport/WebSocketClientTransport.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
@@ -62,7 +60,6 @@ void WebSocketSessionTransport::Start() {
             self->NotifyError(message);
         });
 
-    // 自研客户端无 onopen：握手成功即读循环；连接失败经 on_error/on_close 回退
     running_ = true;
     SetConnected();
     ws_.Open(url_, std::chrono::seconds(30), true);

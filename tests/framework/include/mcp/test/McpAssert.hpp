@@ -1,6 +1,4 @@
 #pragma once
-// McpAssert.hpp — 断言宏（API 与 ToString 见 McpApi.hpp）
-
 #include "McpApi.hpp"
 
 #include <cctype>
@@ -13,7 +11,6 @@
 #include <tuple>
 #include <utility>
 
-// ── 内部辅助 ──
 namespace mcp::test {
 namespace detail {
 
@@ -77,7 +74,6 @@ inline bool CompareOperands(const char* file, int line, const char* expr_a, cons
 }  // namespace detail
 }  // namespace mcp::test
 
-// ── 通用比较断言 ──
 #define MCP_EXPECT_CMP(cmp_obj, a, b) \
     do { \
         (void)::mcp::test::detail::CompareOperands(__FILE__, __LINE__, #a, #b, cmp_obj, (a), (b)); \
@@ -104,7 +100,6 @@ inline bool CompareOperands(const char* file, int line, const char* expr_a, cons
 #define ASSERT_GT(a, b) MCP_ASSERT_CMP(::mcp::test::detail::CmpGt{}, a, b)
 #define ASSERT_GE(a, b) MCP_ASSERT_CMP(::mcp::test::detail::CmpGe{}, a, b)
 
-// ── 布尔、失败与跳过 ──
 #define EXPECT_TRUE(expr) \
     do { if (!(expr)) ::mcp::test::AssertionFailure(__FILE__, __LINE__, #expr " evaluated to false"); } while (0)
 #define EXPECT_FALSE(expr) \
@@ -145,7 +140,6 @@ inline bool CompareOperands(const char* file, int line, const char* expr_a, cons
 
 #define GTEST_SKIP(...) throw ::mcp::test::SkipException(__VA_ARGS__)
 
-// ── 异常断言 ──
 #define MCP_EXPECT_THROW(expr, type, stop) \
     do { \
         bool _mcp_thrown = false; \
@@ -224,7 +218,6 @@ inline bool CompareOperands(const char* file, int line, const char* expr_a, cons
 #define EXPECT_THROW_MSG(expr, type, substr) MCP_EXPECT_THROW_MSG(expr, type, substr, (void)0)
 #define ASSERT_THROW_MSG(expr, type, substr) MCP_EXPECT_THROW_MSG(expr, type, substr, ::mcp::test::RecordFatalFailure(); return)
 
-// ── 字符串断言 ──
 #define EXPECT_STREQ(a, b) \
     do { \
         if (std::string_view((a) ? (a) : "") != std::string_view((b) ? (b) : "")) \
@@ -287,7 +280,6 @@ inline bool CompareOperands(const char* file, int line, const char* expr_a, cons
         } \
     } while (0)
 
-// ── 浮点断言 ──
 #define EXPECT_DOUBLE_EQ(a, b) \
     do { \
         double _mcp_a = (a); \
@@ -362,7 +354,6 @@ inline bool CompareOperands(const char* file, int line, const char* expr_a, cons
 #define EXPECT_NEAR(a, b, abs_error) MCP_EXPECT_NEAR(a, b, abs_error, (void)0)
 #define ASSERT_NEAR(a, b, abs_error) MCP_EXPECT_NEAR(a, b, abs_error, ::mcp::test::RecordFatalFailure(); return)
 
-// ── 匹配器 ──
 namespace mcp::test {
 
 template <typename T>
@@ -432,7 +423,6 @@ ElementsAreMatcher<Ts...> ElementsAre(Ts... vs) {
 
 }  // namespace mcp::test
 
-// ── 匹配器断言 ──
 namespace mcp::test {
 namespace detail {
 

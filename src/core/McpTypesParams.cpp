@@ -1,13 +1,12 @@
-// McpTypesParams.cpp — Request params serialization and elicitation helpers
-
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
-namespace mcp {
+#include <string_view>
 
-// ── PaginatedRequestParams ──
+namespace mcp {
 
 JsonValue SerializePaginatedRequestParams(const PaginatedRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -24,12 +23,12 @@ PaginatedRequestParams DeserializePaginatedRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── ResourceRequestParams ──
-
 JsonValue SerializeResourceRequestParams(const ResourceRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
     if (v.meta) obj[detail::kMeta] = SerializeRequestMeta(*v.meta);
+    detail::SerializeOptional(obj, detail::kInputResponses, v.input_responses);
+    detail::SerializeOptional(obj, detail::kRequestState, v.request_state);
     return obj;
 }
 
@@ -38,10 +37,10 @@ ResourceRequestParams DeserializeResourceRequestParams(const JsonValue& j) {
     v.uri = j[detail::kUri].GetString();
     auto* m = j.Find(detail::kMeta);
     if (m) v.meta = DeserializeRequestMeta(*m);
+    detail::DeserializeOptional(j, detail::kInputResponses, v.input_responses);
+    detail::DeserializeOptional(j, detail::kRequestState, v.request_state);
     return v;
 }
-
-// ── CallToolRequestParams ──
 
 JsonValue SerializeCallToolRequestParams(const CallToolRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -64,18 +63,16 @@ CallToolRequestParams DeserializeCallToolRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── GetPromptRequestParams ──
-
 GetPromptRequestParams DeserializeGetPromptRequestParams(const JsonValue& j) {
     GetPromptRequestParams v;
     v.name = j[detail::kName].GetString();
     detail::DeserializeOptional(j, detail::kArguments, v.arguments);
     auto* m = j.Find(detail::kMeta);
     if (m) v.meta = DeserializeRequestMeta(*m);
+    detail::DeserializeOptional(j, detail::kInputResponses, v.input_responses);
+    detail::DeserializeOptional(j, detail::kRequestState, v.request_state);
     return v;
 }
-
-// ── CompleteRequestParams ──
 
 JsonValue SerializeCompleteRequestParams(const CompleteRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -103,13 +100,9 @@ CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── DiscoverRequestParams ──
-
 JsonValue SerializeDiscoverRequestParams(const DiscoverRequestParams&) {
     return JsonValue(JsonValue::object_tag);
 }
-
-// ── InitializeRequestParams ──
 
 JsonValue SerializeInitializeRequestParams(const InitializeRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -127,16 +120,20 @@ InitializeRequestParams DeserializeInitializeRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── ElicitRequestParams ──
-
 JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v) {
+    return SerializeElicitRequestParams(v, std::string_view{});
+}
+
+JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v, std::string_view protocol_version) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kMessage] = JsonValue(v.message);
     detail::SerializeOptional(obj, detail::kRequestedSchema, v.requested_schema);
     if (v.mode != detail::kForm) {
         obj[detail::kMode] = JsonValue(v.mode);
         detail::SerializeOptional(obj, detail::kUrl, v.url);
-        detail::SerializeOptional(obj, "elicitationId", v.elicitation_id);
+        if (!IsModernProtocolVersion(protocol_version)) {
+            detail::SerializeOptional(obj, "elicitationId", v.elicitation_id);
+        }
     }
     return obj;
 }
@@ -152,8 +149,6 @@ ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j) {
     return v;
 }
 
-// ── SamplingMessage ──
-
 JsonValue SerializeSamplingMessage(const SamplingMessage& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kRole] = JsonValue(v.role);
@@ -167,8 +162,6 @@ SamplingMessage DeserializeSamplingMessage(const JsonValue& j) {
     v.content = DeserializeContentVariant(j[detail::kContent]);
     return v;
 }
-
-// ── CreateMessageRequestParams ──
 
 JsonValue SerializeCreateMessageRequestParams(const CreateMessageRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -202,16 +195,12 @@ CreateMessageRequestParams DeserializeCreateMessageRequestParams(const JsonValue
     return v;
 }
 
-// ── Root ──
-
 JsonValue SerializeRoot(const Root& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
     detail::SerializeOptional(obj, detail::kName, v.name);
     return obj;
 }
-
-// ── ListRootsRequestParams ──
 
 JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams&) {
     return JsonValue(JsonValue::object_tag);
@@ -220,8 +209,6 @@ JsonValue SerializeListRootsRequestParams(const ListRootsRequestParams&) {
 ListRootsRequestParams DeserializeListRootsRequestParams(const JsonValue&) {
     return ListRootsRequestParams{};
 }
-
-// ── SetLevelRequestParams ──
 
 JsonValue SerializeSetLevelRequestParams(const SetLevelRequestParams& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -234,10 +221,6 @@ SetLevelRequestParams DeserializeSetLevelRequestParams(const JsonValue& j) {
     v.level = DeserializeLoggingLevel(j[detail::kLevel]);
     return v;
 }
-
-// ====================================================================
-// Free functions for elicitation helpers
-// ====================================================================
 
 InputRequest MakeInputRequestForElicitation(const ElicitRequestParams& params) {
     InputRequest request;

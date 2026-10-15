@@ -1,7 +1,5 @@
 #pragma once
 
-// McpTypes.hpp — Full MCP protocol data model types
-
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
@@ -14,13 +12,12 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 namespace mcp {
 
-// ====================================================================
-// ToolAnnotations
-// ====================================================================
 struct ToolAnnotations {
     std::optional<std::string> title;
     std::optional<bool> read_only_hint;
@@ -29,27 +26,20 @@ struct ToolAnnotations {
     std::optional<bool> destructive_hint;
 };
 
-// ====================================================================
-// ToolExecution
-// ====================================================================
 enum class ToolExecutionMode { Auto, Manual, Task };
+enum class TaskSupport { Optional, Required };
 struct ToolExecution {
     ToolExecutionMode mode{ToolExecutionMode::Auto};
     std::optional<std::string> human_use;
+    std::optional<TaskSupport> task_support;
 };
 
-// ====================================================================
-// ResourceAnnotations
-// ====================================================================
 struct ResourceAnnotations {
     std::optional<std::vector<std::string>> audience;
     std::optional<double> priority;
     std::optional<std::string> last_modified;
 };
 
-// ====================================================================
-// Tool
-// ====================================================================
 struct Tool {
     std::string name;
     std::optional<std::string> title;
@@ -62,9 +52,6 @@ struct Tool {
     std::optional<ToolExecution> execution;
 };
 
-// ====================================================================
-// Resource
-// ====================================================================
 struct Resource {
     std::string uri;
     std::string name;
@@ -77,9 +64,6 @@ struct Resource {
     std::optional<JsonValue> meta;
 };
 
-// ====================================================================
-// ResourceTemplate
-// ====================================================================
 struct ResourceTemplate {
     std::string uri_template;
     std::string name;
@@ -91,9 +75,6 @@ struct ResourceTemplate {
     std::optional<JsonValue> meta;
 };
 
-// ====================================================================
-// PromptArgument / Prompt / PromptMessage
-// ====================================================================
 struct PromptArgument {
     std::string name;
     std::optional<std::string> description;
@@ -114,26 +95,20 @@ struct PromptMessage {
     ContentVariant content;
 };
 
-// ====================================================================
-// Pagination
-// ====================================================================
 struct Pagination {
     std::optional<std::string> next_cursor;
 };
 
-// ====================================================================
-// Base Result
-// ====================================================================
-enum class ResultType { Complete, InputRequired };
+enum class ResultType { Complete, InputRequired, Task };
+
+JsonValue SerializeResultType(ResultType v);
+ResultType DeserializeResultType(const JsonValue& j);
 
 struct Result {
     std::optional<JsonValue> meta;
     ResultType result_type{ResultType::Complete};
 };
 
-// ====================================================================
-// Request params — shared types matching TS/C#/Python SDK patterns.
-// ====================================================================
 struct PaginatedRequestParams {
     std::optional<std::string> cursor;
     std::optional<RequestMeta> meta;
@@ -146,6 +121,8 @@ using ListPromptsRequestParams = PaginatedRequestParams;
 struct ResourceRequestParams {
     std::string uri;
     std::optional<RequestMeta> meta;
+    std::optional<JsonValue> input_responses;
+    std::optional<std::string> request_state;
 };
 using ReadResourceRequestParams = ResourceRequestParams;
 using SubscribeRequestParams = ResourceRequestParams;
@@ -159,10 +136,40 @@ struct CallToolRequestParams {
     std::optional<std::string> request_state;
 };
 
+struct FileRef {
+    std::string uri;
+    int64_t offset{0};
+    int64_t length{0};
+};
+
+inline JsonValue SerializeFileRef(const FileRef& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj["uri"] = JsonValue(v.uri);
+    if (v.offset != 0) obj["offset"] = JsonValue(v.offset);
+    if (v.length != 0) obj["length"] = JsonValue(v.length);
+    return obj;
+}
+
+inline FileRef DeserializeFileRef(const JsonValue& j) {
+    FileRef v;
+    v.uri = j["uri"].GetString();
+    if (auto* o = j.Find("offset")) {
+        if (o->IsInt()) v.offset = o->GetInt();
+        else if (o->IsDouble()) v.offset = static_cast<int64_t>(o->GetDouble());
+    }
+    if (auto* l = j.Find("length")) {
+        if (l->IsInt()) v.length = l->GetInt();
+        else if (l->IsDouble()) v.length = static_cast<int64_t>(l->GetDouble());
+    }
+    return v;
+}
+
 struct GetPromptRequestParams {
     std::string name;
     std::optional<JsonValue> arguments;
     std::optional<RequestMeta> meta;
+    std::optional<JsonValue> input_responses;
+    std::optional<std::string> request_state;
 };
 
 struct CompleteRequestParams {
@@ -180,9 +187,6 @@ struct InitializeRequestParams {
     Implementation client_info;
 };
 
-// ====================================================================
-// Subscription
-// ====================================================================
 struct SubscriptionFilter {
     std::optional<bool> tools_list_changed;
     std::optional<bool> prompts_list_changed;
@@ -199,9 +203,6 @@ struct SubscriptionsAcknowledgedNotificationParams {
     SubscriptionFilter notifications;
 };
 
-// ====================================================================
-// InputRequiredResult (MRTR)
-// ====================================================================
 struct SamplingMessage {
     std::string role;
     ContentVariant content;
@@ -228,10 +229,16 @@ struct InputRequiredResult {
     std::optional<std::string> request_state;
 };
 
-// ====================================================================
-// Result types
-// ====================================================================
 struct EmptyResult : Result {};
+
+struct CacheableResult : Result {
+    std::optional<std::string> etag;
+};
+
+void SetEtagCacheEnabled(bool enabled);
+bool IsEtagCacheEnabled();
+JsonValue SerializeCacheableResult(const CacheableResult& v);
+CacheableResult DeserializeCacheableResult(const JsonValue& j);
 
 struct CallToolResult : Result {
     std::vector<ContentVariant> content;
@@ -261,6 +268,7 @@ struct ListResourceTemplatesResult : Result {
 struct ReadResourceResult : Result {
     std::vector<ResourceContents> contents;
     std::optional<CacheHint> cache_hint;
+    std::optional<InputRequiredResult> input_required;
 };
 
 struct ListPromptsResult : Result {
@@ -272,6 +280,7 @@ struct ListPromptsResult : Result {
 struct GetPromptResult : Result {
     std::vector<PromptMessage> messages;
     std::optional<std::string> description;
+    std::optional<InputRequiredResult> input_required;
 };
 
 struct CompleteResult : Result {
@@ -295,9 +304,6 @@ struct DiscoverResult : Result {
 
 using PingResult = EmptyResult;
 
-// ====================================================================
-// Notification params
-// ====================================================================
 struct ProgressNotificationParams {
     ProgressToken progress_token;
     double progress;
@@ -310,18 +316,12 @@ struct CancelledNotificationParams {
     std::optional<std::string> reason;
 };
 
-// ====================================================================
-// Logging [deprecated].
-// ====================================================================
 struct LoggingMessageNotificationParams {
     LoggingLevel level;
     std::optional<std::string> logger;
     JsonValue data;
 };
 
-// ====================================================================
-// Elicitation
-// ====================================================================
 struct ElicitRequestParams {
     std::string message;
     std::optional<JsonValue> requested_schema;
@@ -334,8 +334,6 @@ struct ElicitResult : Result {
     std::string action;
     std::optional<JsonValue> content;
 };
-
-// ── Typed elicitation result / schema builder ──
 
 template <typename T>
 struct ElicitResultTyped {
@@ -352,9 +350,6 @@ JsonValue MakeInputResponseFromElicitResult(const ElicitResult& result);
 bool IsInputRequiredResult(const JsonValue& j);
 std::optional<InputRequests> ExtractInputRequests(const JsonValue& result);
 
-// ====================================================================
-// Sampling [deprecated] — use Elicitation instead (SEP-2577).
-// ====================================================================
 struct CreateMessageResult : Result {
     std::string role;
     ContentVariant content;
@@ -362,9 +357,6 @@ struct CreateMessageResult : Result {
     std::optional<std::string> stop_reason;
 };
 
-// ====================================================================
-// Roots [deprecated].
-// ====================================================================
 struct Root {
     std::string uri;
     std::optional<std::string> name;
@@ -377,9 +369,6 @@ struct ListRootsResult : Result {
 JsonValue MakeInputResponseFromCreateMessageResult(const CreateMessageResult& result);
 JsonValue MakeInputResponseFromListRootsResult(const ListRootsResult& result);
 
-// ====================================================================
-// RequestOptions / CacheableRequestOptions
-// ====================================================================
 struct RequestOptions {
     std::optional<JsonValue> meta;
     std::optional<int64_t> read_timeout_ms;
@@ -393,16 +382,10 @@ struct CacheableRequestOptions : RequestOptions {
     std::optional<int64_t> max_age_ms;
 };
 
-// ====================================================================
-// SetLevelRequestParams [deprecated].
-// ====================================================================
 struct SetLevelRequestParams {
     LoggingLevel level;
 };
 
-// ====================================================================
-// Tasks
-// ====================================================================
 struct GetTaskResult {
     std::string task_id;
     std::string status;
@@ -411,12 +394,24 @@ struct GetTaskResult {
     std::optional<std::string> error_message;
     std::optional<JsonValue> input_required;
     std::optional<JsonValue> meta;
+    std::optional<std::string> status_message;
+    std::optional<std::string> created_at;
+    std::optional<std::string> last_updated_at;
+    std::optional<int64_t> ttl_ms;
+    std::optional<int64_t> poll_interval_ms;
+    std::optional<InputRequests> input_requests;
+    std::optional<JsonValue> error;
 };
 
 struct CreateTaskResult : Result {
-    std::string task_id;        // wire: task.taskId
-    std::string status;         // wire: task.status
-    std::string created_at;     // wire: task.createdAt (ISO8601)
+    std::string task_id;
+    std::string status;
+    std::string created_at;
+    std::optional<std::string> status_message;
+    std::optional<std::string> last_updated_at;
+    std::optional<int64_t> ttl_ms;
+    std::optional<int64_t> poll_interval_ms;
+    std::optional<InputRequests> input_requests;
 };
 
 using UpdateTaskResult = EmptyResult;
@@ -429,6 +424,7 @@ struct GetTaskRequestParams {
 struct UpdateTaskRequestParams {
     std::string task_id;
     std::optional<JsonValue> result;
+    std::optional<JsonValue> input_responses;
 };
 
 struct CancelTaskRequestParams {
@@ -441,9 +437,61 @@ struct TaskStatusNotificationParams {
     std::string status;
 };
 
-// ====================================================================
-// Options — registration helpers (replaces Tool.hpp/Resource.hpp/Prompt.hpp)
-// ====================================================================
+using ListSkillsRequestParams = PaginatedRequestParams;
+
+struct SkillsGetRequestParams {
+    std::string uri;
+    std::optional<RequestMeta> meta;
+};
+
+struct ReadDirectoryRequestParams {
+    std::string uri;
+    std::optional<std::string> cursor;
+    std::optional<RequestMeta> meta;
+};
+
+struct SkillResource {
+    std::string uri;
+    std::string digest;
+    int64_t size{0};
+};
+
+using SkillResources = std::variant<std::vector<SkillResource>, std::string>;
+
+struct Skill {
+    std::string uri;
+    JsonValue frontmatter;
+    SkillResources resources;
+    std::optional<JsonValue> meta;
+};
+
+struct SkillsListResult : Result {
+    std::vector<Skill> skills;
+    std::optional<std::string> next_cursor;
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
+};
+
+struct SkillsGetResult : Result {
+    Skill skill;
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
+};
+
+struct DirectoryChild {
+    std::string uri;
+    std::string name;
+    std::optional<std::string> mime_type;
+    std::optional<JsonValue> meta;
+};
+
+struct ReadDirectoryResult : Result {
+    std::vector<DirectoryChild> resources;
+    std::optional<std::string> next_cursor;
+    std::optional<int64_t> ttl_ms;
+    std::optional<std::string> cache_scope;
+};
+
 struct ToolOptions {
     std::optional<std::string> name;
     std::optional<std::string> description;
@@ -488,7 +536,6 @@ struct PromptOptions {
     PromptOptions& Arguments(std::vector<PromptArgument> a) { arguments = std::move(a); return *this; }
 };
 
-// ── Serialization ──
 JsonValue SerializeToolAnnotations(const ToolAnnotations& v);
 ToolAnnotations DeserializeToolAnnotations(const JsonValue& j);
 JsonValue SerializeToolExecution(const ToolExecution& v);
@@ -565,6 +612,7 @@ JsonValue SerializeLoggingMessageNotificationParams(const LoggingMessageNotifica
 LoggingMessageNotificationParams DeserializeLoggingMessageNotificationParams(const JsonValue& j);
 
 JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v);
+JsonValue SerializeElicitRequestParams(const ElicitRequestParams& v, std::string_view protocol_version);
 ElicitRequestParams DeserializeElicitRequestParams(const JsonValue& j);
 JsonValue SerializeElicitResult(const ElicitResult& v);
 ElicitResult DeserializeElicitResult(const JsonValue& j);
@@ -594,5 +642,24 @@ UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j);
 JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v);
 CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j);
 JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v);
+
+JsonValue SerializeSkillResource(const SkillResource& v);
+SkillResource DeserializeSkillResource(const JsonValue& j);
+JsonValue SerializeSkillResources(const SkillResources& v);
+SkillResources DeserializeSkillResources(const JsonValue& j);
+JsonValue SerializeSkill(const Skill& v);
+Skill DeserializeSkill(const JsonValue& j);
+JsonValue SerializeSkillsListResult(const SkillsListResult& v);
+SkillsListResult DeserializeSkillsListResult(const JsonValue& j);
+JsonValue SerializeSkillsGetResult(const SkillsGetResult& v);
+SkillsGetResult DeserializeSkillsGetResult(const JsonValue& j);
+JsonValue SerializeSkillsGetRequestParams(const SkillsGetRequestParams& v);
+SkillsGetRequestParams DeserializeSkillsGetRequestParams(const JsonValue& j);
+JsonValue SerializeDirectoryChild(const DirectoryChild& v);
+DirectoryChild DeserializeDirectoryChild(const JsonValue& j);
+JsonValue SerializeReadDirectoryResult(const ReadDirectoryResult& v);
+ReadDirectoryResult DeserializeReadDirectoryResult(const JsonValue& j);
+JsonValue SerializeReadDirectoryRequestParams(const ReadDirectoryRequestParams& v);
+ReadDirectoryRequestParams DeserializeReadDirectoryRequestParams(const JsonValue& j);
 
 } // namespace mcp

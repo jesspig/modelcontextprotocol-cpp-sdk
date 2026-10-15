@@ -1,5 +1,3 @@
-// StdioClientTransport.cpp — stdio client transport implementation
-
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
@@ -9,6 +7,7 @@
 
 #include <atomic>
 #include <exception>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -21,11 +20,14 @@ public:
     StdioClientSessionTransport(
         std::unique_ptr<detail::ProcessHandle> process,
         std::unique_ptr<detail::PipeHandle> stdin_pipe,
-        std::unique_ptr<detail::PipeHandle> stdout_pipe)
+        std::unique_ptr<detail::PipeHandle> stdout_pipe,
+        std::optional<std::size_t> max_frame_bytes)
         : TransportBase()
         , process_(std::move(process))
         , stdin_pipe_(std::move(stdin_pipe))
         , stdout_pipe_(std::move(stdout_pipe))
+        , max_frame_bytes_(max_frame_bytes.value_or(
+            detail::kMaxStdioFrameBytes))
     {
     }
 
@@ -86,9 +88,9 @@ private:
             buf[bytes_read] = '\0';
             buffer.append(buf, bytes_read);
 
-            if (buffer.size() > detail::kMaxMessageSize) {
+            if (buffer.size() > max_frame_bytes_) {
                 buffer.clear();
-                NotifyError("message size exceeds maximum allowed size");
+                NotifyError("stdio frame size exceeds maximum allowed size");
                 break;
             }
 
@@ -99,8 +101,8 @@ private:
 
                 if (line.empty()) continue;
 
-                if (line.size() > detail::kMaxMessageSize) {
-                    NotifyError("message size exceeds maximum allowed size");
+                if (line.size() > max_frame_bytes_) {
+                    NotifyError("stdio frame size exceeds maximum allowed size");
                     continue;
                 }
 
@@ -119,6 +121,7 @@ private:
     std::unique_ptr<detail::ProcessHandle> process_;
     std::unique_ptr<detail::PipeHandle> stdin_pipe_;
     std::unique_ptr<detail::PipeHandle> stdout_pipe_;
+    std::size_t max_frame_bytes_;
     std::atomic<bool> running_{false};
 };
 
@@ -146,7 +149,8 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
     auto session = std::make_shared<StdioClientSessionTransport>(
         std::move(created.process),
         std::move(created.stdin_pipe),
-        std::move(created.stdout_pipe));
+        std::move(created.stdout_pipe),
+        options_.max_frame_bytes);
 
     session->Start();
     return session;

@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-15T13:14:29+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -17,7 +17,7 @@ resource: src/server/McpServer.cpp
 - `PromptOptions::arguments`（`optional<vector<PromptArgument>>`，链式 `Arguments()`）：`prompts/list` 输出提示词参数声明，配合补全请求官方线格式 `{ref, argument:{name,value}}`（序列化修正见 [/modules/protocol.md](protocol.md)）
 - 任务不注册，由 `ServerOptions::task_store` 驱动
 - `RegisterTool` 保存工具 `inputSchema`；`ResolveToolParamAnnotations(method, name)` 解析合法 `x-mcp-header` 属性路径，供 Streamable HTTP 的 `resolve_param_annotations` 校验 `Mcp-Param-*` 头与 `tools/call` body 一致（详见 [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md)）
-- 能力推导（[McpServer.cpp](../../src/server/McpServer.cpp)）：有工具→`tools`（list_changed）、有资源→`resources`（subscribe + list_changed）、有提示词→`prompts`、`declare_logging`/`declare_completions` 显式声明 `logging`/`completions`（默认 false，不派生）、有 task_store→`extensions = {}`
+- 能力推导（[McpServer.cpp](../../src/server/McpServer.cpp)）：有工具→`tools`（list_changed）、有资源→`resources`（subscribe + list_changed）、有提示词→`prompts`、`declare_logging`/`declare_completions` 显式声明 `logging`/`completions`（默认 false，不派生）、`enable_tasks_extension` 为真→声明 `io.modelcontextprotocol/tasks`（空对象；`task_store` 存在仅决定三处理器是否接线，关时入口回 `MethodNotFound "tasks extension is disabled"`）、`enable_skills_extension` 为真且 `skills_` 非空且有 `resources` 能力→声明 `io.modelcontextprotocol/skills`（关时入口回 `MethodNotFound "skills extension is disabled"`）
 
 ## WireHandlers 方法清单
 
@@ -28,7 +28,7 @@ resource: src/server/McpServer.cpp
 - **WirePromptHandlers**：`prompts/list`（有提示词时）、`prompts/get`（无条件）
 - **WireCoreHandlers**：`initialize`、`server/discover`、`ping`、`logging/setLevel`、`completion/complete` + 通知 `notifications/initialized`（置 `initialized_`）、`notifications/progress`（延长超时截止）、`notifications/elicitation/complete`（唤醒 URL elicitation 等待）
 - **WireExtensionHandlers**：`server/extensions/list`
-- **WireTaskHandlers**：`tasks/get/update/cancel/result/list`——仅 `options_.task_store` 存在时注册，且**仅 2025 及更早时代可用**（`IsModernProtocolVersion` 时回 `MethodNotFound`，[McpServer.cpp:775](../../src/server/McpServer.cpp)）
+- **WireTaskHandlers**：`tasks/get|update|cancel`（2025 与 2026 双时代均可用，modern 下头校验 + 按订阅路由）与 `tasks/result|list`（仅 2025，modern 回 `MethodNotFound`）——仅 `options_.task_store` 存在时接线，三处理器入口另查 `enable_tasks_extension`（关回 `MethodNotFound "tasks extension is disabled"`）；语义见 [/classes/mcp-server.md](../classes/mcp-server.md)（任务分流）与 [/concepts/tasks-extension.md](../concepts/tasks-extension.md)
 - **WireSubscriptionHandlers**：`subscriptions/listen`（2026-era）
 
 `initialized_` 守卫经 `RequireInitialized(initialized, modern_era, promise)` 统一判定：**modern era（2026-07-28）直接放行**（Pin-to-2026/纯 modern 客户端无 initialize 握手也可调用），legacy era 未初始化才回 `InvalidRequest "Server not initialized"`；`initialize`/`server/discover`/`subscriptions/listen`/`tasks/*` 不经此守卫。
@@ -36,9 +36,9 @@ resource: src/server/McpServer.cpp
 ## 任务化 tools/call（[McpServer.cpp](../../src/server/McpServer.cpp)）
 
 - 声明：`ToolOptions::execution`（`ToolExecution`，`mode == ToolExecutionMode::Task`）经 `RegisterTool` 写入工具定义的 `execution` 字段
-- 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径仅 **2025 及更早时代**可用（modern era 回 `MethodNotFound`）
-- 立即返回：登记取消标志 → `CreateTask` + 置 `Working` → 发 `notifications/tasks/status` → 同步返回 `CreateTaskResult`（wire `task.taskId/task.status/createdAt`，`resultType` 落 `"task"`）
-- 后台执行：`std::async` 调用工具 handler，完成后结果写入 store 并发 `notifications/tasks/status`（Working→Completed/Failed；取消判定优先于 Failed，Cancelled 静默收尾不发通知）；失败任务把首个文本 content 作为 `error` 写入 store
+- 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径 2025 与 2026 双时代均放行（modern 下任务状态通知按订阅路由——无订阅者时丢弃，客户端靠轮询取终态）
+- 立即返回：登记取消标志 → `CreateTask` + 置 `Working`（`last_updated_at = created_at`）→ legacy 下发 `notifications/tasks/status`（modern 抑制）→ 同步返回 `CreateTaskResult`（`resultType` 落 `"task"`；2026 扁平只写顶层字段，2025 保留嵌套 `task` 兼容）
+- 后台执行：`std::async` 调用工具 handler——正常返回（含 `is_error` 结果）序列化入库并落 `Completed`；抛 `McpError` 按原码/消息/data 以错误载荷入库落 `Failed`（`GetTaskResult` 以内联 `error` 透传），其他异常按 `InternalError` 落 `Failed`；取消判定优先于 Failed，`Cancelled` 静默收尾不发通知
 - 协作取消：`RequestContext::IsCancellationRequested()` 读共享取消标志（`shared_ptr<const std::atomic<bool>>`，handler 轮询自愿退出）；`tasks/cancel` 置位标志并落 `Cancelled` 终态，**终态不迁移**（已终态直接返回空结果）；**协议级 `notifications/cancelled` 与任务级取消共用同一标志**，标志在派发前由 `GetIncomingCancellationFlag(req.id)` 注入，故普通（非任务）工具 handler 同样能感知
 - future 进 `pending_async_futures_`（顺带清理已完成项），`Close()` 全部等待
 
@@ -55,12 +55,13 @@ resource: src/server/McpServer.cpp
 - 变更通知：`SendToolListChanged()` / `SendResourceListChanged()` / `SendPromptListChanged()` 经 `SendListChangedNotification` **按时代分派**（现代走 `NotifySubscribers` 按 filter 过滤，2025 及更早直接广播）；新增 `SendResourceUpdated(uri)` 发布 `notifications/resources/updated`，以 uri 为过滤键，只投递给订阅了该资源的订阅者（[McpServer.hpp:88](../../include/mcp/server/McpServer.hpp)）
 - `SendLoggingMessage` 的 wire `level` 为**官方字符串**（`SerializeLoggingLevel`，如 `"debug"`/`"error"`）——原数字枚举直写为真 bug，已修正（官方 conformance 捕获）
 - `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全；构造多参 `cancellation_flag` 供任务化执行传入协作取消标志
-- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`），`SendTaskStatus` 公开方法发送 `tasks/status`，任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`
+- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`，modern 经 `NotifySubscribers` 按订阅路由、legacy 广播），`SendTaskStatus` 公开方法发送 `tasks/status`（同样按协商时代二选一路），任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`
 - `ElicitUrl(url, message, timeout=600s)`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - `resources/read` 两轮遍历（[McpServer.cpp:1228](../../src/server/McpServer.cpp)）：第一轮**静态资源优先**（跳过 `is_template`，`uri_pattern == uri` 精确匹配调 `handler(uri)`）；未命中再逐模板 `detail::UriTemplate::Parse` + `Match`，命中调 `template_handler(uri, variables)`（变量名→pct-decoded 值，[McpServer.hpp:171](../../include/mcp/server/McpServer.hpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`。命中分支同样回填 `resources/read` 的 cache hint
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）
+- **六开关门控位置**：etag 构造期同步（`SetEtagCacheEnabled(options_.enable_etag_cache)`，[McpServer.cpp:510](../../src/server/McpServer.cpp)）、触发器发射门（`EmitTriggerEvent` 开头，关直接 return，[McpServer.cpp:832](../../src/server/McpServer.cpp)）、渐进发现（`HandleListTools` 开头，关走缓存快照路径，[McpServer.cpp:1690](../../src/server/McpServer.cpp)）、文件输入（`HandleCallTool` 参数解析段，关跳过 file 引用消解，[McpServer.cpp:1824](../../src/server/McpServer.cpp)）、apps `ui://` 读门（`HandleReadResource` 内 `HasAppsUriScheme` 分支，关报 `HandlerError "apps extension is disabled"`，[McpServer.cpp:2432](../../src/server/McpServer.cpp)）、server-card 获取门（`GetServerCard` 开头，关报 `HandlerError "server card is disabled"`，[McpServer.cpp:2917](../../src/server/McpServer.cpp)）；注意 apps/server-card 关态为 `HandlerError` 而非 `MethodNotFound`
 
 ## requestState 签发（MRTR）
 

@@ -1,0 +1,39 @@
+# per-leg 基线：modern leg（CONFORMANCE_SPEC_VERSION=2026-07-28）。
+# 来源：tests/conformance/baseline.yaml（2026-10-12 摘录，条目逐字一致）。
+# 选用规则：scripts/run-conformance.sh 按 CONFORMANCE_SPEC_VERSION 映射本文件，
+# 未知版本回退 tests/conformance/baseline.yaml。完整归因见 baseline.yaml，本文件只收
+# 现代 leg（--requirements 2026-07-28）实际运行的场景条目（server 1 + client 6）。
+
+# （server 键：仅 server-stateless 一条。server-sse-multiple-streams 在 modern requirements 内 2/2 通过，
+# 故不入本文件（入则报 stale）；该条目仅留 baseline-2025-11-25.yaml 保 legacy 绿。）
+
+server:
+    # --- server-stateless（SHOULD 级推送缺口，modern leg 保绿）---
+    # 2026-10-12 referee 实测 28/28 通过但带 2 个 WARNING
+    # （ServerSendsPromptsListChangedOnSubscription 与
+    # ServerSendsToolsListChangedOnSubscription，均为 SHOULD 级：
+    # 诊断工具变更列表后 listen 流未收到 list_changed 推送），
+    # referee 将其判为 unexpected 致 modern server leg 退出 1。
+    # 待生产实现变更推送后 referee 会报 stale，届时删除本条目。
+    - server-stateless
+
+client:
+    # --- auth/*：fixture 真实 OAuth 流已接线，剩余条目均为结构性不可绿---
+    # 2026-10-13 两轮删除（均有 referee 变绿证据）：
+    #   第一轮（4 条）：metadata-var1/var2/var3/migration — ValidateTokenIssuer
+    #     由「iss 强制必需」改「存在即校验」后转绿（referee stale 报告）。
+    #   第二轮（3 条）：client-credentials-jwt/dpop/dpop-nonce — WSL Linux
+    #     + OpenSSL 3.5.5 实测三场景 checks.json 全 SUCCESS（0 FAILURE / 0 WARNING）：
+    #       cc-jwt 35 checks（client-credentials-jwt-verified SUCCESS）、
+    #       dpop 50 checks（sep-1932-client-* 三项 SUCCESS）、
+    #       dpop-nonce 62 checks（上述 + sep-1932-client-{as,rs}-nonce SUCCESS）。
+    #     此前保留原因「本地无 OpenSSL」已由 WSL 环境消除。
+    #
+    # 以下 3 条保留（非「待生产落地」）：
+    #   - auth/client-credentials-basic（6 passed）、auth/enterprise-managed-authorization
+    #     （7 passed）、auth/wif-jwt-bearer（6 passed）：三者本 leg 均 0 failed，
+    #     但 referee 未标 stale（其「通过」判定口径与摘要 passed 计数不一致），
+    #     删除会失去基线兜底故暂留；后续 referee 报 stale 时再删，禁臆测删除。
+    - auth/client-credentials-basic
+    - auth/enterprise-managed-authorization
+    - auth/wif-jwt-bearer

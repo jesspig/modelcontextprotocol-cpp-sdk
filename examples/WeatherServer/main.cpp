@@ -1,7 +1,3 @@
-// WeatherServer — MCP server example
-// Demonstrates tool definition, parameter descriptions, and multi-tool registration
-// Uses StdioServerTransport
-
 #include <mcp/server/McpServer.hpp>
 #include <mcp/transport/StdioServerTransport.hpp>
 
@@ -13,7 +9,6 @@
 using namespace mcp;
 using Ctx = RequestContext<CallToolRequestParams>;
 
-// 模拟天气数据
 static const std::map<std::string, std::string> kWeatherData = {
     {"CA", "California: Sunny, 72°F"},
     {"NY", "New York: Cloudy, 65°F"},
@@ -34,7 +29,6 @@ int main() {
 
     auto server = McpServer::Create(std::move(transport), opts);
 
-    // 工具: 获取天气警报
     server->RegisterTool("get_alerts",
         ToolOptions{}
             .Description("Get weather alerts for a US state")
@@ -62,7 +56,6 @@ int main() {
                 return result;
             }));
 
-    // 工具: 获取天气预报
     server->RegisterTool("get_forecast",
         ToolOptions{}
             .Description("Get weather forecast for a location")

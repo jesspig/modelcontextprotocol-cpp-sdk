@@ -1,7 +1,5 @@
 #pragma once
 
-// Content.hpp — MCP content types (text, image, audio, resource)
-
 #include <mcp/JsonValue.hpp>
 
 #include <optional>
@@ -81,13 +79,11 @@ struct ResourceLink {
 
 using ContentVariant = std::variant<TextContent, ImageContent, AudioContent, EmbeddedResource, ResourceLink>;
 
-// ── Forward declarations for types defined in Meta.hpp / Implementation.hpp ──
 struct Implementation;
 enum class LoggingLevel;
 struct CacheHint;
 struct RequestMeta;
 
-// ── Serialization ──
 JsonValue SerializeIcon(const Icon& v);
 Icon DeserializeIcon(const JsonValue& j);
 

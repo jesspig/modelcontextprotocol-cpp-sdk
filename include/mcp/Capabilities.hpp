@@ -1,12 +1,11 @@
 #pragma once
 
-// Capabilities.hpp — MCP client/server capability types and serialization
-
 #include <mcp/JsonValue.hpp>
 
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace mcp {
 
@@ -41,6 +40,15 @@ using TasksCapability = EmptyCapability;
 using SubscriptionsCapability = EmptyCapability;
 using CompletionsCapability = EmptyCapability;
 
+inline constexpr std::string_view kTasksExtensionId = "io.modelcontextprotocol/tasks";
+inline constexpr std::string_view kSkillsExtensionId = "io.modelcontextprotocol/skills";
+
+struct TasksExtensionSettings {};
+
+struct SkillsExtensionSettings {
+    bool directory_read{false};
+};
+
 struct ServerCapabilities {
     std::optional<ToolsCapability> tools;
     std::optional<ResourcesCapability> resources;
@@ -63,7 +71,6 @@ struct ClientCapabilities {
     std::optional<JsonValue> experimental;
 };
 
-// ── Serialization ──
 JsonValue SerializeToolsCapability(const ToolsCapability& v);
 ToolsCapability DeserializeToolsCapability(const JsonValue& j);
 JsonValue SerializeResourcesCapability(const ResourcesCapability& v);
@@ -78,6 +85,10 @@ JsonValue SerializeElicitationCapability(const ElicitationCapability& v);
 ElicitationCapability DeserializeElicitationCapability(const JsonValue& j);
 JsonValue SerializeEmptyCapability(const EmptyCapability& v);
 EmptyCapability DeserializeEmptyCapability(const JsonValue& j);
+JsonValue SerializeTasksExtensionSettings(const TasksExtensionSettings& v);
+TasksExtensionSettings DeserializeTasksExtensionSettings(const JsonValue& j);
+JsonValue SerializeSkillsExtensionSettings(const SkillsExtensionSettings& v);
+SkillsExtensionSettings DeserializeSkillsExtensionSettings(const JsonValue& j);
 JsonValue SerializeServerCapabilities(const ServerCapabilities& v);
 ServerCapabilities DeserializeServerCapabilities(const JsonValue& j);
 JsonValue SerializeClientCapabilities(const ClientCapabilities& v);

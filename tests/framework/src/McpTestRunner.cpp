@@ -1,5 +1,3 @@
-// McpTestRunner.cpp — 测试注册、过滤、断言失败记录与运行入口
-
 #include <mcp/test/McpTest.hpp>
 #include <mcp/test/McpAssert.hpp>
 #include <mcp/test/McpTestInfo.hpp>
@@ -30,8 +28,6 @@ std::atomic<TestCase*> g_current_test{nullptr};
 std::atomic<const TestEntry*> g_current_entry{nullptr};
 thread_local TestCase* t_current_test = nullptr;
 
-// ── 全局环境与监听器存储 ──
-
 std::vector<std::unique_ptr<Environment>>& GlobalEnvironments() {
     static std::vector<std::unique_ptr<Environment>> environments;
     return environments;
@@ -41,8 +37,6 @@ std::vector<TestEndListener>& TestEndListeners() {
     static std::vector<TestEndListener> listeners;
     return listeners;
 }
-
-// ── 过滤匹配 ──
 
 bool GlobMatch(std::string_view pattern, std::string_view text) {
     size_t p = 0, t = 0;
@@ -88,8 +82,6 @@ bool MatchAny(const TestEntry& e, const std::vector<std::string_view>& patterns)
     }
     return false;
 }
-
-// ── 运行期状态 ──
 
 struct RecordedTest {
     std::string suite;
@@ -277,8 +269,6 @@ bool WriteJsonReport(const std::string& path, const JsonReport& report) {
     return static_cast<bool>(out);
 }
 
-// ── 命令行解析 ──
-
 void PrintHelp(const char* program) {
     std::printf(
         "Usage: %s [options]\n"
@@ -345,8 +335,6 @@ ParsedCommandLine ParseCommandLine(int argc, char** argv) {
     }
     return parsed;
 }
-
-// ── 执行顺序与套件状态 ──
 
 std::vector<const TestEntry*> BuildExecutionOrder(
     const std::vector<const TestEntry*>& selected, const Options& options) {
@@ -531,8 +519,6 @@ EntryOutcome RunEntry(const TestEntry* entry, SuiteState& suite_state, bool brea
 
 }  // namespace
 
-// ── 用例状态与属性 ──
-
 void TestCase::RecordFailure(std::string message) {
     std::lock_guard<std::mutex> lock(failure_mutex_);
     failures_.push_back(std::move(message));
@@ -564,8 +550,6 @@ void TestCase::RecordProperty(std::string key, long long value) {
 const std::map<std::string, std::string>& TestCase::Properties() const {
     return properties_;
 }
-
-// ── 注册表 ──
 
 Registry& Registry::Instance() {
     static Registry instance;
@@ -606,8 +590,6 @@ std::vector<const TestEntry*> Registry::Select(std::string_view filter) const {
     return result;
 }
 
-// ── 当前用例归因 ──
-
 void SetCurrentTest(TestCase* test) {
     g_current_test.store(test);
     t_current_test = test;
@@ -626,8 +608,6 @@ std::string_view CurrentSuiteName() {
     const TestEntry* e = g_current_entry.load();
     return e ? e->suite : std::string_view();
 }
-
-// ── 断言失败记录 ──
 
 void AssertionFailure(const char* file, int line,
                       std::string_view expr_a, std::string_view expr_b,
@@ -654,8 +634,6 @@ void AssertionFailure(const char* file, int line, std::string_view message) {
     }
 }
 
-// ── 全局环境与监听器 ──
-
 void AddGlobalTestEnvironment(std::unique_ptr<Environment> env) {
     GlobalEnvironments().push_back(std::move(env));
 }
@@ -663,8 +641,6 @@ void AddGlobalTestEnvironment(std::unique_ptr<Environment> env) {
 void AddTestEndListener(TestEndListener listener) {
     TestEndListeners().push_back(std::move(listener));
 }
-
-// ── 运行入口 ──
 
 int RunAll(int argc, char** argv) {
     const ParsedCommandLine parsed = ParseCommandLine(argc, argv);

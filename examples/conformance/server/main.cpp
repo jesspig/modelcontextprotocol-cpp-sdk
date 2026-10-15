@@ -1,7 +1,3 @@
-// main.cpp — MCP conformance test server (Streamable HTTP, legacy 2025-11-25 leg)
-// Fixture for the official @modelcontextprotocol/conformance package; mirrors
-// typescript-sdk test/conformance/src/everythingServer.ts
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/Methods.hpp>
@@ -13,9 +9,12 @@
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 
+#include <mcp/http/EventStore.hpp>
+
 #include <cstdint>
 #include <future>
 #include <iostream>
+#include <map>
 #include <random>
 #include <string>
 #include <string_view>
@@ -55,6 +54,14 @@ uint16_t ParsePort(int argc, char** argv)
         }
     }
     return port;
+}
+
+bool ParseStatelessFlag(int argc, char** argv)
+{
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--stateless") return true;
+    }
+    return false;
 }
 
 void WireCompletionHandler(mcp::McpServer& server)
@@ -125,11 +132,16 @@ int main(int argc, char** argv)
     using namespace mcp::conformance;
 
     const uint16_t port = ParsePort(argc, argv);
+    const bool stateless = ParseStatelessFlag(argc, argv);
 
     StreamableHttpServerOptions transport_options;
     transport_options.port = port;
     transport_options.endpoint = "/mcp";
-    transport_options.stateless = false;
+    transport_options.stateless = stateless;
+    transport_options.enable_legacy_sse = true;
+    if (stateless) transport_options.listen_hold_open = true;
+    transport_options.event_store = std::make_shared<EventStore>();
+    transport_options.session_store = nullptr;
     transport_options.server_name = "mcp-conformance-test-server";
     transport_options.server_version = "1.0.0";
 
@@ -144,10 +156,28 @@ int main(int argc, char** argv)
 
     ServerOptions server_options;
     server_options.server_info = Implementation{"mcp-conformance-test-server", "1.0.0"};
-    server_options.protocol_version = std::string(kLegacyProtocolVersion);
+    if (!stateless) {
+        server_options.protocol_version = std::string(kLegacyProtocolVersion);
+    }
     server_options.declare_logging = true;
     server_options.declare_completions = true;
+    server_options.enable_tasks_extension = true;
+    server_options.enable_skills_extension = true;
     server_options.request_state_key = GenerateRequestStateKey();
+    if (stateless) {
+        server_options.task_store = MakeConformanceTaskStore();
+        std::map<std::string, CacheHint, std::less<>> cache_hints;
+        for (const char* method : {"tools/list", "prompts/list",
+                "resources/list", "resources/templates/list", "resources/read",
+                "skills/list", "skills/get", "resources/directory/read",
+                "server/discover"}) {
+            CacheHint hint;
+            hint.ttl_ms = 60000;
+            hint.cache_scope = "public";
+            cache_hints[method] = hint;
+        }
+        server_options.cache_hints = std::move(cache_hints);
+    }
 
     auto server = McpServer::Create(transport, server_options);
     server_ptr = server.get();
@@ -157,6 +187,10 @@ int main(int argc, char** argv)
     RegisterMrtrTools(*server);
     RegisterConformanceResources(*server);
     RegisterConformancePrompts(*server);
+    if (stateless) {
+        RegisterConformanceSkills(*server);
+        RegisterConformanceTaskTools(*server);
+    }
 
     WireCompletionHandler(*server);
     WireLoggingSetLevelNotice(*server);
@@ -164,6 +198,7 @@ int main(int argc, char** argv)
 
     std::cerr << "MCP Conformance Test Server running on http://localhost:" << port << std::endl;
     std::cerr << "  - MCP endpoint: http://localhost:" << port << "/mcp" << std::endl;
+    std::cerr << "  - mode: " << (stateless ? "stateless (2026-07-28)" : "stateful (2025-11-25)") << std::endl;
 
     server->Run();
     return 0;

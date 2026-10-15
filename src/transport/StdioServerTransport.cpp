@@ -1,15 +1,22 @@
-// StdioServerTransport.cpp — stdio server transport implementation
-
 #include <mcp/transport/StdioServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
 
+#include <cstddef>
+#include <optional>
+
 namespace mcp {
 
 StdioServerTransport::StdioServerTransport()
     : TransportBase()
+{
+}
+
+StdioServerTransport::StdioServerTransport(std::optional<std::size_t> max_frame_bytes)
+    : TransportBase()
+    , max_frame_bytes_(max_frame_bytes.value_or(detail::kMaxStdioFrameBytes))
 {
 }
 
@@ -28,12 +35,10 @@ void StdioServerTransport::Start() {
 
 void StdioServerTransport::Close() {
     if (running_.exchange(false)) {
-        // Closing the pipes unblocks the read thread's blocking Read, so join completes
         if (stdin_pipe_) stdin_pipe_->Close();
         if (stdout_pipe_) stdout_pipe_->Close();
     }
 
-    // Join unconditionally: the read thread may have exited on its own (EOF/error)
     detail::JoinThreadSafely(read_thread_);
 
     if (channel_) channel_->Close();
@@ -67,9 +72,9 @@ void StdioServerTransport::ReadLoop() {
         buf[bytes_read] = '\0';
         buffer.append(buf, bytes_read);
 
-        if (buffer.size() > detail::kMaxMessageSize) {
+        if (buffer.size() > max_frame_bytes_) {
             buffer.clear();
-            NotifyError("message size exceeds maximum allowed size");
+            NotifyError("stdio frame size exceeds maximum allowed size");
             break;
         }
 
@@ -80,8 +85,8 @@ void StdioServerTransport::ReadLoop() {
 
             if (line.empty()) continue;
 
-            if (line.size() > detail::kMaxMessageSize) {
-                NotifyError("message size exceeds maximum allowed size");
+            if (line.size() > max_frame_bytes_) {
+                NotifyError("stdio frame size exceeds maximum allowed size");
                 continue;
             }
 
@@ -96,8 +101,6 @@ void StdioServerTransport::ReadLoop() {
         }
     }
 
-    // The read thread exited on its own (EOF/error/oversize); leave running_
-    // untouched so Close() still performs the full teardown and joins us.
     if (channel_) channel_->Close();
     SetDisconnected();
 }

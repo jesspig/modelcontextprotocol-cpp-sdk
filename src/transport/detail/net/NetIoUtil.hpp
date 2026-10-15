@@ -1,7 +1,5 @@
 #pragma once
 
-// NetIoUtil.hpp — net 层共享的字符串/超时工具与解析上限常量
-
 #include <mcp/detail/StringUtils.hpp>
 
 #include <chrono>

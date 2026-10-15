@@ -1,5 +1,3 @@
-// posix_platform.cpp — POSIX process and pipe implementations
-
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -25,8 +23,6 @@ namespace mcp { namespace detail {
 
 namespace {
 
-// 忽略 SIGPIPE 是进程级设置：向读端已关闭的管道写入时内核会发送 SIGPIPE，
-// 默认动作是终止整个进程，这里改为忽略后 write 返回 EPIPE 错误码。
 struct SigpipeIgnorer {
     SigpipeIgnorer() {
         struct sigaction sa = {};
@@ -123,9 +119,9 @@ bool PosixProcess::IsRunning() {
     if (pid_ <= 0) return false;
     int status = 0;
     pid_t result = waitpid(pid_, &status, WNOHANG);
-    if (result == 0) return true;   // still running
+    if (result == 0) return true;
     if (result == pid_) {
-        pid_ = -1;                   // reaped
+        pid_ = -1;
         return false;
     }
     return false;
@@ -142,7 +138,6 @@ bool PosixProcess::Terminate(int timeout_ms) {
         elapsed += 10;
     }
 
-    // Force kill
     kill(pid_, SIGKILL);
     waitpid(pid_, nullptr, 0);
     pid_ = -1;
@@ -152,7 +147,6 @@ bool PosixProcess::Terminate(int timeout_ms) {
 } // anonymous namespace
 
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
-    // Create pipes: stdout_pipe (child writes, parent reads)
     int stdout_pipefd[2];
     if (pipe(stdout_pipefd) < 0) {
         throw std::runtime_error("pipe creation failed for stdout");
@@ -160,7 +154,6 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     SetCloseOnExec(stdout_pipefd[0]);
     SetCloseOnExec(stdout_pipefd[1]);
 
-    // stdin_pipe: parent writes, child reads
     int stdin_pipefd[2];
     if (pipe(stdin_pipefd) < 0) {
         close(stdout_pipefd[0]);
@@ -170,7 +163,6 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     SetCloseOnExec(stdin_pipefd[0]);
     SetCloseOnExec(stdin_pipefd[1]);
 
-    // Build argv
     std::vector<std::string> args;
     args.push_back(info.command);
     args.insert(args.end(), info.arguments.begin(), info.arguments.end());
@@ -179,7 +171,6 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     for (auto& arg : args) argv.push_back(arg.data());
     argv.push_back(nullptr);
 
-    // Handle environment
     bool has_custom_env = !info.environment_variables.empty() || !info.inherit_environment;
     std::vector<std::string> env_strings;
     std::vector<char*> envp;
@@ -200,8 +191,6 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         envp.push_back(nullptr);
     }
 
-    // execvpe is not available on macOS/BSD.
-    // Search PATH manually, then use execve.
     std::string resolved = info.command;
     if (has_custom_env && resolved.find('/') == std::string::npos) {
         const char* path_env = getenv("PATH");
@@ -238,13 +227,11 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     }
 
     if (pid == 0) {
-        // ── Child process ──
-        close(stdin_pipefd[1]);   // close write end of stdin
-        close(stdout_pipefd[0]);  // close read end of stdout
+        close(stdin_pipefd[1]);
+        close(stdout_pipefd[0]);
 
         dup2(stdin_pipefd[0], STDIN_FILENO);
         dup2(stdout_pipefd[1], STDOUT_FILENO);
-        // stderr inherits from parent (same as Win32 behavior)
 
         close(stdin_pipefd[0]);
         close(stdout_pipefd[1]);
@@ -259,13 +246,11 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         else
             execvp(info.command.c_str(), argv.data());
 
-        // If exec fails
         _exit(127);
     }
 
-    // ── Parent process ──
-    close(stdin_pipefd[0]);   // close read end of stdin
-    close(stdout_pipefd[1]);  // close write end of stdout
+    close(stdin_pipefd[0]);
+    close(stdout_pipefd[1]);
 
     CreatedProcess result;
     result.process = std::make_unique<PosixProcess>(pid);
@@ -287,7 +272,6 @@ std::unique_ptr<PipeHandle> OpenStandardOutput() {
 }
 
 void SetThreadName(const char* name) {
-    // POSIX limits thread names to 16 bytes including null terminator
     char truncated[16];
     std::strncpy(truncated, name, sizeof(truncated) - 1);
     truncated[sizeof(truncated) - 1] = '\0';

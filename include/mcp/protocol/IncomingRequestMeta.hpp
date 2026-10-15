@@ -1,6 +1,4 @@
 #pragma once
-// IncomingRequestMeta.hpp
-// Extracted _meta fields from incoming 2026-era requests and support types
 #include <mcp/Implementation.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Meta.hpp>
@@ -14,9 +12,6 @@
 
 namespace mcp {
 
-// ═══════════════════════════════════════════════════════════════════════
-// IncomingRequestMeta — extracted _meta from incoming 2026-era requests
-// ═══════════════════════════════════════════════════════════════════════
 struct IncomingRequestMeta {
     std::string protocol_version;
     std::optional<Implementation> client_info;
@@ -29,18 +24,12 @@ struct IncomingRequestMeta {
     std::optional<std::string> baggage;
 };
 
-// ═══════════════════════════════════════════════════════════════════════
-// PendingRequest — used by session handler for request/response tracking
-// ═══════════════════════════════════════════════════════════════════════
 struct PendingRequest {
     std::function<void(JsonValue)> callback;
     std::chrono::steady_clock::time_point deadline;
     std::optional<ProgressToken> progress_token;
 };
 
-// ═══════════════════════════════════════════════════════════════════════
-// Subscription — for subscriptions/listen tracking
-// ═══════════════════════════════════════════════════════════════════════
 struct Subscription {
     std::string id;
     SubscriptionFilter granted;

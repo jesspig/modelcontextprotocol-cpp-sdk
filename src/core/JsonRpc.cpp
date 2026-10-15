@@ -1,5 +1,3 @@
-// JsonRpc.cpp — JSON-RPC 2.0 message serialization/deserialization
-
 #include <mcp/JsonRpc.hpp>
 #include <mcp/McpError.hpp>
 #include <detail/JsonFields.hpp>
@@ -13,7 +11,6 @@ namespace mcp {
 
 namespace {
 
-// Validate that the jsonrpc field equals kJsonRpcVersion.
 void ValidateVersion(std::string_view ver) {
     if (ver != kJsonRpcVersion)
         throw McpError(McpErrorCode::InvalidRequest,
@@ -234,9 +231,6 @@ std::string SerializeMessage(JsonRpcMessage&& msg) {
     return jv.Dump();
 }
 
-// Parse a JSON string and dispatch to the correct message type based on field presence.
-// A null "id" is treated as absent (JSON-RPC 2.0 notification semantics), matching
-// the null-id handling of the error response path.
 JsonRpcMessage DeserializeMessage(std::string_view json) {
     auto jv = JsonValue::Parse(json);
 

@@ -1,7 +1,5 @@
 #pragma once
 
-// JsonValue.hpp — Recursive JSON value type (public API)
-
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -40,19 +38,23 @@ public:
     JsonValue(Array v) : data_(std::move(v)) {}
     JsonValue(Object v) : data_(std::move(v)) {}
 
-    // Tag types for empty containers
     enum ObjectTag { object_tag };
     enum ArrayTag { array_tag };
     JsonValue(ObjectTag) : data_(Object{}) {}
     JsonValue(ArrayTag)  : data_(Array{}) {}
 
-    // Static factories
+    ~JsonValue();
+    JsonValue(const JsonValue& other);
+    JsonValue& operator=(const JsonValue& other);
+    JsonValue(JsonValue&& other) noexcept = default;
+    JsonValue& operator=(JsonValue&& other) noexcept = default;
+
     static JsonValue Parse(std::string_view json);
 
-    // Serialize to JSON string
+    static std::string SanitizeUtf8(std::string_view text);
+
     std::string Dump(int indent = -1) const;
 
-    // Type checks
     bool IsNull()   const { return std::holds_alternative<std::nullptr_t>(data_); }
     bool IsBool()   const { return std::holds_alternative<bool>(data_); }
     bool IsInt()    const { return std::holds_alternative<int64_t>(data_); }
@@ -62,7 +64,6 @@ public:
     bool IsArray()  const { return std::holds_alternative<Array>(data_); }
     bool IsObject() const { return std::holds_alternative<Object>(data_); }
 
-    // Accessors
     bool            GetBool()   const;
     int64_t         GetInt()    const;
     double          GetDouble() const;
@@ -72,35 +73,27 @@ public:
     const Object&   GetObject() const;
     Object&         GetObject();
 
-    // Container queries
     size_t Size()   const;
     bool   Empty()  const;
     bool   Contains(std::string_view key) const;
 
-    // Element access for arrays
     JsonValue&       operator[](size_t i);
     const JsonValue& operator[](size_t i) const;
 
-    // Element access for objects
     JsonValue&       operator[](std::string_view key);
     const JsonValue& operator[](std::string_view key) const;
 
-    // Optional key lookup (returns nullptr if not found)
     const JsonValue* Find(std::string_view key) const;
     JsonValue*       Find(std::string_view key);
 
-    // Required key access (throws if missing)
     const JsonValue& At(std::string_view key) const;
     JsonValue&       At(std::string_view key);
 
-    // Push back for arrays
     void PushBack(JsonValue val);
 
-    // Equality
     bool operator==(const JsonValue& other) const;
     bool operator!=(const JsonValue& other) const { return !(*this == other); }
 
-    // Iteration over object
     Object::const_iterator begin() const { return GetObject().begin(); }
     Object::const_iterator end()   const { return GetObject().end(); }
     Object::iterator       begin()       { return GetObject().begin(); }

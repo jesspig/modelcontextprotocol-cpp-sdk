@@ -1,5 +1,4 @@
 #pragma once
-// ThreadUtils.hpp - thread join helpers
 #include <thread>
 
 namespace mcp { namespace detail {

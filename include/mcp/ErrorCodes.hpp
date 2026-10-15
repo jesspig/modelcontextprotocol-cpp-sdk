@@ -1,7 +1,5 @@
 #pragma once
 
-// ErrorCodes.hpp — MCP error codes and std::error_code integration
-
 #include <cstdint>
 #include <system_error>
 
@@ -22,17 +20,15 @@ enum class McpErrorCode : int32_t {
     RequestTimeout = -32001,
     RequestCancelled = -32800,
 
-    // ── Fine-grained error subcategories ──
-    ConnectionRefused = -32003,     // Connection refused
-    TlsHandshakeFailed = -32004,    // TLS handshake failure
-    ProtocolViolation = -32005,     // Protocol violation (message format, etc.)
-    TaskNotFound = -32006,          // Task not found
-    HandlerError = -32007,          // User handler threw exception
-    DeserializeFailed = -32008,     // Deserialization failure
-    SessionExpired = -32009,        // Session expired (HTTP 404 on streamable http)
+    ConnectionRefused = -32003,
+    TlsHandshakeFailed = -32004,
+    ProtocolViolation = -32005,
+    TaskNotFound = -32006,
+    HandlerError = -32007,
+    DeserializeFailed = -32008,
+    SessionExpired = -32009,
 };
 
-// Enable std::error_code integration
 inline std::error_code make_error_code(McpErrorCode e) noexcept;
 
 } // namespace mcp

@@ -1,6 +1,4 @@
 #pragma once
-// McpTrace.hpp — 调用链定位（SCOPED_TRACE）
-
 #include "McpApi.hpp"
 
 #include <string>

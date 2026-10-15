@@ -1,17 +1,36 @@
-// McpTypesResults.cpp — Result type serialization
-
 #include <mcp/McpTypes.hpp>
 #include <mcp/McpError.hpp>
+#include <mcp/detail/sha256.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
+
+#include <atomic>
 
 namespace mcp {
 
 namespace {
 
-// Cache hint deserialization compatible with both wire shapes: the 2026 era
-// flattens ttlMs/cacheScope onto the result top level; the 2025 era nests
-// them under cacheHint.
+constexpr int64_t kDefaultTtlMs = 0;
+constexpr char kDefaultCacheScope[] = "private";
+constexpr char kEtagKey[] = "etag";
+constexpr size_t kEtagMaxBytes = 8u * 1024u * 1024u;
+
+std::atomic<bool>& EtagEnabledFlag() {
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+
+std::string EtagToHex(std::string_view raw) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(raw.size() * 2);
+    for (unsigned char c : raw) {
+        out.push_back(kHex[c >> 4]);
+        out.push_back(kHex[c & 0x0f]);
+    }
+    return out;
+}
+
 std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
     auto* ttl = j.Find(detail::kTTLMs);
     auto* scope = j.Find(detail::kCacheScope);
@@ -28,12 +47,19 @@ std::optional<CacheHint> DeserializeCacheHintCompat(const JsonValue& j) {
 
 } // anonymous namespace
 
-// ── ResultType enum ──
+void SetEtagCacheEnabled(bool enabled) {
+    EtagEnabledFlag().store(enabled);
+}
+
+bool IsEtagCacheEnabled() {
+    return EtagEnabledFlag().load();
+}
 
 JsonValue SerializeResultType(ResultType v) {
     switch (v) {
         case ResultType::Complete:     return JsonValue(detail::kCompleteValue);
         case ResultType::InputRequired: return JsonValue(detail::kInputRequiredValue);
+        case ResultType::Task:          return JsonValue(detail::kTaskValue);
         default:
             throw McpError(McpErrorCode::InvalidParams,
                 "SerializeResultType: unknown value: " + std::to_string(static_cast<int>(v)));
@@ -43,16 +69,13 @@ JsonValue SerializeResultType(ResultType v) {
 ResultType DeserializeResultType(const JsonValue& j) {
     auto s = j.GetString();
     if (s == detail::kInputRequiredValue) return ResultType::InputRequired;
+    if (s == detail::kTaskValue) return ResultType::Task;
     if (s == detail::kCompleteValue) return ResultType::Complete;
     throw McpError(McpErrorCode::InvalidParams,
         std::string("DeserializeResultType: unknown string: '") + s + "'");
 }
 
 namespace {
-
-// ── List-style result serialization helpers ──
-// Shared by ListToolsResult / ListResourcesResult / ListResourceTemplatesResult /
-// ListPromptsResult and ReadResourceResult (which has no next_cursor).
 
 template <typename T, typename SerializeFn>
 void SerializeListItems(JsonValue& obj, const char* items_key,
@@ -62,17 +85,28 @@ void SerializeListItems(JsonValue& obj, const char* items_key,
     obj[items_key] = JsonValue(std::move(arr));
 }
 
-// Common trailing fields of list-style results: nextCursor (omit when absent,
-// pass std::nullopt for results without one), cacheHint, meta, resultType.
 void WriteListResultCommon(JsonValue& obj,
                            const std::optional<std::string>& next_cursor,
                            const std::optional<CacheHint>& cache_hint,
                            const std::optional<JsonValue>& meta,
                            ResultType result_type) {
     detail::SerializeOptional(obj, detail::kNextCursor, next_cursor);
-    if (cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
+    if (cache_hint) {
+        obj[detail::kCacheHint] = SerializeCacheHint(*cache_hint);
+        detail::SerializeOptional(obj, detail::kTTLMs, cache_hint->ttl_ms);
+        detail::SerializeOptional(obj, detail::kCacheScope, cache_hint->cache_scope);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kDefaultTtlMs);
+        obj[detail::kCacheScope] = JsonValue(kDefaultCacheScope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, meta);
     obj[detail::kResultType] = SerializeResultType(result_type);
+    if (IsEtagCacheEnabled()) {
+        std::string payload = obj.Dump();
+        if (payload.size() <= kEtagMaxBytes) {
+            obj[kEtagKey] = JsonValue(EtagToHex(detail::Sha256::Hash(payload)));
+        }
+    }
 }
 
 template <typename T, typename DeserializeFn>
@@ -86,8 +120,6 @@ std::vector<T> DeserializeListItems(const JsonValue& j, const char* items_key,
     return result;
 }
 
-// Common trailing fields of list-style results; next_cursor may be nullptr
-// for results without a cursor (e.g. ReadResourceResult).
 void ReadListResultCommon(const JsonValue& j,
                           std::optional<std::string>* next_cursor,
                           std::optional<CacheHint>& cache_hint,
@@ -101,8 +133,6 @@ void ReadListResultCommon(const JsonValue& j,
 }
 
 } // anonymous namespace
-
-// ── EmptyResult ──
 
 JsonValue SerializeEmptyResult(const EmptyResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -118,7 +148,22 @@ EmptyResult DeserializeEmptyResult(const JsonValue& j) {
     return v;
 }
 
-// ── CallToolResult ──
+JsonValue SerializeCacheableResult(const CacheableResult& v) {
+    JsonValue obj(JsonValue::object_tag);
+    detail::SerializeOptional(obj, detail::kMeta, v.meta);
+    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    detail::SerializeOptional(obj, kEtagKey, v.etag);
+    return obj;
+}
+
+CacheableResult DeserializeCacheableResult(const JsonValue& j) {
+    CacheableResult v;
+    detail::DeserializeOptional(j, detail::kMeta, v.meta);
+    auto* rt = j.Find(detail::kResultType);
+    if (rt) v.result_type = DeserializeResultType(*rt);
+    detail::DeserializeOptional(j, kEtagKey, v.etag);
+    return v;
+}
 
 JsonValue SerializeCallToolResult(const CallToolResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -157,8 +202,6 @@ CallToolResult DeserializeCallToolResult(const JsonValue& j) {
     return v;
 }
 
-// ── ListToolsResult ──
-
 JsonValue SerializeListToolsResult(const ListToolsResult& v) {
     JsonValue obj(JsonValue::object_tag);
     SerializeListItems(obj, detail::kTools, v.tools, SerializeTool);
@@ -172,8 +215,6 @@ ListToolsResult DeserializeListToolsResult(const JsonValue& j) {
     ReadListResultCommon(j, &v.next_cursor, v.cache_hint, v.meta, v.result_type);
     return v;
 }
-
-// ── ListResourcesResult ──
 
 JsonValue SerializeListResourcesResult(const ListResourcesResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -189,8 +230,6 @@ ListResourcesResult DeserializeListResourcesResult(const JsonValue& j) {
     return v;
 }
 
-// ── ListResourceTemplatesResult ──
-
 JsonValue SerializeListResourceTemplatesResult(const ListResourceTemplatesResult& v) {
     JsonValue obj(JsonValue::object_tag);
     SerializeListItems(obj, detail::kResourceTemplates, v.resource_templates, SerializeResourceTemplate);
@@ -205,12 +244,15 @@ ListResourceTemplatesResult DeserializeListResourceTemplatesResult(const JsonVal
     return v;
 }
 
-// ── ReadResourceResult ──
-
 JsonValue SerializeReadResourceResult(const ReadResourceResult& v) {
     JsonValue obj(JsonValue::object_tag);
     SerializeListItems(obj, detail::kContents, v.contents, SerializeResourceContents);
-    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta, v.result_type);
+    WriteListResultCommon(obj, std::nullopt, v.cache_hint, v.meta,
+        v.input_required ? ResultType::InputRequired : v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    }
     return obj;
 }
 
@@ -220,8 +262,6 @@ ReadResourceResult DeserializeReadResourceResult(const JsonValue& j) {
     ReadListResultCommon(j, nullptr, v.cache_hint, v.meta, v.result_type);
     return v;
 }
-
-// ── ListPromptsResult ──
 
 JsonValue SerializeListPromptsResult(const ListPromptsResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -237,8 +277,6 @@ ListPromptsResult DeserializeListPromptsResult(const JsonValue& j) {
     return v;
 }
 
-// ── GetPromptResult ──
-
 JsonValue SerializeGetPromptResult(const GetPromptResult& v) {
     JsonValue obj(JsonValue::object_tag);
     {
@@ -248,7 +286,13 @@ JsonValue SerializeGetPromptResult(const GetPromptResult& v) {
     }
     detail::SerializeOptional(obj, detail::kDescription, v.description);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
-    obj[detail::kResultType] = SerializeResultType(v.result_type);
+    if (v.input_required) {
+        obj[detail::kInputRequests] = SerializeInputRequests(v.input_required->input_requests);
+        obj[detail::kResultType] = JsonValue(detail::kInputRequiredValue);
+        detail::SerializeOptional(obj, detail::kRequestState, v.input_required->request_state);
+    } else {
+        obj[detail::kResultType] = SerializeResultType(v.result_type);
+    }
     return obj;
 }
 
@@ -267,8 +311,6 @@ GetPromptResult DeserializeGetPromptResult(const JsonValue& j) {
     return v;
 }
 
-// ── CompleteResult ──
-
 JsonValue SerializeCompleteResult(const CompleteResult& v) {
     JsonValue obj(JsonValue::object_tag);
     obj["completion"] = v.completion;
@@ -285,8 +327,6 @@ CompleteResult DeserializeCompleteResult(const JsonValue& j) {
     if (rt) v.result_type = DeserializeResultType(*rt);
     return v;
 }
-
-// ── InitializeResult ──
 
 JsonValue SerializeInitializeResult(const InitializeResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -311,8 +351,6 @@ InitializeResult DeserializeInitializeResult(const JsonValue& j) {
     return v;
 }
 
-// ── DiscoverResult ──
-
 JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
     JsonValue obj(JsonValue::object_tag);
     {
@@ -323,7 +361,14 @@ JsonValue SerializeDiscoverResult(const DiscoverResult& v) {
     obj[detail::kCapabilities] = SerializeServerCapabilities(v.capabilities);
     obj[detail::kServerInfo] = SerializeImplementation(v.server_info);
     detail::SerializeOptional(obj, detail::kInstructions, v.instructions);
-    if (v.cache_hint) obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
+    if (v.cache_hint) {
+        obj[detail::kCacheHint] = SerializeCacheHint(*v.cache_hint);
+        detail::SerializeOptional(obj, detail::kTTLMs, v.cache_hint->ttl_ms);
+        detail::SerializeOptional(obj, detail::kCacheScope, v.cache_hint->cache_scope);
+    } else {
+        obj[detail::kTTLMs] = JsonValue(kDefaultTtlMs);
+        obj[detail::kCacheScope] = JsonValue(kDefaultCacheScope);
+    }
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     return obj;
@@ -351,8 +396,6 @@ DiscoverResult DeserializeDiscoverResult(const JsonValue& j) {
     if (rt) v.result_type = DeserializeResultType(*rt);
     return v;
 }
-
-// ── InputRequest ──
 
 JsonValue SerializeInputRequest(const InputRequest& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -389,8 +432,6 @@ InputRequest DeserializeInputRequest(const JsonValue& j) {
     return v;
 }
 
-// ── InputRequests ──
-
 JsonValue SerializeInputRequests(const InputRequests& v) {
     JsonValue obj(JsonValue::object_tag);
     for (const auto& [key, request] : v) obj[key] = SerializeInputRequest(request);
@@ -408,8 +449,6 @@ InputRequests DeserializeInputRequests(const JsonValue& j) {
     return v;
 }
 
-// ── InputRequiredResult ──
-
 JsonValue SerializeInputRequiredResult(const InputRequiredResult& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kInputRequests] = SerializeInputRequests(v.input_requests);
@@ -425,8 +464,6 @@ InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kRequestState, v.request_state);
     return v;
 }
-
-// ── ElicitResult ──
 
 JsonValue SerializeElicitResult(const ElicitResult& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -448,8 +485,6 @@ ElicitResult DeserializeElicitResult(const JsonValue& j) {
     return v;
 }
 
-// ── CreateMessageResult ──
-
 JsonValue SerializeCreateMessageResult(const CreateMessageResult& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kRole] = JsonValue(v.role);
@@ -460,8 +495,6 @@ JsonValue SerializeCreateMessageResult(const CreateMessageResult& v) {
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
 }
-
-// ── ListRootsResult ──
 
 JsonValue SerializeListRootsResult(const ListRootsResult& v) {
     JsonValue obj(JsonValue::object_tag);

@@ -127,3 +127,24 @@ return result;  // 服务端自动签名 requestState（需配置 request_state_
 ```
 
 配置 `ServerOptions::request_state_key` 后，服务端在返回前自动为 `input_required` 结果签名 `request_state`；重试时篡改或过期的状态会在进入处理程序前被拒绝（-32602，`data.reason="invalid_request_state"`）。完整协议流程见 [MRTR](/zh/advanced/mrtr)。
+
+## 任务化执行
+
+将工具声明为任务模式后，`tools/call` 立即返回任务句柄（`taskId`），后台异步执行，客户端用 `GetTask` / `PollTaskToCompletion` 跟进（2025 与 2026 时代均可；2026 时代下任务状态通知按订阅路由，无订阅者时丢弃，客户端靠轮询取终态）：
+
+```cpp
+ToolExecution execution;
+execution.mode = ToolExecutionMode::Task;
+
+ToolOptions opts;
+opts.execution = execution;
+opts.description = "耗时较长的计算";
+
+server->RegisterTool("slow_compute", opts,
+    [](const RequestContext<CallToolRequestParams>& ctx) -> CallToolResult {
+        // 轮询 ctx.IsCancellationRequested() 实现协作取消
+        // ...
+    });
+```
+
+前提是 `ServerOptions::task_store` 已配置（任务持久化后端）。`tasks/update` 支持携带 `inputResponses` 回应任务执行中的输入请求（与 `result` 互斥）。任务句柄形态按时代区分：2026 时代扁平直写顶层 `taskId`/`status`，2025 时代保留嵌套 `task` 对象兼容（客户端双形态接受）。后台落终态语义：处理程序正常返回（含 `is_error` 结果）落 `Completed`，抛异常落 `Failed` 并以内联 `error` 透传错误载荷。扩展声明与 wire 语义见 [扩展](/zh/server/extensions)。

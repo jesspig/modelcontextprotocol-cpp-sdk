@@ -1,9 +1,8 @@
-// MrtrTools.cpp — multi-round-trip (SEP-2322) input_required_result tools
-
 #include "ConformanceServer.hpp"
 
 #include <mcp/server/RequestState.hpp>
 
+#include <mcp/Capabilities.hpp>
 #include <mcp/McpError.hpp>
 
 #include <functional>
@@ -41,9 +40,6 @@ JsonValue MakeConfirmOkSchema()
     return schema;
 }
 
-// TS acceptedContent equivalent for elicitation responses: returns the
-// response's content when the entry is an accepted ElicitResult. Entries that
-// carry the content object directly (no action field) count as accepted too.
 const JsonValue* AcceptedElicitContent(
     const std::optional<JsonValue>& responses, const char* key)
 {
@@ -124,13 +120,11 @@ CallToolResult MakeInputRequired(InputRequiredResult ir)
     return result;
 }
 
-// Re-requests the caller name via an in-band elicitation input request until
-// the retry carries it in inputResponses, then answers "Hello, <name>!".
 CallToolResult Elicitation(const ToolContext& ctx)
 {
-    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "name");
+    auto* content = AcceptedElicitContent(ctx.Params().input_responses, "user_name");
     if (content) {
-        auto* name = content->Find("user_name");
+        auto* name = content->Find("name");
         if (name && name->IsString())
             return MakeTextResult("Hello, " + name->GetString() + "!");
     }
@@ -139,8 +133,8 @@ CallToolResult Elicitation(const ToolContext& ctx)
     InputRequiredResult ir;
     ElicitRequestParams params;
     params.message = "What is your name?";
-    params.requested_schema = MakeFormSchema("user_name", "string");
-    ir.input_requests["name"] = MakeInputRequestForElicitation(params);
+    params.requested_schema = MakeFormSchema("name", "string");
+    ir.input_requests["user_name"] = MakeInputRequestForElicitation(params);
     result.input_required = std::move(ir);
     return result;
 }
@@ -204,20 +198,20 @@ CallToolResult RequestState(const ToolContext& ctx)
 CallToolResult MultipleInputs(const ToolContext& ctx)
 {
     const auto& responses = ctx.Params().input_responses;
-    auto* name_content = AcceptedElicitContent(responses, "name");
-    auto* name = name_content ? name_content->Find("user_name") : nullptr;
+    auto* name_content = AcceptedElicitContent(responses, "user_name");
+    auto* name = name_content ? name_content->Find("name") : nullptr;
     std::string greeting;
     bool has_greeting = false;
-    if (auto* entry = ResponseEntry(responses, "message"); entry && entry->IsObject()) {
+    if (auto* entry = ResponseEntry(responses, "greeting"); entry && entry->IsObject()) {
         has_greeting = TrySamplingText(*entry, greeting) != nullptr;
     }
-    auto* roots_entry = ResponseEntry(responses, "paths");
+    auto* roots_entry = ResponseEntry(responses, "client_roots");
     auto* roots = roots_entry ? RootsResponseArray(*roots_entry) : nullptr;
     if (!name || !name->IsString() || !has_greeting || !roots) {
         InputRequiredResult ir;
-        ir.input_requests["name"] = MakeNameElicitRequest();
-        ir.input_requests["message"] = MakeGreetingSamplingRequest("Generate a greeting", 50);
-        ir.input_requests["paths"] = MakeInputRequestForRoots(ListRootsRequestParams{});
+        ir.input_requests["user_name"] = MakeNameElicitRequest();
+        ir.input_requests["greeting"] = MakeGreetingSamplingRequest("Generate a greeting", 50);
+        ir.input_requests["client_roots"] = MakeInputRequestForRoots(ListRootsRequestParams{});
         JsonValue payload(JsonValue::object_tag);
         payload["tool"] = JsonValue("multiple_inputs");
         ir.request_state = payload.Dump();
@@ -227,11 +221,6 @@ CallToolResult MultipleInputs(const ToolContext& ctx)
         + std::to_string(roots->GetArray().size()) + " root(s) visible");
 }
 
-// Two elicitation rounds ("Step 1: name" / "Step 2: favorite color"); the
-// round counter and the collected name live in requestState (HMAC-minted by
-// the server when request_state_key is configured, bare JSON otherwise).
-// Mirrors the TS fixture's round gating: the round only counts when the state
-// payload carries tool == "multi_round" and a numeric round.
 CallToolResult MultiRound(const ToolContext& ctx)
 {
     int round = 0;
@@ -313,8 +302,11 @@ CallToolResult Capabilities(const ToolContext& ctx)
     std::optional<ClientCapabilities> declared;
     if (ctx.Params().meta && ctx.Params().meta->client_capabilities) {
         declared = *ctx.Params().meta->client_capabilities;
-    } else if (auto caps = ctx.Server().GetClientCapabilities()) {
-        declared = *caps;
+    }
+    if (!declared) {
+        if (auto caps = ctx.Server().GetClientCapabilities()) {
+            declared = *caps;
+        }
     }
     InputRequiredResult ir;
     if (declared && declared->elicitation) {

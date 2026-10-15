@@ -1,14 +1,15 @@
-// HttpServer.hpp — Minimal HTTP server with SSE streaming support (self-hosted PIMPL)
-
 #pragma once
 
 #include <mcp/JsonRpc.hpp>
+#include <mcp/transport/detail/Limits.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,9 +17,8 @@
 
 namespace mcp {
 
-// ── HTTP request / response ──
 struct HttpRequest {
-    std::string method;      // GET, POST
+    std::string method;
     std::string path;
     std::unordered_map<std::string, std::string> headers;
     std::string body;
@@ -29,16 +29,13 @@ struct HttpResponse {
     std::string status_text{"OK"};
     std::unordered_map<std::string, std::string> headers;
     std::string body;
-    bool is_sse{false};  // if true, body is ignored and SSE stream is used
-    // Close the connection right after writing an SSE body: the stream is
-    // finite (e.g. a single request response), not a long-lived GET stream.
+    bool is_sse{false};
     bool sse_close_after_write{false};
+    std::string sse_client_tag;
 };
 
-// ── HTTP handler callback ──
 using HttpHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
 
-// ── HttpServer options — event callbacks ──
 using HttpRequestCallback = std::function<void(const HttpRequest&)>;
 using HttpConnectCallback = std::function<void()>;
 using HttpDisconnectCallback = std::function<void()>;
@@ -48,24 +45,16 @@ struct HttpServerOptions {
     HttpConnectCallback on_connect;
     HttpDisconnectCallback on_disconnect;
 
-    // DNS rebinding protection: when non-empty, requests whose Host header is
-    // not in this list are rejected with 403. When empty, only localhost
-    // hosts (localhost / 127.0.0.1 / ::1) are allowed.
     std::vector<std::string> allowed_hosts;
-    // When non-empty, requests carrying an Origin header must match one of
-    // these exact origins; otherwise the Origin header is ignored.
     std::vector<std::string> allowed_origins;
 
-    // SSE keepalive comment-frame interval in ms (0 disables)
     int sse_keep_alive_ms{0};
 
-    // 绑定监听地址；接受 IPv4/IPv6 字面量（如 "127.0.0.1" / "::1" / "::"），可用 [] 包围（如 "[::1]"）。
-    // 空字符串 = 仅监听 IPv4 所有接口 (INADDR_ANY)，与历史行为一致。不支持主机名解析。
     std::string bind_host;
+
+    std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
 };
 
-// ── HttpServer — minimal HTTP server ──
-// Handles GET and POST. Supports SSE streaming via callback.
 struct HttpServerImpl;
 class HttpServer {
 public:
@@ -73,22 +62,21 @@ public:
                const HttpServerOptions& options = {});
     ~HttpServer();
 
-    // Start accepting connections
     void Start();
 
-    // Stop the server
     void Stop();
 
-    // Set handler for a specific path + method
     void SetHandler(std::string_view method, std::string_view path,
                     HttpHandler handler);
 
-    // Send SSE event to a connected SSE client
-    // (for server-initiated notifications)
     using SseClientId = uint64_t;
     SseClientId AddSseClient(std::function<void(std::string_view)> send_fn);
+    SseClientId AddSseClient(std::function<void(std::string_view)> send_fn,
+                             std::string tag);
     void RemoveSseClient(SseClientId id);
     void BroadcastSse(std::string_view event);
+    void BroadcastSse(std::string_view event,
+                      const std::function<bool(const std::string&)>& accept);
     std::size_t SseClientCount() const;
 
 private:
@@ -96,10 +84,8 @@ private:
     std::atomic<bool> running_{false};
     HttpServerOptions options_;
 
-    // Handlers: (method, path) → handler
     std::map<std::pair<std::string, std::string>, HttpHandler> handlers_;
 
-    // shared_ptr so SSE onclose callbacks can capture the impl safely
     std::shared_ptr<HttpServerImpl> impl_;
 };
 

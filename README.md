@@ -22,6 +22,7 @@ C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 - [Conformance Tests](#conformance-tests)
 - [Examples](#examples)
 - [Related Projects](#related-projects)
+- [Unsupported Declarations](#unsupported-declarations)
 - [License](#license)
 
 </details>
@@ -92,7 +93,7 @@ Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-proto
 - **mcp-transport** — Transport implementations: StdioServerTransport, StdioClientTransport, SseClientTransport, InMemoryTransport, WebSocketClientTransport, StreamableHttpServerTransport, StreamableHttpClientTransport. Platform-specific I/O in `detail/` (posix, win32).
 - **mcp-protocol** — `McpSessionHandler` (JSON-RPC engine), dual-era `WireCodec` (2025-11-25 / 2026-07-28), request/response correlation with timeout, `MessageFilter` pipeline.
 - **mcp-server** — `McpServer` with tool/resource/prompt registration, `IMcpTaskStore` (incl. `FileTaskStore`), MRTR (`InputRequiredResult`), server → client elicitation, subscription management.
-- **mcp-client** — `McpClient` with server discovery (`server/discover` → initialize fallback), version negotiation, OAuth (PKCE/DCR), MRTR (InputRequired loop), tool cache, `FileTokenCache`.
+- **mcp-client** — `McpClient` with server discovery (`server/discover` → initialize fallback), version negotiation, OAuth (PKCE/CIMD with DCR fallback), MRTR (InputRequired loop), tool cache, `FileTokenCache`.
 - **mcp-http** — HTTP server for Streamable HTTP mode: `HttpServer`, `EventStore` (SSE event persistence), `StreamableHttpServerTransport`, `StreamableHttpClientTransport`.
 
 ### All transports
@@ -174,9 +175,10 @@ auto result = client->CallTool("echo",
 The client supports the MCP OAuth authorization flow:
 
 - **Authorization Code + PKCE** flow with S256 code challenge
-- Dynamic Client Registration (DCR)
+- CIMD client identity with DCR fallback (an `http(s)://` `client_id` is fetched as a client metadata document; dynamic registration only when no `client_id` is configured)
 - Token refresh and revocation
 - Pluggable token cache (`ITokenCache`), persistent `FileTokenCache` included
+- DPoP (RFC 9449): server-side proof verification on the Streamable HTTP resource server — off by default, turned on per deployment with the experimental `enable_dpop` switch (`StreamableHttpServerOptions::bearer_auth->enable_dpop`), and requires OpenSSL; the client side can bind the authorization scheme and mint proofs (`OAuthClientOptions::enable_dpop`), but transports attach per-request `DPoP` proof when `apply_per_request_headers`/`observe_response_challenge` are bound via `ApplyDPoPProofHeader`/`ObserveDPoPNonce`
 
 ```cpp
 OAuthClientOptions oauth_opts;
@@ -235,14 +237,60 @@ build/debug/examples/EchoServer/EchoServer
 
 This SDK was developed against the official MCP protocol specification and reference implementations:
 
-| Language   | Repository                                                       |
-|------------|-----------------------------------------------------------------|
-| Python     | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) |
-| TypeScript | [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) |
-| Go         | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) |
-| C#         | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) |
-| Java       | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) |
-| Rust       | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) |
+| Language   | Repository                                                       | Tier   |
+|------------|-----------------------------------------------------------------|--------|
+| Python     | [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) | Tier 1 |
+| TypeScript | [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) | Tier 1 |
+| Go         | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) | Tier 1 |
+| C#         | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk) | Tier 1 |
+| Rust       | [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) | Tier 1 |
+| Ruby       | [modelcontextprotocol/ruby-sdk](https://github.com/modelcontextprotocol/ruby-sdk) | Tier 1 |
+| Java       | [modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk) | Tier 2 |
+| Swift      | [modelcontextprotocol/swift-sdk](https://github.com/modelcontextprotocol/swift-sdk) | Tier 3 |
+| PHP        | [modelcontextprotocol/php-sdk](https://github.com/modelcontextprotocol/php-sdk) | Tier 3 |
+| Kotlin     | [modelcontextprotocol/kotlin-sdk](https://github.com/modelcontextprotocol/kotlin-sdk) | Tier 3 |
+
+> Tiers follow the [official SDK list (2026-07-28 revision)](https://modelcontextprotocol.io/docs/2026-07-28/sdk): 6 Tier 1 (TypeScript, Python, C#, Go, Rust, Ruby — Rust promoted to Tier 1 via [PR #3287](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3287) on 2026-08-21), Java is Tier 2, Swift/PHP/Kotlin are Tier 3. Tier rules: [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers) — experimental features and protocol extensions (such as Tasks and MCP Apps) are not required for any tier.
+
+### Ruby SDK cross-check
+
+Implementation notes on the official Ruby SDK (`mcp` gem, `main` branch as of 2026-10-11; latest release `1.7.0` dated 2026-10-05, see [CHANGELOG.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/CHANGELOG.md) and [version.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/version.rb)), compared with this SDK per dimension:
+
+| Dimension | Ruby (`mcp` gem) | This SDK |
+|-----------|------------------|----------|
+| Spec revisions | 2025-06-18, 2025-11-25, 2026-07-28 ([ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md), Current Status) | 2024-11-05…2026-07-28, dual-era codec (see Protocol Versions above) |
+| `server/discover` | Modern era never negotiated via `initialize` (CHANGELOG §1.2.0); `server/discover` finalized with modern client support; per-transport era lock on stdio, sessionless modern path on Streamable HTTP ([methods.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/methods.rb)) | Auto mode with transport-classified fallback ([version-negotiation](wiki/concepts/version-negotiation.md)) |
+| MRTR | SEP-2322 `input_required` results with `inputRequests`/`inputResponses` + `requestState`, fulfilled on the legacy wire too (CHANGELOG §0.24.0/§1.2.0); `resultType` is only `complete`/`input_required` ([result_type.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/result_type.rb)) | `InputRequiredResult` + elicitation loop ([mrtr](wiki/concepts/mrtr.md)); additional `task` resultType for task handles |
+| Headers | Sends SEP-2243 `Mcp-Method`/`Mcp-Name`, mirrors `x-mcp-header` params into `Mcp-Param-*` (CHANGELOG §0.22.0/§1.2.0; [mcp_param_headers.rb](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/client/mcp_param_headers.rb)); `Mcp-Method` required on the modern path | `Mcp-Name` validation incl. tasks `taskId` check ([mcp-param-headers](wiki/concepts/mcp-param-headers.md), [tasks-extension](wiki/concepts/tasks-extension.md)) |
+| Cache | Server stamps SEP-2549 `ttlMs`/`cacheScope` (CHANGELOG §0.24.0/§1.2.0); no client-side response cache: `lib/mcp/client/` holds only elicitation, http, mcp_param_headers, modern_envelope, oauth(+oauth/), paginated_result, stdio, tool, and `client/http.rb` matches no `ttlMs`/`cacheScope`/cache-hit logic (verified 2026-10-13 against `main`) | Client response cache consuming both the 2026 top-level `ttlMs`/`cacheScope` and the 2025 nested `cacheHint`, with TTL + public/private partitions ([response-cache](wiki/concepts/response-cache.md)) |
+| Auth | Full OAuth 2.1 client (DCR, PKCE, CIMD, `client_credentials`, `private_key_jwt`, `jwt-bearer`, RFC 9207 `iss`, PRM-first discovery; CHANGELOG §0.17.0–§1.6.0) + server resource-server protection ([README Features](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/README.md)) | PKCE/CIMD (DCR fallback) + `FileTokenCache`, server Bearer auth, opt-in server-side DPoP proof verification ([dpop](wiki/concepts/dpop.md); see OAuth Support above) |
+| Tasks (SEP-2663) | Not implemented — "remains planned" ([ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md), [#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)) | `tasks/get\|update\|cancel` dual-era + `FileTaskStore` ([tasks-extension](wiki/concepts/tasks-extension.md)) |
+| Skills (SEP-2640) | Not implemented【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`, 2026-only ([skills-extension](wiki/concepts/skills-extension.md)) |
+
+## Unsupported Declarations
+
+The following items are explicitly declared unsupported in this round; when a peer sends them, this SDK degrades gracefully (ignores the unknown field or falls back to the baseline path) instead of failing the session.
+
+- **Apps UI rendering** — server-pushed UI components are not rendered and pass through as opaque data only.
+- **EMA** — EMA negotiation is not implemented and peers fall back to baseline capability negotiation.
+- **DPoP client-side per-request proofs** — server-side proof verification is implemented (off by default, experimental `enable_dpop`, requires OpenSSL; see OAuth Support above); without the two callbacks above no proof is attached, while configured callbacks drive a DPoP session with a single `use_dpop_nonce` retry; with the switch off the plain Bearer path is unchanged ([dpop](wiki/concepts/dpop.md)).
+- **jwt-bearer** — `private_key_jwt` client authentication is supported (an ES256 client assertion is sent on the token requests when `private_key_pem` is configured and the authorization server advertises `private_key_jwt` in `token_endpoint_auth_methods_supported`; requires OpenSSL), while the authorization-owner `jwt-bearer` grant is not, and the public-client PKCE/CIMD flow remains the supported path.
+- **ETags** — `ETag` / `If-None-Match` validators are not stored or compared, and cached responses are governed by TTL only.
+- **Progressive discovery** — incremental capability discovery is not implemented, and the full `server/discover` (modern) / `initialize` (legacy) handshake is always used.
+- **File Uploads** — resumable file-upload primitives are not implemented, and file content moves through existing tool/resource payloads only.
+- **Server Cards** — server cards are not surfaced, and `serverInfo` from the handshake remains the identity source.
+
+### Breaking changes in this round
+
+Per the 2026-07-28 spec revision, each change is summarized in one sentence followed by its migration note.
+
+- **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
+- **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.
+- **Redirect tightening** — HTTP redirect handling is stricter than the legacy behavior. Migration: the default policy is `HttpRedirectPolicy::SameOriginOnly` (same scheme/host/port, with `http`→`https` upgrade allowed; cross-origin hops are rejected and strip the `Authorization` header, `301`/`302` POST flips to `GET`, `303` always flips to `GET`); opt out per call via `HttpRequestSpec::redirect_policy` (`FollowAll`/`NoFollow`) and `max_redirects` (default 5), or per transport via `SseClientTransportOptions` / `HttpClientTransportOptions`.
+- **Default upper limits** — built-in default caps apply when the peer omits the corresponding limits. Migration: HTTP responses 8 MB (`HttpRequestSpec::max_response_bytes`), SSE events 1 MB (`max_sse_event_bytes` on the SSE/Streamable-HTTP client options), CIMD documents 1 MB (hard cap, best-effort fallback), stdio frames 8 MB (`StdioClientTransportOptions::max_frame_bytes` / `StdioServerTransport` ctor arg), server request bodies 4 MB (`max_request_body_bytes`), tool arguments `ServerOptions::max_tool_input_elements` (over-budget calls return an `is_error` tool result, not a protocol error), skill manifests 512 files / 16 MB total (client-side `CheckSkillLimits`); raise the matching knob, or shard/page the payload, when a peer legitimately exceeds a default.
+- **Async cancellation** — `notifications/cancelled` delivery is asynchronous and unordered relative to the cancelled call. Migration: the pending-request callback now runs on a detached thread (inline only as a thread-spawn fallback), so callers must treat cancellation as eventually consistent — keep handlers idempotent and poll `RequestContext::IsCancellationRequested()` for cooperative exit instead of assuming the cancel lands before the response.
+
+> Sources: [official SDK list (2026-07-28 revision)](https://modelcontextprotocol.io/docs/2026-07-28/sdk); [SDK Tiering System](https://modelcontextprotocol.io/community/sdk-tiers) — experimental features and protocol extensions (such as Tasks and MCP Apps) are not required for any tier.
 
 ## License
 

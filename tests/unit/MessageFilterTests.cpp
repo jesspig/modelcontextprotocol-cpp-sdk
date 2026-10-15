@@ -1,5 +1,3 @@
-// MessageFilterTests — unit tests for MessageFilter pipeline chain-of-responsibility
-
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/JsonRpc.hpp>
 
@@ -57,7 +55,6 @@ TEST(MessageFilterTest, FilterStopsChain) {
     bool second_called = false;
     pipeline.AddFilter(std::make_shared<MessageFilterFuncAdapter>(
         [](const JsonRpcMessage&, MessageFilterNext) {
-            // Intentionally do NOT call next
         }));
     pipeline.AddFilter(std::make_shared<MessageFilterFuncAdapter>(
         [&second_called](const JsonRpcMessage&, MessageFilterNext next) {

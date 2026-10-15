@@ -1,0 +1,42 @@
+# per-leg 基线：legacy leg（CONFORMANCE_SPEC_VERSION=2025-11-25）。
+# 来源：tests/conformance/baseline.yaml（2026-10-12 摘录，条目逐字一致）。
+# 选用规则：scripts/run-conformance.sh 按 CONFORMANCE_SPEC_VERSION 映射本文件，
+# 未知版本回退 tests/conformance/baseline.yaml。完整归因见 baseline.yaml，本文件只收
+# legacy leg 实际运行的场景条目（server 1 + client 1）。
+
+# （server 键：仅 server-sse-multiple-streams 一条。legacy suite 内它以 WARNING
+# 形式 skip（0/0，无 session 时 referee 记 WARNING 不记失败），无条目则 legacy
+# 报 unexpected 退出 1；条目为 legacy 保绿所必需。完整跨 leg 说明见 baseline.yaml。）
+
+server:
+    # --- server-sse-multiple-streams（跨 leg 保留，见上）---
+    # 旧“传输层多流能力缺口”归因为推断错误。实测有 session 时 3 并发
+    # POST 全 200 全 SSE（legacy 单跑 2/2，modern 2/2）。
+    # suite 内保持 skip：fixture 若发 session 会激活 lifecycle DELETE，
+    # 而单通道传输的 DELETE 关闭共享 channel 毒化后续全场景（生产缺口），
+    # 故 stateful fixture 显式不设 session_store。
+    - server-sse-multiple-streams
+
+client:
+    # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
+    # fixture 有对应场景注册且逻辑正确（列工具→按 context 逐个调用），
+    # 但 Windows 下 MCP_CONFORMANCE_CONTEXT 经 getenv 取回时非 ASCII
+    # （世界）与字面控制字符致 JsonValue::Parse 报 invalid UTF-8，
+    # client 退出 1。CI Linux（UTF-8 locale）下预期通过；若 CI modern
+    # invocation 报本条目 stale，即为变绿证据，届时删除。
+    # 旧“fetch-shim/注入点依赖”归因错误：context 系经环境变量下发，
+    # C++ fixture 可读，无需 TS fetch shim。
+    - http-custom-headers
+
+    # --- auth/*：legacy client 条目已全部转绿，2026-10-13 清空---
+    # 2026-10-13 实测（--suite core --spec-version 2025-11-25）：Total 233 passed / 0 failed。
+    # referee 报 stale 4 条，删除证据即该 stale 报告：
+    #   auth/metadata-var1（17 passed）、auth/metadata-var2（17 passed）、
+    #   auth/metadata-var3（17 passed）、auth/scope-step-up（20 passed）。
+    # 前三条成因同 modern leg（ValidateTokenIssuer 由「iss 强制必需」改为
+    # 「存在即校验」，此前 provider 流换 token 阶段恒失败）；
+    # scope-step-up 成因是 SSE 拆除路径——服务端不支持 GET /mcp 时返回 404，
+    # 原 `ListenStateForStatusCode` 把 404 判为 Connecting（可重连），
+    # 触发 5 次退避重连耗尽 referee 的 30s（检查已跑完但进程退不出）。
+    # 本轮将其改判：4xx 视为不支持监听流并静默放弃（对齐既有 405 语义），
+    # 修复后该场景 20 passed 且进程正常退出。

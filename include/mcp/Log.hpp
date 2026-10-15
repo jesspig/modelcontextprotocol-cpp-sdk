@@ -1,7 +1,5 @@
 #pragma once
 
-// Log.hpp — Logging utilities with level-based filtering
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -32,11 +30,11 @@ struct LogContext {
 
 struct LogRecord {
     LogLevel level;
-    std::string_view tag;        // 可空
+    std::string_view tag;
     std::string_view message;
-    const char* file;            // 无则 nullptr
-    int line;                    // 无则 0
-    const LogContext* context;   // 可空
+    const char* file;
+    int line;
+    const LogContext* context;
 };
 
 using LogHandler = std::function<void(const LogRecord&)>;
@@ -85,8 +83,6 @@ inline LogLevel GetLogLevel() {
     return detail::GetLogState().level.load();
 }
 
-// 设置自定义日志钩子；传 nullptr 恢复默认 stderr 行为。
-// 钩子在发射日志的线程同步调用，须线程安全，禁止在其中调用 Close()。
 inline void SetLogHandler(LogHandler handler) {
     auto& s = detail::GetLogState();
     std::lock_guard<std::mutex> g(s.mtx);
@@ -94,14 +90,12 @@ inline void SetLogHandler(LogHandler handler) {
     s.has_handler.store(static_cast<bool>(s.handler));
 }
 
-// 获取当前钩子（无则空 callable）。
 inline LogHandler GetLogHandler() {
     auto& s = detail::GetLogState();
     std::lock_guard<std::mutex> g(s.mtx);
     return s.handler;
 }
 
-// 运行时覆盖 MCP_LOG_LEVEL 环境变量设定的级别。
 inline void SetLogLevel(LogLevel level) {
     detail::GetLogState().level.store(level);
 }

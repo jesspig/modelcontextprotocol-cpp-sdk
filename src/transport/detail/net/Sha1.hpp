@@ -1,7 +1,5 @@
 #pragma once
 
-// Sha1.hpp — WebSocket 握手用的 SHA-1、base64 与 CSPRNG 工具
-
 #include <algorithm>
 #include <cstdint>
 #include <random>

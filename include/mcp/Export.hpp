@@ -1,13 +1,5 @@
 #pragma once
 
-// Export.hpp — Symbol visibility and DLL export macros
-//
-// Use this macro on all public class declarations:
-//   class MCP_API MyClass { ... };
-// Currently all libraries are STATIC, so this is a no-op.
-// When switching to shared libraries, define MCP_BUILD_SHARED
-// and MCP_BUILD_{LIBRARY_NAME} for the exporting library.
-
 #if defined(_MSC_VER)
 #  define MCP_EXPORT __declspec(dllexport)
 #  define MCP_IMPORT __declspec(dllimport)
@@ -20,7 +12,6 @@
 #  define MCP_API
 #endif
 
-// For static builds (current), MCP_API is a no-op
 #if defined(MCP_STATIC) || !defined(MCP_BUILD_SHARED)
 #  define MCP_API
 #elif defined(MCP_BUILD_CORE)

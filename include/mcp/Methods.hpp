@@ -1,13 +1,10 @@
 #pragma once
 
-// Methods.hpp — MCP method and notification name constants
-
 #include <string_view>
 
 namespace mcp {
 namespace methods {
 
-// ── Request methods ──
 inline constexpr std::string_view kInitialize = "initialize";
 inline constexpr std::string_view kPing = "ping";
 
@@ -16,6 +13,7 @@ inline constexpr std::string_view kCallTool = "tools/call";
 
 inline constexpr std::string_view kListResources = "resources/list";
 inline constexpr std::string_view kReadResource = "resources/read";
+inline constexpr std::string_view kReadDirectory = "resources/directory/read";
 inline constexpr std::string_view kListResourceTemplates = "resources/templates/list";
 inline constexpr std::string_view kSubscribeResource = "resources/subscribe";
 inline constexpr std::string_view kUnsubscribeResource = "resources/unsubscribe";
@@ -41,6 +39,12 @@ inline constexpr std::string_view kCancelTask = "tasks/cancel";
 
 inline constexpr std::string_view kGetTaskPayload = "tasks/result";
 inline constexpr std::string_view kListTasks = "tasks/list";
+
+inline constexpr std::string_view kLegacyGetTaskPayload = "tasks/result";
+inline constexpr std::string_view kLegacyListTasks = "tasks/list";
+
+inline constexpr std::string_view kListSkills = "skills/list";
+inline constexpr std::string_view kGetSkill = "skills/get";
 
 inline constexpr std::string_view kSetLoggingLevel = "logging/setLevel";
 
@@ -69,6 +73,7 @@ inline constexpr std::string_view kTaskCompleted = "notifications/tasks/complete
 inline constexpr std::string_view kTaskFailed = "notifications/tasks/failed";
 inline constexpr std::string_view kTaskCancelled = "notifications/tasks/cancelled";
 inline constexpr std::string_view kTaskInputRequired = "notifications/tasks/input_required";
+inline constexpr std::string_view kTriggersEvent = "notifications/triggers/event";
 
 } // namespace notifications
 

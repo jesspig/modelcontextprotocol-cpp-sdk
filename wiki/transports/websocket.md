@@ -9,7 +9,7 @@ resource: src/transport/WebSocketClientTransport.cpp
 
 # WebSocket 客户端传输
 
-`WebSocketClientTransport`（客户端工厂，[WebSocketClientTransport.cpp](../../src/transport/WebSocketClientTransport.cpp)）。构造 `(url, name = "websocket")`。
+`WebSocketClientTransport`（客户端工厂，[WebSocketClientTransport.cpp](../../src/transport/WebSocketClientTransport.cpp)）。构造 `(url, name = "websocket")`。定位为**非标超集**（spec 未要求 WebSocket 传输，不计入 Tier1 对等口径，见 [/concepts/tier1-parity.md](../concepts/tier1-parity.md)）。
 
 ## 会话实现
 

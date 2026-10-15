@@ -1,5 +1,3 @@
-// sha256.hpp - Minimal SHA-256 implementation (FIPS 180-4, no OpenSSL required)
-
 #pragma once
 
 #include <array>
@@ -11,8 +9,6 @@
 
 namespace mcp { namespace detail {
 
-// Minimal SHA-256 implementation — standalone, no OpenSSL required.
-// Based on the FIPS 180-4 specification.
 class Sha256 {
 public:
     Sha256() { Reset(); }

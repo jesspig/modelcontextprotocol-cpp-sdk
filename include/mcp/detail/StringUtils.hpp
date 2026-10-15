@@ -1,5 +1,3 @@
-// StringUtils.hpp - shared ASCII string helpers
-
 #pragma once
 
 #include <cctype>

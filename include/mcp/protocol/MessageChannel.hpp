@@ -1,6 +1,4 @@
 #pragma once
-// MessageChannel.hpp
-// Bounded async message queue with backpressure, replacing asio::experimental::channel
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
@@ -15,17 +13,11 @@
 
 namespace mcp {
 
-// ═══════════════════════════════════════════════════════════════════════
-// MessageChannel — bounded async message queue with backpressure
-// Replaces asio::experimental::channel with pure C++17 primitives
-// ═══════════════════════════════════════════════════════════════════════
 class MCP_API MessageChannel {
 public:
     explicit MessageChannel(size_t max_buffer = 64)
         : max_buffer_(max_buffer) {}
 
-    // Async receive — calls callback when a message is available
-    // The callback is invoked outside the lock; caller should not block.
     template <typename Callback>
     void AsyncReceive(Callback&& cb) {
         JsonRpcMessage msg;
@@ -41,13 +33,10 @@ public:
             msg = std::move(queue_.front());
             queue_.pop();
         }
-        // Notify any blocked sender
         cv_send_.notify_one();
         cb(std::error_code{}, std::move(msg));
     }
 
-    // Send a message into the channel (blocks if buffer is full).
-    // Returns false if the channel is closed and the message was dropped.
     bool Send(JsonRpcMessage message) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -59,7 +48,6 @@ public:
         return true;
     }
 
-    // Try to send without blocking; returns false if buffer is full
     bool TrySend(JsonRpcMessage message) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -70,7 +58,6 @@ public:
         return true;
     }
 
-    // Close the channel — wakes all waiters
     void Close() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -80,10 +67,8 @@ public:
         cv_send_.notify_all();
     }
 
-    // Check if open
     bool IsOpen() const { return !closed_.load(); }
 
-    // Check if empty
     bool Empty() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return queue_.empty();

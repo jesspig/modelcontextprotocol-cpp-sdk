@@ -1,5 +1,3 @@
-// McpSessionHandler.cpp
-// Implementation of the JSON-RPC session handler
 #include <detail/JsonFields.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
@@ -21,7 +19,6 @@
 
 namespace mcp {
 
-// Forward declarations of core serialization helpers (defined in src/core)
 JsonValue SerializeErrorData(const ErrorData& v);
 
 namespace {
@@ -37,22 +34,14 @@ bool HasCapability(const ClientCapabilities& caps, const std::string& required) 
 constexpr char kErrorDataSupported[] = "supported";
 constexpr char kErrorDataRequested[] = "requested";
 
-bool IsSupportedProtocolVersion(std::string_view version) {
-    for (auto known : kProtocolVersions) {
-        if (known == version) return true;
-    }
-    return false;
-}
-
-JsonValue MakeUnsupportedProtocolVersionData(const std::string& requested) {
-    JsonValue supported(JsonValue::array_tag);
-    for (auto known : kProtocolVersions) {
-        supported.PushBack(JsonValue(std::string(known)));
-    }
-    JsonValue data(JsonValue::object_tag);
-    data[kErrorDataSupported] = std::move(supported);
-    data[kErrorDataRequested] = JsonValue(requested);
-    return data;
+void AttachTraceFromRequest(SpanEvent& event, const JsonRpcRequest& req) {
+    if (!req.meta || !req.meta->IsObject()) return;
+    if (auto* v = req.meta->Find(detail::kTraceparent); v && v->IsString())
+        event.traceparent = v->GetString();
+    if (auto* v = req.meta->Find(detail::kTracestate); v && v->IsString())
+        event.tracestate = v->GetString();
+    if (auto* v = req.meta->Find(detail::kBaggage); v && v->IsString())
+        event.baggage = v->GetString();
 }
 
 const char* InvalidMetaField(const JsonValue& meta) {
@@ -138,8 +127,6 @@ void InvokeSpan(const SpanHandler& handler, SpanEvent& event, SpanPhase phase) {
     InvokeSafely([&] { handler(event); }, "span-hook");
 }
 
-// Pair a Begin with its End across every return path. A default-constructed
-// scope carries no event, so an uninstrumented session never builds one.
 class SpanScope {
 public:
     SpanScope() noexcept = default;
@@ -176,9 +163,6 @@ private:
 
 } // anonymous namespace
 
-// ═══════════════════════════════════════════════════════════════════════
-// Construction
-// ═══════════════════════════════════════════════════════════════════════
 McpSessionHandler::McpSessionHandler(
     std::shared_ptr<ITransport> transport,
     std::unique_ptr<WireCodec> codec,
@@ -189,15 +173,13 @@ McpSessionHandler::McpSessionHandler(
     , incoming_filters_(std::move(incoming_filters))
     , outgoing_filters_(std::move(outgoing_filters))
 {
+    for (auto known : kProtocolVersions) supported_versions_.emplace_back(known);
 }
 
 McpSessionHandler::~McpSessionHandler() {
     Close();
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Lifecycle
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::Start() {
     if (closed_.load()) {
         throw std::logic_error("McpSessionHandler::Start() called after Close()");
@@ -221,21 +203,17 @@ void McpSessionHandler::Close() {
     closed_.store(true);
     running_.store(false);
 
-    // Wake up message loop by closing the channel
     transport_->GetMessageChannel().Close();
 
     detail::JoinThreadSafely(message_loop_thread_);
     detail::JoinThreadSafely(timeout_thread_);
 
-    // Wake the response worker; it drains queued tasks, each of which aborts
-    // once it observes closed_, so the join never blocks on an unsatisfied promise.
     {
         std::lock_guard<std::mutex> lock(response_queue_mutex_);
     }
     response_cv_.notify_all();
     detail::JoinThreadSafely(response_worker_);
 
-    // Fail all pending requests; callbacks fire outside the lock
     std::vector<std::shared_ptr<PendingRequest>> to_fire;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -261,9 +239,6 @@ void McpSessionHandler::Close() {
     transport_->Close();
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Message loop
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::MessageLoop() {
     auto& channel = transport_->GetMessageChannel();
     while (!closed_.load()) {
@@ -336,9 +311,6 @@ void McpSessionHandler::SetMaxTotalTimeout(std::chrono::seconds total) {
     max_total_timeout_ = total;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Dispatch
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
     if (IsRequest(msg))
         OnRequest(*AsRequest(msg));
@@ -350,9 +322,6 @@ void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
         OnNotification(*AsNotification(msg));
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Request handling
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     bool span_open = false;
     if (span_handler_) {
@@ -361,8 +330,6 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         InvokeSpan(span_handler_, event, SpanPhase::Begin);
         span_open = true;
     }
-    // Closes the span on every rejection path; a request handed to the response
-    // worker clears the flag and is closed there instead.
     const struct SpanGuard {
         const SpanHandler& handler;
         const JsonRpcRequest& req;
@@ -370,18 +337,26 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         ~SpanGuard() {
             if (!open) return;
             auto event = MakeServerRequestEvent(req, SpanPhase::End, true);
+            AttachTraceFromRequest(event, req);
             InvokeSpan(handler, event, SpanPhase::End);
         }
     } span_guard{span_handler_, req, span_open};
+    auto reject = [&](McpErrorCode code, std::string_view message,
+                      std::optional<JsonValue> data = std::nullopt) {
+        if (span_handler_) {
+            auto event = MakeServerRequestEvent(req, SpanPhase::End, true);
+            AttachTraceFromRequest(event, req);
+            InvokeSpan(span_handler_, event, SpanPhase::End);
+        }
+        span_open = false;
+        SendErrorResponse(req.id, code, message, std::move(data));
+    };
 
     std::shared_ptr<WireCodec> codec;
     {
         std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
     }
-    // Lightweight codec-validation view: only method/_meta (and initialize
-    // params) are inspected, so avoid building the full request tree.
-    // _meta is presented inside params, matching the wire location.
     JsonValue validation_view(JsonValue::object_tag);
     validation_view[detail::kMethod] = JsonValue(req.method);
     if (req.method == methods::kInitialize && req.params)
@@ -392,30 +367,28 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         view_params[detail::kMeta] = *req.meta;
     }
     auto validation = codec->ValidateRequest(req.method, validation_view);
-    // initialize is exempt: a modern server must still answer legacy handshakes
-    if (validation == WireValidation::NotInEra && req.method != methods::kInitialize) {
-        SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
+    if (validation == WireValidation::NotInEra &&
+        (req.method != methods::kInitialize || IsJuly2026OrLater())) {
+        reject(McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
     if (validation == WireValidation::Invalid) {
-        SendErrorResponse(req.id, McpErrorCode::InvalidRequest, "invalid request: " + req.method);
+        reject(McpErrorCode::InvalidRequest, "invalid request: " + req.method);
         return;
     }
 
-    // initialize negotiates through params.protocolVersion; every other method
-    // declares its version in the per-request _meta envelope.
     if (req.meta && req.method != methods::kInitialize) {
         if (const char* field = InvalidMetaField(*req.meta)) {
-            SendErrorResponse(req.id, McpErrorCode::InvalidParams,
+            reject(McpErrorCode::InvalidParams,
                 std::string("invalid _meta field: ") + field);
             return;
         }
         if (auto* declared = req.meta->Find(detail::kMetaProtocolVersionKey)) {
             const std::string requested = declared->GetString();
-            if (!IsSupportedProtocolVersion(requested)) {
-                SendErrorResponse(req.id, McpErrorCode::UnsupportedProtocolVersion,
+            if (!IsVersionSupported(requested)) {
+                reject(McpErrorCode::UnsupportedProtocolVersion,
                     "unsupported protocol version: " + requested,
-                    MakeUnsupportedProtocolVersionData(requested));
+                    MakeVersionErrorData(requested));
                 return;
             }
         }
@@ -434,29 +407,32 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
     }
     if (!handler) {
-        SendErrorResponse(req.id, McpErrorCode::MethodNotFound, "method not found: " + req.method);
+        reject(McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
 
-    // ── Capability verification ──
     auto required_cap = RequiredClientCapability(req.method);
-    if (required_cap && !VerifyCapability(req, *required_cap)) return;
+    if (required_cap) {
+        if (auto capability_error = VerifyCapability(req, *required_cap)) {
+            reject(capability_error->code, capability_error->message,
+                std::move(capability_error->data));
+            return;
+        }
+    }
 
-    // ── Request state verification (HMAC/AEAD) ──
     if (request_state_verifier_ && req.params) {
         auto* rs = req.params->Find(detail::kRequestState);
         if (rs && rs->IsString()) {
             if (!request_state_verifier_(rs->GetString())) {
                 JsonValue data(JsonValue::object_tag);
                 data[detail::kReason] = JsonValue("invalid_request_state");
-                SendErrorResponse(req.id, McpErrorCode::InvalidParams,
+                reject(McpErrorCode::InvalidParams,
                     "invalid requestState", std::move(data));
                 return;
             }
         }
     }
 
-    // Track the request so that notifications/cancelled can reach its handler.
     const std::string cancel_key = GetRequestIdKey(req.id);
     {
         std::lock_guard<std::mutex> lock(incoming_cancel_mutex_);
@@ -470,11 +446,11 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         handler(req, std::move(*promise));
     } catch (const McpError& e) {
         EraseIncomingCancellationFlag(cancel_key);
-        SendErrorResponse(req.id, e.Code(), std::string(e.what()));
+        reject(e.Code(), std::string(e.what()), e.Data());
         return;
     } catch (const std::exception& e) {
         EraseIncomingCancellationFlag(cancel_key);
-        SendErrorResponse(req.id, McpErrorCode::InternalError, std::string("handler error: ") + e.what());
+        reject(McpErrorCode::InternalError, std::string("handler error: ") + e.what());
         return;
     }
 
@@ -482,18 +458,21 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     EnqueueResponse(req, std::move(future));
 }
 
-bool McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::string& required) {
+std::optional<ErrorData> McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::string& required) {
     auto meta = ExtractIncomingMeta(req);
-    if (meta.client_capabilities && HasCapability(*meta.client_capabilities, required)) return true;
-    if (client_capabilities_ && HasCapability(*client_capabilities_, required)) return true;
+    if (meta.client_capabilities && HasCapability(*meta.client_capabilities, required)) return std::nullopt;
+    if (client_capabilities_ && HasCapability(*client_capabilities_, required)) return std::nullopt;
 
     JsonValue data(JsonValue::object_tag);
-    JsonValue arr(JsonValue::array_tag);
-    arr.PushBack(JsonValue(required));
-    data[detail::kRequiredCapabilities] = std::move(arr);
-    SendErrorResponse(req.id, McpErrorCode::MissingRequiredClientCapability,
-        "missing required client capability: " + required, std::move(data));
-    return false;
+    JsonValue capability(JsonValue::object_tag);
+    JsonValue required_caps(JsonValue::object_tag);
+    required_caps[std::string_view(required)] = std::move(capability);
+    data[detail::kRequiredCapabilities] = std::move(required_caps);
+    ErrorData error;
+    error.code = McpErrorCode::MissingRequiredClientCapability;
+    error.message = "missing required client capability: " + required;
+    error.data = std::move(data);
+    return error;
 }
 
 void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future) {
@@ -511,8 +490,6 @@ void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<J
 
 void McpSessionHandler::DeliverResponse(PendingResponse item) {
     if (closed_.load()) return;
-    // The handler has produced its result; a cancellation arriving from
-    // here on is answered by the response itself.
     EraseIncomingCancellationFlag(item.cancel_key);
     std::shared_ptr<WireCodec> codec;
     {
@@ -522,6 +499,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
     const auto finish_span = [this, &item](bool failed) {
         if (!span_handler_) return;
         auto event = MakeServerRequestEvent(item.req, SpanPhase::End, failed);
+        AttachTraceFromRequest(event, item.req);
         InvokeSpan(span_handler_, event, SpanPhase::End);
     };
     try {
@@ -540,6 +518,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
         err_resp.error.message = e.what();
+        if (e.Data()) err_resp.error.data = *e.Data();
         finish_span(true);
         SendMessage(JsonRpcMessage{std::move(err_resp)});
     } catch (const std::exception& e) {
@@ -596,9 +575,6 @@ void McpSessionHandler::ResponseWorkerLoop() {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Response/Error handling (correlate with pending requests)
-// ═══════════════════════════════════════════════════════════════════════
 std::string McpSessionHandler::GetRequestIdKey(const RequestId& rid) {
     if (std::holds_alternative<int64_t>(rid))
         return std::to_string(std::get<int64_t>(rid));
@@ -651,16 +627,12 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Notification handling
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
     std::shared_ptr<WireCodec> codec;
     {
         std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
     }
-    // Lightweight codec-validation view: only method/params presence matters.
     JsonValue validation_view(JsonValue::object_tag);
     validation_view[detail::kMethod] = JsonValue(notif.method);
     if (notif.params) validation_view[detail::kParams] = *notif.params;
@@ -676,7 +648,6 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
         InvokeSafely([&] { on_notification_cb_(notif); }, "on-notification");
     }
 
-    // Handle protocol-level notifications first
     if (notif.method == notifications::kCancelled) {
         HandleCancelled(notif);
         return;
@@ -695,9 +666,6 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Send request (with timeout)
-// ═══════════════════════════════════════════════════════════════════════
 std::future<JsonValue> McpSessionHandler::SendRequest(
     std::string_view method,
     JsonValue params,
@@ -714,23 +682,29 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     req.method = std::string(method);
     req.params = std::move(params);
 
-    // Ensure params is an object (matches the pre-meta-stamping wire format)
     if (req.params->IsNull()) *req.params = JsonValue(JsonValue::object_tag);
 
-    // 2026 era: the meta envelope lives in req.meta; serialization places
-    // it inside params._meta on the wire.
     if (IsModernProtocolVersion(meta.protocol_version)) {
         req.meta = SerializeRequestMeta(meta);
-    } else if (meta.progress_token) {
-        JsonValue* legacy_meta = req.params->Find(detail::kMeta);
-        if (!legacy_meta) {
-            (*req.params)[detail::kMeta] = JsonValue(JsonValue::object_tag);
-            legacy_meta = req.params->Find(detail::kMeta);
+    } else {
+        if (meta.progress_token) {
+            JsonValue* legacy_meta = req.params->Find(detail::kMeta);
+            if (!legacy_meta) {
+                (*req.params)[detail::kMeta] = JsonValue(JsonValue::object_tag);
+                legacy_meta = req.params->Find(detail::kMeta);
+            }
+            (*legacy_meta)[detail::kProgressToken] = SerializeProgressToken(*meta.progress_token);
         }
-        (*legacy_meta)[detail::kProgressToken] = SerializeProgressToken(*meta.progress_token);
+        if (req.params->IsObject()) {
+            JsonValue* legacy_meta = req.params->Find(detail::kMeta);
+            if (legacy_meta && legacy_meta->IsObject() && legacy_meta->Empty())
+                req.params->GetObject().erase(std::string(detail::kMeta));
+            if (req.params->Empty()) req.params = std::nullopt;
+        } else if (req.params->IsNull()) {
+            req.params = std::nullopt;
+        }
     }
 
-    // Register pending request
     auto pending = std::make_shared<PendingRequest>();
     pending->callback = [promise](JsonValue result) {
         promise->set_value(std::move(result));
@@ -771,9 +745,6 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     return future;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Send notification
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SendNotification(std::string_view method, JsonValue params) {
     JsonRpcNotification notif;
     notif.method = std::string(method);
@@ -808,9 +779,6 @@ void McpSessionHandler::SendMessage(JsonRpcMessage message) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Meta helpers
-// ═══════════════════════════════════════════════════════════════════════
 IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest& req) {
     IncomingRequestMeta meta;
     if (!req.meta) return meta;
@@ -844,9 +812,6 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     return meta;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Subscriptions
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::AddSubscription(Subscription sub) {
     SubscriptionEntry entry;
     entry.id = std::move(sub.id);
@@ -898,6 +863,15 @@ void McpSessionHandler::NotifySubscribers(
                         }
                     }
                 }
+            } else if (notification_type == notifications::kTaskStatus ||
+                       notification_type == notifications::kTaskWorking ||
+                       notification_type == notifications::kTaskCompleted ||
+                       notification_type == notifications::kTaskFailed ||
+                       notification_type == notifications::kTaskCancelled ||
+                       notification_type == notifications::kTaskInputRequired) {
+                should_notify = true;
+            } else if (notification_type == notifications::kTriggersEvent) {
+                should_notify = true;
             }
 
             if (!should_notify) continue;
@@ -916,9 +890,6 @@ void McpSessionHandler::NotifySubscribers(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Error response helper
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data) {
     std::shared_ptr<WireCodec> codec;
     {
@@ -934,9 +905,6 @@ void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code
     SendMessage(JsonRpcMessage{std::move(err_resp)});
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Cancel handling
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     if (!notif.params) return;
 
@@ -979,21 +947,28 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
         }
     }
     if (pending) {
-        std::optional<JsonValue> data;
-        if (!reason.empty()) {
-            JsonValue d(JsonValue::object_tag);
-            d[detail::kReason] = JsonValue(reason);
-            data = std::move(d);
+        auto make_error = [&]() {
+            std::optional<JsonValue> data;
+            if (!reason.empty()) {
+                JsonValue d(JsonValue::object_tag);
+                d[detail::kReason] = JsonValue(reason);
+                data = std::move(d);
+            }
+            return SerializeErrorData(
+                ErrorData{McpErrorCode::RequestCancelled, "request cancelled", std::move(data)});
+        };
+        auto callback = pending->callback;
+        try {
+            std::thread([callback, err = make_error()]() mutable {
+                InvokeSafely([&] { callback(std::move(err)); }, "cancel-callback");
+            }).detach();
+        } catch (...) {
+            auto err = make_error();
+            InvokeSafely([&] { callback(std::move(err)); }, "cancel-callback");
         }
-        auto err = SerializeErrorData(
-            ErrorData{McpErrorCode::RequestCancelled, "request cancelled", std::move(data)});
-        InvokeSafely([&] { pending->callback(std::move(err)); }, "cancel-callback");
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Internal helpers
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::EraseProgressTokens(const std::string& request_id) {
     for (auto it = progress_token_map_.begin(); it != progress_token_map_.end(); ) {
         if (it->second == request_id) it = progress_token_map_.erase(it);
@@ -1016,9 +991,6 @@ std::shared_ptr<std::atomic<bool>> McpSessionHandler::GetIncomingCancellationFla
     return it->second;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Handler registration
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SetRequestHandler(std::string_view method, RequestHandler handler) {
     std::unique_lock<std::shared_mutex> lock(handler_mutex_);
     request_handlers_[std::string(method)] = std::move(handler);
@@ -1053,9 +1025,6 @@ void McpSessionHandler::SetOnNotificationCallback(std::function<void(const JsonR
     on_notification_cb_ = std::move(cb);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Capability validation
-// ═══════════════════════════════════════════════════════════════════════
 std::optional<std::string> McpSessionHandler::RequiredClientCapability(std::string_view method) {
     if (method == methods::kCreateMessage) return std::string("sampling");
     if (method == methods::kListRoots) return std::string("roots");
@@ -1066,14 +1035,37 @@ void McpSessionHandler::SetClientCapabilities(ClientCapabilities caps) {
     client_capabilities_ = std::move(caps);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Version
-// ═══════════════════════════════════════════════════════════════════════
 void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view version) {
     auto new_codec = MakeWireCodec(version);
     std::unique_lock<std::shared_mutex> lock(codec_mutex_);
     negotiated_version_ = std::make_shared<const std::string>(version);
     codec_ = std::move(new_codec);
+}
+
+void McpSessionHandler::SetSupportedProtocolVersions(std::vector<std::string> versions) {
+    if (versions.empty()) return;
+    std::unique_lock<std::shared_mutex> lock(versions_mutex_);
+    supported_versions_ = std::move(versions);
+}
+
+bool McpSessionHandler::IsVersionSupported(std::string_view version) const {
+    std::shared_lock<std::shared_mutex> lock(versions_mutex_);
+    for (const auto& known : supported_versions_) {
+        if (known == version) return true;
+    }
+    return false;
+}
+
+JsonValue McpSessionHandler::MakeVersionErrorData(const std::string& requested) const {
+    std::shared_lock<std::shared_mutex> lock(versions_mutex_);
+    JsonValue supported(JsonValue::array_tag);
+    for (const auto& known : supported_versions_) {
+        supported.PushBack(JsonValue(known));
+    }
+    JsonValue data(JsonValue::object_tag);
+    data[kErrorDataSupported] = std::move(supported);
+    data[kErrorDataRequested] = JsonValue(requested);
+    return data;
 }
 
 std::string McpSessionHandler::NegotiatedProtocolVersion() const {

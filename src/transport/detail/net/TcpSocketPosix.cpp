@@ -1,5 +1,3 @@
-// TcpSocketPosix.cpp — POSIX TCP socket implementation
-
 #include <transport/detail/net/TcpSocket.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>

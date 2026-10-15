@@ -1,10 +1,9 @@
-// WireCodec.cpp
-// Per-era WireCodec implementations (2025-11-25 and 2026-07-28)
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
 
@@ -14,7 +13,6 @@
 namespace mcp {
 namespace {
 
-// Shared methods — supported by both 2025 and 2026 era
 inline const std::unordered_set<std::string_view> kCommonRequestMethods = {
     "tools/list", "tools/call",
     "resources/list", "resources/read", "resources/templates/list",
@@ -35,6 +33,8 @@ inline const std::unordered_set<std::string_view> k2025OnlyRequestMethods = {
 inline const std::unordered_set<std::string_view> k2026OnlyRequestMethods = {
     "server/discover",
     "subscriptions/listen",
+    "tasks/get", "tasks/update", "tasks/cancel",
+    "skills/list", "skills/get", "resources/directory/read",
 };
 
 inline const std::unordered_set<std::string_view> kCommonNotifMethods = {
@@ -71,9 +71,11 @@ inline std::unordered_set<std::string_view> MakeEraMethods(
     return set;
 }
 
-// ====================================================================
-// rev2025-11-25 — initialization-handshake era
-// ====================================================================
+inline bool IsTaskNameCheckedMethod(std::string_view method) {
+    return method == "tasks/get" || method == "tasks/update" ||
+        method == "tasks/cancel";
+}
+
 class Rev2025Codec : public WireCodec {
 public:
     static constexpr std::string_view kEra = "2025-11-25";
@@ -105,26 +107,22 @@ public:
     }
 
     WireValidation ValidateResponse(
-        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
-        // 2025-era responses have no additional structural requirements
-        // beyond standard JSON-RPC validation (handled by the message parser).
+        std::string_view, const JsonValue&) const override {
         return WireValidation::Ok;
     }
 
     WireValidation ValidateNotification(
-        std::string_view /*method*/, const JsonValue& /*raw*/) const override {
-        // 2025-era notifications have no additional structural requirements
-        // beyond standard JSON-RPC validation (handled by the message parser).
+        std::string_view, const JsonValue&) const override {
         return WireValidation::Ok;
     }
 
     void StampOutgoingRequest(
-        JsonValue& /*request_body*/,
-        const RequestMeta& /*meta*/) const override {
+        JsonValue&,
+        const RequestMeta&) const override {
     }
 
     JsonValue EncodeResult(
-        std::string_view /*method*/, const JsonValue& result) const override {
+        std::string_view, const JsonValue& result) const override {
         return result;
     }
 
@@ -135,9 +133,6 @@ public:
     std::string_view Era() const override { return kEra; }
 };
 
-// ====================================================================
-// rev2026-07-28 — stateless, per-request _meta era
-// ====================================================================
 class Rev2026Codec : public WireCodec {
 public:
     static constexpr std::string_view kEra = "2026-07-28";
@@ -175,7 +170,7 @@ public:
         }
         static const std::unordered_set<std::string_view> kListMethods = {
             "tools/list", "resources/list", "resources/templates/list",
-            "prompts/list",
+            "prompts/list", "skills/list",
         };
         if (kListMethods.count(method) > 0) {
             auto* rt = raw.Find(detail::kResultType);
@@ -187,7 +182,7 @@ public:
     }
 
     WireValidation ValidateNotification(
-        std::string_view /*method*/, const JsonValue& raw) const override {
+        std::string_view, const JsonValue& raw) const override {
         if (raw.Contains("id") || raw.Contains("result") || raw.Contains("error")) {
             return WireValidation::Invalid;
         }
@@ -216,10 +211,8 @@ public:
     }
 
     JsonValue EncodeResult(
-        std::string_view /*method*/, const JsonValue& result) const override {
+        std::string_view, const JsonValue& result) const override {
         JsonValue j = result;
-        // The 2026 era flattens cache fields onto the result top level:
-        // ttlMs/cacheScope replace the nested cacheHint object.
         if (auto* ch = j.Find(detail::kCacheHint); ch && ch->IsObject()) {
             if (auto* ttl = ch->Find(detail::kTTLMs); ttl && ttl->IsInt())
                 j[detail::kTTLMs] = *ttl;
@@ -252,7 +245,23 @@ public:
 
 } // anonymous namespace
 
-// ── Factory ──
+void WireCodec::ValidateTaskHeaders(
+    std::string_view method,
+    const JsonValue& params,
+    std::string_view mcp_name) const {
+    if (!IsTaskNameCheckedMethod(method)) {
+        return;
+    }
+    const JsonValue* task_id =
+        params.IsObject() ? params.Find(detail::kTaskId) : nullptr;
+    if (!task_id || !task_id->IsString() || task_id->GetString().empty()) {
+        throw McpError(McpErrorCode::InvalidParams, "tasks request missing valid taskId");
+    }
+    if (std::string_view(task_id->GetString()) != mcp_name) {
+        throw McpError(McpErrorCode::HeaderMismatch, "Mcp-Name header does not match body params taskId");
+    }
+}
+
 std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version) {
     if (protocol_version >= kLatestProtocolVersion) {
         return std::make_unique<Rev2026Codec>();

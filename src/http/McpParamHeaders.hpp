@@ -1,5 +1,4 @@
 #pragma once
-// McpParamHeaders.hpp — SEP-2243 custom header annotations (x-mcp-header) and value encoding
 
 #include <mcp/JsonRpc.hpp>
 #include <mcp/JsonValue.hpp>
@@ -24,9 +23,6 @@ inline constexpr std::string_view kMcpParamPrefix = "mcp-param-";
 inline constexpr std::string_view kBase64SentinelOpen = "=?base64?";
 inline constexpr std::string_view kBase64SentinelClose = "?=";
 
-// RFC 4648 section 4 (padded). The Mcp-Param-* sentinel defined by the
-// Streamable HTTP spec uses this alphabet; it is NOT interchangeable with the
-// unpadded base64url used by PKCE and request-state.
 inline std::string StandardBase64Encode(std::string_view data) {
     static constexpr char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -202,8 +198,6 @@ inline bool HeaderValueMatchesBody(const JsonValue& header_value, const JsonValu
     return false;
 }
 
-// Client-side annotation cache, populated from tools/list responses so that
-// tools/call mirrors annotated arguments into Mcp-Param-* request headers.
 class ToolAnnotationCache {
 public:
     void NoteToolsListRequest(std::string key) {
@@ -216,8 +210,6 @@ public:
         return pending_tools_list_.erase(key) > 0;
     }
 
-    // Drops tools whose x-mcp-header annotations violate the spec constraints
-    // and returns their names so callers can log the rejection.
     std::vector<std::string> ObserveToolsListResult(JsonValue& result) {
         std::vector<std::string> rejected;
         if (!result.IsObject()) return rejected;

@@ -1,5 +1,3 @@
-// Content.cpp — Content type serialization/deserialization implementations
-
 #include <mcp/Content.hpp>
 #include <mcp/Implementation.hpp>
 #include <mcp/Meta.hpp>
@@ -11,8 +9,6 @@ namespace mcp {
 
 namespace {
 
-// Known RequestMeta field keys that are stored in dedicated members rather
-// than in the extensions bag (mirrors SerializeRequestMeta's output).
 bool RequestMetaFieldIsKnown(std::string_view key) {
     return key == detail::kProgressToken
         || key == detail::kMetaProtocolVersionKey
@@ -26,8 +22,6 @@ bool RequestMetaFieldIsKnown(std::string_view key) {
 }
 
 } // namespace
-
-// ── Icon ──
 
 JsonValue SerializeIcon(const Icon& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -54,8 +48,6 @@ Icon DeserializeIcon(const JsonValue& j) {
     return v;
 }
 
-// ── Annotations ──
-
 JsonValue SerializeAnnotations(const Annotations& v) {
     JsonValue obj(JsonValue::object_tag);
     if (v.audience) {
@@ -79,8 +71,6 @@ Annotations DeserializeAnnotations(const JsonValue& j) {
     return v;
 }
 
-// ── TextResourceContents ──
-
 JsonValue SerializeTextResourceContents(const TextResourceContents& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kUri] = JsonValue(v.uri);
@@ -98,8 +88,6 @@ TextResourceContents DeserializeTextResourceContents(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── BlobResourceContents ──
 
 JsonValue SerializeBlobResourceContents(const BlobResourceContents& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -119,8 +107,6 @@ BlobResourceContents DeserializeBlobResourceContents(const JsonValue& j) {
     return v;
 }
 
-// ── ResourceContents ──
-
 JsonValue SerializeResourceContents(const ResourceContents& rc) {
     return std::visit([](const auto& v) -> JsonValue {
         using T = std::decay_t<decltype(v)>;
@@ -131,7 +117,6 @@ JsonValue SerializeResourceContents(const ResourceContents& rc) {
     }, rc);
 }
 
-// Heuristic dispatch: presence of "text" or "blob" determines resource content type.
 ResourceContents DeserializeResourceContents(const JsonValue& j) {
     if (j.Find(detail::kText)) return DeserializeTextResourceContents(j);
     if (j.Find(detail::kBlob)) return DeserializeBlobResourceContents(j);
@@ -139,8 +124,6 @@ ResourceContents DeserializeResourceContents(const JsonValue& j) {
         std::string("unknown ResourceContents type: neither 'text' nor 'blob' field present, got ") +
         detail::JsonValueTypeName(j));
 }
-
-// ── TextContent ──
 
 JsonValue SerializeTextContent(const TextContent& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -163,8 +146,6 @@ TextContent DeserializeTextContent(const JsonValue& j) {
     return v;
 }
 
-// ── ImageContent ──
-
 JsonValue SerializeImageContent(const ImageContent& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kType] = JsonValue(v.type);
@@ -185,8 +166,6 @@ ImageContent DeserializeImageContent(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── AudioContent ──
 
 JsonValue SerializeAudioContent(const AudioContent& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -209,8 +188,6 @@ AudioContent DeserializeAudioContent(const JsonValue& j) {
     return v;
 }
 
-// ── EmbeddedResource ──
-
 JsonValue SerializeEmbeddedResource(const EmbeddedResource& v) {
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kType] = JsonValue(v.type);
@@ -230,8 +207,6 @@ EmbeddedResource DeserializeEmbeddedResource(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     return v;
 }
-
-// ── ResourceLink ──
 
 JsonValue SerializeResourceLink(const ResourceLink& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -254,8 +229,6 @@ ResourceLink DeserializeResourceLink(const JsonValue& j) {
     return v;
 }
 
-// ── ContentVariant ──
-
 JsonValue SerializeContentVariant(const ContentVariant& content) {
     return std::visit([](const auto& v) -> JsonValue {
         using T = std::decay_t<decltype(v)>;
@@ -272,7 +245,6 @@ JsonValue SerializeContentVariant(const ContentVariant& content) {
     }, content);
 }
 
-// Dispatch to the correct content deserializer based on the "type" field.
 ContentVariant DeserializeContentVariant(const JsonValue& j) {
     auto type = j[detail::kType].GetString();
     if (type == "text")          return DeserializeTextContent(j);
@@ -283,8 +255,6 @@ ContentVariant DeserializeContentVariant(const JsonValue& j) {
     throw McpError(McpErrorCode::DeserializeFailed,
         std::string("unknown Content type: ") + type);
 }
-
-// ── Implementation ──
 
 JsonValue SerializeImplementation(const Implementation& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -310,8 +280,6 @@ Implementation DeserializeImplementation(const JsonValue& j) {
     return v;
 }
 
-// ── ProgressToken ──
-
 JsonValue SerializeProgressToken(const ProgressToken& pt) {
     return std::visit([](const auto& v) -> JsonValue {
         return JsonValue(v);
@@ -322,8 +290,6 @@ ProgressToken DeserializeProgressToken(const JsonValue& j) {
     if (j.IsString()) return j.GetString();
     return j.GetInt();
 }
-
-// ── LoggingLevel ──
 
 static const char* kLoggingLevelNames[] = {
     "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"
@@ -346,8 +312,6 @@ LoggingLevel DeserializeLoggingLevel(const JsonValue& j) {
         std::string("DeserializeLoggingLevel: unknown level string: '") + s + "'");
 }
 
-// ── CacheHint ──
-
 JsonValue SerializeCacheHint(const CacheHint& v) {
     JsonValue obj(JsonValue::object_tag);
     detail::SerializeOptional(obj, detail::kTTLMs, v.ttl_ms);
@@ -361,8 +325,6 @@ CacheHint DeserializeCacheHint(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kCacheScope, v.cache_scope);
     return v;
 }
-
-// ── RequestMeta ──
 
 JsonValue SerializeRequestMeta(const RequestMeta& v) {
     JsonValue obj(JsonValue::object_tag);
@@ -396,8 +358,6 @@ RequestMeta DeserializeRequestMeta(const JsonValue& j) {
     if (auto* ts = j.Find(detail::kTracestate)) v.tracestate = ts->GetString();
     if (auto* bg = j.Find(detail::kBaggage)) v.baggage = bg->GetString();
 
-    // Round-trip symmetry with SerializeRequestMeta: keys that are not
-    // dedicated members are preserved in the extensions bag.
     JsonValue ext(JsonValue::object_tag);
     for (const auto& [k, val] : j.GetObject()) {
         if (!RequestMetaFieldIsKnown(k)) ext[k] = val;

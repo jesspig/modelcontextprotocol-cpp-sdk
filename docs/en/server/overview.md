@@ -45,6 +45,10 @@ server->Run();
 | `request_state_key` | `optional<string>` | Server-side requestState signing key (HMAC); when set without an explicit `request_state_verifier`, a built-in verifier is wired to reject tampered/expired states before handlers (-32602 with `data.reason="invalid_request_state"`) |
 | `request_state_ttl` | `chrono::seconds` | Max age of minted requestState payloads (default 0 = no expiry check) |
 | `cache_hints` | `optional<map<string, CacheHint, less<>>>` | Per-method cache hints (ttlMs, cacheScope) |
+| `cache_hint_resolver` | `function<optional<CacheHint>(string_view)>` | Escape hook resolving cache hints per method (takes precedence over the static `cache_hints` table; replaceable at runtime via `SetCacheable`) |
+| `supported_protocol_versions` | `optional<vector<string>>` | Narrows the server's supported-version table (applies to the discover response, the initialize candidate set, and the `_meta` gate plus error `data.supported` together; empty means the full table) |
+| `subscriptions_enabled` | `bool` | Subscription master switch (default `true`; when off, `subscriptions/listen` returns `MethodNotFound`) |
+| `max_tool_input_elements` | `optional<size_t>` | Tool-argument element cap (object key count / array length; over-budget calls return an `is_error` tool result, not a protocol error) |
 | `input_required_config` | `optional<InputRequiredConfig>` | Configuration for MRTR/elicitation behavior |
 | `input_required_config.max_rounds` | `int` | Maximum elicitation rounds (default 10) |
 | `input_required_config.round_timeout` | `chrono::seconds` | Per-round timeout (default 600s) |

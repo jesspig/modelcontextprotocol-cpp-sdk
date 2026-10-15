@@ -1,11 +1,12 @@
-// McpServer.hpp - MCP Server class definition
-
 #pragma once
 
 #include <mcp/Export.hpp>
 #include <mcp/JsonValue.hpp>
+#include <mcp/Meta.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
+#include <mcp/ext/Triggers.hpp>
+#include <mcp/ext/ServerCard.hpp>
 #include <mcp/server/McpServerTool.hpp>
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/server/RequestContext.hpp>
@@ -13,10 +14,12 @@
 #include <condition_variable>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -25,21 +28,17 @@
 
 namespace mcp {
 
-// ── McpServer (对应 C# McpServer) ──
 class MCP_API McpServer {
 public:
-    // ── Factory ──
     static std::unique_ptr<McpServer> Create(
         std::shared_ptr<ITransport> transport,
         const ServerOptions& options = {});
 
     virtual ~McpServer() = default;
 
-    // ── Lifecycle ──
     void Run();
     void Close();
 
-    // ── Tool registration ──
     void RegisterTool(std::shared_ptr<McpServerTool> tool);
     void RegisterTool(
         std::string_view name,
@@ -49,67 +48,65 @@ public:
         RegisterTool(McpServerTool::Create(name, std::move(fn), options));
     }
 
-    // ── SEP-2243 x-mcp-header ──
-    // Returns the annotations declared by a registered tool's inputSchema so a
-    // StreamableHttpServerOptions::resolve_param_annotations hook can validate
-    // Mcp-Param-* request headers.
     std::vector<detail::McpParamAnnotation> ResolveToolParamAnnotations(
-        const std::string& /*method*/, const std::string& name) const;
+        const std::string&, const std::string& name) const;
 
-    // ── Resource registration ──
     void RegisterResource(
         std::string_view name,
         std::string_view uri,
-        const ResourceOptions& /*options*/,
+        const ResourceOptions&,
         std::function<ReadResourceResult(const std::string& uri)> handler);
 
     void RegisterResourceTemplate(
         std::string_view name,
         std::string_view uri_template,
-        const ResourceOptions& /*options*/,
+        const ResourceOptions&,
         std::function<ReadResourceResult(
             const std::string& uri,
             const std::map<std::string, std::string>& vars)> handler);
 
-    // ── Prompt registration ──
     void RegisterPrompt(
         std::string_view name,
-        const PromptOptions& /*options*/,
+        const PromptOptions&,
         std::function<GetPromptResult(const std::string& name,
             const std::optional<JsonValue>& args)> handler);
 
-    // ── Elicitation (server→client) ──
+    void RegisterSkill(Skill skill);
+    void SetSkillsDirectoryRead(bool enabled);
+
     std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
     std::future<ElicitResult> ElicitUrl(const std::string& url,
         const std::string& message,
         std::chrono::seconds timeout = std::chrono::seconds(600));
 
-    // Elicit (server→client) — typed convenience removed; use raw Elicit with explicit schema
 
-    // ── Completion handler ──
     using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;
     void SetCompletionHandler(CompletionHandler handler);
 
-    // ── Notifications ──
     void SendToolListChanged();
     void SendResourceListChanged();
     void SendResourceUpdated(const std::string& uri);
     void SendPromptListChanged();
     void SendLoggingMessage(LoggingLevel level, std::string_view data);
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
+    void SetCacheable(std::function<std::optional<CacheHint>(std::string_view method)> resolver);
     void SendTaskStatus(std::string_view task_id, TaskStatus status);
     void SendProgress(const ProgressToken& token, double progress,
                       std::optional<double> total = std::nullopt,
                       std::optional<std::string> message = std::nullopt);
+    void RegisterTrigger(const std::string& id,
+                         std::vector<std::string> types,
+                         const std::string& webhook_url);
+    bool UnregisterTrigger(const std::string& id);
+    void EmitTriggerEvent(const std::string& type, JsonValue data = {});
 
-    // ── Properties ──
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
     std::string GetNegotiatedProtocolVersion() const;
     const ServerCapabilities& GetCapabilities() const;
+    ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
 
-    // ── Internal access ──
     McpSessionHandler& GetSessionHandler() { return *handler_; }
 
 private:
@@ -117,7 +114,6 @@ private:
         std::shared_ptr<ITransport> transport,
         ServerOptions options);
 
-    // ── Auto-wire handlers from registered tools/resources/prompts ──
     void WireHandlers();
     void WireToolHandlers();
     void WireResourceHandlers();
@@ -125,12 +121,15 @@ private:
     void WireCoreHandlers();
     void WireExtensionHandlers();
     void WireTaskHandlers();
+    void WireSkillHandlers();
     void WireSubscriptionHandlers();
     void DeriveCapabilities();
     void SendListChangedNotification(std::string_view method);
 
-    // ── Internal handler implementations ──
     JsonValue BuildToolsJson();
+    std::vector<std::string> EffectiveSupportedVersions() const;
+    CacheHint ResolveCacheHint(std::string_view method) const;
+    void EmitLoggingMessage(LoggingLevel level, std::string_view data);
     void HandleListTools(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleCallTool(
@@ -145,6 +144,12 @@ private:
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleGetPrompt(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void HandleListSkills(
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void HandleGetSkill(
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
+    void HandleReadDirectory(
+        const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleComplete(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void HandleDiscover(
@@ -158,16 +163,13 @@ private:
     void AbandonPendingUrlElicitation(
         const std::string& elicitation_id, std::exception_ptr error);
 
-    // ── State ──
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
     ServerOptions options_;
     ServerCapabilities capabilities_;
 
-    // Registered primitives (guarded by registry_mutex_, which also guards capabilities_)
     mutable std::shared_mutex registry_mutex_;
     std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
-    // Serialized tools/list result cache; invalidated on registration changes
     std::optional<JsonValue> cached_tools_json_;
     struct ResourceEntry {
         std::string name;
@@ -191,42 +193,38 @@ private:
     };
     std::vector<PromptEntry> prompts_;
 
-    // Client info (set on first request in 2026-era, or from initialize)
+    std::vector<Skill> skills_;
+    bool skills_directory_read_{false};
+    ext::TriggerRegistry triggers_;
+
     std::shared_ptr<const ClientCapabilities> client_capabilities_;
     std::shared_ptr<const Implementation> client_info_;
     mutable std::mutex client_info_mutex_;
 
-    // Completion handler (optional user-registered)
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
 
-    // Async tool call lifecycle management
     std::mutex pending_async_mutex_;
     std::vector<std::shared_future<void>> pending_async_futures_;
 
-    // Cancellation flags of in-flight task-mode tool executions
     std::mutex running_task_flags_mutex_;
     std::unordered_map<std::string, std::shared_ptr<std::atomic<bool>>> running_task_cancel_flags_;
 
-    // Initialization state (2025-era protocol)
     std::atomic<bool> initialized_{false};
 
-    // Current logging level (set via logging/setLevel)
     mutable std::mutex log_level_mutex_;
     std::optional<LoggingLevel> current_log_level_;
 
-    // Stateless mode (no session persistence, no MRTR)
+    mutable std::mutex cache_hook_mutex_;
+    std::function<std::optional<CacheHint>(std::string_view)> cache_hint_hook_;
+
     bool is_stateless_{false};
 
-    // Subscription ID allocation (monotonic, process-local)
     std::atomic<uint64_t> next_subscription_id_{1};
 
-    // Task ID allocation (monotonic, process-local)
     std::atomic<uint64_t> next_task_id_{1};
 
-    // Elicitation ID allocation (monotonic, process-local)
     std::atomic<uint64_t> next_elicitation_id_{1};
 
-    // Pending URL elicitations awaiting notifications/elicitation/complete
     struct PendingUrlElicitation {
         std::promise<ElicitResult> promise;
         bool completed{false};
@@ -236,7 +234,6 @@ private:
     std::unordered_map<std::string, std::shared_ptr<PendingUrlElicitation>>
         pending_url_elicitations_;
 
-    // Run loop synchronization
     std::mutex run_mutex_;
     std::condition_variable run_cv_;
     bool running_{false};

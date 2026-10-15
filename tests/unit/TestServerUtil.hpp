@@ -1,6 +1,4 @@
 #pragma once
-// TestServerUtil.hpp — shared HTTP test helpers: free-port probing and
-// readiness polling, shared by multiple test suites.
 
 #include <chrono>
 #include <string>
@@ -18,7 +16,6 @@
 
 static const uint16_t kTestBasePort = 18765;
 
-// Port availability probe: a fresh bind succeeds only when the port is free.
 inline bool PortIsFree(uint16_t port) {
 #ifdef _WIN32
     WSADATA wsa;
@@ -45,9 +42,6 @@ inline bool PortIsFree(uint16_t port) {
 #endif
 }
 
-// Pick a free port near the preferred one so parallel test runs don't collide.
-// Windows may reserve contiguous port ranges (Hyper-V/WSL/Docker excluded
-// ranges); scan a wide window so the probe walks past such ranges.
 inline uint16_t PickFreePort(uint16_t preferred) {
     for (uint16_t p = preferred; p < preferred + 2000; ++p) {
         if (PortIsFree(p)) return p;
@@ -55,7 +49,6 @@ inline uint16_t PickFreePort(uint16_t preferred) {
     return preferred;
 }
 
-// Poll until the server answers any request (ready) or the deadline passes.
 inline bool WaitUntilReady(uint16_t port) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {

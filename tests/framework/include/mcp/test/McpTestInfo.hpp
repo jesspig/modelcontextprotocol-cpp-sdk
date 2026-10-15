@@ -1,6 +1,4 @@
 #pragma once
-// McpTestInfo.hpp — 当前测试名反射
-
 #include <string_view>
 
 namespace mcp::test {

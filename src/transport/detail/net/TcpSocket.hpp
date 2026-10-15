@@ -1,7 +1,5 @@
 #pragma once
 
-// TcpSocket.hpp — blocking TCP socket with poll-based timeouts
-
 #include <atomic>
 #include <chrono>
 #include <cstddef>
