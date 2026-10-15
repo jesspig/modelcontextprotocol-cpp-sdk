@@ -1,10 +1,10 @@
 #pragma once
-#include "McpApi.hpp"
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
-#include <string>
 #include <thread>
 #include <utility>
 
@@ -22,12 +22,12 @@ void RunWithTimeout(const char* file, int line, std::chrono::milliseconds timeou
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (!done.load()) {
         if (std::chrono::steady_clock::now() >= deadline) {
-            AssertionFailure(file, line,
-                "test body hung: did not complete within " +
-                    std::to_string(timeout.count()) + " ms");
-            if (TestCase* t = CurrentTest()) t->MarkAbandoned();
-            worker.detach();
-            return;
+            std::fprintf(stderr,
+                "%s:%d: Failure: test body hung: did not complete within %lld ms\n",
+                file, line, static_cast<long long>(timeout.count()));
+            std::fflush(stderr);
+            std::fflush(stdout);
+            std::_Exit(EXIT_FAILURE);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }

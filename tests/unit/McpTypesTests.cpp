@@ -2,7 +2,7 @@
 
 #include <detail/JsonSchemaValidator.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 using namespace mcp;
 

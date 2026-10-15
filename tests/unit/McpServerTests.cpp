@@ -6,7 +6,8 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/storage/FileTaskStore.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
+#include <mcp/test/McpTestInfo.hpp>
 
 #include <algorithm>
 #include <atomic>

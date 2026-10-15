@@ -1,6 +1,6 @@
 #include <detail/UriTemplate.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <cstddef>
 #include <initializer_list>

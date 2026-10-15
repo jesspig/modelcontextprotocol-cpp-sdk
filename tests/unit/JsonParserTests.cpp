@@ -1,7 +1,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <limits>
 #include <string>

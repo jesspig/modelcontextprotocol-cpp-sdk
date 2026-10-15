@@ -1,17 +1,17 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 18 个测试目标（15 unit + integration/conformance/framework），874 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，自研测试框架）；静态断言统计 3762；支持致命断言、SCOPED_TRACE、匹配器、过滤/重复/乱序/JSON 报告与超时护栏。
-tags: [test, framework, ctest, conformance]
-timestamp: 2026-10-15T13:14:29+08:00
+description: 17 个测试目标（15 unit + integration/conformance），837 个测试用例（静态 `TEST/TEST_F` 口径，googletest v1.18.0 子模块）；静态断言统计 3686；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
+tags: [test, googletest, ctest, conformance]
+timestamp: 2026-10-15T21:12:00+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部经自研 `mcp_discover_tests()`（tests/framework 框架）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(`/`TEST_P(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F|TEST_P)\('`，口径为 `tests/**/*.cpp`），现为 **874**，与 `ctest -N` 注册口径精确一致（873 → 本轮 +1）；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，含 `EXPECT_CALL_COUNT` 调用，不含框架头文件中的宏定义），现为 **3762**（3757 → 本轮 +5）。本轮增量：`StreamableHttpTransportTests` +1 用例 / +5 断言（`NotificationBroadcastWaitsForSseListener`：通知在无 SSE 监听者时有界等待、监听者注册后投递——守护 SSE 流注册竞态修复，无修复时两处断言均失败）。注：10-14 两轮（JsonValue 迭代式析构、span 拒收修复）未同步本页，本轮按实测逐行回填表格（`mcp-core-tests` 179→182 / 390→399、`mcp-oauth-tests` 225→226 系前两轮遗留偏差，非本轮增量）。全量 `ctest`（串行，`--timeout 120`）874 注册：本机 873 通过——唯一未过 `FileEventStoreTest.ConcurrentAppendKeepsOrder` 为本机文件锁环境波动（修复前对照同样挂起，与本轮无关）；CI 常规环境 874/874 全绿（见 [/changelog/2026-10-15-log.md](/changelog/2026-10-15-log.md)），以后者为准。`a7ab6da` 未新增用例（`git diff-tree` 未碰本页与测试代码，总数不动）；`7005b81` 碰本页，即本轮 +1 用例 / +5 断言。
+全部测试经 `mcp_discover_tests()`（[cmake/McpDiscoverTests.cmake](../cmake/McpDiscoverTests.cmake)，对 CMake `gtest_discover_tests` 的薄封装，逐用例 `TIMEOUT 120`）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F)\('`，口径为 `tests/**/*.cpp`），现为 **837**，与 `ctest -N` 注册口径精确一致；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，口径 `tests/**/*.cpp`），现为 **3686**。本轮为测试框架迁移：自研框架（`tests/framework/`，含 37 用例 / 76 断言的自测目标）整体删除，改由 googletest v1.18.0（git submodule `third_party/googletest`，`BUILD_GMOCK OFF`）承载；用例 874 → 837（-37），断言 3762 → 3686（-76，全部来自自测目标删除；27 个测试 cpp 逐文件对账其余 token 全守恒）；全量 `ctest --preset debug` **837/837 全绿**（183s；含此前本机偶发波动的 `FileEventStoreTest.ConcurrentAppendKeepsOrder`），详见 [/changelog/2026-10-15-log.md](/changelog/2026-10-15-log.md)。
 
-目标数维持 18：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）；其后 748 → 769（前瞻六开关批，见下）→ 874（+105，后续批次，同样全部并入既有目标，目标数仍 18，分布见上表；715 → 748 起始基线见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)）。
+目标数 18 → 17（本轮迁移删除 `mcp-framework-self-tests`）：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）；其后 748 → 769（前瞻六开关批，见下）→ 874（+105，后续批次，同样全部并入既有目标，目标数仍 18，分布见上表；715 → 748 起始基线见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)）。
 
 ## 目标清单
 
@@ -34,14 +34,13 @@ resource: tests/CMakeLists.txt
 | mcp-uri-template-tests | UriTemplateTests | 21 | 133 |
 | mcp-integration-tests | ClientServerRoundTrip、Phase1InteropTests、Phase2ClosureTests | 19 | 113 |
 | mcp-conformance-tests | ProtocolConformance | 123 | 386 |
-| mcp-framework-self-tests | SelfTests | 37 | 76 |
-| **合计** | | **874** | **3762** |
+| **合计** | | **837** | **3686** |
 
 ## 测试注意点
 
 - URI 模板（RFC 6570）匹配器由 `mcp-uri-template-tests`（[UriTemplateTests.cpp](../tests/unit/UriTemplateTests.cpp)，21 用例 / 133 断言）覆盖：算子与变量列表解析、非法模板拒绝（括号不平衡/非法变量名/前缀修饰符/双贪婪变量/相邻无分隔变量/长度与变量数上限）、`Expand` 与 `Match` 往返、pct-encoded 解码、贪婪方向与超长 URI 拒绝；实现说明见 [/concepts/uri-template.md](/concepts/uri-template.md)
 - `InMemoryTransport` 是**同步**的：消息在 `Send()`/`AsyncReceive()` 时交付（`MessageChannel` 有界队列，默认 64），无外部事件循环
-- 集成测试超时护栏：`MCP_RUN_WITH_TIMEOUT`（[McpTimeout.hpp](../tests/framework/include/mcp/test/McpTimeout.hpp)，默认 10s，可 `(timeout, body)` 覆盖）为唯一入口，三个集成文件（ClientServerRoundTrip/Phase1InteropTests/Phase2ClosureTests）的本地重复实现已删除；超时记为该用例失败并 `MarkAbandoned()`——跳过 TearDown、故意泄漏 fixture 对象（防挂起工作线程访问已析构对象 UAF）、runner 继续执行后续用例，ctest 侧另有逐用例 `TIMEOUT 120` 兜底（[McpDiscoverTests.cmake.script](../cmake/McpDiscoverTests.cmake.script)）
+- 超时护栏（保留件）：`MCP_RUN_WITH_TIMEOUT`（[McpTimeout.hpp](../tests/support/include/mcp/test/McpTimeout.hpp)，默认 10s，可 `(timeout, body)` 覆盖）为唯一入口，28 处调用（集成 3 文件 19 处 + SpanHookTests 7 处 + OAuthTests 2 处）签名不变；body 在独立工作线程执行，超时打印 `file:line: Failure: test body hung: did not complete within N ms` 后 `std::_Exit(EXIT_FAILURE)` 硬退出——ctest 逐用例进程模型下与旧 `MarkAbandoned` 语义等价（该用例记 FAILED、其余用例照常继续，已实测验证），ctest 侧另有逐用例 `TIMEOUT 120` 兜底
 - 关键协议行为有盲区守护测试：`RejectsRequestsBeforeInitialized`、`InitializeEchoesClientVersion`（回显旧版版本号）、`ProgressNotificationExtendsDeadline`、`IncomingFilterInterceptsRequests`
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删；`WireCodec::ExtractIncomingMeta` 已不再有派生实现（基类默认返回 nullopt，WireCodec 版测试 `Rev2026ExtractMeta` 已删）——meta 提取现由 `McpSessionHandler::ExtractIncomingMeta` 承担（有真实调用者），守护测试为 `IncomingMetaCarriesProtocolVersion`
 - 2026 时代相关新增测试：`PingRejectedIn2026`/`PingAvailableIn2025`（SessionHandler）、`Rev2025ValidateInitializeRequest( +MissingProtocolVersion)`（WireCodec）、`Rev2026EncodeResultFlattensCacheHint`/`Rev2025EncodeResultKeepsCacheHintNested`、`AutoNegotiationCorrectsVersionOnSharedVersion`/`AutoNegotiationFallsBackWhenOnlyLegacySupported`（McpClient）；旧名 `Rev2026HasTaskAndSubscriptionNotifications` 已更名 `Rev2026HasMessageAndSubscriptionNotificationsNoTasks`
@@ -52,8 +51,8 @@ resource: tests/CMakeLists.txt
 - SEP-2243 参数头测试覆盖 `x-mcp-header` 的嵌套属性路径、非法 schema、标准 Base64 哨兵编码、服务端与 body 一致性校验、服务端结果响应头镜像，以及客户端只镜像已注解参数；`ClientOmitsMcpParamHeaders` 仅验证未注解参数不生成头
 - Span hook 测试覆盖未注入回归、服务端请求/传输边界、trace context 传递和拒绝请求的 Begin/End 配对，详见 [/concepts/span-hooks.md](/concepts/span-hooks.md)
 - 期三关键守护测试：Bearer 鉴权 9 用例（无头/非 Bearer 挑战、invalid_token、insufficient_scope、有效 token 透传、元数据端点匿名、未配置零回归、客户端 `auth_challenge_handler` 闭环成功与 scope 不足）；FileEventStore 10 用例（双实例共享、重启恢复、并发写、trim、净化文件名等）；SessionStore 5 用例（外部接管、未知 id 404 `-32009`）；MRTR 端到端 3 用例（`MrtrToolInputRequiredElicitationRoundTrip`、`MrtrMintedRequestStateRoundTrip`、`MrtrForgedRequestStateRejectedWithReason`）；`SendLoggingMessageEncodesLevelAsString`（wire 真 bug 回归）；`ListPromptsIncludesArguments`；`CompleteRequestParamsStandardShape`/`CompleteRequestParamsFlatShapeCompat`；显式能力声明 2 用例
-- 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 18 个测试目标和 874 个用例
-- 平台差异：Windows 874 / Linux 873，差 1 例为 `StreamableHttpTransportTest.PostSseStreamEofDeliversConnectionClosedError`（`#ifdef _WIN32` 保护，[StreamableHttpTransportTests.cpp:717-718](../tests/unit/StreamableHttpTransportTests.cpp)），属平台条件编译的正常结果
+- 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 17 个测试目标和 837 个用例
+- 平台差异：Windows 837 / Linux 836，差 1 例为 `StreamableHttpTransportTest.PostSseStreamEofDeliversConnectionClosedError`（`#ifdef _WIN32` 保护，[StreamableHttpTransportTests.cpp:717-718](../tests/unit/StreamableHttpTransportTests.cpp)），属平台条件编译的正常结果
 - 本分支新增守护测试（均并入既有目标）：任务扩展——`WireCodec` 双时代集合与 `ValidateTaskHeaders` 缺 taskId/头失配、`McpServer` modern 头校验与通知抑制/`tasks/update` inputResponses 分支（互斥/状态门）/`tasks/result|list` 现代拒绝、任务存储新字段 roundtrip 与 `AdvanceTaskWithInput` 状态门、`McpClient` 未声明扩展收 task 抛 `HandlerError`/`UpdateTask` 第三参、`CreateTaskResult` 顶层/嵌套双形态；技能扩展——`Skill/SkillResources` 序列化 roundtrip、`RegisterSkill` 非法 uri 拒绝、目录视图派生与 `directoryRead` 门、客户端技能缓存（`use/bypass/refresh` + `max_age_ms`）；HTTP 加固——未知版本头 400 `-32022`、任务头 400、`initialize` 满存 503、会话闲置过期与 `SweepExpired`、EventStore 扫描追加与 10000 上限、监听流 5xx `GivenUp` 与 `retry:` 钳制（450–1000ms）、SSE `FlushSseBuffer` 尾块补派发；OAuth——`application_type` 注册透传、token `resource` 持久化与失配门、issuer 变更清注册/令牌、challenge 加固（超长/非法 URL 拒绝不抛）；服务端 audience 失配 401、客户端 403 仅 `insufficient_scope` 重试
 - 本批（G 系列冻结批）新增守护测试（均并入既有目标，无新目标）：服务端——`CreateTaskResultFlatNoNested`（2026 扁平无嵌套）/`TaskTimestampsPopulated`（创建即置双时间戳）/`ToolErrorMapsToCompleted`（`is_error` 结果入库落 Completed）/`ProtocolErrorMapsToFailedWithError`（`McpError` 按原码内联 error 落 Failed）/`PromptsGetInputRequired`/`ResourceReadInputRequired`（非工具 input_required + 自动签名）/`MetaReachesHandler`（顶层 `_meta` 合并进 params）；客户端——`FlatTaskResultPreferredOverNested`（双形态反序列化顶层优先）/`ElicitationApplyDefaults*`（`applyDefaults` 缺省回填：五字段/禁用透传/保留既有/拒绝忽略/嵌套与变体递归）/`MrtrElicitationApplyDefaultsFillsInputResponses`；传输——`RequestStreamHoldOpenDeliversProgressBeforeResult`/`RequestStreamHoldOpenDeliversMessageBeforeResult`（modern POST 常开按 token 路由缓冲）/`PlainRequestKeepsSingleWriteAndClose`（普通请求仍单写即关）
 - 实验开关门控矩阵（`ad547f9`，服务端 10 开关 / 客户端 3 开关默认全关，基线 748/3145 不动；详见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)；其后 769 → 874 桥接见下节，目标数始终 18）：
@@ -69,16 +68,14 @@ resource: tests/CMakeLists.txt
 
 前瞻六开关批次（748 → 769，+21：`mcp-server-tests` +8（文件输入 5 + 触发器 3）、`mcp-client-tests` +7（搜索 3 + ETag 4）、`mcp-streamable-http-tests` +3（DPoP 服务端）、`mcp-oauth-tests` +3（DPoP 客户端）；断言 3145 → 3287，+142；全量 `ctest --preset debug` 769/769 全绿；其后 769 → 874（+105，后续批次，同样并入既有目标，目标数仍 18，分布见上表）；详见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)）。
 
-## 自研框架能力（P0+P1）
+## googletest 承载与保留件
 
-- **致命断言**：`ASSERT_*` 与 `FAIL()` 记录失败后置 fatal 标志并立即 `return`，可用 `HasFatalFailure()` 查询；`ASSERT_NO_FATAL_FAILURE`/`EXPECT_NO_FATAL_FAILURE` 包裹子过程；`ASSERT_DOUBLE_EQ`、`EXPECT/ASSERT_FLOAT_EQ`、`EXPECT/ASSERT_NEAR` 补齐浮点族。比较宏经 `CompareOperands` 单次求值（双求值修复，自测 `ExpectCompareEvaluatesOperandsOnce*` 守护）
-- **调试定位**：`SCOPED_TRACE(expr)`（[McpTrace.hpp](../tests/framework/include/mcp/test/McpTrace.hpp)，thread_local 栈）把 `Trace: file:line: msg` 调用链自动附加到失败消息；`ToString` 优先级为 ADL `PrintTo` → `operator<<` → 容器展开（`begin/end` 可迭代类型：vector/map/pair 实测输出 `[1, 2, 3]`/`[("a", 1)]`/`(1, "x")`）→ 类型名兜底，另有 `PrintToString`
-- **扩展断言**：`STRNE`、`STRCASEEQ`/`STRCASENE`（ASCII 大小写不敏感）、`ANY_THROW`、`THROW_MSG`（异常类型 + 消息子串）、`ADD_FAILURE`/`ADD_FAILURE_AT`/`SUCCEED`；匹配器断言 `EXPECT_THAT`/`ASSERT_THAT` 支持 `Eq`/`HasSubstr`/`SizeIs`/`ElementsAre`
-- **运行控制**：`--gtest_filter` 支持 `:` 多模式与 `-` 取反（glob `*`/`?`，匹配 `Suite.Case`，如 `'McpClientTest.*:TransportTest.Fake*'`）；`--gtest_list_tests`（gtest 风格）与 `--list-tests`（`Suite.Case` 行）；`--gtest_repeat=<n>`（n>=1）；`--gtest_shuffle`/`--gtest_random_seed=<n>`（同套件保持连续，seed 0 取时钟并打印）；`--gtest_break_on_failure`（首个失败即 abort）；`--gtest_output=json:<path>`（跨轮次汇总 status/elapsed_ms/properties，失败用例附 `failures` 消息数组（内含 SCOPED_TRACE 调用链））；`DISABLED_` 前缀自动跳过
-- **生命周期**：`GTEST_SKIP()` 抛 `SkipException`，在 SetUp 中跳过整用例（body 不执行、TearDown 仍执行），body 中跳过同样记为 SKIPPED；`SetUpTestSuite`/`TearDownTestSuite` 经 TEST_F 注册钩子每套件恰执行一次；`Environment` 全局环境（`AddGlobalTestEnvironment`，SetUp 先于全部用例、TearDown 逆序收尾）；`RecordProperty` + `AddTestEndListener`（`TestResult{suite,name,passed,skipped,elapsed_ms}`）
-- **归因**：`CurrentTest` 先取 thread_local、回退全局原子指针，子线程内断言仍归因到当前用例
-- **测试替身**：[TestFakes.hpp](../tests/unit/TestFakes.hpp) 的 `FakeTransport`（`Sent()` 记录序列化出站消息、`PushIncoming` 注入入站、`LastSent`/`Closed`/`Started`）与 `EXPECT_CALL_COUNT`（按 `Sent().size()` 断言），支撑无 IO 传输行为测试
-- **用例数变化**：自测 14 → 37（新增 23 用例：双求值修复与致命语义、SCOPED_TRACE、跳过/套件钩子/全局环境、扩展断言/匹配器/ToString、属性与结束监听）；mcp-transport-tests 11 → 12（`FakeTransportRecordsSends`）
+- **框架**：googletest v1.18.0（git submodule `third_party/googletest`，`EXCLUDE_FROM_ALL`；`BUILD_GMOCK OFF`/`INSTALL_GTEST OFF`/`gtest_force_shared_crt ON`）；17 个测试目标链接 `mcp-test-support`（[tests/support/](../tests/support/)，保留件 INTERFACE 库）+ `GTest::gtest_main`；断言、夹具、`SCOPED_TRACE`、`GTEST_SKIP`、`SetUpTestSuite`、`AddGlobalTestEnvironment`、`RecordProperty` 等全部由 googletest 原生承载
+- **保留件**：[McpTimeout.hpp](../tests/support/include/mcp/test/McpTimeout.hpp)（`MCP_RUN_WITH_TIMEOUT` 超时护栏，见上）与 [McpTestInfo.hpp](../tests/support/include/mcp/test/McpTestInfo.hpp)（`CurrentTestName`/`CurrentSuiteName`，基于 `::testing::UnitTest::GetInstance()->current_test_info()` 重实现，5 处调用零改动）
+- **运行控制**（googletest 原生）：`--gtest_filter`（`:` 多模式与 `-` 取反）、`--gtest_list_tests`、`--gtest_repeat`、`--gtest_shuffle`/`--gtest_random_seed`、`--gtest_break_on_failure`、`--gtest_output=json:<path>`（JSON schema 为 googletest 原生格式，现状无消费方）、`--gtest_brief`；`DISABLED_` 前缀自动跳过
+- **测试替身**：[TestFakes.hpp](../tests/unit/TestFakes.hpp) 的 `FakeTransport`（`Sent()` 记录序列化出站消息、`PushIncoming` 注入入站、`LastSent`/`Closed`/`Started`）与 `EXPECT_CALL_COUNT`（宏重写为 `EXPECT_EQ((fake).Sent().size(), n)`），支撑无 IO 传输行为测试
+- **原自研独有断言收编**：`EXPECT_THROW_MSG`（3 处，[ProtocolConformance.cpp](../tests/conformance/ProtocolConformance.cpp)）改为 try/catch + `EXPECT_NE(std::string(e.what()).find(...), std::string::npos)`（gmock 关闭，不用 `ThrowsMessage`）；其余独有宏（`THROW_MSG`、`STRCASEEQ`、匹配器族）随框架删除，生产测试无残留调用
+- **离线属性**：configure 无网络拉取（submodule 于 clone 时获取；仓库无 FetchContent/ExternalProject），消除 2026-08-14 移除 googletest 的原始动机
 
 ## 官方 conformance suite（.github/workflows/conformance.yml）
 

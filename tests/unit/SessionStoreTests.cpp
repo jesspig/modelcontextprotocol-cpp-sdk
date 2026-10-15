@@ -3,7 +3,7 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/JsonRpc.hpp>
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include <transport/detail/net/HttpClient.hpp>
 #include "TestServerUtil.hpp"
 

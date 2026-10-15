@@ -4,7 +4,7 @@
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include "TestFakes.hpp"
 #include "TestServerUtil.hpp"

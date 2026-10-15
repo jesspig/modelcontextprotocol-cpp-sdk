@@ -1,7 +1,7 @@
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/JsonRpc.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 using namespace mcp;
 

@@ -6,7 +6,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>

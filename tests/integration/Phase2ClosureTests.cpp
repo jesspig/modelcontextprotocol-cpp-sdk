@@ -10,7 +10,8 @@
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
+#include <mcp/test/McpTestInfo.hpp>
 #include <mcp/test/McpTimeout.hpp>
 #include "../unit/TestServerUtil.hpp"
 
@@ -94,7 +95,7 @@ void RegisterUrlGateTool(McpServer& server) {
 
 } // namespace
 
-struct Phase2InMemoryTaskFixture : mcp::test::TestCase {
+struct Phase2InMemoryTaskFixture : ::testing::Test {
     std::filesystem::path store_path;
     std::shared_ptr<FileTaskStore> store;
     std::unique_ptr<McpServer> server;
@@ -234,7 +235,7 @@ TEST_F(Phase2InMemoryTaskFixture, CancelRunningTask) {
     });
 }
 
-struct Phase2InMemoryElicitFixture : mcp::test::TestCase {
+struct Phase2InMemoryElicitFixture : ::testing::Test {
     std::unique_ptr<McpServer> server;
     std::unique_ptr<McpClient> client;
     std::thread server_thread;
@@ -290,7 +291,7 @@ TEST_F(Phase2InMemoryElicitFixture, UrlElicitationRoundTrip) {
     });
 }
 
-struct Phase2HttpTaskFixture : mcp::test::TestCase {
+struct Phase2HttpTaskFixture : ::testing::Test {
     uint16_t port = 0;
     std::filesystem::path store_path;
     std::shared_ptr<FileTaskStore> store;
@@ -387,7 +388,7 @@ TEST_F(Phase2HttpTaskFixture, TaskLifecycleOverHttp) {
     });
 }
 
-struct Phase2HttpResilienceFixture : mcp::test::TestCase {
+struct Phase2HttpResilienceFixture : ::testing::Test {
     uint16_t port = 0;
     std::shared_ptr<StreamableHttpServerTransport> server_transport;
     std::unique_ptr<McpServer> server;
@@ -513,7 +514,7 @@ TEST_F(Phase2HttpResilienceFixture, MaxTotalTimeoutTruncatesRequest) {
     });
 }
 
-struct Phase2HttpElicitFixture : mcp::test::TestCase {
+struct Phase2HttpElicitFixture : ::testing::Test {
     uint16_t port = 0;
     std::shared_ptr<StreamableHttpServerTransport> server_transport;
     std::unique_ptr<McpServer> server;

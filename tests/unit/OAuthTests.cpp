@@ -18,7 +18,7 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include <mcp/test/McpTimeout.hpp>
 
 using namespace mcp;

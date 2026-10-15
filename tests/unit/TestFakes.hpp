@@ -2,7 +2,7 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>
-#include <mcp/test/McpApi.hpp>
+#include <gtest/gtest.h>
 
 #include <cstddef>
 #include <string>
@@ -62,8 +62,4 @@ private:
 };
 
 #define EXPECT_CALL_COUNT(fake, n) \
-    do { \
-        if ((fake).Sent().size() != static_cast<std::size_t>(n)) \
-            ::mcp::test::AssertionFailure(__FILE__, __LINE__, \
-                std::string("expected send count ") + std::to_string(n) + ", got " + std::to_string((fake).Sent().size())); \
-    } while (0)
+    EXPECT_EQ((fake).Sent().size(), static_cast<std::size_t>(n))

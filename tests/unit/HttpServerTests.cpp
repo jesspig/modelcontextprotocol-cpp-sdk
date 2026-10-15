@@ -10,7 +10,7 @@
 #include <http/McpParamHeaders.hpp>
 #include <transport/detail/net/HttpClient.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
 
 #include <atomic>
