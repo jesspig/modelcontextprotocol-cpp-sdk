@@ -3,7 +3,7 @@ type: Concept
 title: 实验开关
 description: 服务端 10 开关与客户端 4 开关（默认全关）：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器/dpop 已实现默认关语义与构造期同步、interceptor 为无门控别名。
 tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容]
-timestamp: 2026-10-13T11:10:48+08:00
+timestamp: 2026-10-15T23:48:36+08:00
 resource: include/mcp/server/ServerOptions.hpp
 ---
 
@@ -47,7 +47,7 @@ resource: include/mcp/server/ServerOptions.hpp
 
 ## Tasks/Skills 兼容期（0.3.5 → 0.3.8，本次任务给定口径）
 
-- Tasks：隐式路径已移除——仅设 `task_store` 不再声明 tasks 扩展、不再记 `Warning`，必须显式开 `enable_tasks_extension=true`（能力推导 [McpServer.cpp:1637](../../src/server/McpServer.cpp)、任务三方法守卫 `1205、1246、1472`、任务化调用 `2018` 均只认显式开关）。`TasksImplicitlyEnabled()`（[ServerOptions.hpp:93-95](../../include/mcp/server/ServerOptions.hpp)）仍保留 `[[deprecated]]` 标记作公开 API 兼容，但服务端已不再调用。注：0.3.8 为任务口径，代码内无版本标记；现版本为 0.3.5。
+- Tasks：隐式路径已移除——仅设 `task_store` 不再声明 tasks 扩展、不再记 `Warning`，必须显式开 `enable_tasks_extension=true`（能力推导 [McpServer.cpp:1637](../../src/server/McpServer.cpp)、任务三方法守卫 `1205、1246、1472`、任务化调用 `2018` 均只认显式开关）。`TasksImplicitlyEnabled()`（[ServerOptions.hpp:93-95](../../include/mcp/server/ServerOptions.hpp)）仍保留 `[[deprecated]]` 标记作公开 API 兼容，但服务端已不再调用。注：0.3.8 为任务口径，代码内无版本标记；现版本为 0.3.6。
 - Skills：`SkillsImplicitlyEnabled()`（[ServerOptions.hpp:96-98](../../include/mcp/server/ServerOptions.hpp)）同样标记 deprecated，但实现只返回开关本身、无隐式路径——技能自 `ad547f9` 起必须显式开 `enable_skills_extension=true`，否则能力不声明、三方法 `MethodNotFound`。
 
 ## 关/开两态语义
