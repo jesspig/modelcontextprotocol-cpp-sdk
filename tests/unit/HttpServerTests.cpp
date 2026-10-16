@@ -10,7 +10,7 @@
 #include <http/McpParamHeaders.hpp>
 #include <transport/detail/net/HttpClient.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
 
 #include <atomic>
@@ -324,7 +324,9 @@ TEST(HttpServerTest, BindHostIpv6LoopbackAccepts) {
 #else
     close(sock);
 #endif
-    if (!first_line.empty()) EXPECT_NE(first_line.find("200"), std::string::npos);
+    if (!first_line.empty()) {
+        EXPECT_NE(first_line.find("200"), std::string::npos);
+    }
     server.Stop();
 }
 
@@ -1052,8 +1054,11 @@ TEST(StreamableHttpTest, McpParamAnnotationParsesNestedPropertyPaths) {
         ASSERT_TRUE(value.has_value());
         auto encoded = mcp::http_detail::EncodeHeaderValue(*value);
         ASSERT_TRUE(encoded.has_value());
-        if (annotation.header_name == "Region") EXPECT_EQ(*encoded, "us-west1");
-        else EXPECT_EQ(*encoded, "42");
+        if (annotation.header_name == "Region") {
+            EXPECT_EQ(*encoded, "us-west1");
+        } else {
+            EXPECT_EQ(*encoded, "42");
+        }
     }
 }
 

@@ -5,7 +5,7 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/SessionStore.hpp>
 #include <mcp/ext/DPoP.hpp>
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
 
 #include <atomic>

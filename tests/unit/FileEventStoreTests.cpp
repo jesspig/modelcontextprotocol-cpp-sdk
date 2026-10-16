@@ -1,6 +1,7 @@
 #include <mcp/storage/FileEventStore.hpp>
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
+#include <mcp/test/McpTestInfo.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -26,7 +27,7 @@ std::vector<std::pair<uint64_t, std::string>> AppendN(
 
 } // namespace
 
-struct FileEventStoreTest : mcp::test::TestCase {
+struct FileEventStoreTest : ::testing::Test {
     std::filesystem::path store_dir;
 
     void SetUp() override {

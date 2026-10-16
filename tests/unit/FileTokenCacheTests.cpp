@@ -1,12 +1,13 @@
 #include <mcp/storage/FileTokenCache.hpp>
 
 #include <fstream>
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
+#include <mcp/test/McpTestInfo.hpp>
 #include <filesystem>
 
 using namespace mcp;
 
-class FileTokenCacheTest : public mcp::test::TestCase {
+class FileTokenCacheTest : public ::testing::Test {
 protected:
     std::filesystem::path cache_path;
 

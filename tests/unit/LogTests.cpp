@@ -1,5 +1,5 @@
 #include <mcp/Log.hpp>
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <string>
 #include <vector>

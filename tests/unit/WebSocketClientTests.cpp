@@ -9,7 +9,7 @@
 #include <transport/detail/net/Sha1.hpp>
 #include "TestServerUtil.hpp"
 
-#include <mcp/test/McpTest.hpp>
+#include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
