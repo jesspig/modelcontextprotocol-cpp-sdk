@@ -4,6 +4,6 @@
 
 namespace mcp {
 
-inline constexpr std::string_view kSdkVersion = "0.3.6";
+inline constexpr std::string_view kSdkVersion = "0.3.7";
 
 } // namespace mcp
