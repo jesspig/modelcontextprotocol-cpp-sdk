@@ -1,9 +1,9 @@
 ---
 type: Build
 title: 构建系统
-description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL）。
+description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL，由 MCP_WITH_OPENSSL 三态开关控制）。
 tags: [cmake, ninja, unity, lto, conformance]
-timestamp: 2026-10-16T01:30:43+08:00
+timestamp: 2026-10-18T13:48:17+08:00
 resource: CMakePresets.json
 ---
 
@@ -27,6 +27,7 @@ ctest --preset debug --output-on-failure
 | 预设 | `debug` / `release`（对应 buildPresets/testPresets 各 2 枚） |
 | 默认关闭 | `MCP_BUILD_TESTS`、`MCP_BUILD_EXAMPLES`、`MCP_BUILD_CONFORMANCE` 三开关在 `CMakeLists.txt:52-54` 默认全 OFF；预设仅置 `MCP_BUILD_TESTS=ON` / `MCP_BUILD_EXAMPLES=OFF`（无 `CONFORMANCE`，见 `CMakePresets.json:9-14`）；CI conformance job 双开（`conformance.yml:38`），`CMakeLists.txt:234-238` 以 `NOT EXAMPLES` 防 client fixture 重加 |
 | Werror | 仅 `-DMCP_WERROR=ON`（CI 自动添加；MSVC `/WX`） |
+| OpenSSL 开关 | `-DMCP_WITH_OPENSSL=AUTO\|ON\|OFF`，默认 `AUTO`：`AUTO` 按 `find_package(OpenSSL)` 结果启用，`ON` 未找到即 configure 失败，`OFF` 强制禁用（装有 OpenSSL 也不启用）；启用时由单一 INTERFACE 目标 `mcp-openssl` 统一向 `mcp-transport`/`mcp-client`/`mcp-ext` 施加 `MCP_HAVE_OPENSSL` 定义与链接，构建系统不做 `__has_include` 头文件嗅探 |
 | `MCP_IS_CI` | 由环境变量 `CI` 定义与否决定 |
 | job pool | 自动调优：compile = `min(mem/1500MB, cpu-2)`（下限 1）、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
 
@@ -48,7 +49,7 @@ ctest --preset debug --output-on-failure
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
-| OpenSSL | 系统 | 可选；`MCP_HAVE_OPENSSL` 定义（TLS 与 PKCE 随机数 `RAND_bytes`）；PKCE 的 SHA-256 恒为内置实现（[sha256.hpp](../include/mcp/detail/sha256.hpp)） |
+| OpenSSL | 系统 | 可选；启用由 `MCP_WITH_OPENSSL` 三态开关（默认 `AUTO`）+ `find_package(OpenSSL)` 结果决定，启用时经 `mcp-openssl` 定义 `MCP_HAVE_OPENSSL`（TLS 与 PKCE 随机数 `RAND_bytes`）并链接；PKCE 的 SHA-256 恒为内置实现（[sha256.hpp](../include/mcp/detail/sha256.hpp)） |
 
 ## CI 工作流（.github/workflows/）
 

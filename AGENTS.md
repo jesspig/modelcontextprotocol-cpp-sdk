@@ -14,7 +14,7 @@ ctest --preset debug --output-on-failure
 - 示例需 `-DMCP_BUILD_EXAMPLES=ON`（预设默认 OFF）；官方 conformance fixture 需 `-DMCP_BUILD_CONFORMANCE=ON`（`examples/conformance/server`，配套 `.github/workflows/conformance.yml` 与 `scripts/run-conformance.sh`）。
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`。
 - `-DMCP_WERROR=ON` 才开警告即错误（CI 自动加，本地默认关）。
-- configure 无第三方拉取；唯一可选系统依赖是 OpenSSL（未找到则禁用 TLS；PKCE 随机源回退 `BCryptGenRandom`/`random_device`，SHA-256 恒为内置实现）。
+- configure 无第三方拉取；唯一可选系统依赖是 OpenSSL，由 `-DMCP_WITH_OPENSSL=AUTO|ON|OFF`（默认 `AUTO`）控制——`AUTO` 按 `find_package(OpenSSL)` 结果启用，`ON` 未找到即 configure 失败，`OFF` 强制禁用（未启用则禁用 TLS；PKCE 随机源回退 `BCryptGenRandom`/`random_device`，SHA-256 恒为内置实现）。
 - 验证全量：`ctest -N` 看实际用例数（17 目标 / 837 用例；静态断言统计 3686，详见 [wiki/tests.md](wiki/tests.md)）。
 - 测试栈为 googletest（子模块 `third_party/googletest`）：套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*/ASSERT_*`，测试目标链 `mcp-test-support` + `GTest::gtest_main`，注册统一走 `mcp_discover_tests`。
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删。
@@ -24,7 +24,7 @@ ctest --preset debug --output-on-failure
 
 1. **协议版本共 5 个**（`ProtocolVersion.hpp` 的 `kProtocolVersions[]`：2024-11-05 至 2026-07-28；缺失版本声明默认 `kDefaultNegotiatedProtocolVersion="2025-03-26"`），现代判定字典序 `>= "2026-07-28"`（`IsModernProtocolVersion`）。新增协议方法/通知须同时考虑双 era，`WireCodec` 按协商版本 era-gating。
 2. **Unity build 默认 ON**（core/server/client/http），但 **protocol/transport 为 OFF**。新增 `.cpp` 前先确认目标 `UNITY_BUILD`——含匿名 namespace 或同名静态符号会重复定义。
-3. **OpenSSL 可选**：`MCP_HAVE_OPENSSL` 定义才用；`src/.../TlsSocket.cpp`、`Sha1.hpp`、`OAuthClientProvider.cpp` 的 `<openssl/rand.h>` 均有 `#ifdef` 保护，勿删。
+3. **OpenSSL 可选**：`MCP_HAVE_OPENSSL` 定义才用；启用与否由 `MCP_WITH_OPENSSL`（`AUTO`/`ON`/`OFF`，默认 `AUTO`）与 `find_package(OpenSSL)` 结果共同决定，`MCP_HAVE_OPENSSL` 定义与 OpenSSL 链接统一由单一 INTERFACE 目标 `mcp-openssl` 施加到 `mcp-transport`/`mcp-client`/`mcp-ext`——**禁止用 `__has_include` 嗅探头文件推断 OpenSSL 可用**（头可见不等于已定义、更不等于已链接，曾在 `mcp-ext` 造成链接失败）；`src/.../TlsSocket.cpp`、`Sha1.hpp`、`OAuthClientProvider.cpp` 的 `<openssl/rand.h>` 均有 `#ifdef` 保护，勿删。
 4. **IO 线程回调内调 `Close()` 会 self-join**：stdio/SSE/HTTP 的 IO 线程直接执行用户回调，回调里调 `Close()` 会 join 自身线程。所有 `Close()` 必须用 `detail::JoinThreadSafely`（`include/mcp/detail/ThreadUtils.hpp`）。
 5. **`PipeHandle::Read` 返回 0 不一定是 EOF**（`include/mcp/transport/detail/PlatformIO.hpp`）：Posix 实现 poll 轮询（100ms 超时），无数据返回 0；读循环必须用 `IsEof()` 区分超时与真 EOF，否则空闲误判断连。
 6. **Release 自动 LTO**（Clang ThinLTO / MSVC LTCG / GCC IPO），本地 Release 链接慢属正常。
