@@ -6,9 +6,11 @@
 |----------------|------------|--------------------------------|
 | CMake          | 3.28       | 需要 Ninja 生成器               |
 | C++ 编译器      | C++17      | MSVC、Clang、GCC               |
-| OpenSSL        | 可选（开发头文件） | 仅 `mcp-client`/`mcp-transport` 的可选依赖：`find_package(OpenSSL QUIET)` 找到才定义 `MCP_HAVE_OPENSSL` 并链接。未找到时 TLS 被禁用、PKCE 回退内置 SHA-256。用于 TLS 加密（WebSocket、SSE HTTPS 等） |
+| OpenSSL        | 可选（开发头文件） | 由 `MCP_WITH_OPENSSL`（取值 `AUTO`/`ON`/`OFF`，默认 `AUTO`）与 `find_package(OpenSSL)` 结果共同决定启用与否：启用时定义 `MCP_HAVE_OPENSSL` 并链接，覆盖 `mcp-transport`/`mcp-client`/`mcp-ext` 三个目标（统一由单一 INTERFACE 目标 `mcp-openssl` 施加）。未启用时 TLS 被禁用、PKCE 回退内置 SHA-256。用于 TLS 加密（WebSocket、SSE HTTPS 等） |
 
 configure 阶段无需联网：唯一的外部依赖 OpenSSL 通过 `find_package` 探测本机安装，不拉取任何第三方源码。
+
+`MCP_WITH_OPENSSL` 三态语义：`AUTO`（默认，`find_package(OpenSSL)` 找到即启用）、`ON`（强制启用，未找到时 configure 直接失败）、`OFF`（强制禁用，即使本机装有 OpenSSL 也不定义 `MCP_HAVE_OPENSSL`、不链接）；构建系统不再通过 `__has_include` 嗅探头文件推断 OpenSSL 可用性。
 
 ## 通过 FetchContent 引用
 
