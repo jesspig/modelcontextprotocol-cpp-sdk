@@ -7,12 +7,6 @@
 
 #if defined(MCP_HAVE_OPENSSL)
 #define MCP_DPOP_HAVE_OPENSSL 1
-#elif defined(__has_include)
-#if __has_include(<openssl/ec.h>) && __has_include(<openssl/ecdsa.h>) && \
-    __has_include(<openssl/evp.h>) && __has_include(<openssl/obj_mac.h>) && \
-    __has_include(<openssl/pem.h>) && __has_include(<openssl/rand.h>)
-#define MCP_DPOP_HAVE_OPENSSL 1
-#endif
 #endif
 
 #if defined(MCP_DPOP_HAVE_OPENSSL)
