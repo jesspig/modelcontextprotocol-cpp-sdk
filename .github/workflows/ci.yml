@@ -18,22 +18,39 @@ jobs:
         include:
           - os: windows-2022
             build_type: debug
+            openssl: auto
           - os: windows-2022
             build_type: release
+            openssl: auto
           - os: ubuntu-24.04
             build_type: debug
+            openssl: auto
           - os: ubuntu-24.04
             build_type: release
+            openssl: auto
           - os: ubuntu-24.04
             build_type: debug
             compiler: gcc
+            openssl: auto
           - os: ubuntu-24.04
             build_type: release
             compiler: gcc
+            openssl: auto
           - os: macos-15
             build_type: debug
+            openssl: auto
           - os: macos-15
             build_type: release
+            openssl: auto
+          - os: windows-2022
+            build_type: debug
+            openssl: off
+          - os: ubuntu-24.04
+            build_type: debug
+            openssl: off
+          - os: macos-15
+            build_type: debug
+            openssl: off
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -73,9 +90,9 @@ jobs:
         if: runner.os != 'Windows' && runner.os != 'macOS'
         run: |
           if [ "${{ matrix.compiler }}" = "gcc" ]; then
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DCMAKE_CXX_COMPILER=g++
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DCMAKE_CXX_COMPILER=g++ -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
           else
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
           fi
 
       - name: Configure (Windows)
@@ -84,14 +101,14 @@ jobs:
         run: |
           $opensslDir = Get-ChildItem 'C:\Program Files' -Directory -Filter 'OpenSSL*' | Sort-Object Name -Descending | Select-Object -First 1
           if ($null -eq $opensslDir) {
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
           } else {
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON "-DOPENSSL_ROOT_DIR=$($opensslDir.FullName)"
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON "-DOPENSSL_ROOT_DIR=$($opensslDir.FullName)" -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
           }
 
       - name: Configure (macOS)
         if: runner.os == 'macOS'
-        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)"
+        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
 
       - name: Build
         run: cmake --build --preset ${{ matrix.build_type }}
