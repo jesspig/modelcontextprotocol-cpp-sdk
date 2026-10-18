@@ -42,7 +42,7 @@
 |---------------|---------|-------------------------------|
 | CMake         | 3.28    | 生成器：推荐 Ninja            |
 | C++ 编译器    | C++17   | MSVC、Clang、GCC             |
-| OpenSSL       | (可选)  | TLS 必需（WebSocket、SSE HTTPS）；OAuth PKCE 无需 OpenSSL（内置 SHA-256 回退）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
+| OpenSSL       | (可选)  | 由 `MCP_WITH_OPENSSL` 开关控制（取值 `AUTO`/`ON`/`OFF`，默认 `AUTO`）。TLS 必需（WebSocket、SSE HTTPS）；OAuth PKCE 无需 OpenSSL（内置 SHA-256 回退）。安装：`vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 支持平台：**Windows** (MSVC、clang-cl)、**Linux** (GCC、Clang)、**macOS** (Clang)。
 
