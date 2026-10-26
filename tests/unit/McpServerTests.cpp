@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <mcp/test/McpTestInfo.hpp>
+#include <mcp/test/McpTimeout.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -4678,4 +4679,421 @@ TEST(McpServerTest, TasksRequireExplicitExtensionFlag) {
     server->Close();
     client->Close();
     std::filesystem::remove(store_path, ec);
+}
+
+namespace {
+
+struct SharedStoreSession {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+SharedStoreSession MakeSharedStoreSession(
+    const std::shared_ptr<FileTaskStore>& store)
+{
+    SharedStoreSession session;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLegacyProtocolVersion);
+    sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
+    session.server = McpServer::Create(std::move(pair.server), sopts);
+    session.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    session.client->Start();
+    return session;
+}
+
+} // namespace
+
+TEST(McpServerTest, TerminalTaskCannotBeRegressedByUpdateOrCancel) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+    env.store->CreateTask("task-terminal");
+
+    UpdateTaskRequestParams update_params;
+    update_params.task_id = "task-terminal";
+    JsonValue result(JsonValue::object_tag);
+    result["answer"] = JsonValue(42);
+    update_params.result = result;
+    auto ok_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(update_params));
+    ASSERT_FALSE(ok_resp.Contains("code"));
+
+    auto completed = env.store->GetTask("task-terminal");
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, TaskStatus::Completed);
+
+    UpdateTaskRequestParams regress_params;
+    regress_params.task_id = "task-terminal";
+    auto regress_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(regress_params));
+    ASSERT_TRUE(regress_resp.Contains("code"));
+    EXPECT_EQ(regress_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = "task-terminal";
+    auto cancel_resp = SendBareRequest(env.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params));
+    ASSERT_FALSE(cancel_resp.Contains("code"));
+
+    auto after = env.store->GetTask("task-terminal");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->status, TaskStatus::Completed);
+    ASSERT_TRUE(after->result.has_value());
+    EXPECT_EQ(after->result->At("answer").GetInt(), 42);
+
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, CrossSessionTaskAccessIsRejected) {
+    auto store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(store_path, ec);
+    auto store = std::make_shared<FileTaskStore>(store_path);
+
+    auto owner = MakeSharedStoreSession(store);
+    auto intruder = MakeSharedStoreSession(store);
+    PerformLegacyHandshake(owner.client);
+    PerformLegacyHandshake(intruder.client);
+
+    EXPECT_NE(owner.server->SessionId(), intruder.server->SessionId());
+    store->CreateTask("task-owned", owner.server->SessionId(), 60000);
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = "task-owned";
+    auto intruder_get = SendBareRequest(intruder.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params));
+    ASSERT_TRUE(intruder_get.Contains("code"));
+    EXPECT_EQ(intruder_get["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = "task-owned";
+    auto intruder_cancel = SendBareRequest(intruder.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params));
+    ASSERT_TRUE(intruder_cancel.Contains("code"));
+    EXPECT_EQ(intruder_cancel["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    UpdateTaskRequestParams update_params;
+    update_params.task_id = "task-owned";
+    JsonValue payload(JsonValue::object_tag);
+    payload["answer"] = JsonValue(1);
+    update_params.result = payload;
+    auto intruder_update = SendBareRequest(intruder.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(update_params));
+    ASSERT_TRUE(intruder_update.Contains("code"));
+    EXPECT_EQ(intruder_update["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    auto untouched = store->GetTask("task-owned");
+    ASSERT_TRUE(untouched.has_value());
+    EXPECT_EQ(untouched->status, TaskStatus::Pending);
+    EXPECT_FALSE(untouched->result.has_value());
+
+    auto owner_get = SendBareRequest(owner.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params));
+    EXPECT_FALSE(owner_get.Contains("code"));
+
+    owner.server->Close();
+    owner.client->Close();
+    intruder.server->Close();
+    intruder.client->Close();
+    std::filesystem::remove(store_path, ec);
+}
+
+TEST(McpServerTest, TaskIdentifiersAreSessionScopedAndNotSequential) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+    env.server->RegisterTool("task_tool", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "done"});
+            return r;
+        });
+
+    std::vector<std::string> task_ids;
+    for (int i = 0; i < 2; ++i) {
+        CallToolRequestParams params;
+        params.name = "task_tool";
+        auto resp = SendBareRequest(env.client, methods::kCallTool,
+            SerializeCallToolRequestParams(params));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto created = DeserializeCreateTaskResult(resp);
+        task_ids.push_back(created.task_id);
+    }
+
+    ASSERT_EQ(task_ids.size(), size_t{2});
+    EXPECT_NE(task_ids[0], task_ids[1]);
+    for (const auto& task_id : task_ids) {
+        EXPECT_EQ(task_id.rfind("task-", 0), 0u);
+        EXPECT_NE(task_id, "task-1");
+        EXPECT_NE(task_id, "task-2");
+        EXPECT_GT(task_id.size(), size_t{20});
+        EXPECT_NE(task_id.find(env.server->SessionId()), std::string::npos);
+    }
+
+    auto stored = env.store->GetTask(task_ids.front());
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->owner, env.server->SessionId());
+    ASSERT_TRUE(stored->ttl_ms.has_value());
+    EXPECT_EQ(*stored->ttl_ms, 300000);
+
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+    env.server->RegisterTool("task_tool", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "done"});
+            return r;
+        });
+
+    env.store->CreateTask("task-stale", env.server->SessionId(), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ASSERT_TRUE(env.store->GetTask("task-stale").has_value());
+
+    CallToolRequestParams params;
+    params.name = "task_tool";
+    auto resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_FALSE(resp.Contains("code"));
+
+    EXPECT_FALSE(env.store->GetTask("task-stale").has_value());
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, ResourceHandlerMayRegisterResourceWithoutDeadlock) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    MCP_RUN_WITH_TIMEOUT([&]() {
+        server->RegisterResource("dynamic", "resource://dynamic",
+            ResourceOptions{},
+            [&](const std::string& uri) -> ReadResourceResult {
+                server->RegisterResource("dynamic-extra", "resource://dynamic-extra",
+                    ResourceOptions{},
+                    [](const std::string& extra_uri) -> ReadResourceResult {
+                        TextResourceContents trc;
+                        trc.uri = extra_uri;
+                        trc.text = "extra";
+                        ReadResourceResult rr;
+                        rr.contents = {mcp::ResourceContents{trc}};
+                        return rr;
+                    });
+                TextResourceContents trc;
+                trc.uri = uri;
+                trc.text = "dynamic content";
+                ReadResourceResult rr;
+                rr.contents = {mcp::ResourceContents{trc}};
+                return rr;
+            });
+
+        auto client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+        client->Start();
+        InitializeRequestParams iparams;
+        iparams.protocol_version = std::string(kLatestProtocolVersion);
+        iparams.client_info = Implementation{"test-client", "1.0"};
+        auto init_future = client->SendRequest(methods::kInitialize,
+            SerializeInitializeRequestParams(iparams), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        (void)init_future.get();
+        client->SendNotification(notifications::kInitialized);
+
+        ReadResourceRequestParams params;
+        params.uri = "resource://dynamic";
+        auto resp = SendBareRequest(client, methods::kReadResource,
+            SerializeResourceRequestParams(params));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto read_result = DeserializeReadResourceResult(resp);
+        ASSERT_EQ(read_result.contents.size(), size_t{1});
+
+        client->Close();
+    });
+
+    server->Close();
+}
+
+TEST(McpServerTest, DuplicateRegistrationThrowsInvalidParams) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    auto make_tool = [](const char* name) {
+        return McpServerTool::Create(name,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) { return CallToolResult{}; }),
+            ToolOptions{});
+    };
+
+    server->RegisterTool(make_tool("dup_tool"));
+    EXPECT_THROW(server->RegisterTool(make_tool("dup_tool")), McpError);
+    try {
+        server->RegisterTool(make_tool("dup_tool"));
+        FAIL();
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::InvalidParams);
+    }
+
+    server->RegisterResource("dup_res", "resource://dup",
+        ResourceOptions{},
+        [](const std::string&) -> ReadResourceResult { return ReadResourceResult{}; });
+    EXPECT_THROW(server->RegisterResource("dup_res", "resource://other",
+        ResourceOptions{},
+        [](const std::string&) -> ReadResourceResult { return ReadResourceResult{}; }),
+        McpError);
+    EXPECT_THROW(server->RegisterResource("other_res", "resource://dup",
+        ResourceOptions{},
+        [](const std::string&) -> ReadResourceResult { return ReadResourceResult{}; }),
+        McpError);
+    EXPECT_THROW(server->RegisterResource("empty_res", "resource://empty",
+        ResourceOptions{}, std::function<ReadResourceResult(const std::string&)>()),
+        McpError);
+
+    server->RegisterResourceTemplate("dup_tpl", "resource://tpl/{id}",
+        ResourceOptions{},
+        [](const std::string&, const std::map<std::string, std::string>&)
+            -> ReadResourceResult { return ReadResourceResult{}; });
+    EXPECT_THROW(server->RegisterResourceTemplate("dup_tpl", "resource://tpl2/{id}",
+        ResourceOptions{},
+        [](const std::string&, const std::map<std::string, std::string>&)
+            -> ReadResourceResult { return ReadResourceResult{}; }),
+        McpError);
+    EXPECT_THROW(server->RegisterResourceTemplate("empty_tpl", "resource://tpl3/{id}",
+        ResourceOptions{},
+        std::function<ReadResourceResult(const std::string&,
+            const std::map<std::string, std::string>&)>()),
+        McpError);
+
+    server->RegisterPrompt("dup_prompt", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) -> GetPromptResult {
+            return GetPromptResult{};
+        });
+    EXPECT_THROW(server->RegisterPrompt("dup_prompt", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) -> GetPromptResult {
+            return GetPromptResult{};
+        }), McpError);
+    EXPECT_THROW(server->RegisterPrompt("empty_prompt", PromptOptions{},
+        std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)>()),
+        McpError);
+
+    Skill skill;
+    skill.uri = "skill://code-review/SKILL.md";
+    server->RegisterSkill(skill);
+    EXPECT_THROW(server->RegisterSkill(skill), McpError);
+
+    EXPECT_THROW(server->SetCompletionHandler(McpServer::CompletionHandler{}), McpError);
+    try {
+        server->SetCompletionHandler(McpServer::CompletionHandler{});
+        FAIL();
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::InvalidParams);
+    }
+
+    server->Close();
+}
+
+TEST(McpServerTest, ModernElicitRoutesThroughMrtrInputRoundTrip) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool(McpServerTool::Create("asker",
+        std::function<CallToolResult(const Ctx&)>(
+            [&](const Ctx& ctx) -> CallToolResult {
+                if (ctx.Params().input_responses) {
+                    auto* elicit = ctx.Params().input_responses->Find("elicitation");
+                    auto* content = elicit ? elicit->Find("content") : nullptr;
+                    auto* name = content ? content->Find("user_name") : nullptr;
+                    if (name && name->IsString()) {
+                        CallToolResult done;
+                        done.content.push_back(
+                            TextContent{"text", "Hello, " + name->GetString() + "!"});
+                        return done;
+                    }
+                }
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "What is your name?";
+                JsonValue schema(JsonValue::object_tag);
+                schema["type"] = JsonValue("object");
+                JsonValue properties(JsonValue::object_tag);
+                JsonValue field(JsonValue::object_tag);
+                field["type"] = JsonValue("string");
+                properties["user_name"] = std::move(field);
+                schema["properties"] = std::move(properties);
+                elicit_params.requested_schema = std::move(schema);
+                auto future = server->Elicit(elicit_params);
+                auto result = future.get();
+                CallToolResult out;
+                out.content.push_back(TextContent{"text", result.action});
+                return out;
+            }),
+        ToolOptions{}.Description("modern elicit fixture")));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Pin;
+    cops.pin_protocol_version = std::string(kLatestProtocolVersion);
+    cops.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), cops);
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["user_name"] = JsonValue("Alice");
+        result.content = std::move(content);
+        return result;
+    });
+
+    auto done = client->CallTool("asker", JsonValue(JsonValue::object_tag));
+    EXPECT_FALSE(done.is_error);
+    ASSERT_EQ(done.content.size(), size_t{1});
+    auto* text = std::get_if<TextContent>(&done.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "Hello, Alice!");
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpServerTest, DiscoverRejectedWhenRequestDeclaresLegacyVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    JsonRpcRequest req;
+    req.id = RequestId{int64_t{4100}};
+    req.method = std::string(methods::kDiscover);
+    req.params = JsonValue(JsonValue::object_tag);
+    JsonValue meta(JsonValue::object_tag);
+    meta["io.modelcontextprotocol/protocolVersion"] =
+        JsonValue(std::string(kLegacyProtocolVersion));
+    req.meta = std::move(meta);
+    pair.client->SendMessageAsync(JsonRpcMessage{std::move(req)});
+
+    std::optional<ErrorData> error;
+    MCP_RUN_WITH_TIMEOUT([&]() {
+        pair.client->GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                if (auto* r = std::get_if<JsonRpcErrorResponse>(&msg))
+                    error = r->error;
+            });
+    });
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->code, McpErrorCode::MethodNotFound);
+
+    server->Close();
 }

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <thread>
 #include <set>
 #include <algorithm>
@@ -26,6 +27,11 @@
 #include <mutex>
 #include <shared_mutex>
 #include <type_traits>
+#include <vector>
+
+#if defined(MCP_HAVE_OPENSSL)
+#include <openssl/rand.h>
+#endif
 
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -43,11 +49,12 @@ namespace {
     constexpr std::chrono::seconds kNoWait(0);
 
     constexpr std::string_view kUrlElicitationInputKey = "elicitation";
+    constexpr std::string_view kFormElicitationInputKey = "elicitation";
 
-    struct UrlElicitationInputRequired : std::runtime_error {
+    struct ElicitationInputRequired : std::runtime_error {
         InputRequests input_requests;
-        explicit UrlElicitationInputRequired(InputRequests requests)
-            : std::runtime_error("url elicitation requires an MRTR input round-trip")
+        explicit ElicitationInputRequired(InputRequests requests)
+            : std::runtime_error("elicitation requires an MRTR input round-trip")
             , input_requests(std::move(requests)) {}
     };
 
@@ -162,6 +169,12 @@ namespace {
             sent++;
         }
         return false;
+    }
+
+    bool IsTerminalTaskStatus(TaskStatus status) {
+        return status == TaskStatus::Completed
+            || status == TaskStatus::Failed
+            || status == TaskStatus::Cancelled;
     }
 
     std::string TaskStatusToWireString(TaskStatus status) {
@@ -358,6 +371,76 @@ namespace {
         if (decoded && decoded->IsObject()) return *decoded;
         return fallback;
     }
+
+    bool FillRandomBytes(uint8_t* buffer, size_t size) {
+#if defined(MCP_HAVE_OPENSSL)
+        return RAND_bytes(buffer, static_cast<int>(size)) == 1;
+#else
+        std::random_device rd;
+        for (size_t i = 0; i < size; ++i) {
+            buffer[i] = static_cast<uint8_t>(rd());
+        }
+        return true;
+#endif
+    }
+
+    std::string MakeRandomHex(size_t byte_count) {
+        std::vector<uint8_t> buffer(byte_count);
+        if (!FillRandomBytes(buffer.data(), buffer.size())) {
+            throw McpError(McpErrorCode::InternalError,
+                "failed to generate secure random identifier");
+        }
+        static constexpr char kHexDigits[] = "0123456789abcdef";
+        std::string out;
+        out.reserve(byte_count * 2);
+        for (auto byte : buffer) {
+            out.push_back(kHexDigits[byte >> 4]);
+            out.push_back(kHexDigits[byte & 0x0F]);
+        }
+        return out;
+    }
+
+    int64_t ServerNowMillis() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+
+    bool IsKnownMcpErrorCode(int64_t value) {
+        static constexpr int64_t kKnownCodes[] = {
+            static_cast<int64_t>(McpErrorCode::ParseError),
+            static_cast<int64_t>(McpErrorCode::InvalidRequest),
+            static_cast<int64_t>(McpErrorCode::MethodNotFound),
+            static_cast<int64_t>(McpErrorCode::InvalidParams),
+            static_cast<int64_t>(McpErrorCode::InternalError),
+            static_cast<int64_t>(McpErrorCode::HeaderMismatch),
+            static_cast<int64_t>(McpErrorCode::MissingRequiredClientCapability),
+            static_cast<int64_t>(McpErrorCode::UnsupportedProtocolVersion),
+            static_cast<int64_t>(McpErrorCode::UrlElicitationRequired),
+            static_cast<int64_t>(McpErrorCode::ResourceNotFound),
+            static_cast<int64_t>(McpErrorCode::ConnectionClosed),
+            static_cast<int64_t>(McpErrorCode::RequestTimeout),
+            static_cast<int64_t>(McpErrorCode::RequestCancelled),
+            static_cast<int64_t>(McpErrorCode::ConnectionRefused),
+            static_cast<int64_t>(McpErrorCode::TlsHandshakeFailed),
+            static_cast<int64_t>(McpErrorCode::ProtocolViolation),
+            static_cast<int64_t>(McpErrorCode::TaskNotFound),
+            static_cast<int64_t>(McpErrorCode::HandlerError),
+            static_cast<int64_t>(McpErrorCode::DeserializeFailed),
+            static_cast<int64_t>(McpErrorCode::SessionExpired),
+        };
+        for (auto code : kKnownCodes) {
+            if (code == value) return true;
+        }
+        return false;
+    }
+
+    std::optional<McpErrorCode> FindResponseErrorCode(const JsonValue& payload) {
+        auto* code = payload.Find(detail::kCode);
+        if (!code || !code->IsInt()) return std::nullopt;
+        auto value = code->GetInt();
+        if (!IsKnownMcpErrorCode(value)) return std::nullopt;
+        return static_cast<McpErrorCode>(value);
+    }
 }
 
 namespace {
@@ -506,6 +589,7 @@ McpServer::McpServer(
     ServerOptions options)
     : transport_(std::move(transport))
     , options_(std::move(options))
+    , session_id_(MakeRandomHex(8))
 {
     SetEtagCacheEnabled(options_.enable_etag_cache);
     auto codec = MakeWireCodec(
@@ -615,6 +699,10 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     }
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        if (tools_.find(t.name) != tools_.end()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "tool already registered: " + t.name);
+        }
         tools_[t.name] = std::move(tool);
         cached_tools_json_ = std::nullopt;
     }
@@ -628,6 +716,10 @@ void McpServer::RegisterResource(
     const ResourceOptions& opts,
     std::function<ReadResourceResult(const std::string&)> handler)
 {
+    if (!handler) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "resource handler must not be empty: " + std::string(name));
+    }
     ResourceEntry entry;
     entry.name = std::string(name);
     entry.uri_pattern = std::string(uri);
@@ -639,6 +731,16 @@ void McpServer::RegisterResource(
     entry.handler = std::move(handler);
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        for (const auto& existing : resources_) {
+            if (existing.name == entry.name) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "resource already registered: " + entry.name);
+            }
+            if (existing.uri_pattern == entry.uri_pattern) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "resource uri already registered: " + entry.uri_pattern);
+            }
+        }
         resources_.push_back(std::move(entry));
     }
     WireHandlers();
@@ -653,6 +755,10 @@ void McpServer::RegisterResourceTemplate(
         const std::string&,
         const std::map<std::string, std::string>&)> handler)
 {
+    if (!handler) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "resource template handler must not be empty: " + std::string(name));
+    }
     std::string error;
     if (!detail::UriTemplate::Parse(uri_template, error)) {
         throw McpError(McpErrorCode::InvalidParams,
@@ -671,6 +777,16 @@ void McpServer::RegisterResourceTemplate(
     entry.template_handler = std::move(handler);
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        for (const auto& existing : resources_) {
+            if (existing.name == entry.name) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "resource already registered: " + entry.name);
+            }
+            if (existing.uri_pattern == entry.uri_pattern) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "resource uri already registered: " + entry.uri_pattern);
+            }
+        }
         resources_.push_back(std::move(entry));
     }
     WireHandlers();
@@ -684,6 +800,10 @@ void McpServer::RegisterPrompt(
         const std::string&,
         const std::optional<JsonValue>&)> handler)
 {
+    if (!handler) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "prompt handler must not be empty: " + std::string(name));
+    }
     PromptEntry entry;
     entry.name = std::string(name);
     entry.description = opts.description;
@@ -693,6 +813,12 @@ void McpServer::RegisterPrompt(
     entry.handler = std::move(handler);
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
+        for (const auto& existing : prompts_) {
+            if (existing.name == entry.name) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "prompt already registered: " + entry.name);
+            }
+        }
         prompts_.push_back(std::move(entry));
     }
     WireHandlers();
@@ -706,10 +832,13 @@ void McpServer::RegisterSkill(Skill skill) {
     }
     {
         std::unique_lock<std::shared_mutex> lock(registry_mutex_);
-        auto it = skills_.begin();
-        while (it != skills_.end() && it->uri != skill.uri) ++it;
-        if (it != skills_.end()) *it = std::move(skill);
-        else skills_.push_back(std::move(skill));
+        for (const auto& existing : skills_) {
+            if (existing.uri == skill.uri) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "skill already registered: " + skill.uri);
+            }
+        }
+        skills_.push_back(std::move(skill));
     }
     WireHandlers();
     DeriveCapabilities();
@@ -793,6 +922,34 @@ void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
         IsModernProtocolVersion(handler_->NegotiatedProtocolVersion()));
 }
 
+std::string McpServer::MakeTaskId() const {
+    return "task-" + session_id_ + "-" + MakeRandomHex(16);
+}
+
+bool McpServer::IsTaskOwnedBySession(const TaskState& task) const {
+    return task.owner.empty() || task.owner == session_id_;
+}
+
+void McpServer::SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store) {
+    if (!store) return;
+    std::vector<std::string> expired;
+    try {
+        expired = store->GetExpiredTaskIds(ServerNowMillis());
+    } catch (const std::exception& e) {
+        MCP_LOG(Error, std::string("task store: failed to enumerate expired tasks: ") +
+            e.what());
+        return;
+    }
+    for (const auto& task_id : expired) {
+        try {
+            store->RemoveTask(task_id);
+        } catch (const std::exception& e) {
+            MCP_LOG(Error, std::string("task store: failed to remove expired task ") +
+                task_id + ": " + e.what());
+        }
+    }
+}
+
 void McpServer::SendProgress(const ProgressToken& token, double progress,
                              std::optional<double> total,
                              std::optional<std::string> message) {
@@ -842,6 +999,16 @@ void McpServer::EmitTriggerEvent(const std::string& type, JsonValue data) {
 }
 
 std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
+    const std::string version = handler_->NegotiatedProtocolVersion();
+    if (IsModernProtocolVersion(version)) {
+        InputRequest request;
+        request.method = std::string(methods::kElicit);
+        request.params = SerializeElicitRequestParams(params, version);
+        InputRequests requests;
+        requests[std::string(kFormElicitationInputKey)] = std::move(request);
+        throw ElicitationInputRequired(std::move(requests));
+    }
+
     const bool url_mode = params.mode == "url";
     const auto caps = GetClientCapabilities();
     const ElicitationCapability* elicitation =
@@ -861,9 +1028,8 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
     }
 
     RequestMeta meta;
-    auto vers = handler_->NegotiatedProtocolVersion();
-    meta.protocol_version = vers.empty()
-        ? std::string(kLatestProtocolVersion) : std::string(vers);
+    meta.protocol_version = version.empty()
+        ? std::string(kLatestProtocolVersion) : version;
 
     auto future = handler_->SendRequest(
         methods::kElicit, SerializeElicitRequestParams(params), meta,
@@ -873,10 +1039,10 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
 
     auto result_future = std::async(std::launch::async, [future = std::move(future)]() mutable {
         auto jv = future.get();
-        if (auto* c = jv.Find("code"); c && c->IsInt() && c->GetInt() < 0) {
-            auto msg = jv.Find("message");
+        if (auto code = FindResponseErrorCode(jv)) {
+            auto msg = jv.Find(detail::kMessage);
             throw McpError(
-                static_cast<McpErrorCode>(c->GetInt()),
+                *code,
                 msg ? msg->GetString() : std::string("elicitation failed"));
         }
         return DeserializeElicitResult(jv);
@@ -901,7 +1067,7 @@ std::future<ElicitResult> McpServer::ElicitUrl(
             params, handler_->NegotiatedProtocolVersion());
         InputRequests requests;
         requests[std::string(kUrlElicitationInputKey)] = std::move(request);
-        throw UrlElicitationInputRequired(std::move(requests));
+        throw ElicitationInputRequired(std::move(requests));
     }
     const std::string elicitation_id =
         "elicit-" + std::to_string(next_elicitation_id_.fetch_add(1));
@@ -948,10 +1114,10 @@ std::future<ElicitResult> McpServer::ElicitUrl(
                     "url elicitation timed out (no response): " + elicitation_id));
             } else {
                 auto jv = request_future.get();
-                if (auto* c = jv.Find("code"); c && c->IsInt() && c->GetInt() < 0) {
-                    auto msg = jv.Find("message");
+                if (auto code = FindResponseErrorCode(jv)) {
+                    auto msg = jv.Find(detail::kMessage);
                     error = std::make_exception_ptr(McpError(
-                        static_cast<McpErrorCode>(c->GetInt()),
+                        *code,
                         msg ? msg->GetString() : std::string("elicitation failed")));
                 }
             }
@@ -1232,7 +1398,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
-                if (!task) {
+                if (!task || !IsTaskOwnedBySession(*task)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1280,7 +1446,7 @@ void McpServer::WireTaskHandlers() {
                         return;
                     }
                     auto existing = store->GetTask(params.task_id);
-                    if (!existing) {
+                    if (!existing || !IsTaskOwnedBySession(*existing)) {
                         p.set_exception(std::make_exception_ptr(
                             McpError(McpErrorCode::InvalidParams,
                                      "task not found: " + params.task_id)));
@@ -1406,8 +1572,7 @@ void McpServer::WireTaskHandlers() {
                             error_payload[detail::kMessage] =
                                 JsonValue(std::string(e.ErrorMessage()));
                             if (e.Data()) error_payload[detail::kData] = *e.Data();
-                            store->UpdateTask(params.task_id, error_payload);
-                            store->SetTaskStatus(params.task_id, TaskStatus::Failed);
+                            store->FailTask(params.task_id, error_payload);
                         }
                         retire_resumed_task();
                     } catch (const std::exception& e) {
@@ -1419,8 +1584,7 @@ void McpServer::WireTaskHandlers() {
                                 static_cast<int64_t>(McpErrorCode::InternalError));
                             error_payload[detail::kMessage] =
                                 JsonValue(std::string(e.what()));
-                            store->UpdateTask(params.task_id, error_payload);
-                            store->SetTaskStatus(params.task_id, TaskStatus::Failed);
+                            store->FailTask(params.task_id, error_payload);
                         }
                         retire_resumed_task();
                     } catch (...) {
@@ -1432,8 +1596,7 @@ void McpServer::WireTaskHandlers() {
                                 static_cast<int64_t>(McpErrorCode::InternalError));
                             error_payload[detail::kMessage] =
                                 JsonValue(std::string("tool execution failed"));
-                            store->UpdateTask(params.task_id, error_payload);
-                            store->SetTaskStatus(params.task_id, TaskStatus::Failed);
+                            store->FailTask(params.task_id, error_payload);
                         }
                         retire_resumed_task();
                     }
@@ -1441,6 +1604,20 @@ void McpServer::WireTaskHandlers() {
                     JsonValue ack = SerializeEmptyResult(r);
                     ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
                     p.set_value(std::move(ack));
+                    return;
+                }
+                auto target = store->GetTask(params.task_id);
+                if (!target || !IsTaskOwnedBySession(*target)) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InvalidParams,
+                                 "task not found: " + params.task_id)));
+                    return;
+                }
+                if (IsTerminalTaskStatus(target->status)) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InvalidParams,
+                                 "task already reached a terminal state: " +
+                                     params.task_id)));
                     return;
                 }
                 try {
@@ -1498,6 +1675,13 @@ void McpServer::WireTaskHandlers() {
                 }
                 CancelTaskRequestParams params;
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
+                auto existing = store->GetTask(params.task_id);
+                if (!existing || !IsTaskOwnedBySession(*existing)) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InvalidParams,
+                                 "task not found: " + params.task_id)));
+                    return;
+                }
                 {
                     std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
                     auto flag_it = running_task_cancel_flags_.find(params.task_id);
@@ -1505,13 +1689,6 @@ void McpServer::WireTaskHandlers() {
                         flag_it->second->store(true);
                         running_task_cancel_flags_.erase(flag_it);
                     }
-                }
-                auto existing = store->GetTask(params.task_id);
-                if (!existing) {
-                    p.set_exception(std::make_exception_ptr(
-                        McpError(McpErrorCode::InvalidParams,
-                                 "task not found: " + params.task_id)));
-                    return;
                 }
                 const bool already_terminal =
                     existing->status == TaskStatus::Completed
@@ -1556,7 +1733,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
-                if (!task) {
+                if (!task || !IsTaskOwnedBySession(*task)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1578,6 +1755,7 @@ void McpServer::WireTaskHandlers() {
                 JsonValue tasks_arr(JsonValue::array_tag);
                 auto all_tasks = store->GetAllTasks();
                 for (const auto& t : all_tasks) {
+                    if (!IsTaskOwnedBySession(t)) continue;
                     JsonValue entry(JsonValue::object_tag);
                     entry[detail::kTaskId] = t.task_id;
                     entry["status"] = TaskStatusToWireString(t.status);
@@ -2036,7 +2214,7 @@ void McpServer::HandleCallTool(
             tool->InvokeAsync(ctx, std::move(*required_promise));
             try {
                 first_result = required_future.get();
-            } catch (const UrlElicitationInputRequired& e) {
+            } catch (const ElicitationInputRequired& e) {
                 first_result.input_required = InputRequiredResult{};
                 first_result.input_required->input_requests = e.input_requests;
             } catch (const McpError& e) {
@@ -2082,7 +2260,8 @@ void McpServer::HandleCallTool(
                 return;
             }
             auto store = options_.task_store;
-            const std::string task_id = "task-" + std::to_string(next_task_id_++);
+            SweepExpiredTasks(store);
+            const std::string task_id = MakeTaskId();
             {
                 std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
                 running_task_cancel_flags_[task_id] = cancel_flag;
@@ -2093,14 +2272,13 @@ void McpServer::HandleCallTool(
             };
             TaskStatus terminal_status = TaskStatus::Completed;
             try {
-                store->CreateTask(task_id);
+                store->CreateTask(task_id, session_id_, kDefaultTaskTtlMs);
                 store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
                 if (cancel_flag->load()) {
                     store->SetTaskStatus(task_id, TaskStatus::Cancelled);
                     terminal_status = TaskStatus::Cancelled;
                 } else if (first_failed) {
-                    store->UpdateTask(task_id, first_error);
-                    store->SetTaskStatus(task_id, TaskStatus::Failed);
+                    store->FailTask(task_id, first_error);
                     terminal_status = TaskStatus::Failed;
                 } else {
                     store->UpdateTask(task_id, SerializeCallToolResult(first_result));
@@ -2124,12 +2302,13 @@ void McpServer::HandleCallTool(
         }
 
         auto store = options_.task_store;
-        const std::string task_id = "task-" + std::to_string(next_task_id_++);
+        SweepExpiredTasks(store);
+        const std::string task_id = MakeTaskId();
         {
             std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
             running_task_cancel_flags_[task_id] = cancel_flag;
         }
-        store->CreateTask(task_id);
+        store->CreateTask(task_id, session_id_, kDefaultTaskTtlMs);
         store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
         store->SetTaskStatus(task_id, TaskStatus::Working);
         SendTaskNotification(*handler_, notifications::kTaskStatus,
@@ -2165,8 +2344,10 @@ void McpServer::HandleCallTool(
                     error_payload[detail::kCode] = JsonValue(code);
                     error_payload[detail::kMessage] = JsonValue(std::move(message));
                     if (data) error_payload[detail::kData] = std::move(*data);
-                    store->UpdateTask(task_id, error_payload);
-                    finish(TaskStatus::Failed, true);
+                    store->FailTask(task_id, error_payload);
+                    retire_task();
+                    SendTaskNotification(*handler_, notifications::kTaskStatus,
+                        task_id, TaskStatus::Failed, modern);
                 };
                 auto result_promise = std::make_shared<std::promise<CallToolResult>>();
                 auto result_future = result_promise->get_future();
@@ -2183,7 +2364,7 @@ void McpServer::HandleCallTool(
                 CallToolResult pre_result;
                 try {
                     pre_result = result_future.get();
-                } catch (const UrlElicitationInputRequired& e) {
+                } catch (const ElicitationInputRequired& e) {
                     pre_result.input_required = InputRequiredResult{};
                     pre_result.input_required->input_requests = e.input_requests;
                 } catch (const McpError& e) {
@@ -2293,7 +2474,7 @@ void McpServer::HandleCallTool(
             CallToolResult sync_result;
             try {
                 sync_result = result_future.get();
-            } catch (const UrlElicitationInputRequired& e) {
+            } catch (const ElicitationInputRequired& e) {
                 sync_result.input_required = InputRequiredResult{};
                 sync_result.input_required->input_requests = e.input_requests;
             } catch (const McpError& e) {
@@ -2445,12 +2626,53 @@ void McpServer::HandleReadResource(
         }
     }
 
-    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
-    for (const auto& entry : resources_) {
-        if (entry.is_template) continue;
-        if (entry.uri_pattern == params.uri) {
+    std::function<ReadResourceResult(const std::string&)> resource_handler;
+    std::function<ReadResourceResult(
+        const std::string&, const std::map<std::string, std::string>&)> template_handler;
+    std::map<std::string, std::string> variables;
+    bool matched = false;
+    {
+        std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+        for (const auto& entry : resources_) {
+            if (entry.is_template) continue;
+            if (entry.uri_pattern != params.uri) continue;
+            resource_handler = entry.handler;
+            matched = true;
+            break;
+        }
+        if (!matched) {
+            for (const auto& entry : resources_) {
+                if (!entry.is_template) continue;
+                std::string error;
+                auto tmpl = detail::UriTemplate::Parse(entry.uri_pattern, error);
+                if (!tmpl) continue;
+                auto matched_variables = tmpl->Match(params.uri);
+                if (!matched_variables) continue;
+                template_handler = entry.template_handler;
+                variables = *matched_variables;
+                matched = true;
+                break;
+            }
+        }
+    }
+
+    if (!matched) {
+        JsonValue data(JsonValue::object_tag);
+        data["uri"] = JsonValue(params.uri);
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "resource not found: " + params.uri, std::move(data))));
+        return;
+    }
+
+    auto fut = std::async(std::launch::async,
+        [this, resource_handler, template_handler,
+         variables = std::move(variables), uri = params.uri,
+         promise = std::move(promise)]() mutable {
             try {
-                auto result = entry.handler(params.uri);
+                auto result = template_handler
+                    ? template_handler(uri, variables)
+                    : resource_handler(uri);
                 if (result.input_required) {
                     if (options_.request_state_key) {
                         JsonValue payload =
@@ -2466,50 +2688,19 @@ void McpServer::HandleReadResource(
                 auto hint = ResolveCacheHint("resources/read");
                 if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
                 promise.set_value(SerializeReadResourceResult(result));
-                return;
             } catch (...) {
                 promise.set_exception(std::current_exception());
-                return;
             }
-        }
-    }
+        });
 
-    for (const auto& entry : resources_) {
-        if (!entry.is_template) continue;
-        std::string error;
-        auto tmpl = detail::UriTemplate::Parse(entry.uri_pattern, error);
-        if (!tmpl) continue;
-        auto variables = tmpl->Match(params.uri);
-        if (!variables) continue;
-        try {
-            auto result = entry.template_handler(params.uri, *variables);
-            if (result.input_required) {
-                if (options_.request_state_key) {
-                    JsonValue payload =
-                        DecodeStatePayloadForMint(result.input_required->request_state);
-                    payload["iat"] = JsonValue(
-                        static_cast<int64_t>(std::time(nullptr)));
-                    result.input_required->request_state =
-                        detail::MintRequestState(*options_.request_state_key, payload);
-                }
-                promise.set_value(SerializeReadResourceResult(result));
-                return;
-            }
-            auto hint = ResolveCacheHint("resources/read");
-            if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-            promise.set_value(SerializeReadResourceResult(result));
-            return;
-        } catch (...) {
-            promise.set_exception(std::current_exception());
-            return;
-        }
+    {
+        std::lock_guard<std::mutex> lock(pending_async_mutex_);
+        pending_async_futures_.push_back(fut.share());
+        pending_async_futures_.erase(
+            std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
+                [](const auto& f) { return f.wait_for(kNoWait) == std::future_status::ready; }),
+            pending_async_futures_.end());
     }
-
-    JsonValue data(JsonValue::object_tag);
-    data["uri"] = JsonValue(params.uri);
-    promise.set_exception(std::make_exception_ptr(
-        McpError(McpErrorCode::InvalidParams,
-                 "resource not found: " + params.uri, std::move(data))));
 }
 
 void McpServer::HandleListPrompts(
@@ -2549,11 +2740,29 @@ void McpServer::HandleGetPrompt(
         params = DeserializeGetPromptRequestParams(*req.params);
     }
 
-    std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
-    for (const auto& entry : prompts_) {
-        if (entry.name == params.name) {
+    std::function<GetPromptResult(
+        const std::string&, const std::optional<JsonValue>&)> prompt_handler;
+    {
+        std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
+        for (const auto& entry : prompts_) {
+            if (entry.name != params.name) continue;
+            prompt_handler = entry.handler;
+            break;
+        }
+    }
+
+    if (!prompt_handler) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                     "prompt not found: " + params.name)));
+        return;
+    }
+
+    auto fut = std::async(std::launch::async,
+        [this, prompt_handler, name = params.name, arguments = params.arguments,
+         promise = std::move(promise)]() mutable {
             try {
-                auto result = entry.handler(params.name, params.arguments);
+                auto result = prompt_handler(name, arguments);
                 if (result.input_required) {
                     if (options_.request_state_key) {
                         JsonValue payload =
@@ -2567,17 +2776,19 @@ void McpServer::HandleGetPrompt(
                     return;
                 }
                 promise.set_value(SerializeGetPromptResult(result));
-                return;
             } catch (...) {
                 promise.set_exception(std::current_exception());
-                return;
             }
-        }
-    }
+        });
 
-    promise.set_exception(std::make_exception_ptr(
-        McpError(McpErrorCode::InvalidParams,
-                 "prompt not found: " + params.name)));
+    {
+        std::lock_guard<std::mutex> lock(pending_async_mutex_);
+        pending_async_futures_.push_back(fut.share());
+        pending_async_futures_.erase(
+            std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
+                [](const auto& f) { return f.wait_for(kNoWait) == std::future_status::ready; }),
+            pending_async_futures_.end());
+    }
 }
 
 void McpServer::HandleListSkills(
@@ -2720,6 +2931,11 @@ void McpServer::HandleReadDirectory(
 }
 
 void McpServer::SetCompletionHandler(CompletionHandler handler) {
+    if (!handler) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "completion handler must not be empty");
+    }
+    std::lock_guard<std::mutex> lock(completion_handler_mutex_);
     completion_handler_ = std::move(handler);
 }
 
@@ -2730,24 +2946,49 @@ void McpServer::HandleComplete(
     CompleteRequestParams params;
     if (req.params) params = DeserializeCompleteRequestParams(*req.params);
 
-    if (completion_handler_) {
-        try {
-            auto result = completion_handler_(params);
-            promise.set_value(SerializeCompleteResult(result));
-            return;
-        } catch (...) {
-            promise.set_exception(std::current_exception());
-            return;
-        }
+    CompletionHandler handler;
+    {
+        std::lock_guard<std::mutex> lock(completion_handler_mutex_);
+        handler = completion_handler_;
     }
 
-    promise.set_exception(std::make_exception_ptr(
-        McpError(McpErrorCode::MethodNotFound, "No completion handler registered")));
+    if (!handler) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound, "No completion handler registered")));
+        return;
+    }
+
+    auto fut = std::async(std::launch::async,
+        [handler, params, promise = std::move(promise)]() mutable {
+            try {
+                auto result = handler(params);
+                promise.set_value(SerializeCompleteResult(result));
+            } catch (...) {
+                promise.set_exception(std::current_exception());
+            }
+        });
+
+    {
+        std::lock_guard<std::mutex> lock(pending_async_mutex_);
+        pending_async_futures_.push_back(fut.share());
+        pending_async_futures_.erase(
+            std::remove_if(pending_async_futures_.begin(), pending_async_futures_.end(),
+                [](const auto& f) { return f.wait_for(kNoWait) == std::future_status::ready; }),
+            pending_async_futures_.end());
+    }
 }
 
 void McpServer::HandleDiscover(
-    const JsonRpcRequest&, std::promise<JsonValue> promise)
+    const JsonRpcRequest& req, std::promise<JsonValue> promise)
 {
+    const auto incoming = handler_->ExtractIncomingMeta(req);
+    if (!incoming.protocol_version.empty()
+        && !IsModernProtocolVersion(incoming.protocol_version)) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::MethodNotFound,
+                "server/discover is only available in 2026 and later protocol versions")));
+        return;
+    }
     initialized_ = true;
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     if (options_.protocol_version) {
