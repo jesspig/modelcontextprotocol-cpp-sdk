@@ -1032,7 +1032,7 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
 }
 
 std::optional<std::string> McpClient::GetStoredEtag(const std::string& key) {
-    if (!IsEtagCacheEnabled()) return std::nullopt;
+    if (!IsEtagCacheEnabled() || !options_.enable_etag_cache) return std::nullopt;
     std::lock_guard<std::mutex> lk(etag_mutex_);
     auto it = etag_entries_.find(key);
     if (it == etag_entries_.end()) return std::nullopt;
@@ -1047,7 +1047,7 @@ std::optional<JsonValue> McpClient::GetStoredEtagBody(const std::string& key) {
 }
 
 void McpClient::StoreEtagBody(const std::string& key, const JsonValue& result) {
-    if (!IsEtagCacheEnabled()) return;
+    if (!IsEtagCacheEnabled() || !options_.enable_etag_cache) return;
     auto* et = result.Find(kEtagField);
     if (!et || !et->IsString() || et->GetString().empty()) return;
     std::lock_guard<std::mutex> lk(etag_mutex_);
@@ -1080,7 +1080,7 @@ ListToolsResult McpClient::ListTools(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListToolsResult(*cached);
     }
@@ -1222,7 +1222,7 @@ ListResourcesResult McpClient::ListResources(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListResources, "resources", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListResourcesResult(*cached);
     }
@@ -1258,7 +1258,7 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListResourceTemplatesResult(*cached);
     }
@@ -1309,7 +1309,7 @@ ReadResourceResult McpClient::ReadResource(
     MaybeAttachEtag(key, meta);
     auto result_json = SendRequestWithMrtr(
         methods::kReadResource, std::move(req_json), meta, timeout);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result_json)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result_json)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeReadResourceResult(*cached);
     }
@@ -1347,7 +1347,7 @@ ListPromptsResult McpClient::ListPrompts(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListPrompts, "prompts", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListPromptsResult(*cached);
     }
@@ -1418,7 +1418,7 @@ SkillsListResult McpClient::ListSkills(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListSkills, "skills", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeSkillsListResult(*cached);
     }
@@ -1465,7 +1465,7 @@ SkillsGetResult McpClient::GetSkill(
     MaybeAttachEtag(key, meta);
     auto result_json = SendRequestWithMrtr(
         methods::kGetSkill, std::move(req_json), meta, timeout);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result_json)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result_json)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeSkillsGetResult(*cached);
     }
@@ -1510,7 +1510,7 @@ ReadDirectoryResult McpClient::ReadDirectory(
     MaybeAttachEtag(key, meta);
     auto result_json = SendRequestWithMrtr(
         methods::kReadDirectory, std::move(req_json), meta, timeout);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result_json)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result_json)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeReadDirectoryResult(*cached);
     }

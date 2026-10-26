@@ -3512,3 +3512,47 @@ TEST(McpClientTest, TransportErrorAndCloseAreObservable) {
 
     client->Close();
 }
+
+TEST(McpClientTest, ClientEtagOptionGatesConditionalRequests) {
+    SetEtagCacheEnabled(true);
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    std::atomic<bool> saw_conditional{false};
+    server_handler->SetRequestHandler(methods::kListTools,
+        [&calls, &saw_conditional](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            if (req.meta && req.meta->IsObject()) {
+                if (auto* v = req.meta->Find("ifNoneMatch"); v && v->IsString())
+                    saw_conditional.store(true);
+            }
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue t(JsonValue::object_tag);
+            t["name"] = JsonValue("tool-x");
+            t["inputSchema"] = JsonValue(JsonValue::object_tag);
+            arr.PushBack(std::move(t));
+            result["tools"] = JsonValue(std::move(arr));
+            result["etag"] = JsonValue("v1");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.enable_etag_cache = false;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ListTools();
+    ASSERT_EQ(r1.tools.size(), 1u);
+    auto r2 = client->ListTools();
+    ASSERT_EQ(r2.tools.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_FALSE(saw_conditional.load());
+
+    client->Close();
+    server_handler->Close();
+    SetEtagCacheEnabled(false);
+}
