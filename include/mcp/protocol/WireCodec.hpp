@@ -1,6 +1,7 @@
 #pragma once
 #include <mcp/Export.hpp>
 #include <mcp/McpTypes.hpp>
+#include <mcp/JsonRpc.hpp>
 #include <mcp/JsonValue.hpp>
 
 #include <memory>
@@ -13,6 +14,14 @@ enum class WireValidation {
     NotInEra,
     Invalid,
 };
+
+struct WireMessageView {
+    JsonValue raw{JsonValue::object_tag};
+    bool meta_backfilled{false};
+};
+
+MCP_API WireMessageView MakeWireRequestView(const JsonRpcRequest& req);
+MCP_API WireMessageView MakeWireNotificationView(const JsonRpcNotification& notif);
 
 class MCP_API WireCodec {
 public:
@@ -27,6 +36,15 @@ public:
         std::string_view method, const JsonValue& raw) const = 0;
     virtual WireValidation ValidateNotification(
         std::string_view method, const JsonValue& raw) const = 0;
+
+    virtual WireValidation ValidateRequest(
+        std::string_view method, const WireMessageView& view) const {
+        return ValidateRequest(method, view.raw);
+    }
+    virtual WireValidation ValidateNotification(
+        std::string_view method, const WireMessageView& view) const {
+        return ValidateNotification(method, view.raw);
+    }
 
     virtual void StampOutgoingRequest(
         JsonValue& request_body,
