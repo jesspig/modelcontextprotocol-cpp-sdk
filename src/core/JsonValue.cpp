@@ -93,8 +93,8 @@ static size_t EstimateSize(const JsonValue& jv, int indent) {
 }
 
 static void DumpValue(std::string& out, const JsonValue& jv, int indent, int depth) {
-    auto indent_line = [&]() {
-        int n = depth * indent;
+    auto indent_at = [&](int level) {
+        int n = level * indent;
         if (n > 0) out.append(static_cast<size_t>(n), ' ');
     };
 
@@ -129,12 +129,12 @@ static void DumpValue(std::string& out, const JsonValue& jv, int indent, int dep
         } else {
             out += "[\n";
             for (size_t i = 0; i < arr.size(); ++i) {
-                indent_line();
+                indent_at(depth + 1);
                 DumpValue(out, arr[i], indent, depth + 1);
                 if (i + 1 < arr.size()) out.push_back(',');
                 out.push_back('\n');
             }
-            indent_line();
+            indent_at(depth);
             out.push_back(']');
         }
     } else {
@@ -158,14 +158,14 @@ static void DumpValue(std::string& out, const JsonValue& jv, int indent, int dep
             for (const auto& [key, val] : obj) {
                 if (!first) out += ",\n";
                 first = false;
-                indent_line();
+                indent_at(depth + 1);
                 AppendEscapedString(out, key);
                 out.push_back(':');
                 out.push_back(' ');
                 DumpValue(out, val, indent, depth + 1);
             }
             out.push_back('\n');
-            indent_line();
+            indent_at(depth);
             out.push_back('}');
         }
     }
