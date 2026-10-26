@@ -132,6 +132,17 @@ void ReadListResultCommon(const JsonValue& j,
     if (rt) result_type = DeserializeResultType(*rt);
 }
 
+std::optional<InputRequiredResult> ReadInputRequiredFields(const JsonValue& j,
+                                                           ResultType& result_type) {
+    auto* requests = j.Find(detail::kInputRequests);
+    if (!requests && result_type != ResultType::InputRequired) return std::nullopt;
+    InputRequiredResult ir;
+    if (requests) ir.input_requests = DeserializeInputRequests(*requests);
+    detail::DeserializeOptional(j, detail::kRequestState, ir.request_state);
+    result_type = ResultType::InputRequired;
+    return ir;
+}
+
 } // anonymous namespace
 
 JsonValue SerializeEmptyResult(const EmptyResult& v) {
@@ -199,6 +210,7 @@ CallToolResult DeserializeCallToolResult(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     auto* rt = j.Find(detail::kResultType);
     if (rt) v.result_type = DeserializeResultType(*rt);
+    v.input_required = ReadInputRequiredFields(j, v.result_type);
     return v;
 }
 
@@ -260,6 +272,7 @@ ReadResourceResult DeserializeReadResourceResult(const JsonValue& j) {
     ReadResourceResult v;
     v.contents = DeserializeListItems<ResourceContents>(j, detail::kContents, DeserializeResourceContents);
     ReadListResultCommon(j, nullptr, v.cache_hint, v.meta, v.result_type);
+    v.input_required = ReadInputRequiredFields(j, v.result_type);
     return v;
 }
 
@@ -308,6 +321,7 @@ GetPromptResult DeserializeGetPromptResult(const JsonValue& j) {
     detail::DeserializeOptional(j, detail::kMeta, v.meta);
     auto* rt = j.Find(detail::kResultType);
     if (rt) v.result_type = DeserializeResultType(*rt);
+    v.input_required = ReadInputRequiredFields(j, v.result_type);
     return v;
 }
 

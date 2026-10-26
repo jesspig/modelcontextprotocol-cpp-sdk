@@ -125,6 +125,52 @@ TEST(McpTypesTest, CallToolResultWithError) {
     EXPECT_TRUE(r2.is_error);
 }
 
+TEST(McpTypesTest, CallToolResultInputRequiredRoundTrip) {
+    CallToolResult r;
+    r.content = {TextContent{"text", "need input"}};
+    r.result_type = ResultType::InputRequired;
+
+    InputRequest name_request;
+    name_request.method = "elicitation/create";
+    name_request.params = JsonValue::Parse(R"({"message":"Give me a name"})");
+    InputRequest roots_request;
+    roots_request.method = "roots/list";
+    roots_request.params = JsonValue(JsonValue::object_tag);
+    r.input_required = InputRequiredResult{};
+    r.input_required->input_requests["name"] = name_request;
+    r.input_required->input_requests["roots"] = roots_request;
+    r.input_required->request_state = "state-123";
+
+    auto r2 = DeserializeCallToolResult(SerializeCallToolResult(r));
+
+    ASSERT_TRUE(r2.input_required.has_value());
+    ASSERT_EQ(r2.input_required->input_requests.size(), size_t{2});
+    ASSERT_EQ(r2.input_required->input_requests.count("name"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("name").method, "elicitation/create");
+    EXPECT_EQ(r2.input_required->input_requests.at("name").params, name_request.params);
+    ASSERT_EQ(r2.input_required->input_requests.count("roots"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("roots").method, "roots/list");
+    EXPECT_TRUE(r2.input_required->input_requests.at("roots").params.Empty());
+    EXPECT_EQ(r2.input_required->request_state, "state-123");
+    EXPECT_EQ(r2.result_type, ResultType::InputRequired);
+}
+
+TEST(McpTypesTest, CallToolResultWithoutMrtrKeysHasNoInputRequired) {
+    CallToolResult r;
+    r.content = {TextContent{"text", "ok"}};
+    auto jv = SerializeCallToolResult(r);
+    EXPECT_FALSE(jv.Find("inputRequests"));
+    auto r2 = DeserializeCallToolResult(jv);
+    EXPECT_FALSE(r2.input_required.has_value());
+    EXPECT_EQ(r2.result_type, ResultType::Complete);
+
+    auto r3 = DeserializeCallToolResult(
+        JsonValue::Parse(R"({"content":[],"isError":false,"resultType":"input_required"})"));
+    ASSERT_TRUE(r3.input_required.has_value());
+    EXPECT_TRUE(r3.input_required->input_requests.empty());
+    EXPECT_FALSE(r3.input_required->request_state.has_value());
+}
+
 TEST(McpTypesTest, ListToolsResultRoundTrip) {
     ListToolsResult r;
     Tool t;
@@ -237,6 +283,32 @@ TEST(McpTypesTest, GetPromptResultRoundTrip) {
     EXPECT_TRUE(std::holds_alternative<TextContent>(r2.messages[0].content));
 }
 
+TEST(McpTypesTest, GetPromptResultInputRequiredRoundTrip) {
+    GetPromptResult r;
+    r.description = "daily report";
+    InputRequest elicit;
+    elicit.method = "elicitation/create";
+    elicit.params = JsonValue::Parse(R"({"message":"Which day?"})");
+    r.input_required = InputRequiredResult{};
+    r.input_required->input_requests["day"] = elicit;
+    r.input_required->request_state = "prompt-state";
+
+    auto r2 = DeserializeGetPromptResult(SerializeGetPromptResult(r));
+
+    ASSERT_TRUE(r2.input_required.has_value());
+    ASSERT_EQ(r2.input_required->input_requests.count("day"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("day").method, "elicitation/create");
+    EXPECT_EQ(r2.input_required->input_requests.at("day").params, elicit.params);
+    EXPECT_EQ(r2.input_required->request_state, "prompt-state");
+    EXPECT_EQ(r2.result_type, ResultType::InputRequired);
+    EXPECT_EQ(r2.description, "daily report");
+
+    r.input_required = std::nullopt;
+    auto r3 = DeserializeGetPromptResult(SerializeGetPromptResult(r));
+    EXPECT_FALSE(r3.input_required.has_value());
+    EXPECT_EQ(r3.result_type, ResultType::Complete);
+}
+
 TEST(McpTypesTest, TextResourceContentsRoundTrip) {
     TextResourceContents r;
     r.uri = "file:///doc.txt";
@@ -263,6 +335,36 @@ TEST(McpTypesTest, ReadResourceResultRoundTrip) {
     auto* rc = std::get_if<TextResourceContents>(&r2.contents[0]);
     ASSERT_NE(rc, nullptr);
     EXPECT_EQ(rc->text, "Hello");
+}
+
+TEST(McpTypesTest, ReadResourceResultInputRequiredRoundTrip) {
+    ReadResourceResult r;
+    TextResourceContents trc;
+    trc.uri = "file:///doc.txt";
+    trc.text = "Hello";
+    r.contents = {ResourceContents(trc)};
+
+    InputRequest roots;
+    roots.method = "roots/list";
+    roots.params = JsonValue(JsonValue::object_tag);
+    r.input_required = InputRequiredResult{};
+    r.input_required->input_requests["paths"] = roots;
+    r.input_required->request_state = "read-state";
+
+    auto jv = SerializeReadResourceResult(r);
+    auto r2 = DeserializeReadResourceResult(jv);
+
+    ASSERT_TRUE(r2.input_required.has_value());
+    ASSERT_EQ(r2.input_required->input_requests.count("paths"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("paths").method, "roots/list");
+    EXPECT_EQ(r2.input_required->request_state, "read-state");
+    EXPECT_EQ(r2.result_type, ResultType::InputRequired);
+    ASSERT_EQ(r2.contents.size(), 1);
+
+    r.input_required = std::nullopt;
+    auto r3 = DeserializeReadResourceResult(SerializeReadResourceResult(r));
+    EXPECT_FALSE(r3.input_required.has_value());
+    EXPECT_EQ(r3.result_type, ResultType::Complete);
 }
 
 TEST(McpTypesTest, LoggingLevelRoundTrip) {
