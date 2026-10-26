@@ -5,7 +5,10 @@
 #include <mcp/Log.hpp>
 
 #include <cstddef>
+#include <exception>
 #include <optional>
+#include <string>
+#include <thread>
 
 namespace mcp {
 
@@ -50,9 +53,11 @@ void StdioServerTransport::SendMessageAsync(JsonRpcMessage message) {
 
     auto line = SerializeMessage(std::move(message)) + "\n";
 
-    if (stdout_pipe_ && stdout_pipe_->Write(line.data(), line.size()) != line.size()) {
-        MCP_LOG(Error, "failed to write to stdout pipe");
-        NotifyError("failed to write to stdout pipe");
+    if (!stdout_pipe_) return;
+    if (!detail::WriteWholeMessage(*stdout_pipe_, line.data(), line.size())) {
+        MCP_LOG(Error, "failed to write complete message to stdout pipe");
+        NotifyError("failed to write complete message to stdout pipe");
+        Close();
     }
 }
 
@@ -63,7 +68,14 @@ void StdioServerTransport::ReadLoop() {
     while (running_) {
         char buf[detail::kReadBufferSize];
 
-        size_t bytes_read = stdin_pipe_->Read(buf, sizeof(buf) - 1);
+        size_t bytes_read = 0;
+        try {
+            bytes_read = stdin_pipe_->Read(buf, sizeof(buf) - 1);
+        } catch (const std::exception& e) {
+            MCP_LOG(Error, std::string("stdio read failed: ") + e.what());
+            NotifyError(e.what());
+            break;
+        }
         if (bytes_read == 0) {
             if (stdin_pipe_->IsEof()) break;
             continue;

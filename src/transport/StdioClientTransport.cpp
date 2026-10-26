@@ -8,6 +8,7 @@
 #include <atomic>
 #include <exception>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -61,9 +62,11 @@ public:
         if (!running_) return;
 
         auto line = SerializeMessage(std::move(message)) + "\n";
-        if (stdin_pipe_ && stdin_pipe_->Write(line.data(), line.size()) != line.size()) {
-            MCP_LOG(Error, "failed to write to child stdin pipe");
-            NotifyError("failed to write to child stdin pipe");
+        if (!stdin_pipe_) return;
+        if (!detail::WriteWholeMessage(*stdin_pipe_, line.data(), line.size())) {
+            MCP_LOG(Error, "failed to write complete message to child stdin pipe");
+            NotifyError("failed to write complete message to child stdin pipe");
+            Close();
         }
     }
 
