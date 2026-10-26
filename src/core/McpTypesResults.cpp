@@ -433,15 +433,15 @@ InputRequest DeserializeInputRequest(const JsonValue& j) {
     InputRequest v;
     v.method = method->GetString();
     auto* params = j.Find(detail::kParams);
-    if (params) {
+    if (!params || params->IsNull()) {
+        v.params = JsonValue(JsonValue::object_tag);
+    } else {
         if (!params->IsObject()) {
             throw McpError(McpErrorCode::InvalidParams,
                 "DeserializeInputRequest: method '" + method->GetString() +
                 "' has a non-object 'params'");
         }
         v.params = *params;
-    } else {
-        v.params = JsonValue(JsonValue::object_tag);
     }
     return v;
 }

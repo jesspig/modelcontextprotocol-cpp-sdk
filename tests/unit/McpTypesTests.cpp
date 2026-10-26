@@ -1257,3 +1257,78 @@ TEST(McpTypesTest, CallToolResultStructuredContentArbitraryPassthrough) {
     ASSERT_TRUE(rs2.structured_content.has_value());
     EXPECT_EQ(rs2.structured_content->GetString(), "plain");
 }
+
+TEST(McpTypesTest, InputRequestRoundTripWithDefaultParams) {
+    InputRequest req;
+    req.method = "elicitation/create";
+    auto jv = SerializeInputRequest(req);
+    ASSERT_TRUE(jv.Contains("params"));
+    EXPECT_TRUE(jv["params"].IsNull());
+
+    auto back = DeserializeInputRequest(jv);
+    EXPECT_EQ(back.method, req.method);
+    EXPECT_TRUE(back.params.IsObject());
+    EXPECT_TRUE(back.params.Empty());
+
+    auto explicit_null = DeserializeInputRequest(
+        JsonValue::Parse(R"({"method":"roots/list","params":null})"));
+    EXPECT_EQ(explicit_null.method, "roots/list");
+    EXPECT_TRUE(explicit_null.params.IsObject());
+    EXPECT_TRUE(explicit_null.params.Empty());
+
+    auto missing = DeserializeInputRequest(
+        JsonValue::Parse(R"({"method":"roots/list"})"));
+    EXPECT_TRUE(missing.params.IsObject());
+    EXPECT_TRUE(missing.params.Empty());
+
+    EXPECT_THROW(DeserializeInputRequest(
+        JsonValue::Parse(R"({"method":"roots/list","params":[1,2]})")), McpError);
+}
+
+TEST(McpTypesTest, FileRefOffsetNarrowingRejectsInvalidValues) {
+    auto integral = DeserializeFileRef(
+        JsonValue::Parse(R"({"uri":"file:///a.txt","offset":12.0})"));
+    EXPECT_EQ(integral.offset, int64_t{12});
+    EXPECT_EQ(integral.length, int64_t{0});
+
+    auto int_offset = DeserializeFileRef(
+        JsonValue::Parse(R"({"uri":"file:///a.txt","offset":7,"length":9})"));
+    EXPECT_EQ(int_offset.offset, int64_t{7});
+    EXPECT_EQ(int_offset.length, int64_t{9});
+
+    bool offset_overflow_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","offset":1e19})"));
+    } catch (const McpError& e) {
+        offset_overflow_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(offset_overflow_rejected);
+
+    bool offset_type_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","offset":"abc"})"));
+    } catch (const McpError& e) {
+        offset_type_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(offset_type_rejected);
+
+    bool length_overflow_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","length":1e19})"));
+    } catch (const McpError& e) {
+        length_overflow_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(length_overflow_rejected);
+
+    bool length_type_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","length":"abc"})"));
+    } catch (const McpError& e) {
+        length_type_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(length_type_rejected);
+}
