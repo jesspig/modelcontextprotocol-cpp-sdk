@@ -1,15 +1,22 @@
 #include <mcp/storage/FileTaskStore.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/McpError.hpp>
 #include <mcp/detail/AtomicJsonFile.hpp>
 #include <detail/JsonFields.hpp>
 
 #include <chrono>
 #include <filesystem>
-#include <stdexcept>
+#include <fstream>
+#include <iterator>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace mcp {
 
 namespace {
+
+constexpr size_t kMinCompactThreshold = 64;
 
 std::string MakeMillisNow() {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -17,9 +24,28 @@ std::string MakeMillisNow() {
     return std::to_string(now_ms);
 }
 
+std::optional<int64_t> ParseMillis(const std::string& value) {
+    if (value.empty()) return std::nullopt;
+    try {
+        size_t consumed = 0;
+        auto parsed = std::stoll(value, &consumed);
+        if (consumed != value.size()) return std::nullopt;
+        return parsed;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+bool IsTerminalStatus(TaskStatus status) {
+    return status == TaskStatus::Completed
+        || status == TaskStatus::Failed
+        || status == TaskStatus::Cancelled;
+}
+
 JsonValue SerializeTaskState(const TaskState& state) {
     JsonValue::Object obj;
     obj["task_id"] = JsonValue(state.task_id);
+    obj["owner"] = JsonValue(state.owner);
     obj["status"] = JsonValue(static_cast<int64_t>(state.status));
     if (state.result) obj[detail::kResult] = *state.result;
     if (state.error_message) obj["error_message"] = JsonValue(*state.error_message);
@@ -41,6 +67,7 @@ JsonValue SerializeTaskState(const TaskState& state) {
 TaskState DeserializeTaskState(const JsonValue& j) {
     TaskState state;
     if (auto* v = j.Find("task_id")) state.task_id = v->GetString();
+    if (auto* v = j.Find("owner"); v && v->IsString()) state.owner = v->GetString();
     if (auto* v = j.Find("status")) state.status = static_cast<TaskStatus>(v->GetInt());
     if (auto* v = j.Find("result"); v && !v->IsNull())
         state.result = *v;
@@ -71,14 +98,18 @@ TaskState DeserializeTaskState(const JsonValue& j) {
     return state;
 }
 
-JsonValue SerializeTasks(const std::unordered_map<std::string, TaskState>& tasks) {
-    JsonValue::Object root_obj;
-    JsonValue::Object tasks_obj;
-    for (auto& [id, state] : tasks) {
-        tasks_obj[id] = SerializeTaskState(state);
-    }
-    root_obj["tasks"] = JsonValue(std::move(tasks_obj));
-    return JsonValue(std::move(root_obj));
+std::string SerializeRecord(const std::string& task_id, const TaskState& state) {
+    JsonValue::Object obj;
+    obj["task_id"] = JsonValue(task_id);
+    obj["state"] = SerializeTaskState(state);
+    return JsonValue(std::move(obj)).Dump();
+}
+
+std::string SerializeRemoval(const std::string& task_id) {
+    JsonValue::Object obj;
+    obj["task_id"] = JsonValue(task_id);
+    obj["removed"] = JsonValue(true);
+    return JsonValue(std::move(obj)).Dump();
 }
 
 } // anonymous namespace
@@ -86,28 +117,112 @@ JsonValue SerializeTasks(const std::unordered_map<std::string, TaskState>& tasks
 FileTaskStore::FileTaskStore(std::filesystem::path storage_path)
     : storage_path_(std::move(storage_path))
 {
-    try {
-        auto json = detail::LoadJson(storage_path_);
-        if (auto* tasks = json.Find("tasks")) {
-            for (auto& [key, val] : *tasks) {
-                tasks_[key] = DeserializeTaskState(val);
-            }
-        }
-    } catch (const std::exception& e) {
-        MCP_LOG(Error, "task store: failed to load " + storage_path_.string() + ": " + e.what());
-        auto backup_path = storage_path_;
-        backup_path += ".corrupt";
-        std::error_code ec;
-        std::filesystem::copy_file(storage_path_, backup_path,
-            std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) {
-            MCP_LOG(Error, "task store: failed to back up corrupt file to " + backup_path.string());
-        }
-    }
+    LoadTasks();
 }
 
 FileTaskStore::~FileTaskStore() {
     Flush();
+}
+
+void FileTaskStore::BackupCorruptFile() {
+    MCP_LOG(Error, "task store: failed to load " + storage_path_.string());
+    auto backup_path = storage_path_;
+    backup_path += ".corrupt";
+    std::error_code ec;
+    std::filesystem::copy_file(storage_path_, backup_path,
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        MCP_LOG(Error, "task store: failed to back up corrupt file to " + backup_path.string());
+    }
+}
+
+void FileTaskStore::LoadTasks() {
+    std::error_code ec;
+    if (!std::filesystem::exists(storage_path_, ec)) return;
+    std::ifstream file(storage_path_, std::ios::binary);
+    if (!file.is_open()) {
+        BackupCorruptFile();
+        return;
+    }
+    std::string content((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+    if (content.empty()) return;
+
+    try {
+        JsonValue json = JsonValue::Parse(content);
+        if (json.IsObject()) {
+            if (auto* tasks = json.Find("tasks"); tasks && tasks->IsObject()) {
+                for (auto& [key, val] : *tasks) {
+                    tasks_[key] = DeserializeTaskState(val);
+                }
+                return;
+            }
+        }
+    } catch (const std::exception&) {
+    }
+
+    LoadRecords(content);
+}
+
+void FileTaskStore::LoadRecords(const std::string& content) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start <= content.size()) {
+        auto pos = content.find('\n', start);
+        if (pos == std::string::npos) {
+            lines.push_back(content.substr(start));
+            break;
+        }
+        lines.push_back(content.substr(start, pos - start));
+        start = pos + 1;
+    }
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string& line = lines[i];
+        if (line.empty()) continue;
+        JsonValue json;
+        try {
+            json = JsonValue::Parse(line);
+        } catch (const std::exception&) {
+            if (i + 1 == lines.size()) {
+                MCP_LOG(Error, "task store: ignoring truncated trailing record in " +
+                    storage_path_.string());
+                break;
+            }
+            BackupCorruptFile();
+            tasks_.clear();
+            return;
+        }
+        if (!json.IsObject()) {
+            BackupCorruptFile();
+            tasks_.clear();
+            return;
+        }
+        if (auto* legacy = json.Find("tasks"); legacy && legacy->IsObject()) {
+            for (auto& [key, val] : *legacy) {
+                tasks_[key] = DeserializeTaskState(val);
+            }
+            continue;
+        }
+        auto* id = json.Find("task_id");
+        if (!id || !id->IsString() || id->GetString().empty()) {
+            BackupCorruptFile();
+            tasks_.clear();
+            return;
+        }
+        if (auto* removed = json.Find("removed"); removed && removed->GetBool()) {
+            tasks_.erase(id->GetString());
+            continue;
+        }
+        auto* state = json.Find("state");
+        if (!state || !state->IsObject()) {
+            BackupCorruptFile();
+            tasks_.clear();
+            return;
+        }
+        tasks_[id->GetString()] = DeserializeTaskState(*state);
+        ++pending_records_;
+    }
 }
 
 TaskState FileTaskStore::CreateTask(const std::string& task_id) {
@@ -118,19 +233,49 @@ TaskState FileTaskStore::CreateTask(const std::string& task_id) {
     state.progress = 0;
     state.created_at = MakeMillisNow();
     state.last_updated_at = state.created_at;
-    std::unordered_map<std::string, TaskState> snapshot;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
-        auto [_, inserted] = tasks_.try_emplace(task_id, state);
-        if (!inserted) {
-            throw std::runtime_error("task already exists: " + task_id);
+        if (tasks_.find(task_id) != tasks_.end()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "task already exists: " + task_id);
         }
-        snapshot = tasks_;
+        tasks_[task_id] = state;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, state)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         tasks_.erase(task_id);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
+    }
+    return state;
+}
+
+TaskState FileTaskStore::CreateTask(const std::string& task_id,
+                                     const std::string& owner,
+                                     std::optional<int64_t> ttl_ms)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState state;
+    state.task_id = task_id;
+    state.owner = owner;
+    state.status = TaskStatus::Pending;
+    state.progress = 0;
+    state.created_at = MakeMillisNow();
+    state.last_updated_at = state.created_at;
+    state.ttl_ms = ttl_ms;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        if (tasks_.find(task_id) != tasks_.end()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "task already exists: " + task_id);
+        }
+        tasks_[task_id] = state;
+    }
+    if (!AppendRecord(task_id, state)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        tasks_.erase(task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return state;
 }
@@ -148,22 +293,25 @@ bool FileTaskStore::UpdateTask(
 {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
     TaskState original;
-    std::unordered_map<std::string, TaskState> snapshot;
+    TaskState updated;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
+        if (IsTerminalStatus(it->second.status)) return false;
         original = it->second;
-        it->second.result = result;
-        it->second.status = result ? TaskStatus::Completed : TaskStatus::Working;
-        it->second.last_updated_at = MakeMillisNow();
-        snapshot = tasks_;
+        updated = original;
+        updated.result = result;
+        updated.status = result ? TaskStatus::Completed : TaskStatus::Working;
+        updated.last_updated_at = MakeMillisNow();
+        it->second = updated;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, updated)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it != tasks_.end()) it->second = std::move(original);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return true;
 }
@@ -174,22 +322,25 @@ bool FileTaskStore::CancelTask(
 {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
     TaskState original;
-    std::unordered_map<std::string, TaskState> snapshot;
+    TaskState updated;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
+        if (IsTerminalStatus(it->second.status)) return false;
         original = it->second;
-        it->second.status = TaskStatus::Cancelled;
-        it->second.error_message = reason;
-        it->second.last_updated_at = MakeMillisNow();
-        snapshot = tasks_;
+        updated = original;
+        updated.status = TaskStatus::Cancelled;
+        updated.error_message = reason;
+        updated.last_updated_at = MakeMillisNow();
+        it->second = updated;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, updated)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it != tasks_.end()) it->second = std::move(original);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return true;
 }
@@ -197,23 +348,136 @@ bool FileTaskStore::CancelTask(
 bool FileTaskStore::SetTaskStatus(const std::string& task_id, TaskStatus status) {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
     TaskState original;
-    std::unordered_map<std::string, TaskState> snapshot;
+    TaskState updated;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        if (IsTerminalStatus(it->second.status) && it->second.status != status) {
+            return false;
+        }
+        original = it->second;
+        updated = original;
+        updated.status = status;
+        updated.last_updated_at = MakeMillisNow();
+        it->second = updated;
+    }
+    if (!AppendRecord(task_id, updated)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::FailTask(
+    const std::string& task_id,
+    const JsonValue& error_payload)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    TaskState updated;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        if (IsTerminalStatus(it->second.status)) return false;
+        original = it->second;
+        updated = original;
+        updated.result = error_payload;
+        updated.status = TaskStatus::Failed;
+        if (auto* msg = error_payload.Find(detail::kMessage);
+                msg && msg->IsString()) {
+            updated.error_message = msg->GetString();
+        }
+        updated.last_updated_at = MakeMillisNow();
+        it->second = updated;
+    }
+    if (!AppendRecord(task_id, updated)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::SetTaskOwner(const std::string& task_id,
+                                  const std::string& owner)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    TaskState updated;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
         original = it->second;
-        it->second.status = status;
-        it->second.last_updated_at = MakeMillisNow();
-        snapshot = tasks_;
+        updated = original;
+        updated.owner = owner;
+        it->second = updated;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, updated)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it != tasks_.end()) it->second = std::move(original);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return true;
+}
+
+bool FileTaskStore::SetTaskTtl(const std::string& task_id, int64_t ttl_ms) {
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    TaskState updated;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        original = it->second;
+        updated = original;
+        updated.ttl_ms = ttl_ms;
+        it->second = updated;
+    }
+    if (!AppendRecord(task_id, updated)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::RemoveTask(const std::string& task_id) {
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    {
+        std::shared_lock<std::shared_mutex> data_lock(data_mutex_);
+        if (tasks_.find(task_id) == tasks_.end()) return false;
+    }
+    if (!AppendRemoval(task_id)) {
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist removal of task " + task_id);
+    }
+    std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+    tasks_.erase(task_id);
+    return true;
+}
+
+std::vector<std::string> FileTaskStore::GetExpiredTaskIds(int64_t now_ms) {
+    std::shared_lock<std::shared_mutex> lock(data_mutex_);
+    std::vector<std::string> expired;
+    for (const auto& [task_id, state] : tasks_) {
+        if (!state.ttl_ms || *state.ttl_ms <= 0) continue;
+        auto created_at = ParseMillis(state.created_at);
+        if (!created_at) continue;
+        if (now_ms - *created_at >= *state.ttl_ms) expired.push_back(task_id);
+    }
+    return expired;
 }
 
 bool FileTaskStore::AdvanceTaskWithInput(
@@ -222,30 +486,32 @@ bool FileTaskStore::AdvanceTaskWithInput(
 {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
     TaskState original;
-    std::unordered_map<std::string, TaskState> snapshot;
+    TaskState updated;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
         if (it->second.status != TaskStatus::InputRequired) return false;
         original = it->second;
-        if (it->second.input_responses && it->second.input_responses->IsObject()
+        updated = original;
+        if (updated.input_responses && updated.input_responses->IsObject()
             && input_responses.IsObject()) {
             for (const auto& [key, value] : input_responses.GetObject()) {
-                (*it->second.input_responses)[key] = value;
+                (*updated.input_responses)[key] = value;
             }
         } else {
-            it->second.input_responses = input_responses;
+            updated.input_responses = input_responses;
         }
-        it->second.status = TaskStatus::Working;
-        it->second.last_updated_at = MakeMillisNow();
-        snapshot = tasks_;
+        updated.status = TaskStatus::Working;
+        updated.last_updated_at = MakeMillisNow();
+        it->second = updated;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, updated)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it != tasks_.end()) it->second = std::move(original);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return true;
 }
@@ -256,27 +522,25 @@ bool FileTaskStore::ParkTaskForInput(
 {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
     TaskState original;
-    std::unordered_map<std::string, TaskState> snapshot;
+    TaskState updated;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
-        if (it->second.status == TaskStatus::Completed
-            || it->second.status == TaskStatus::Failed
-            || it->second.status == TaskStatus::Cancelled) {
-            return false;
-        }
+        if (IsTerminalStatus(it->second.status)) return false;
         original = it->second;
-        it->second.input_requests = input_requests;
-        it->second.status = TaskStatus::InputRequired;
-        it->second.last_updated_at = MakeMillisNow();
-        snapshot = tasks_;
+        updated = original;
+        updated.input_requests = input_requests;
+        updated.status = TaskStatus::InputRequired;
+        updated.last_updated_at = MakeMillisNow();
+        it->second = updated;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, updated)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it != tasks_.end()) it->second = std::move(original);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return true;
 }
@@ -288,21 +552,23 @@ bool FileTaskStore::BindTaskTool(
 {
     std::lock_guard<std::mutex> write_lock(write_mutex_);
     TaskState original;
-    std::unordered_map<std::string, TaskState> snapshot;
+    TaskState updated;
     {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
         original = it->second;
-        it->second.tool_name = tool_name;
-        it->second.tool_arguments = tool_arguments;
-        snapshot = tasks_;
+        updated = original;
+        updated.tool_name = tool_name;
+        updated.tool_arguments = tool_arguments;
+        it->second = updated;
     }
-    if (!PersistTasks(snapshot)) {
+    if (!AppendRecord(task_id, updated)) {
         std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
         auto it = tasks_.find(task_id);
         if (it != tasks_.end()) it->second = std::move(original);
-        throw std::runtime_error("task store: failed to persist task " + task_id);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
     }
     return true;
 }
@@ -318,22 +584,69 @@ std::vector<TaskState> FileTaskStore::GetAllTasks() {
 }
 
 bool FileTaskStore::Flush() {
-    std::unordered_map<std::string, TaskState> snapshot;
-    {
-        std::shared_lock<std::shared_mutex> data_lock(data_mutex_);
-        snapshot = tasks_;
-    }
-    return PersistTasks(snapshot);
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    return CompactLocked();
 }
 
-bool FileTaskStore::PersistTasks(
-    const std::unordered_map<std::string, TaskState>& tasks)
-{
-    try {
-        return detail::WriteAtomic(storage_path_, SerializeTasks(tasks));
-    } catch (...) {
+bool FileTaskStore::AppendRecord(const std::string& task_id, const TaskState& state) {
+    std::ofstream file(storage_path_, std::ios::app | std::ios::binary);
+    if (!file.is_open()) {
+        MCP_LOG(Error, "task store: failed to open " + storage_path_.string() +
+            " for append");
         return false;
     }
+    file << SerializeRecord(task_id, state) << '\n';
+    file.flush();
+    if (!file.good()) {
+        MCP_LOG(Error, "task store: failed to append task record to " +
+            storage_path_.string());
+        return false;
+    }
+    ++pending_records_;
+    size_t live_count = 0;
+    {
+        std::shared_lock<std::shared_mutex> data_lock(data_mutex_);
+        live_count = tasks_.size();
+    }
+    if (pending_records_ > kMinCompactThreshold + live_count * 2) {
+        return CompactLocked();
+    }
+    return true;
+}
+
+bool FileTaskStore::AppendRemoval(const std::string& task_id) {
+    std::ofstream file(storage_path_, std::ios::app | std::ios::binary);
+    if (!file.is_open()) {
+        MCP_LOG(Error, "task store: failed to open " + storage_path_.string() +
+            " for append");
+        return false;
+    }
+    file << SerializeRemoval(task_id) << '\n';
+    file.flush();
+    if (!file.good()) {
+        MCP_LOG(Error, "task store: failed to append task removal to " +
+            storage_path_.string());
+        return false;
+    }
+    ++pending_records_;
+    return true;
+}
+
+bool FileTaskStore::CompactLocked() {
+    std::string content;
+    {
+        std::shared_lock<std::shared_mutex> data_lock(data_mutex_);
+        for (const auto& [task_id, state] : tasks_) {
+            content += SerializeRecord(task_id, state);
+            content += '\n';
+        }
+    }
+    if (!detail::WriteAtomic(storage_path_, content)) {
+        MCP_LOG(Error, "task store: failed to persist " + storage_path_.string());
+        return false;
+    }
+    pending_records_ = 0;
+    return true;
 }
 
 } // namespace mcp

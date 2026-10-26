@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace mcp {
 
@@ -23,6 +24,7 @@ enum class TaskStatus {
 
 struct TaskState {
     std::string task_id;
+    std::string owner;
     TaskStatus status{TaskStatus::Pending};
     std::optional<JsonValue> result;
     std::optional<std::string> error_message;
@@ -45,6 +47,15 @@ public:
     virtual ~IMcpTaskStore() = default;
 
     virtual TaskState CreateTask(const std::string& task_id) = 0;
+    virtual TaskState CreateTask(const std::string& task_id,
+                                  const std::string& owner,
+                                  std::optional<int64_t> ttl_ms)
+    {
+        TaskState state = CreateTask(task_id);
+        if (!owner.empty()) SetTaskOwner(task_id, owner);
+        if (ttl_ms) SetTaskTtl(task_id, *ttl_ms);
+        return state;
+    }
     virtual std::optional<TaskState> GetTask(const std::string& task_id) = 0;
     virtual bool UpdateTask(const std::string& task_id,
                             const std::optional<JsonValue>& result) = 0;
@@ -56,6 +67,34 @@ public:
     virtual bool BindTaskTool(const std::string&, const std::string&,
                               const std::optional<JsonValue>&) { return false; }
     virtual std::vector<TaskState> GetAllTasks() = 0;
+    virtual bool FailTask(const std::string& task_id, const JsonValue& error_payload)
+    {
+        (void)task_id;
+        (void)error_payload;
+        return false;
+    }
+    virtual bool RemoveTask(const std::string& task_id)
+    {
+        (void)task_id;
+        return false;
+    }
+    virtual std::vector<std::string> GetExpiredTaskIds(int64_t now_ms)
+    {
+        (void)now_ms;
+        return {};
+    }
+    virtual bool SetTaskOwner(const std::string& task_id, const std::string& owner)
+    {
+        (void)task_id;
+        (void)owner;
+        return false;
+    }
+    virtual bool SetTaskTtl(const std::string& task_id, int64_t ttl_ms)
+    {
+        (void)task_id;
+        (void)ttl_ms;
+        return false;
+    }
 };
 
 } // namespace mcp
