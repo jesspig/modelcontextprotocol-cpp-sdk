@@ -16,6 +16,8 @@ public:
     void StoreTokens(const TokenContainer& tokens) override;
     std::optional<TokenContainer> GetTokens() override;
     void ClearTokens() override;
+    void StoreBoundIssuer(const std::string& issuer) override;
+    std::optional<std::string> GetBoundIssuer() override;
 
 private:
     void Load();
