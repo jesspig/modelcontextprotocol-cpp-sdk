@@ -2431,7 +2431,7 @@ TEST(McpClientTest, UndeclaredExtensionReceivesTaskThrows) {
 TEST(McpClientTest, ListSkillsRoundTrip) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     std::atomic<int> calls{0};
     server_handler->SetRequestHandler(methods::kListSkills,
         [&calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -2464,7 +2464,7 @@ TEST(McpClientTest, ListSkillsRoundTrip) {
 
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
-    opts.pin_protocol_version = std::string("2025-11-25");
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
@@ -2494,7 +2494,7 @@ TEST(McpClientTest, ListSkillsRoundTrip) {
 TEST(McpClientTest, SkillDirectFetchWithoutList) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     std::atomic<int> get_calls{0};
     std::atomic<int> dir_calls{0};
     std::atomic<int> res_calls{0};
@@ -2559,7 +2559,7 @@ TEST(McpClientTest, SkillDirectFetchWithoutList) {
 
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
-    opts.pin_protocol_version = std::string("2025-11-25");
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
@@ -2585,7 +2585,7 @@ TEST(McpClientTest, SkillDirectFetchWithoutList) {
 TEST(McpClientTest, TtlExpiryRefetch) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     std::atomic<int> calls{0};
     server_handler->SetRequestHandler(methods::kGetSkill,
         [&calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -2606,7 +2606,7 @@ TEST(McpClientTest, TtlExpiryRefetch) {
 
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
-    opts.pin_protocol_version = std::string("2025-11-25");
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 

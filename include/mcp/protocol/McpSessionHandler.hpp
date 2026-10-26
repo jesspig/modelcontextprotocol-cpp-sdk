@@ -64,6 +64,13 @@ public:
         const RequestMeta& meta = {},
         std::chrono::milliseconds timeout = kDefaultRequestTimeout);
 
+    std::future<JsonValue> SendRequest(
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout,
+        OutcomeCallback on_outcome);
+
     void SendNotification(std::string_view method, JsonValue params = {});
     void SendMessage(JsonRpcMessage message);
 
