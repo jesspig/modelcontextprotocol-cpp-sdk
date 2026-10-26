@@ -4,7 +4,8 @@ add_executable(mcp-core-tests
     JsonRpcTests.cpp
     McpTypesTests.cpp
     JsonParserTests.cpp
-    LogTests.cpp)
+    LogTests.cpp
+    ResponseCacheTests.cpp)
 
 target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-core-tests)
