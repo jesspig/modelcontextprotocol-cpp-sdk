@@ -3,12 +3,15 @@
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
+#include <mcp/McpError.hpp>
 #include <mcp/Meta.hpp>
 #include <mcp/Methods.hpp>
 
 #include <mcp/JsonValue.hpp>
 
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -150,17 +153,34 @@ inline JsonValue SerializeFileRef(const FileRef& v) {
     return obj;
 }
 
+namespace detail {
+
+inline int64_t NarrowJsonToInt64(const JsonValue& v, const char* field) {
+    if (v.IsInt()) return v.GetInt();
+    if (!v.IsDouble()) {
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("DeserializeFileRef: field '") + field +
+            "' expected an integer number, got " + v.Dump());
+    }
+    const double value = v.GetDouble();
+    const double lower_bound = static_cast<double>(std::numeric_limits<int64_t>::min());
+    const double upper_bound_exclusive = std::ldexp(1.0, 63);
+    if (!std::isfinite(value) || std::trunc(value) != value ||
+        value < lower_bound || value >= upper_bound_exclusive) {
+        throw McpError(McpErrorCode::DeserializeFailed,
+            std::string("DeserializeFileRef: field '") + field +
+            "' expected an integral value in int64 range, got " + v.Dump());
+    }
+    return static_cast<int64_t>(value);
+}
+
+} // namespace detail
+
 inline FileRef DeserializeFileRef(const JsonValue& j) {
     FileRef v;
     v.uri = j["uri"].GetString();
-    if (auto* o = j.Find("offset")) {
-        if (o->IsInt()) v.offset = o->GetInt();
-        else if (o->IsDouble()) v.offset = static_cast<int64_t>(o->GetDouble());
-    }
-    if (auto* l = j.Find("length")) {
-        if (l->IsInt()) v.length = l->GetInt();
-        else if (l->IsDouble()) v.length = static_cast<int64_t>(l->GetDouble());
-    }
+    if (auto* o = j.Find("offset")) v.offset = detail::NarrowJsonToInt64(*o, "offset");
+    if (auto* l = j.Find("length")) v.length = detail::NarrowJsonToInt64(*l, "length");
     return v;
 }
 
