@@ -4,6 +4,7 @@
 #include <detail/JsonSerializer.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <type_traits>
 
@@ -62,6 +63,12 @@ JsonValue SerializeErrorData(const ErrorData& v) {
 ErrorData DeserializeErrorData(const JsonValue& j) {
     ErrorData v;
     int64_t code = j[detail::kCode].GetInt();
+    if (code < std::numeric_limits<int32_t>::min() ||
+        code > std::numeric_limits<int32_t>::max()) {
+        throw McpError(McpErrorCode::DeserializeFailed,
+            "DeserializeErrorData: error code " + std::to_string(code) +
+            " is outside the representable McpErrorCode range");
+    }
     v.code = static_cast<McpErrorCode>(code);
     v.message = j[detail::kMessage].GetString();
     detail::DeserializeOptional(j, detail::kData, v.data);
