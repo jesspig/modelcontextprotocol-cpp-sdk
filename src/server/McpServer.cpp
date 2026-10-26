@@ -3149,7 +3149,7 @@ std::string McpServer::GetNegotiatedProtocolVersion() const {
     return handler_->NegotiatedProtocolVersion();
 }
 
-const ServerCapabilities& McpServer::GetCapabilities() const {
+ServerCapabilities McpServer::GetCapabilities() const {
     std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
     return capabilities_;
 }

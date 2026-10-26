@@ -103,7 +103,7 @@ public:
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
     std::string GetNegotiatedProtocolVersion() const;
-    const ServerCapabilities& GetCapabilities() const;
+    ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
     const std::string& SessionId() const { return session_id_; }

@@ -3134,10 +3134,11 @@ JsonValue SendSkillsRequest(
 TEST(McpServerTest, SkillsListGetDirectory) {
     auto env = MakeSkillsEnv(true);
 
-    EXPECT_TRUE(env.server->GetCapabilities().extensions.has_value());
-    ASSERT_TRUE(env.server->GetCapabilities().extensions->find(
+    auto caps = env.server->GetCapabilities();
+    EXPECT_TRUE(caps.extensions.has_value());
+    ASSERT_TRUE(caps.extensions->find(
         std::string(kSkillsExtensionId)) !=
-        env.server->GetCapabilities().extensions->end());
+        caps.extensions->end());
 
     auto list_resp = SendSkillsRequest(env.client, methods::kListSkills,
         SerializePaginatedRequestParams(PaginatedRequestParams{}));
