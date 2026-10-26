@@ -1,4 +1,5 @@
 #pragma once
+#include <mcp/Export.hpp>
 #include <mcp/JsonValue.hpp>
 #include <mcp/client/auth/TokenCache.hpp>
 #include <mcp/ext/DPoP.hpp>
@@ -38,6 +39,7 @@ struct OAuthClientOptions {
     std::optional<std::string> private_key_pem;
     std::string signing_algorithm{"ES256"};
     std::function<int64_t()> client_assertion_clock_seconds;
+    std::vector<std::string> allowed_authorization_server_origins;
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -48,6 +50,10 @@ class OAuthClientProvider {
 public:
     explicit OAuthClientProvider(OAuthClientOptions options);
     ~OAuthClientProvider();
+
+    static bool IsSecureEndpoint(std::string_view url);
+
+    static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
 
     bool Authenticate();
 
@@ -80,13 +86,36 @@ public:
     bool HandleAuthChallenge(std::string_view www_authenticate);
 
 private:
+    enum class RefreshOutcome {
+        Refreshed,
+        InvalidGrant,
+        TransientFailure,
+    };
+
+    struct TokenEndpointResponse {
+        bool transport_ok{false};
+        int status_code{0};
+        JsonValue json;
+        std::string error_code;
+
+        bool Succeeded() const {
+            return transport_ok && status_code >= 200 && status_code < 300;
+        }
+        bool IsCredentialRejection() const {
+            return error_code == "invalid_grant" || error_code == "invalid_client";
+        }
+    };
+
     bool DiscoverMetadata();
+    bool EnsureMetadata();
     bool RegisterClient();
     bool StartAuthorizationFlow();
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
     bool ParseAndStoreTokenResponse(const JsonValue& json);
 
     void RefreshTokensCoalesced();
+
+    RefreshOutcome RefreshTokensInternal();
 
     bool ValidateTokenIssuer(const JsonValue& response) const;
 
@@ -97,6 +126,18 @@ private:
     bool TokenResourceMatches(const TokenContainer& tokens) const;
 
     void EnforceIssuerBinding();
+
+    bool IssuerBindingAllows(const std::string& issuer) const;
+
+    bool IsAllowedAuthorizationServer(const OAuthMetadata& meta) const;
+
+    void RequireSecureEndpoint(std::string_view url, std::string_view kind) const;
+
+    void ValidateMetadataEndpoints(const OAuthMetadata& meta) const;
+
+    std::optional<OAuthMetadata> MetadataSnapshot() const;
+
+    std::optional<ClientRegistrationInfo> RegistrationSnapshot() const;
 
     std::string ResolveResourceIndicator() const;
 
@@ -112,7 +153,7 @@ private:
 
     void ApplyClientAuthentication(std::map<std::string, std::string>& form) const;
 
-    JsonValue HttpPost(
+    TokenEndpointResponse HttpPost(
         std::string_view url,
         const std::map<std::string, std::string>& form_data);
 
@@ -123,10 +164,8 @@ private:
     std::optional<ClientRegistrationInfo> registration_;
     std::optional<std::string> bound_issuer_;
 
-    std::string code_verifier_;
-    std::string code_challenge_;
-
-    std::string state_;
+    mutable std::recursive_mutex state_mutex_;
+    std::mutex auth_flow_mutex_;
 
     std::optional<ext::dpop::EcP256Jwk> dpop_key_;
     std::optional<std::string> dpop_nonce_;

@@ -26,6 +26,9 @@ public:
     virtual void StoreTokens(const TokenContainer& tokens) = 0;
     virtual std::optional<TokenContainer> GetTokens() = 0;
     virtual void ClearTokens() = 0;
+
+    virtual void StoreBoundIssuer(const std::string& issuer) { (void)issuer; }
+    virtual std::optional<std::string> GetBoundIssuer() { return std::nullopt; }
 };
 
 class InMemoryTokenCache : public ITokenCache {
@@ -33,8 +36,11 @@ public:
     void StoreTokens(const TokenContainer& tokens) override;
     std::optional<TokenContainer> GetTokens() override;
     void ClearTokens() override;
+    void StoreBoundIssuer(const std::string& issuer) override;
+    std::optional<std::string> GetBoundIssuer() override;
 private:
     std::optional<TokenContainer> tokens_;
+    std::optional<std::string> bound_issuer_;
     std::mutex mutex_;
 };
 
