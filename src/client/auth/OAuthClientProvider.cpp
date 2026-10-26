@@ -83,6 +83,79 @@ bool IsSafeHttpUrl(std::string_view url) {
     return true;
 }
 
+std::string ToLowerAscii(std::string_view input) {
+    std::string out(input);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+struct UrlParts {
+    std::string scheme;
+    std::string host;
+    std::string port;
+};
+
+std::optional<UrlParts> ParseUrl(std::string_view url) {
+    auto scheme_end = url.find("://");
+    if (scheme_end == std::string_view::npos) return std::nullopt;
+    UrlParts parts;
+    parts.scheme = ToLowerAscii(url.substr(0, scheme_end));
+    if (parts.scheme != "http" && parts.scheme != "https") return std::nullopt;
+    auto rest = url.substr(scheme_end + 3);
+    auto authority_end = rest.find_first_of("/?#");
+    std::string authority(rest.substr(0, authority_end));
+    auto at = authority.rfind('@');
+    if (at != std::string::npos) authority = authority.substr(at + 1);
+    if (authority.empty()) return std::nullopt;
+    if (authority.front() == '[') {
+        auto close = authority.find(']');
+        if (close == std::string::npos) return std::nullopt;
+        parts.host = ToLowerAscii(authority.substr(1, close - 1));
+        if (close + 1 < authority.size()) {
+            if (authority[close + 1] != ':') return std::nullopt;
+            parts.port = authority.substr(close + 2);
+        }
+    } else {
+        auto colon = authority.find(':');
+        if (colon == std::string::npos) {
+            parts.host = ToLowerAscii(authority);
+        } else {
+            parts.host = ToLowerAscii(authority.substr(0, colon));
+            parts.port = authority.substr(colon + 1);
+        }
+    }
+    if (parts.host.empty()) return std::nullopt;
+    for (char c : parts.port) {
+        if (c < '0' || c > '9') return std::nullopt;
+    }
+    return parts;
+}
+
+std::string EffectivePort(const UrlParts& parts) {
+    if (!parts.port.empty()) return parts.port;
+    return parts.scheme == "https" ? "443" : "80";
+}
+
+std::string UrlOrigin(std::string_view url) {
+    auto parts = ParseUrl(url);
+    if (!parts) return {};
+    return parts->scheme + "://" + parts->host + ":" + EffectivePort(*parts);
+}
+
+bool IsLoopbackHost(std::string_view host) {
+    return host == "localhost" || host == "127.0.0.1" || host == "::1";
+}
+
+bool IsSecureEndpointUrl(std::string_view url) {
+    if (!IsSafeHttpUrl(url)) return false;
+    auto parts = ParseUrl(url);
+    if (!parts) return false;
+    if (parts->scheme == "https") return true;
+    return IsLoopbackHost(parts->host);
+}
+
 std::optional<NetResponse> HttpGetUrl(const std::string& url) {
     try {
         mcp::detail::net::HttpClient client;
@@ -226,9 +299,9 @@ std::string GenerateCodeVerifier() {
     }
 #else
     std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> dist(0, 255);
-    for (auto& b : random_bytes) b = static_cast<unsigned char>(dist(gen));
+    for (auto& b : random_bytes) {
+        b = static_cast<unsigned char>(rd() & 0xFF);
+    }
 #endif
     return Base64UrlEncode(
         std::string_view(reinterpret_cast<const char*>(random_bytes.data()),
@@ -268,7 +341,17 @@ void InMemoryTokenCache::ClearTokens() {
     tokens_.reset();
 }
 
-JsonValue OAuthClientProvider::HttpPost(
+void InMemoryTokenCache::StoreBoundIssuer(const std::string& issuer) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bound_issuer_ = issuer;
+}
+
+std::optional<std::string> InMemoryTokenCache::GetBoundIssuer() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bound_issuer_;
+}
+
+OAuthClientProvider::TokenEndpointResponse OAuthClientProvider::HttpPost(
     std::string_view url_str,
     const std::map<std::string, std::string>& form_data)
 {
@@ -284,11 +367,23 @@ JsonValue OAuthClientProvider::HttpPost(
         headers["DPoP"] = BuildDPoPProof("POST", std::string(url_str));
     }
 
+    TokenEndpointResponse response;
     auto resp = HttpPostUrl(std::string(url_str), body, headers);
-    if (!resp || resp->status_code < 200 || resp->status_code >= 300)
-        return JsonValue();
-
-    return JsonValue::Parse(resp->body);
+    if (!resp) return response;
+    response.transport_ok = true;
+    response.status_code = resp->status_code;
+    try {
+        response.json = JsonValue::Parse(resp->body);
+    } catch (...) {
+        response.json = JsonValue();
+    }
+    if (response.json.IsObject()) {
+        if (auto* error = response.json.Find("error");
+            error && error->IsString() && !error->GetString().empty()) {
+            response.error_code = error->GetString();
+        }
+    }
+    return response;
 }
 
 OAuthClientProvider::OAuthClientProvider(OAuthClientOptions options)
@@ -305,8 +400,11 @@ bool OAuthClientProvider::Authenticate() {
 
     if (options_.client_id && IsClientIdMetadataDocumentUrl(*options_.client_id)) {
         FetchClientMetadataDocument();
-    } else if (!options_.client_id && metadata_->registration_endpoint) {
-        if (!RegisterClient()) return false;
+    } else if (!options_.client_id) {
+        auto meta = MetadataSnapshot();
+        if (meta && meta->registration_endpoint) {
+            if (!RegisterClient()) return false;
+        }
     }
 
     auto cached = token_cache_->GetTokens();
@@ -315,15 +413,20 @@ bool OAuthClientProvider::Authenticate() {
         cached.reset();
     }
     if (cached && !cached->IsExpired()) return true;
-    if (cached && cached->refresh_token.size() > 0) return RefreshTokens();
+    if (cached && cached->refresh_token.size() > 0) {
+        auto outcome = RefreshTokensInternal();
+        if (outcome == RefreshOutcome::Refreshed) return true;
+        if (outcome == RefreshOutcome::InvalidGrant) return StartAuthorizationFlow();
+        return false;
+    }
 
     return StartAuthorizationFlow();
 }
 
 bool OAuthClientProvider::AuthenticateClientCredentials() {
-    if (!metadata_) {
-        if (!DiscoverMetadata()) return false;
-    }
+    if (!EnsureMetadata()) return false;
+    auto meta = MetadataSnapshot();
+    if (!meta) return false;
     if (!options_.client_id || options_.client_id->empty()) {
         MCP_LOG(Error, "client_credentials requires client_id");
         return false;
@@ -347,35 +450,60 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
         form["client_secret"] = *options_.client_secret;
     }
 
-    auto json = HttpPost(metadata_->token_endpoint, form);
-    if (json.IsNull()) return false;
-    if (!ValidateTokenIssuer(json)) return false;
-    return ParseAndStoreTokenResponse(json);
+    auto response = HttpPost(meta->token_endpoint, form);
+    if (!response.Succeeded() || response.json.IsNull()) return false;
+    if (!ValidateTokenIssuer(response.json)) return false;
+    return ParseAndStoreTokenResponse(response.json);
 }
 
 bool OAuthClientProvider::DiscoverMetadata() {
-    if (auto discovered = OAuthMetadata::Discover(options_.server_url)) {
-        if (discovered->issuer.empty()) {
+    std::optional<OAuthMetadata> discovered = OAuthMetadata::Discover(options_.server_url);
+    bool from_discovery = discovered && !discovered->issuer.empty();
+    OAuthMetadata meta;
+    if (from_discovery) {
+        meta = std::move(*discovered);
+    } else {
+        if (discovered) {
             MCP_LOG(Warning, "OAuth metadata discovery response missing required 'issuer'; falling back to server_url defaults");
-        } else {
-            metadata_ = std::move(discovered);
-            EnforceIssuerBinding();
-            return true;
         }
+        if (options_.server_url.empty()) {
+            MCP_LOG(Error, "OAuth metadata discovery failed and server_url is empty");
+            return false;
+        }
+        MCP_LOG(Warning, "OAuth metadata discovery failed; falling back to server_url defaults");
+        meta.issuer = options_.server_url;
+        meta.authorization_endpoint = options_.server_url + "/authorize";
+        meta.token_endpoint = options_.server_url + "/token";
     }
+    ValidateMetadataEndpoints(meta);
 
-    if (options_.server_url.empty()) {
-        MCP_LOG(Error, "OAuth metadata discovery failed and server_url is empty");
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    if (from_discovery && !IssuerBindingAllows(meta.issuer)) {
+        MCP_LOG(Error, "OAuth issuer mismatch: refusing to bind to an authorization server "
+            "other than the pinned one");
         return false;
     }
-    MCP_LOG(Warning, "OAuth metadata discovery failed; falling back to server_url defaults");
-    OAuthMetadata meta;
-    meta.issuer = options_.server_url;
-    meta.authorization_endpoint = options_.server_url + "/authorize";
-    meta.token_endpoint = options_.server_url + "/token";
     metadata_ = std::move(meta);
-    EnforceIssuerBinding();
+    if (from_discovery) EnforceIssuerBinding();
     return true;
+}
+
+bool OAuthClientProvider::EnsureMetadata() {
+    {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+        if (metadata_) return true;
+    }
+    return DiscoverMetadata();
+}
+
+std::optional<OAuthMetadata> OAuthClientProvider::MetadataSnapshot() const {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    return metadata_;
+}
+
+std::optional<ClientRegistrationInfo> OAuthClientProvider::RegistrationSnapshot() const {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    return registration_;
 }
 
 bool OAuthClientProvider::TokenResourceMatches(const TokenContainer& tokens) const {
@@ -384,21 +512,90 @@ bool OAuthClientProvider::TokenResourceMatches(const TokenContainer& tokens) con
         NormalizeResourceUrl(ResolveResourceIndicator());
 }
 
+bool OAuthClientProvider::IssuerBindingAllows(const std::string& issuer) const {
+    if (issuer.empty()) return true;
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    if (bound_issuer_ && !bound_issuer_->empty() && *bound_issuer_ != issuer) return false;
+    auto persisted = token_cache_->GetBoundIssuer();
+    if (!persisted || persisted->empty()) return true;
+    return *persisted == issuer;
+}
+
 void OAuthClientProvider::EnforceIssuerBinding() {
     if (!metadata_ || metadata_->issuer.empty()) return;
-    if (!bound_issuer_) {
-        bound_issuer_ = metadata_->issuer;
-        return;
+    auto persisted = token_cache_->GetBoundIssuer();
+    if (!persisted || persisted->empty()) {
+        token_cache_->StoreBoundIssuer(metadata_->issuer);
     }
-    if (*bound_issuer_ != metadata_->issuer) {
-        registration_.reset();
-        if (token_cache_) token_cache_->ClearTokens();
-        bound_issuer_ = metadata_->issuer;
+    bound_issuer_ = metadata_->issuer;
+}
+
+void OAuthClientProvider::RequireSecureEndpoint(
+    std::string_view url, std::string_view kind) const
+{
+    if (IsSecureEndpointUrl(url)) return;
+    MCP_LOG(Error, "OAuth " + std::string(kind) +
+        " endpoint rejected: https is required (loopback hosts excepted)");
+    throw McpError(McpErrorCode::InvalidParams,
+        std::string("OAuth ") + std::string(kind) +
+        " endpoint must use https (loopback hosts excepted)");
+}
+
+void OAuthClientProvider::ValidateMetadataEndpoints(const OAuthMetadata& meta) const {
+    if (!meta.authorization_endpoint.empty())
+        RequireSecureEndpoint(meta.authorization_endpoint, "authorization");
+    if (!meta.token_endpoint.empty())
+        RequireSecureEndpoint(meta.token_endpoint, "token");
+    if (meta.revocation_endpoint && !meta.revocation_endpoint->empty())
+        RequireSecureEndpoint(*meta.revocation_endpoint, "revocation");
+    if (meta.registration_endpoint && !meta.registration_endpoint->empty())
+        RequireSecureEndpoint(*meta.registration_endpoint, "registration");
+}
+
+bool OAuthClientProvider::IsAllowedAuthorizationServer(const OAuthMetadata& meta) const {
+    std::string anchor = meta.issuer.empty() ? meta.token_endpoint : meta.issuer;
+    if (anchor.empty()) return false;
+    std::string anchor_origin = UrlOrigin(anchor);
+    if (anchor_origin.empty()) return false;
+
+    std::string server_origin = UrlOrigin(options_.server_url);
+    bool allowed = !server_origin.empty() && anchor_origin == server_origin;
+    if (!allowed) {
+        for (const auto& candidate : options_.allowed_authorization_server_origins) {
+            if (!candidate.empty() && UrlOrigin(candidate) == anchor_origin) {
+                allowed = true;
+                break;
+            }
+        }
     }
+    if (!allowed) return false;
+
+    std::string issuer_origin = meta.issuer.empty() ? anchor_origin : UrlOrigin(meta.issuer);
+    if (issuer_origin.empty()) return false;
+    if (!meta.authorization_endpoint.empty() &&
+        UrlOrigin(meta.authorization_endpoint) != issuer_origin) {
+        return false;
+    }
+    if (!meta.token_endpoint.empty() &&
+        UrlOrigin(meta.token_endpoint) != issuer_origin) {
+        return false;
+    }
+    return true;
+}
+
+bool OAuthClientProvider::IsSecureEndpoint(std::string_view url) {
+    return IsSecureEndpointUrl(url);
+}
+
+bool OAuthClientProvider::IsSameOrigin(std::string_view lhs, std::string_view rhs) {
+    std::string left = UrlOrigin(lhs);
+    std::string right = UrlOrigin(rhs);
+    return !left.empty() && left == right;
 }
 
 bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
-    if (!metadata_) return false;
+    auto meta = MetadataSnapshot();
+    if (!meta) return false;
     auto* it = response.Find("iss");
     if (!it) {
         MCP_LOG(Warning,
@@ -409,7 +606,7 @@ bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
         MCP_LOG(Error, "OAuth token response 'iss' claim is present but not a string");
         return false;
     }
-    if (it->GetString() != metadata_->issuer) {
+    if (it->GetString() != meta->issuer) {
         MCP_LOG(Error, "OAuth token response issuer mismatch");
         return false;
     }
@@ -417,11 +614,12 @@ bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
 }
 
 bool OAuthClientProvider::CodeChallengeS256Supported() const {
-    if (!metadata_) return true;
-    if (metadata_->code_challenge_methods_supported.empty()) return true;
-    return std::find(metadata_->code_challenge_methods_supported.begin(),
-        metadata_->code_challenge_methods_supported.end(), "S256")
-        != metadata_->code_challenge_methods_supported.end();
+    auto meta = MetadataSnapshot();
+    if (!meta) return true;
+    if (meta->code_challenge_methods_supported.empty()) return true;
+    return std::find(meta->code_challenge_methods_supported.begin(),
+        meta->code_challenge_methods_supported.end(), "S256")
+        != meta->code_challenge_methods_supported.end();
 }
 
 void OAuthClientProvider::NotifyTokenUpdate(const TokenContainer& tokens) const {
@@ -435,12 +633,14 @@ void OAuthClientProvider::NotifyTokenUpdate(const TokenContainer& tokens) const 
 
 std::string OAuthClientProvider::ResolveResourceIndicator() const {
     if (options_.resource && !options_.resource->empty()) return *options_.resource;
-    if (metadata_ && metadata_->resource && !metadata_->resource->empty())
-        return *metadata_->resource;
+    auto meta = MetadataSnapshot();
+    if (meta && meta->resource && !meta->resource->empty())
+        return *meta->resource;
     return options_.server_url;
 }
 
 std::vector<std::string> OAuthClientProvider::ResolveScopes() const {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     if (!options_.scope_filter) return options_.scopes;
     return options_.scope_filter(options_.scopes);
 }
@@ -503,16 +703,18 @@ bool OAuthClientProvider::FetchClientMetadataDocument() {
             }
         }
     }
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     registration_ = std::move(info);
     return true;
 }
 
 bool OAuthClientProvider::PrivateKeyJwtAdvertised() const {
-    if (!metadata_) return false;
-    return std::find(metadata_->token_endpoint_auth_methods_supported.begin(),
-        metadata_->token_endpoint_auth_methods_supported.end(),
+    auto meta = MetadataSnapshot();
+    if (!meta) return false;
+    return std::find(meta->token_endpoint_auth_methods_supported.begin(),
+        meta->token_endpoint_auth_methods_supported.end(),
         std::string(kPrivateKeyJwtAuthMethod))
-        != metadata_->token_endpoint_auth_methods_supported.end();
+        != meta->token_endpoint_auth_methods_supported.end();
 }
 
 bool OAuthClientProvider::UsesClientAssertion() const {
@@ -525,15 +727,17 @@ std::string OAuthClientProvider::CreateClientAssertion() const {
         throw McpError(McpErrorCode::InvalidParams,
             "OAuth client assertion supports only the ES256 signing algorithm");
     }
+    auto registration = RegistrationSnapshot();
     std::string client_id = options_.client_id.value_or(
-        registration_ ? registration_->client_id : std::string());
+        registration ? registration->client_id : std::string());
     if (client_id.empty()) {
         throw McpError(McpErrorCode::InvalidParams,
             "OAuth private_key_jwt client assertion requires a client_id");
     }
+    auto meta = MetadataSnapshot();
     std::string audience;
-    if (metadata_) audience = metadata_->issuer;
-    if (audience.empty() && metadata_) audience = metadata_->token_endpoint;
+    if (meta) audience = meta->issuer;
+    if (audience.empty() && meta) audience = meta->token_endpoint;
     if (audience.empty()) {
         throw McpError(McpErrorCode::InvalidParams,
             "OAuth private_key_jwt client assertion requires an issuer audience");
@@ -565,32 +769,40 @@ void OAuthClientProvider::ApplyClientAuthentication(
 }
 
 bool OAuthClientProvider::RegisterClient() {
-    if (!metadata_->registration_endpoint) return false;
+    auto meta = MetadataSnapshot();
+    if (!meta || !meta->registration_endpoint) return false;
+    RequireSecureEndpoint(*meta->registration_endpoint, "registration");
     std::string_view application_type = options_.application_type.empty()
         ? std::string_view{"native"}
         : std::string_view{options_.application_type};
     auto info = ClientRegistrationInfo::Register(
-        *metadata_->registration_endpoint,
+        *meta->registration_endpoint,
         options_.redirect_uri, "mcp-cpp-client", application_type);
     if (!info) return false;
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     registration_ = std::move(info);
     return true;
 }
 
 bool OAuthClientProvider::StartAuthorizationFlow() {
+    std::lock_guard<std::mutex> flow_lock(auth_flow_mutex_);
+    if (!EnsureMetadata()) return false;
+    auto meta = MetadataSnapshot();
+    if (!meta) return false;
     if (!CodeChallengeS256Supported()) return false;
-    code_verifier_ = pkce::GenerateCodeVerifier();
-    code_challenge_ = pkce::ComputeCodeChallenge(code_verifier_);
-    state_ = pkce::GenerateCodeVerifier();
+    std::string code_verifier = pkce::GenerateCodeVerifier();
+    std::string code_challenge = pkce::ComputeCodeChallenge(code_verifier);
+    std::string state = pkce::GenerateCodeVerifier();
 
-    std::string auth_url = metadata_->authorization_endpoint;
+    std::string auth_url = meta->authorization_endpoint;
     auth_url += "?response_type=code";
+    auto registration = RegistrationSnapshot();
     auth_url += "&client_id=" + UrlEncode(options_.client_id.value_or(
-        registration_ ? registration_->client_id : ""));
+        registration ? registration->client_id : ""));
     auth_url += "&redirect_uri=" + UrlEncode(options_.redirect_uri);
-    auth_url += "&code_challenge=" + code_challenge_;
+    auth_url += "&code_challenge=" + code_challenge;
     auth_url += "&code_challenge_method=S256";
-    auth_url += "&state=" + UrlEncode(state_);
+    auth_url += "&state=" + UrlEncode(state);
     const auto scopes = ResolveScopes();
     if (!scopes.empty()) {
         std::string scope_str;
@@ -608,34 +820,37 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
     if (!options_.authorization_code_callback) return false;
     auto callback_result = options_.authorization_code_callback();
     if (!callback_result) return false;
-    if (callback_result->state != state_) return false;
-    if (callback_result->iss && *callback_result->iss != metadata_->issuer) {
+    if (callback_result->state != state) return false;
+    if (callback_result->iss && *callback_result->iss != meta->issuer) {
         MCP_LOG(Error, "OAuth authorization response issuer mismatch");
         return false;
     }
 
-    return ExchangeCodeForToken(callback_result->code, code_verifier_);
+    return ExchangeCodeForToken(callback_result->code, code_verifier);
 }
 
 bool OAuthClientProvider::ExchangeCodeForToken(
     std::string_view code, std::string_view code_verifier)
 {
     if (code.empty() || code_verifier.empty()) return false;
+    auto meta = MetadataSnapshot();
+    if (!meta) return false;
     std::map<std::string, std::string> form;
     form["grant_type"] = "authorization_code";
     form["code"] = std::string(code);
     form["redirect_uri"] = options_.redirect_uri;
+    auto registration = RegistrationSnapshot();
     form["client_id"] = options_.client_id.value_or(
-        registration_ ? registration_->client_id : "");
+        registration ? registration->client_id : "");
     form["code_verifier"] = std::string(code_verifier);
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
     ApplyClientAuthentication(form);
 
-    auto json = HttpPost(metadata_->token_endpoint, form);
-    if (json.IsNull()) return false;
-    if (!ValidateTokenIssuer(json)) return false;
-    return ParseAndStoreTokenResponse(json);
+    auto response = HttpPost(meta->token_endpoint, form);
+    if (!response.Succeeded() || response.json.IsNull()) return false;
+    if (!ValidateTokenIssuer(response.json)) return false;
+    return ParseAndStoreTokenResponse(response.json);
 }
 
 bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
@@ -669,27 +884,47 @@ bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
 }
 
 bool OAuthClientProvider::RefreshTokens() {
+    return RefreshTokensInternal() == RefreshOutcome::Refreshed;
+}
+
+OAuthClientProvider::RefreshOutcome OAuthClientProvider::RefreshTokensInternal() {
     auto cached = token_cache_->GetTokens();
-    if (!cached || cached->refresh_token.empty()) return false;
+    if (!cached || cached->refresh_token.empty()) return RefreshOutcome::TransientFailure;
+    if (!EnsureMetadata()) return RefreshOutcome::TransientFailure;
+    auto meta = MetadataSnapshot();
+    if (!meta) return RefreshOutcome::TransientFailure;
 
     std::map<std::string, std::string> form;
     form["grant_type"] = "refresh_token";
     form["refresh_token"] = cached->refresh_token;
+    auto registration = RegistrationSnapshot();
     form["client_id"] = options_.client_id.value_or(
-        registration_ ? registration_->client_id : "");
+        registration ? registration->client_id : "");
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
     ApplyClientAuthentication(form);
 
-    auto json = HttpPost(metadata_->token_endpoint, form);
-    if (json.IsNull()) return false;
-    if (!ValidateTokenIssuer(json)) return false;
+    auto response = HttpPost(meta->token_endpoint, form);
+    if (!response.Succeeded()) {
+        if (response.transport_ok && response.IsCredentialRejection()) {
+            MCP_LOG(Error, "OAuth refresh rejected by the authorization server: " +
+                response.error_code);
+            token_cache_->ClearTokens();
+            return RefreshOutcome::InvalidGrant;
+        }
+        MCP_LOG(Error, "OAuth token refresh request failed (status " +
+            std::to_string(response.status_code) + ")");
+        return RefreshOutcome::TransientFailure;
+    }
+    if (response.json.IsNull()) return RefreshOutcome::TransientFailure;
+    if (!ValidateTokenIssuer(response.json)) return RefreshOutcome::TransientFailure;
 
     TokenContainer tokens;
-    if (auto* v = json.Find("access_token")) tokens.access_token = v->GetString();
-    tokens.refresh_token = json.Find("refresh_token") ? json.Find("refresh_token")->GetString() : cached->refresh_token;
-    if (auto* v = json.Find("token_type")) tokens.token_type = v->GetString();
-    if (auto* v = json.Find("scope"); v && v->IsString()) {
+    if (auto* v = response.json.Find("access_token")) tokens.access_token = v->GetString();
+    tokens.refresh_token = response.json.Find("refresh_token")
+        ? response.json.Find("refresh_token")->GetString() : cached->refresh_token;
+    if (auto* v = response.json.Find("token_type")) tokens.token_type = v->GetString();
+    if (auto* v = response.json.Find("scope"); v && v->IsString()) {
         const auto& scope_str = v->GetString();
         size_t pos = 0;
         while (pos < scope_str.size()) {
@@ -706,7 +941,8 @@ bool OAuthClientProvider::RefreshTokens() {
         tokens.resource = std::move(indicator);
     else
         tokens.resource = cached->resource;
-    auto expires_in = json.Find("expires_in") ? json.Find("expires_in")->GetInt() : 3600;
+    auto expires_in = response.json.Find("expires_in")
+        ? response.json.Find("expires_in")->GetInt() : 3600;
     tokens.expires_at =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count() +
@@ -714,11 +950,11 @@ bool OAuthClientProvider::RefreshTokens() {
 
     if (tokens.access_token.empty()) {
         MCP_LOG(Error, "OAuth refresh response missing access_token");
-        return false;
+        return RefreshOutcome::TransientFailure;
     }
     token_cache_->StoreTokens(tokens);
     NotifyTokenUpdate(tokens);
-    return true;
+    return RefreshOutcome::Refreshed;
 }
 
 void OAuthClientProvider::RefreshTokensCoalesced() {
@@ -761,11 +997,13 @@ std::string OAuthClientProvider::GetAccessToken() {
 
 void OAuthClientProvider::Revoke() {
     auto tokens = token_cache_->GetTokens();
+    auto meta = MetadataSnapshot();
     if (tokens && !tokens->access_token.empty() &&
-        metadata_ && metadata_->revocation_endpoint) {
+        meta && meta->revocation_endpoint && !meta->revocation_endpoint->empty()) {
+        RequireSecureEndpoint(*meta->revocation_endpoint, "revocation");
         std::map<std::string, std::string> form;
         form["token"] = tokens->access_token;
-        HttpPost(*metadata_->revocation_endpoint, form);
+        HttpPost(*meta->revocation_endpoint, form);
     }
     token_cache_->ClearTokens();
 }
@@ -829,10 +1067,13 @@ void OAuthClientProvider::ObserveDPoPNonce(std::string_view dpop_nonce) {
 bool OAuthClientProvider::StepUpAuthorization(
     const std::vector<std::string>& additional_scopes)
 {
-    for (auto& s : additional_scopes) {
-        if (std::find(options_.scopes.begin(), options_.scopes.end(), s)
-            == options_.scopes.end()) {
-            options_.scopes.push_back(s);
+    {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+        for (auto& s : additional_scopes) {
+            if (std::find(options_.scopes.begin(), options_.scopes.end(), s)
+                == options_.scopes.end()) {
+                options_.scopes.push_back(s);
+            }
         }
     }
     Revoke();
@@ -851,7 +1092,7 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
         if (end == std::string::npos || end == pos + 1 || end - pos - 1 > 2048)
             return false;
         auto metadata_url = header.substr(pos + 1, end - pos - 1);
-        if (!IsSafeHttpUrl(metadata_url)) return false;
+        if (!IsSecureEndpointUrl(metadata_url)) return false;
 
         auto resp = HttpGetUrl(metadata_url);
         if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
@@ -869,42 +1110,49 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
             meta.token_endpoint.empty()) {
             return false;
         }
-        if (!meta.issuer.empty() && !IsSafeHttpUrl(meta.issuer)) return false;
-        if (!meta.authorization_endpoint.empty() &&
-            !IsSafeHttpUrl(meta.authorization_endpoint)) {
-            return false;
-        }
-        if (!meta.token_endpoint.empty() && !IsSafeHttpUrl(meta.token_endpoint))
-            return false;
+        ValidateMetadataEndpoints(meta);
         try {
             VerifyResourceMatch(options_.server_url, meta.resource);
         } catch (...) {
             return false;
         }
-        if (!metadata_) metadata_ = OAuthMetadata{};
-        if (!meta.issuer.empty()) metadata_->issuer = meta.issuer;
-        if (!meta.authorization_endpoint.empty()) metadata_->authorization_endpoint = meta.authorization_endpoint;
-        if (!meta.token_endpoint.empty()) metadata_->token_endpoint = meta.token_endpoint;
-        if (meta.revocation_endpoint && IsSafeHttpUrl(*meta.revocation_endpoint))
-            metadata_->revocation_endpoint = meta.revocation_endpoint;
-        if (meta.registration_endpoint && IsSafeHttpUrl(*meta.registration_endpoint))
-            metadata_->registration_endpoint = meta.registration_endpoint;
-        if (meta.jwks_uri && IsSafeHttpUrl(*meta.jwks_uri))
-            metadata_->jwks_uri = meta.jwks_uri;
-        if (!meta.scopes_supported.empty() && meta.scopes_supported.size() <= 128)
-            metadata_->scopes_supported = meta.scopes_supported;
-        if (!meta.response_types_supported.empty() && meta.response_types_supported.size() <= 128)
-            metadata_->response_types_supported = meta.response_types_supported;
-        if (!meta.grant_types_supported.empty() && meta.grant_types_supported.size() <= 128)
-            metadata_->grant_types_supported = meta.grant_types_supported;
-        if (!meta.code_challenge_methods_supported.empty() &&
-            meta.code_challenge_methods_supported.size() <= 8)
-            metadata_->code_challenge_methods_supported = meta.code_challenge_methods_supported;
-        if (!meta.token_endpoint_auth_methods_supported.empty() &&
-            meta.token_endpoint_auth_methods_supported.size() <= 128)
-            metadata_->token_endpoint_auth_methods_supported =
-                meta.token_endpoint_auth_methods_supported;
-        EnforceIssuerBinding();
+        if (!IsAllowedAuthorizationServer(meta)) {
+            MCP_LOG(Error, "OAuth authorization challenge rejected: the authorization "
+                "server is not same-origin with the MCP server and is not allow-listed");
+            return false;
+        }
+        {
+            std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+            if (!meta.issuer.empty() && !IssuerBindingAllows(meta.issuer)) {
+                MCP_LOG(Error, "OAuth authorization challenge issuer mismatch; "
+                    "challenge rejected");
+                return false;
+            }
+            if (!metadata_) metadata_ = OAuthMetadata{};
+            if (!meta.issuer.empty()) metadata_->issuer = meta.issuer;
+            if (!meta.authorization_endpoint.empty()) metadata_->authorization_endpoint = meta.authorization_endpoint;
+            if (!meta.token_endpoint.empty()) metadata_->token_endpoint = meta.token_endpoint;
+            if (meta.revocation_endpoint && IsSafeHttpUrl(*meta.revocation_endpoint))
+                metadata_->revocation_endpoint = meta.revocation_endpoint;
+            if (meta.registration_endpoint && IsSafeHttpUrl(*meta.registration_endpoint))
+                metadata_->registration_endpoint = meta.registration_endpoint;
+            if (meta.jwks_uri && IsSafeHttpUrl(*meta.jwks_uri))
+                metadata_->jwks_uri = meta.jwks_uri;
+            if (!meta.scopes_supported.empty() && meta.scopes_supported.size() <= 128)
+                metadata_->scopes_supported = meta.scopes_supported;
+            if (!meta.response_types_supported.empty() && meta.response_types_supported.size() <= 128)
+                metadata_->response_types_supported = meta.response_types_supported;
+            if (!meta.grant_types_supported.empty() && meta.grant_types_supported.size() <= 128)
+                metadata_->grant_types_supported = meta.grant_types_supported;
+            if (!meta.code_challenge_methods_supported.empty() &&
+                meta.code_challenge_methods_supported.size() <= 8)
+                metadata_->code_challenge_methods_supported = meta.code_challenge_methods_supported;
+            if (!meta.token_endpoint_auth_methods_supported.empty() &&
+                meta.token_endpoint_auth_methods_supported.size() <= 128)
+                metadata_->token_endpoint_auth_methods_supported =
+                    meta.token_endpoint_auth_methods_supported;
+            EnforceIssuerBinding();
+        }
         return true;
     } catch (...) {
         return false;
@@ -994,6 +1242,13 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
     std::string_view client_name,
     std::string_view application_type)
 {
+    if (!IsSecureEndpointUrl(registration_endpoint)) {
+        MCP_LOG(Error, "OAuth registration endpoint rejected: https is required "
+            "(loopback hosts excepted)");
+        throw McpError(McpErrorCode::InvalidParams,
+            "OAuth registration endpoint must use https (loopback hosts excepted)");
+    }
+
     JsonValue obj(JsonValue::object_tag);
     {
         JsonValue::Array uris;
