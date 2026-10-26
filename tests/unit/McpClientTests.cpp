@@ -3466,3 +3466,49 @@ TEST(McpClientTest, EtagDisabledWritesNoEtag) {
     ASSERT_TRUE(back.etag.has_value());
     EXPECT_EQ(*back.etag, "abc");
 }
+
+namespace {
+
+class ObservableTransport : public TransportBase {
+public:
+    void SendMessageAsync(JsonRpcMessage) override {}
+
+    void Close() override {
+        SetDisconnected();
+        channel_->Close();
+    }
+
+    void RaiseError(std::string_view message) { NotifyError(message); }
+
+    void RaiseClose() { SetDisconnected(); }
+};
+
+} // anonymous namespace
+
+TEST(McpClientTest, TransportErrorAndCloseAreObservable) {
+    auto transport = std::make_shared<ObservableTransport>();
+    std::atomic<int> errors{0};
+    std::atomic<int> closes{0};
+    std::string last_error;
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.on_transport_error = [&](std::string_view message) {
+        last_error = std::string(message);
+        errors.fetch_add(1);
+    };
+    opts.on_transport_close = [&]() { closes.fetch_add(1); };
+
+    auto client = McpClient::Create(transport, opts);
+    ASSERT_NE(client, nullptr);
+
+    transport->RaiseError("stdio write failed");
+    EXPECT_EQ(errors.load(), 1);
+    EXPECT_EQ(last_error, "stdio write failed");
+
+    transport->RaiseClose();
+    EXPECT_EQ(closes.load(), 1);
+
+    client->Close();
+}
