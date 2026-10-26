@@ -1,15 +1,15 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 17 个测试目标（15 unit + integration/conformance），837 个测试用例（静态 `TEST/TEST_F` 口径，googletest v1.18.0 子模块）；静态断言统计 3686；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
+description: 17 个测试目标（15 unit + integration/conformance），905 个测试用例（静态 `TEST/TEST_F` 口径，googletest v1.18.0 子模块；Windows 本机 ctest 注册 900——FileTokenCache 4 个 POSIX-only 与 TransportTests 1 个 TLS-only 条件用例不参与编译）；静态断言统计 4052；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
 tags: [test, googletest, ctest, conformance]
-timestamp: 2026-10-15T21:12:00+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部测试经 `mcp_discover_tests()`（[cmake/McpDiscoverTests.cmake](../cmake/McpDiscoverTests.cmake)，对 CMake `gtest_discover_tests` 的薄封装，逐用例 `TIMEOUT 120`）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F)\('`，口径为 `tests/**/*.cpp`），现为 **837**，与 `ctest -N` 注册口径精确一致；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，口径 `tests/**/*.cpp`），现为 **3686**。本轮为测试框架迁移：自研框架（`tests/framework/`，含 37 用例 / 76 断言的自测目标）整体删除，改由 googletest v1.18.0（git submodule `third_party/googletest`，`BUILD_GMOCK OFF`）承载；用例 874 → 837（-37），断言 3762 → 3686（-76，全部来自自测目标删除；27 个测试 cpp 逐文件对账其余 token 全守恒）；全量 `ctest --preset debug` **837/837 全绿**（183s；含此前本机偶发波动的 `FileEventStoreTest.ConcurrentAppendKeepsOrder`），详见 [/changelog/2026-10-15-log.md](/changelog/2026-10-15-log.md)。
+全部测试经 `mcp_discover_tests()`（[cmake/McpDiscoverTests.cmake](../cmake/McpDiscoverTests.cmake)，对 CMake `gtest_discover_tests` 的薄封装，逐用例 `TIMEOUT 120`）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F)\('`，口径为 `tests/**/*.cpp`），现为 **905**；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，口径 `tests/**/*.cpp`），现为 **4052**。837 → 905 增量来自审计修复批次（批次 1 data-codec/io-lifecycle/delivery 归并后注册 851；wire-era +14 → 865、server-core +15 → 880、auth-security +14 → 894；收口项 +6 → 注册 900，含新增 `ResponseCacheTests.cpp` 并入 `mcp-core-tests`），全量 `ctest --preset debug` **900/900 全绿**（Windows 本机）；静态 905 与 Windows 注册 900 之差为 5 个条件编译用例（见下表注）。
 
 目标数 18 → 17（本轮迁移删除 `mcp-framework-self-tests`）：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）；其后 748 → 769（前瞻六开关批，见下）→ 874（+105，后续批次，同样全部并入既有目标，目标数仍 18，分布见上表；715 → 748 起始基线见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)）。
 
@@ -17,24 +17,26 @@ resource: tests/CMakeLists.txt
 
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
-| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests | 182 | 399 |
-| mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 65 | 307 |
-| mcp-server-tests | McpServerTests | 95 | 807 |
-| mcp-client-tests | McpClientTests | 76 | 375 |
-| mcp-oauth-tests | OAuthTests | 52 | 226 |
-| mcp-transport-tests | TransportTests、MessageChannelTests | 15 | 62 |
+| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests、ResponseCacheTests | 197 | 491 |
+| mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 79 | 372 |
+| mcp-server-tests | McpServerTests | 103 | 864 |
+| mcp-client-tests | McpClientTests | 78 | 383 |
+| mcp-oauth-tests | OAuthTests | 63 | 283 |
+| mcp-transport-tests | TransportTests、MessageChannelTests | 20 | 86 |
 | mcp-net-tests | NetStackTests、WebSocketClientTests | 26 | 55 |
 | mcp-http-tests | HttpServerTests | 41 | 179 |
 | mcp-message-filter-tests | MessageFilterTests | 5 | 12 |
-| mcp-token-cache-tests | FileTokenCacheTests | 5 | 19 |
-| mcp-task-store-tests | FileTaskStoreTests | 15 | 113 |
+| mcp-token-cache-tests | FileTokenCacheTests | 11 | 34 |
+| mcp-task-store-tests | FileTaskStoreTests | 22 | 161 |
 | mcp-event-store-tests | FileEventStoreTests | 11 | 48 |
 | mcp-streamable-http-tests | StreamableHttpTransportTests、SessionStoreTests | 84 | 447 |
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-uri-template-tests | UriTemplateTests | 21 | 133 |
 | mcp-integration-tests | ClientServerRoundTrip、Phase1InteropTests、Phase2ClosureTests | 19 | 113 |
 | mcp-conformance-tests | ProtocolConformance | 123 | 386 |
-| **合计** | | **837** | **3686** |
+| **合计** | | **905** | **4052** |
+
+注：`FileTokenCacheTests` 4 个 POSIX-only 用例（`#ifndef _WIN32`）与 `TransportTests` 1 个 TLS-only 用例（`#ifdef MCP_HAVE_OPENSSL`）在 Windows 本机不参与编译——静态 905 与 Windows `ctest -N` 注册 900 之差即此 5 个。
 
 ## 测试注意点
 

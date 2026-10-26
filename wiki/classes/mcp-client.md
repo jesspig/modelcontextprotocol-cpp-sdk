@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、任务化工具调用（含 tasks 扩展声明守卫与 inputResponses）、技能三方法与缓存、404 会话自愈、progress 回调、MRTR、响应缓存与翻页聚合。
 tags: [client, 门面, 协商, mrt, progress, tasks, skills]
-timestamp: 2026-10-18T14:39:02+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -32,7 +32,8 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:296](../../src/client/M
 
 - `WireClientHandlers()` 注册 6 个通知处理器（[McpClient.cpp:522](../../src/client/McpClient.cpp)）：三个 listChanged → `response_cache_->Clear()`；`resources/updated` → 按 uri 键**单键失效**（`Invalidate`，其余缓存保留）；`notifications/progress` → 重置对应请求超时 + 分发 `on_progress` 回调；`subscriptions/acknowledged` → 匹配 `SubscribeAsync` 待确认订阅并转发用户处理器（经 `SetNotificationHandler` 特判存储的 `user_ack_notification_handler_`，不覆盖内部逻辑）；另注册 elicit 请求处理器
 - 懒注册：`SetSamplingHandler`/`SetRootsHandler`（两 API 已因 SEP-2577 废弃，新代码改用 `SetElicitationHandler`）未设置 → `MethodNotFound`；`SetLoggingHandler` 未设置 → 静默丢弃
-- 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），读取 `GetAny` 双分区查（public 优先）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint` 顶层 `ttlMs`/`cacheScope` 优先回退嵌套 `cacheHint`，而 `CacheIfHinted` 顺序**相反**（嵌套优先、顶层兜底，[McpClient.cpp:964](../../src/client/McpClient.cpp)）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
+- 响应缓存（SEP-2549）：键 = `CacheKey(method, context)`——列表方法带 cursor 键（`<method>\x1F<cursor>`，无 cursor 为空串），`resources/read` 带 uri 键；`ttlMs > 0` 才缓存，TTL **钳制 24h**（`kMaxTtl`）；按 `cacheScope` 分 **public/private 双分区**（private 连接关闭时 `ClearPrivate` 丢弃，public 保留），每分区 **512 条上限、LRU 逐出**（见 [/concepts/response-cache.md](../concepts/response-cache.md)）；`resources/updated` 只失效对应 uri 键；`ExtractCacheHint` 顶层 `ttlMs`/`cacheScope` 优先回退嵌套 `cacheHint`，而 `CacheIfHinted` 顺序**相反**（嵌套优先、顶层兜底，[McpClient.cpp:964](../../src/client/McpClient.cpp)）；`ReadResource` 支持 `cache_mode`（`use`/`bypass`/`refresh`）与 `max_age_ms`
+- **etag 条件请求**：服务端响应带 `etag` 字段时本地缓存响应体（`etag_entries_`，**1024 条 FIFO 上限**防无界增长），后续同键请求经 `_meta` 携带 `ifNoneMatch`，服务端可回 `notModified` 走本地缓存体；`ClientOptions::enable_etag_cache`（默认 true）为实例级开关，与全局 `SetEtagCacheEnabled`（服务端与序列化层共用）共同生效
 - MRTR：`SendRequestWithMrtr` 包装 `SendRequestWithMrtrOnce`（后者循环处理 `input_required`）——**仅当 `ClientOptions::input_required_config` 显式配置**（`auto_fulfill` 默认开）时启用，未配置 `max_rounds=0` 仅 1 轮；配置时 `max_rounds`（默认 10）超限抛 InternalError、`max_total_timeout` 超限抛 RequestTimeout；`TryFulfillInputRequired` 遍历 `input_requests`（服务端键 → `{method, params}`）逐项按 `method` 分派（`elicitation/create` → `ElicitationHandler`、`sampling/createMessage` → `SamplingHandler`、`roots/list` → `RootsHandler`），handler 未注册或 `method` 未知 → `MethodNotFound`；回发 `inputResponses` 用服务端原键、值为裸结果（elicitation 经 `MakeInputResponseFromElicitResult` 只写 `action`+`content`）；无请求项时 state-only 退避（50ms ×2、封顶 250ms，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
 - 自动翻页：`ListPages` 上限 `kMaxListPages = 64` 页，不收敛抛 `McpError(ProtocolViolation)`（修复原静默截断）；聚合入口 `ListToolsAll/ListResourcesAll/ListResourceTemplatesAll/ListPromptsAll` 自带 cursor 循环（同样 64 页上限，返回时 `next_cursor` 为空）
 - 任务客户端流：`CallToolAsTask(name, arguments?, options?)` 发起任务化 tools/call——对端返回 `resultType=="task"` 时立即得到 `GetTaskResult`（任务句柄），后续 `GetTask`/`PollTaskToCompletion`（500ms 间隔 / 300s 超时，超时抛 `InternalError`）轮询至终态，`CancelTask` 请求取消；`UpdateTask(task_id, result?, input_responses?)` 新增第三参——`inputResponses` 用于回应服务端的 `InputRequired`（与 `result` 互斥，服务端同带时拒绝）；`CallTool`/`GetPrompt` 收到 `resultType=="task"` 的结果同样经 `ResolveTaskResult` 走任务载荷提取（`tasks/result` 仍仅 legacy 可用，见 [/concepts/tasks-extension.md](../concepts/tasks-extension.md)）
@@ -43,7 +44,8 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:296](../../src/client/M
 - **audience（资源绑定）透传**：OAuth 令牌现携带 `resource`（audience），`Authenticate` 在指示符变化时清缓存、`GetAccessToken`/`IsAuthenticated`/`HasToken`/`GetAuthorizationHeader` 在失配时按无 token 处理——客户端无需改调用，行为详见 [/concepts/oauth.md](../concepts/oauth.md)
 - URL elicitation：`SetUrlElicitationHandler` 注册 url 模式处理器——收到 `mode=="url"` 的 `elicitation/create` 时调用（缺 `elicitationId` 直接回 `InvalidParams`），返回后 SDK 自动回 `action="accept"` 并发送 `notifications/elicitation/complete`；处理器抛异常则异常回传服务端
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）
-- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.8"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`span_handler` 为空
+- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.8"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`enable_etag_cache true`、`span_handler` 为空
+- **传输可观测回调**：`ClientOptions::on_transport_close`（传输关闭）与 `on_transport_error(string_view message)`（传输错误）经 `TransportBase::SetOnClose/SetOnError` 挂接，客户端内部先记日志再回调用户处理器（用户回调异常被吞掉），客户端析构时摘除；传输不支持回调（非 `TransportBase` 派生）时记 Warning 跳过
 
 ## progress 接收
 

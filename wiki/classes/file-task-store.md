@@ -3,7 +3,7 @@ type: Class
 title: FileTaskStore
 description: 文件持久化任务存储：CRUD、AdvanceTaskWithInput、Flush 失败回滚、损坏文件备份 .corrupt、新字段（statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs/inputRequests/inputResponses）持久化。
 tags: [storage, 任务, 原子写入, 回滚, tasks-extension]
-timestamp: 2026-10-11T16:35:00+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: include/mcp/storage/FileTaskStore.hpp
 ---
 
@@ -11,22 +11,23 @@ resource: include/mcp/storage/FileTaskStore.hpp
 
 `class FileTaskStore : public IMcpTaskStore`（[FileTaskStore.hpp](../../include/mcp/storage/FileTaskStore.hpp)），持 `storage_path_`、`tasks_`（`unordered_map<string, TaskState>`）。析构调用 `Flush()`。
 
-**双锁**：`write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；锁序固定 `write_mutex_` → `data_mutex_`。写方法统一模式：锁内检查存在性 → 修改 `tasks_`（内存提交）→ 拷贝快照 → 释放 `data_mutex_` → **锁外** `PersistTasks`（序列化 + `WriteAtomic`）→ 失败重取 `data_mutex_` 回滚（恢复 `original` / `erase`）并抛 `std::runtime_error`。
+**双锁**：`write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；锁序固定 `write_mutex_` → `data_mutex_`。写方法统一模式：锁内检查存在性与终态 → 修改 `tasks_`（内存提交）→ **锁外** `AppendRecord`（单条 JSONL 追加 + flush）→ 失败重取 `data_mutex_` 回滚（恢复 `original` / `erase`）并抛 `McpError(InternalError)`。
 
 ## CRUD 与失败语义（[FileTaskStore.cpp](../../src/server/FileTaskStore.cpp)）
 
-- `CreateTask`：`try_emplace`，已存在抛 `runtime_error "task already exists: <id>"`；`created_at` 与 `last_updated_at` 同取毫秒时钟（`MakeMillisNow`）；Flush 失败从内存 erase 并抛异常
+- `CreateTask(task_id)` 与 `CreateTask(task_id, owner, ttl_ms)`：已存在抛 `McpError(InvalidParams, "task already exists: <id>")`；`created_at` 与 `last_updated_at` 同取毫秒时钟（`MakeMillisNow`）；追加失败从内存 erase 并抛 `McpError(InternalError)`
 - `GetTask`：不存在返回 `nullopt`；`GetAllTasks`：拷贝全部（均 `shared_lock`，与写盘并发）
-- `UpdateTask / CancelTask / SetTaskStatus`：**返回 false 仅表示任务不存在**；成功路径均刷新 `last_updated_at`；Flush 失败恢复原值（`original` 回滚）并抛异常
-- `CancelTask`：置 status=Cancelled 并写 `error_message`=reason（[FileTaskStore.cpp:154](../../src/server/FileTaskStore.cpp)）；`SetTaskStatus` 仅改状态，不写 `error_message`
-- `AdvanceTaskWithInput(task_id, input_responses)`：仅当任务存在**且**状态为 `InputRequired` 时推进（否则返回 false，不抛异常）；写入 `input_responses`、状态置 Working、刷新 `last_updated_at`；持久化走同一快照+回滚路径
-- `Flush()`：`shared_lock` 快照 + 锁外 `PersistTasks`；析构忽略返回值
+- `UpdateTask / CancelTask / SetTaskStatus / FailTask / ParkTaskForInput`：**返回 false 表示任务不存在或已终态**（Completed/Failed/Cancelled 拒绝再变更，`SetTaskStatus` 同状态幂等除外）；成功路径均刷新 `last_updated_at`；追加失败恢复原值（`original` 回滚）并抛 `McpError(InternalError)`
+- `FailTask(task_id, error_payload)`：一步落 Failed 态并提取 `error.message` 进 `error_message`（服务端失败路径统一入口，替代「写错误结果再改状态」两步）
+- `SetTaskOwner / SetTaskTtl`：按 id 更新对应字段；`RemoveTask`：追加 `removed` 记录后内存删除（不存在返回 false）；`GetExpiredTaskIds(now_ms)`：枚举 `ttl_ms > 0` 且 `now - created_at >= ttl_ms` 的任务
+- `AdvanceTaskWithInput(task_id, input_responses)`：仅当任务存在**且**状态为 `InputRequired` 时推进（否则返回 false，不抛异常）；写入 `input_responses`、状态置 Working、刷新 `last_updated_at`
+- `Flush()`：`write_mutex_` 下压缩（`CompactLocked`，`WriteAtomic` 全量重写现存活任务）；析构调用
 
 ## 持久化格式
 
-根对象 `{"tasks": {id: {task_id, status, result?, error_message?, input_required?, progress, progress_total?, created_at, statusMessage?, lastUpdatedAt?, ttlMs?, pollIntervalMs?, inputRequests?, inputResponses?}}}`；`result`/`input_required`/`inputResponses` 为 null 时不写字段，`statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs` 仅有值时写，`inputRequests` 仅对象形态时读写（`SerializeInputRequests`/`DeserializeInputRequests`）。反序列化容缺：缺字段的旧文件仍可读（新字段留空），未知键忽略。序列化提取为 `SerializeTasks`（`{"tasks": {...}}` 格式不变），经 `detail::WriteAtomic` 原子写入（见 [/concepts/storage.md](../concepts/storage.md)）。
+**JSONL 追加 + 阈值压缩**：每条变更追加一行 `{"task_id":"...", "state":{...任务全字段...}}` 或 `{"task_id":"...", "removed":true}`（临时文件名 `<path>.tmp.<pid>.<counter>.<salt>` 语义同 `WriteAtomic` 家族）；追加后待处理记录数超过 `kMinCompactThreshold(64) + 存活数×2` 时自动压缩为全量快照（`CompactLocked`），析构 `Flush` 亦压缩。旧格式 `{"tasks": {...}}` 单对象文件仍可读（自动识别），且容忍**末尾截断记录**（半行忽略，中途坏行备份 `.corrupt` 后清空重建）。反序列化容缺：缺字段的旧记录仍可读，未知键忽略。状态字段含 `owner`（会话锚定）、`ttl_ms` 等新字段。
 
-损坏文件：`LoadJson` 抛异常时把原文件复制为 `<path>.corrupt`（overwrite），复制失败仅记 Error；不覆盖原数据。
+损坏文件：加载遇坏行把原文件复制为 `<path>.corrupt`（overwrite）后清空重建，复制失败仅记 Error。
 
 ## 相关页面
 
