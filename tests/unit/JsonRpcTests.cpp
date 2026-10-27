@@ -1,4 +1,5 @@
 #include <mcp/JsonRpc.hpp>
+#include <mcp/McpError.hpp>
 
 #include <gtest/gtest.h>
 
@@ -123,4 +124,66 @@ TEST(JsonRpcTest, ErrorDataRoundTrip) {
     ASSERT_NE(err2, nullptr);
     EXPECT_EQ(ed.code, err2->error.code);
     EXPECT_EQ(ed.message, err2->error.message);
+}
+
+TEST(JsonRpcTest, ErrorDataKeepsArbitraryErrorCode) {
+    auto msg = DeserializeMessage(
+        R"({"jsonrpc":"2.0","id":1,"error":{"code":-32009,"message":"Session expired"}})");
+    auto* err = AsError(msg);
+    ASSERT_NE(err, nullptr);
+    EXPECT_EQ(static_cast<int64_t>(err->error.code), -32009);
+    EXPECT_EQ(err->error.code, McpErrorCode::SessionExpired);
+    EXPECT_EQ(err->error.message, "Session expired");
+    EXPECT_FALSE(err->error.data.has_value());
+
+    auto custom = DeserializeMessage(
+        R"({"jsonrpc":"2.0","id":2,"error":{"code":-99999,"message":"vendor error","data":{"retry":true}}})");
+    auto* err2 = AsError(custom);
+    ASSERT_NE(err2, nullptr);
+    EXPECT_EQ(static_cast<int64_t>(err2->error.code), -99999);
+    EXPECT_EQ(err2->error.message, "vendor error");
+    ASSERT_TRUE(err2->error.data.has_value());
+    EXPECT_TRUE((*err2->error.data)["retry"].GetBool());
+}
+
+TEST(JsonRpcTest, ErrorDataCodeStaysWithinInt32Range) {
+    auto min_msg = DeserializeMessage(
+        R"({"jsonrpc":"2.0","id":1,"error":{"code":-2147483648,"message":"min"}})");
+    auto* min_err = AsError(min_msg);
+    ASSERT_NE(min_err, nullptr);
+    EXPECT_EQ(static_cast<int64_t>(min_err->error.code), int64_t{-2147483648});
+
+    auto max_msg = DeserializeMessage(
+        R"({"jsonrpc":"2.0","id":2,"error":{"code":2147483647,"message":"max"}})");
+    auto* max_err = AsError(max_msg);
+    ASSERT_NE(max_err, nullptr);
+    EXPECT_EQ(static_cast<int64_t>(max_err->error.code), int64_t{2147483647});
+
+    auto vendor_msg = DeserializeMessage(
+        R"({"jsonrpc":"2.0","id":3,"error":{"code":-99999,"message":"vendor"}})");
+    auto* vendor_err = AsError(vendor_msg);
+    ASSERT_NE(vendor_err, nullptr);
+    EXPECT_EQ(static_cast<int64_t>(vendor_err->error.code), int64_t{-99999});
+
+    bool overflow_rejected = false;
+    try {
+        DeserializeMessage(
+            R"({"jsonrpc":"2.0","id":4,"error":{"code":9999999999999,"message":"overflow"}})");
+    } catch (const McpError& e) {
+        overflow_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+        EXPECT_NE(std::string(e.what()).find("9999999999999"), std::string::npos);
+    }
+    EXPECT_TRUE(overflow_rejected);
+
+    bool underflow_rejected = false;
+    try {
+        DeserializeMessage(
+            R"({"jsonrpc":"2.0","id":5,"error":{"code":-9999999999999,"message":"underflow"}})");
+    } catch (const McpError& e) {
+        underflow_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+        EXPECT_NE(std::string(e.what()).find("-9999999999999"), std::string::npos);
+    }
+    EXPECT_TRUE(underflow_rejected);
 }

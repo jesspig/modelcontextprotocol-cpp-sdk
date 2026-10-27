@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-10-15T13:14:29+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -13,6 +13,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 - `WriteAtomic(path, contents)`：临时文件名为 `<path>.tmp.<pid>.<counter>`（pid + 进程内静态自增计数器，多进程与同进程并发均不踩踏，[AtomicJsonFile.cpp:21](../../src/detail/AtomicJsonFile.cpp)）；写入后 `fflush` + 刷盘（Windows `FlushFileBuffers` / POSIX `fsync`）再 rename
 - 失败（打开/写/刷盘/rename）删除残留 tmp 并记 Error 日志、返回 false
+- **`WriteAtomicSecure(path, contents)`**：机密文件专用——临时文件名追加随机 salt（`<path>.tmp.<pid>.<counter>.<salt>`），以 `CREATE_NEW`/`O_CREAT|O_EXCL|O_NOFOLLOW` 独占创建且权限创建即收紧（Windows SDDL `D:P(A;;FA;;;OW)` 仅所有者 ACL / POSIX `0600`），写入循环处理短写与 `EINTR`，刷盘后原子改名，POSIX 侧再 fsync 父目录；任一步失败删除残留 tmp 并**抛 `McpError(InternalError)`**（区别于 `WriteAtomic` 的返回 false）
 - `WriteAtomic(path, JsonValue)`：`Dump(2)` 缩进 2 后走字节重载
 - `LoadJson(path)`：文件不存在返回 null；打开失败或解析出 null 抛 `runtime_error`
 - 调用方须保证父目录存在
@@ -21,8 +22,8 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 | 组件 | 行为 | 页 |
 |------|------|----|
-| FileTaskStore | 双锁 + 锁外写盘（见下）；损坏文件备份 `<path>.corrupt` 继续 | [/classes/file-task-store.md](../classes/file-task-store.md) |
-| FileTokenCache | Windows DPAPI 加密、POSIX chmod 0600；解密失败不回落明文 | [/classes/file-token-cache.md](../classes/file-token-cache.md) |
+| FileTaskStore | 双锁 + 锁外 JSONL 追加（见下）；损坏文件备份 `<path>.corrupt` 继续 | [/classes/file-task-store.md](../classes/file-task-store.md) |
+| FileTokenCache | Windows DPAPI 加密、POSIX 明文；`WriteAtomicSecure` 创建即安全、加载前权限校验；解密失败不回落明文 | [/classes/file-token-cache.md](../classes/file-token-cache.md) |
 | FileEventStore | SSE 事件 JSONL 持久化（跨进程文件锁，见下） | [/classes/file-event-store.md](../classes/file-event-store.md) |
 
 ## FileEventStore 事件持久化
@@ -42,19 +43,19 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 `write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；**锁序固定 `write_mutex_` → `data_mutex_`**（[FileTaskStore.hpp:36](../../include/mcp/storage/FileTaskStore.hpp)）。
 
-写方法（CreateTask/UpdateTask/CancelTask/SetTaskStatus）流程：
+写方法（CreateTask/UpdateTask/CancelTask/SetTaskStatus/FailTask/SetTaskOwner/SetTaskTtl/AdvanceTaskWithInput/ParkTaskForInput/BindTaskTool）流程：
 
-1. 锁内检查（任务不存在返回 `false`；重复创建抛 `runtime_error`）
-2. 内存提交 → 释放 `data_mutex_` → **锁外** `PersistTasks`（`SerializeTasks` + `WriteAtomic`）
-3. 持久化失败 → 重取 `data_mutex_` 回滚内存修改 → 抛 `runtime_error`
+1. 锁内检查（任务不存在或已终态返回 `false`；重复创建抛 `McpError(InvalidParams)`）
+2. 内存提交 → 释放 `data_mutex_` → **锁外** `AppendRecord`（单条 JSONL 追加 + flush；超过阈值自动 `CompactLocked` 压缩为 `WriteAtomic` 全量快照）
+3. 持久化失败 → 重取 `data_mutex_` 回滚内存修改 → 抛 `McpError(InternalError)`
 
 读（`GetTask`/`GetAllTasks`）在写盘 I/O 期间**不阻塞**——同一时刻至多一个写者持锁写盘，读者并发通过。
 
 ## 失败语义约定
 
-- `UpdateTask/CancelTask/SetTaskStatus` 返回 `false` **仅表示任务不存在**（不是持久化失败——持久化失败抛异常）；`CreateTask` 不返回 bool（返回 `TaskState`，重复创建直接抛 `runtime_error`）
+- `UpdateTask/CancelTask/SetTaskStatus/FailTask/ParkTaskForInput` 返回 `false` 表示任务**不存在或已终态**（不是持久化失败——持久化失败抛 `McpError(InternalError)`）；`CreateTask` 不返回 bool（返回 `TaskState`，重复创建抛 `McpError(InvalidParams)`）
 - token 刷新失败不回退旧 token
-- `FileTokenCache` 的写入、删除、chmod、DPAPI 加解密失败采用 Error 日志和忽略/继续认证的 best-effort 语义，不向 `StoreTokens`/`ClearTokens` 调用方传播持久化异常
+- `FileTokenCache` 的机密写入经 `WriteAtomicSecure`（失败抛 `McpError(InternalError)`，向 `StoreTokens`/`Save` 调用方传播）；析构内的 `Save` 捕获异常仅记 Error，避免进程终止；加载前校验文件属主与权限（组/其他可读即拒绝加载）
 
 ## 相关页面
 

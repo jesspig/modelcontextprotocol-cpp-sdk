@@ -3,7 +3,7 @@ type: Concept
 title: 客户端响应缓存
 description: McpClient 对带 cache hint 的列表和资源读取结果使用的双作用域、带 TTL 和按 URI 失效的本地缓存。
 tags: [client, cache, sep2549, ttl, 订阅]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: src/detail/ResponseCache.hpp
 ---
 
@@ -16,6 +16,7 @@ resource: src/detail/ResponseCache.hpp
 - `CacheKey` 按方法和上下文构成：列表请求包含 cursor，`resources/read` 包含 URI；同一方法的不同页或 URI 使用不同键。
 - 条目分为 `public` 与 `private` 两个分区。`GetAny` 先查 public，再查 private；同一连接内可以命中任一分区。
 - TTL 上限固定为 24 小时；过期或超过调用方传入的 `max_age` 时惰性删除并返回未命中。
+- **容量上限与 LRU**：每个作用域默认上限 512 条（`kDefaultMaxEntriesPerScope`，构造参数可注入），超出时逐出**最久未访问**条目（命中访问与重插都刷新最近使用时间）；public 与 private 分区独立计数。
 - `ClearPrivate` 在客户端关闭时清除 private 条目，public 条目保留；`Clear` 清空两个分区。
 
 ## 失效与协议提示

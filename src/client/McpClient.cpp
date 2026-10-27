@@ -50,6 +50,26 @@ namespace {
 
     constexpr size_t kMaxListPages = 64;
 
+    constexpr size_t kMaxEtagEntries = 1024;
+
+    struct ProtocolErrorInfo {
+        bool is_error{false};
+        McpErrorCode code{McpErrorCode::InternalError};
+        std::string message;
+    };
+
+    ProtocolErrorInfo ExtractProtocolError(const JsonValue& result) {
+        ProtocolErrorInfo info;
+        if (result.Contains(detail::kCode) && result[detail::kCode].GetInt() < 0) {
+            info.is_error = true;
+            info.code = static_cast<McpErrorCode>(result[detail::kCode].GetInt());
+            info.message = result.Contains(detail::kMessage)
+                ? result[detail::kMessage].GetString()
+                : std::string("request failed");
+        }
+        return info;
+    }
+
     static JsonValue DoSendRequest(
         McpSessionHandler& handler,
         std::string_view method,
@@ -60,13 +80,9 @@ namespace {
         auto future = handler.SendRequest(method, std::move(params), meta, timeout);
         auto result = future.get();
 
-        if (result.Contains(detail::kCode) && result[detail::kCode].GetInt() < 0) {
-            std::string msg = "request failed";
-            if (result.Contains(detail::kMessage))
-                msg = result[detail::kMessage].GetString();
-            throw McpError(
-                static_cast<McpErrorCode>(result[detail::kCode].GetInt()),
-                std::move(msg));
+        auto error = ExtractProtocolError(result);
+        if (error.is_error) {
+            throw McpError(error.code, std::move(error.message));
         }
 
         return result;
@@ -193,8 +209,7 @@ namespace {
 
     static bool IsErrorResponse(const JsonValue& result)
     {
-        return result.Contains(detail::kCode) &&
-               static_cast<int32_t>(result[detail::kCode].GetInt()) < 0;
+        return ExtractProtocolError(result).is_error;
     }
 
     static bool DeclaresSharedClientVersion(
@@ -511,12 +526,50 @@ McpClient::McpClient(
     if (options_.span_handler) {
         handler_->SetSpanHandler(std::move(options_.span_handler));
     }
+    WireTransportCallbacks();
     handler_->Start();
     WireClientHandlers();
 }
 
 McpClient::~McpClient() {
     Close();
+    DetachTransportCallbacks();
+}
+
+void McpClient::WireTransportCallbacks() {
+    if (!options_.on_transport_close && !options_.on_transport_error) return;
+    auto* base = dynamic_cast<TransportBase*>(transport_.get());
+    if (!base) {
+        MCP_LOG(Warning, "client: transport does not support error/close callbacks");
+        return;
+    }
+    if (options_.on_transport_close) {
+        auto handler = options_.on_transport_close;
+        base->SetOnClose([handler]() {
+            MCP_LOG(Warning, "client: transport closed");
+            try {
+                handler();
+            } catch (...) {
+            }
+        });
+    }
+    if (options_.on_transport_error) {
+        auto handler = options_.on_transport_error;
+        base->SetOnError([handler](std::string_view message) {
+            MCP_LOG(Error, "client: transport error: " + std::string(message));
+            try {
+                handler(message);
+            } catch (...) {
+            }
+        });
+    }
+}
+
+void McpClient::DetachTransportCallbacks() {
+    auto* base = dynamic_cast<TransportBase*>(transport_.get());
+    if (!base) return;
+    base->SetOnClose(nullptr);
+    base->SetOnError(nullptr);
 }
 
 std::unique_ptr<McpClient> McpClient::Create(
@@ -917,15 +970,12 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
         auto future = handler_->SendRequest(method, params_json, meta, effective_timeout);
         auto result_json = future.get();
 
-        if (result_json.Contains(detail::kCode) && result_json[detail::kCode].GetInt() < 0) {
+        auto error = ExtractProtocolError(result_json);
+        if (error.is_error) {
             std::optional<JsonValue> error_data;
             if (auto* data_value = result_json.Find(detail::kData))
                 error_data = *data_value;
-            throw McpError(
-                static_cast<McpErrorCode>(result_json[detail::kCode].GetInt()),
-                result_json.Contains(detail::kMessage)
-                    ? result_json[detail::kMessage].GetString()
-                    : "request failed",
+            throw McpError(error.code, std::move(error.message),
                 std::move(error_data));
         }
 
@@ -982,7 +1032,7 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
 }
 
 std::optional<std::string> McpClient::GetStoredEtag(const std::string& key) {
-    if (!IsEtagCacheEnabled()) return std::nullopt;
+    if (!IsEtagCacheEnabled() || !options_.enable_etag_cache) return std::nullopt;
     std::lock_guard<std::mutex> lk(etag_mutex_);
     auto it = etag_entries_.find(key);
     if (it == etag_entries_.end()) return std::nullopt;
@@ -997,11 +1047,19 @@ std::optional<JsonValue> McpClient::GetStoredEtagBody(const std::string& key) {
 }
 
 void McpClient::StoreEtagBody(const std::string& key, const JsonValue& result) {
-    if (!IsEtagCacheEnabled()) return;
+    if (!IsEtagCacheEnabled() || !options_.enable_etag_cache) return;
     auto* et = result.Find(kEtagField);
     if (!et || !et->IsString() || et->GetString().empty()) return;
     std::lock_guard<std::mutex> lk(etag_mutex_);
+    if (etag_entries_.find(key) == etag_entries_.end()) {
+        etag_order_.push_back(key);
+    }
     etag_entries_[key] = EtagEntry{et->GetString(), result};
+    while (etag_entries_.size() > kMaxEtagEntries && !etag_order_.empty()) {
+        auto oldest = etag_order_.front();
+        etag_order_.pop_front();
+        etag_entries_.erase(oldest);
+    }
 }
 
 void McpClient::MaybeAttachEtag(const std::string& key, RequestMeta& meta) {
@@ -1022,7 +1080,7 @@ ListToolsResult McpClient::ListTools(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListTools, "tools", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListToolsResult(*cached);
     }
@@ -1164,7 +1222,7 @@ ListResourcesResult McpClient::ListResources(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListResources, "resources", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListResourcesResult(*cached);
     }
@@ -1200,7 +1258,7 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListResourceTemplates, "resourceTemplates", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListResourceTemplatesResult(*cached);
     }
@@ -1251,7 +1309,7 @@ ReadResourceResult McpClient::ReadResource(
     MaybeAttachEtag(key, meta);
     auto result_json = SendRequestWithMrtr(
         methods::kReadResource, std::move(req_json), meta, timeout);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result_json)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result_json)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeReadResourceResult(*cached);
     }
@@ -1289,7 +1347,7 @@ ListPromptsResult McpClient::ListPrompts(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListPrompts, "prompts", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeListPromptsResult(*cached);
     }
@@ -1360,7 +1418,7 @@ SkillsListResult McpClient::ListSkills(
     }
     MaybeAttachEtag(key, meta);
     auto result = ListPages(*handler_, methods::kListSkills, "skills", meta, cursor);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeSkillsListResult(*cached);
     }
@@ -1407,7 +1465,7 @@ SkillsGetResult McpClient::GetSkill(
     MaybeAttachEtag(key, meta);
     auto result_json = SendRequestWithMrtr(
         methods::kGetSkill, std::move(req_json), meta, timeout);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result_json)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result_json)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeSkillsGetResult(*cached);
     }
@@ -1452,7 +1510,7 @@ ReadDirectoryResult McpClient::ReadDirectory(
     MaybeAttachEtag(key, meta);
     auto result_json = SendRequestWithMrtr(
         methods::kReadDirectory, std::move(req_json), meta, timeout);
-    if (IsEtagCacheEnabled() && IsNotModifiedResult(result_json)) {
+    if (IsEtagCacheEnabled() && options_.enable_etag_cache &&IsNotModifiedResult(result_json)) {
         if (auto cached = GetStoredEtagBody(key))
             return DeserializeReadDirectoryResult(*cached);
     }

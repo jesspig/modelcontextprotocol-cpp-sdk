@@ -3,7 +3,7 @@ type: Class
 title: McpSessionHandler
 description: JSON-RPC 引擎：消息分发、请求/响应关联、idle/总量双超时检查、取消、过滤器管线。
 tags: [protocol, jsonrpc, 超时, 并发, meta]
-timestamp: 2026-10-14T18:07:07+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: include/mcp/protocol/McpSessionHandler.hpp
 ---
 
@@ -26,14 +26,18 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 
 ## 请求处理语义
 
-- handler 抛 `McpError` → 回 `e.Code()`（错误码保留）；其他异常 → `InternalError "handler error: ..."`
-- 校验失败：方法不在时代（非 initialize）→ `MethodNotFound`（-32601）；`Invalid` → `InvalidRequest`；未注册 handler → `MethodNotFound`
-- 入站校验用轻量视图：只构造 `{method, initialize 的 params, params._meta}`（`req.meta` 存在时置于视图 params 内，与线上一致）交给 codec，不完整序列化请求（[McpSessionHandler.cpp:233](../../src/protocol/McpSessionHandler.cpp)）
+- handler 抛 `McpError` → 回 `e.Code()`（错误码保留）；其他异常（含未知异常）→ `InternalError` 固定文案 `"request handler failed"`——**异常细节不回传对端**，原文经 `MCP_LOG_CTX` 记日志（带 method 与 request_id 上下文）
+- 校验失败：方法不在时代且非握手入口（未协商会话的 `initialize`/`server/discover`）→ `MethodNotFound`（-32601）；`Invalid` → `InvalidRequest`；未注册 handler → `MethodNotFound`；拒绝路径同样记 `MCP_LOG_CTX(Warning)` 带 method/request_id
+- 入站校验用轻量视图：经 `MakeWireRequestView/MakeWireNotificationView`（[WireCodec.hpp](../../include/mcp/protocol/WireCodec.hpp)）把 `jsonrpc/method/params/_meta` 组装为 `WireMessageView` 交给 codec——`req.meta` 存在时以 `meta_backfilled` 注入视图而非拼进 params；通知校验同构
 - 响应回发：`EnqueueResponse` 入队（锁内检查 `closed_`，已关闭直接丢弃），单一 `response_worker_` 线程经 `response_queue_`（`deque<std::function>`）+ `response_cv_` 消费；任务先 `wait_for(0)` 快检（同步 handler 零延迟），未就绪则 10ms 间隔轮询 promise（`kResponsePollInterval`），`closed_` 时中止（保证 Close 不阻塞）。`SendResponseAsync`/`ReapCompletedResponses` 已删除
 - `SendRequest` 注册 pending 后复查 `closed_`：已关闭则以 `ConnectionClosed` 错误满足 promise（[McpSessionHandler.cpp:536](../../src/protocol/McpSessionHandler.cpp)）
 - `SendRequest` 双 era meta：modern era 把 `SerializeRequestMeta(meta)` 信封写入 `req.meta`（序列化层落 `params._meta`）；legacy era 仅当带 progressToken 时写 `params._meta.progressToken`（[McpSessionHandler.cpp:508](../../src/protocol/McpSessionHandler.cpp)）
 - `RequiredClientCapability`：`createMessage→sampling`、`listRoots→roots`；缺失回 `MissingRequiredClientCapability`（data 含 `requiredCapabilities`）；`VerifyCapability` 只判定不发送，返回 `optional<ErrorData>` 由调用方经 `reject` 闭包统一收尾（[McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp)）
 - 拒收路径 span 先行：`OnRequest` 内局部 `reject` 闭包显式发 ServerRequest End（`failed=true`、trace 回填）→ 置 `span_open=false`（抑制栈上 guard 重发）→ `SendErrorResponse`；9 处 early-return（含两处 handler 异常 catch）全走该闭包，成功路径与 `DeliverResponse` 未动（[McpSessionHandler.cpp:344](../../src/protocol/McpSessionHandler.cpp)）
+
+## 结果/错误分型投递
+
+pending 请求的全部结算路径（正常响应、错误响应、超时、连接关闭、协议取消、关闭时兜底）统一经 `DeliverOutcome` 投递：既有 `callback` 语义不变（错误仍以 `SerializeErrorData` 序列化 JSON 交付）；`SendRequest` 新增重载接受 `OutcomeCallback`（`std::function<void(RequestOutcome)>`，`RequestOutcome = variant<JsonValue, ErrorData>`）——观察者直接拿到**类型化**结果或错误，无需解析 JSON 区分形态。各结算路径在投递前记 `MCP_LOG_CTX`（method + request_id）。
 
 ## 其他
 

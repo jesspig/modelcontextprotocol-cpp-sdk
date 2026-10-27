@@ -387,6 +387,38 @@ TEST(JsonParserTest, RoundTripDumpIdempotent) {
     EXPECT_EQ(dump1, dump2);
 }
 
+TEST(JsonParserTest, DumpIndentTwoSpacesNestedLevels) {
+    auto v = JsonValue::Parse(R"({"a":{"b":1},"c":[2,[3]]})");
+    EXPECT_EQ(v.Dump(2), std::string(
+        "{\n"
+        "  \"a\": {\n"
+        "    \"b\": 1\n"
+        "  },\n"
+        "  \"c\": [\n"
+        "    2,\n"
+        "    [\n"
+        "      3\n"
+        "    ]\n"
+        "  ]\n"
+        "}"));
+}
+
+TEST(JsonParserTest, DumpIndentFourSpacesRootMembersIndented) {
+    auto v = JsonValue::Parse(R"({"k":{"n":"x"}})");
+    EXPECT_EQ(v.Dump(4), std::string(
+        "{\n"
+        "    \"k\": {\n"
+        "        \"n\": \"x\"\n"
+        "    }\n"
+        "}"));
+    EXPECT_EQ(v.Dump(0), std::string(
+        "{\n"
+        "\"k\": {\n"
+        "\"n\": \"x\"\n"
+        "}\n"
+        "}"));
+}
+
 TEST(JsonParserTest, SanitizeUtf8KeepsValidText) {
     EXPECT_EQ(JsonValue::SanitizeUtf8(""), "");
     EXPECT_EQ(JsonValue::SanitizeUtf8("hello"), "hello");

@@ -186,24 +186,126 @@ TEST(WireCodecTest, Rev2025EncodeResultKeepsCacheHintNested) {
     EXPECT_EQ(encoded["cacheHint"]["ttlMs"], JsonValue(int64_t(60000)));
 }
 
-TEST(WireCodecTest, Rev2026HasMessageAndSubscriptionNotificationsNoTasks) {
+TEST(WireCodecTest, Rev2026HasMessageSubscriptionAndTaskNotifications) {
     auto codec = MakeWireCodec("2026-07-28");
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/message"));
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/subscriptions/acknowledged"));
-    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/status"));
-    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/working"));
-    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/completed"));
-    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/failed"));
-    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/cancelled"));
-    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/input_required"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/status"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/working"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/completed"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/failed"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/cancelled"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/input_required"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/triggers/event"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/roots/list_changed"));
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/initialized"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/elicitation/complete"));
 }
 
 TEST(WireCodecTest, Rev2025HasTaskStatusNotification) {
     auto codec = MakeWireCodec("2025-11-25");
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/status"));
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/message"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/roots/list_changed"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/triggers/event"));
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/subscriptions/acknowledged"));
+}
+
+TEST(WireCodecTest, Rev2025RejectsModernOnlyRequestMethods) {
+    auto legacy = MakeWireCodec("2025-11-25");
+    const std::string_view kMethods[] = {
+        "server/discover", "subscriptions/listen",
+        "skills/list", "skills/get", "resources/directory/read",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        EXPECT_FALSE(legacy->HasRequestMethod(method));
+        JsonValue raw(JsonValue::object_tag);
+        EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::NotInEra);
+    }
+}
+
+TEST(WireCodecTest, Rev2025AcceptsCommonAndLegacyRequestMethods) {
+    auto legacy = MakeWireCodec("2025-11-25");
+    const std::string_view kMethods[] = {
+        "tools/list", "tools/call", "resources/list", "resources/read",
+        "resources/templates/list", "prompts/list", "prompts/get",
+        "completion/complete", "server/extensions/list",
+        "ping", "resources/subscribe", "resources/unsubscribe",
+        "logging/setLevel", "roots/list", "sampling/createMessage",
+        "elicitation/create", "tasks/get", "tasks/update", "tasks/cancel",
+        "tasks/result", "tasks/list",
+    };
+    for (auto method : kMethods) {
+        SCOPED_TRACE(method);
+        EXPECT_TRUE(legacy->HasRequestMethod(method));
+        JsonValue raw(JsonValue::object_tag);
+        EXPECT_EQ(legacy->ValidateRequest(method, raw), WireValidation::Ok);
+    }
+
+    JsonValue init(JsonValue::object_tag);
+    JsonValue init_params(JsonValue::object_tag);
+    init_params["protocolVersion"] = JsonValue("2025-11-25");
+    init_params["capabilities"] = JsonValue(JsonValue::object_tag);
+    init_params["clientInfo"] =
+        SerializeImplementation(Implementation{"test-client", "1.0.0"});
+    init["params"] = std::move(init_params);
+    EXPECT_TRUE(legacy->HasRequestMethod("initialize"));
+    EXPECT_EQ(legacy->ValidateRequest("initialize", init), WireValidation::Ok);
+}
+
+TEST(WireCodecTest, Rev2025ValidateNotificationRejectsModernOnly) {
+    auto legacy = MakeWireCodec("2025-11-25");
+    JsonValue raw(JsonValue::object_tag);
+    EXPECT_EQ(legacy->ValidateNotification("notifications/subscriptions/acknowledged", raw),
+              WireValidation::NotInEra);
+    EXPECT_EQ(legacy->ValidateNotification("notifications/initialized", raw),
+              WireValidation::Ok);
+    EXPECT_EQ(legacy->ValidateNotification("notifications/elicitation/complete", raw),
+              WireValidation::Ok);
+    EXPECT_EQ(legacy->ValidateNotification("notifications/triggers/event", raw),
+              WireValidation::Ok);
+}
+
+TEST(WireCodecTest, Rev2026ValidateNotificationRejectsLegacyOnly) {
+    auto modern = MakeWireCodec("2026-07-28");
+    JsonValue raw(JsonValue::object_tag);
+    EXPECT_EQ(modern->ValidateNotification("notifications/initialized", raw),
+              WireValidation::NotInEra);
+    EXPECT_EQ(modern->ValidateNotification("notifications/elicitation/complete", raw),
+              WireValidation::NotInEra);
+    EXPECT_EQ(modern->ValidateNotification("notifications/tasks/status", raw),
+              WireValidation::Ok);
+    EXPECT_EQ(modern->ValidateNotification("notifications/roots/list_changed", raw),
+              WireValidation::Ok);
+}
+
+TEST(WireCodecTest, WireRequestViewRestoresMetaIntoParams) {
+    auto codec = MakeWireCodec("2026-07-28");
+    JsonRpcRequest req;
+    req.id = RequestId{int64_t(7)};
+    req.method = "tools/list";
+    req.params = JsonValue(JsonValue::object_tag);
+    (*req.params)["cursor"] = JsonValue("c1");
+    req.meta = JsonValue(JsonValue::object_tag);
+    (*req.meta)["io.modelcontextprotocol/protocolVersion"] =
+        JsonValue("2026-07-28");
+
+    auto view = MakeWireRequestView(req);
+    EXPECT_TRUE(view.meta_backfilled);
+    EXPECT_EQ(view.raw["method"], JsonValue("tools/list"));
+    ASSERT_TRUE(view.raw["params"].IsObject());
+    EXPECT_EQ(view.raw["params"]["cursor"], JsonValue("c1"));
+    EXPECT_TRUE(view.raw["params"].Contains("_meta"));
+    EXPECT_EQ(codec->ValidateRequest("tools/list", view), WireValidation::Ok);
+
+    JsonRpcRequest bare;
+    bare.id = RequestId{int64_t(8)};
+    bare.method = "tools/list";
+    auto bare_view = MakeWireRequestView(bare);
+    EXPECT_FALSE(bare_view.meta_backfilled);
+    EXPECT_EQ(codec->ValidateRequest("tools/list", bare_view),
+              WireValidation::Invalid);
 }
 
 TEST(WireCodecTest, Rev2026ValidateResponse) {

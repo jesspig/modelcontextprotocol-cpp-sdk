@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -140,6 +141,8 @@ private:
         ClientOptions options);
 
     void WireClientHandlers();
+    void WireTransportCallbacks();
+    void DetachTransportCallbacks();
     NegotiationResult NegotiateProtocol();
 
     std::optional<std::string> AttachProgressCallback(
@@ -171,6 +174,7 @@ private:
     void StoreEtagBody(const std::string& key, const JsonValue& result);
     void MaybeAttachEtag(const std::string& key, RequestMeta& meta);
     std::unordered_map<std::string, EtagEntry> etag_entries_;
+    std::deque<std::string> etag_order_;
     std::mutex etag_mutex_;
 
     std::shared_ptr<ITransport> transport_;

@@ -40,6 +40,7 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info);
 
 std::unique_ptr<PipeHandle> OpenStandardInput();
 std::unique_ptr<PipeHandle> OpenStandardOutput();
+bool WriteWholeMessage(PipeHandle& pipe, const char* data, std::size_t size);
 void SetThreadName(const char* name);
 
 }} // namespace mcp::detail

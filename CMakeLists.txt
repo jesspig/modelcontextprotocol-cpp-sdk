@@ -83,6 +83,23 @@ include(CompilerOptions)
 include(Cache)
 include(FetchDependencies)
 include(Lto)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+set(MCP_LIBRARY_TARGETS
+    mcp-core
+    mcp-transport
+    mcp-protocol
+    mcp-server
+    mcp-client
+    mcp-http
+    mcp-ext)
+
+function(mcp_setup_library target)
+    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(${target} PUBLIC $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    target_compile_features(${target} PUBLIC cxx_std_17)
+endfunction()
 
 if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_GENERATOR MATCHES "Ninja")
     find_program(_lld_link NAMES lld-link)
@@ -106,10 +123,8 @@ target_sources(mcp-core PRIVATE
     src/core/Content.cpp
     src/core/Capabilities.cpp
     src/detail/AtomicJsonFile.cpp)
-target_include_directories(mcp-core PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_include_directories(mcp-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(mcp-core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+mcp_setup_library(mcp-core)
 target_link_libraries(mcp-core PUBLIC Threads::Threads)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
@@ -137,7 +152,7 @@ target_link_libraries(mcp-transport PUBLIC mcp-core)
 if(WIN32)
     target_link_libraries(mcp-transport PUBLIC ws2_32)
 endif()
-target_include_directories(mcp-transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+mcp_setup_library(mcp-transport)
 set_property(TARGET mcp-transport PROPERTY UNITY_BUILD OFF)
 
 add_library(mcp-protocol STATIC)
@@ -145,7 +160,7 @@ target_sources(mcp-protocol PRIVATE
     src/protocol/WireCodec.cpp
     src/protocol/McpSessionHandler.cpp)
 target_link_libraries(mcp-protocol PUBLIC mcp-transport)
-target_include_directories(mcp-protocol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+mcp_setup_library(mcp-protocol)
 set_property(TARGET mcp-protocol PROPERTY UNITY_BUILD OFF)
 
 add_library(mcp-server STATIC)
@@ -153,7 +168,7 @@ target_sources(mcp-server PRIVATE
     src/server/McpServer.cpp
     src/server/FileTaskStore.cpp)
 target_link_libraries(mcp-server PUBLIC mcp-protocol mcp-ext)
-target_include_directories(mcp-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+mcp_setup_library(mcp-server)
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-server PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
@@ -167,7 +182,7 @@ target_link_libraries(mcp-client PUBLIC mcp-protocol mcp-ext)
 if(WIN32)
     target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
 endif()
-target_include_directories(mcp-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+mcp_setup_library(mcp-client)
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 set_property(TARGET mcp-client PROPERTY UNITY_BUILD_UNIQUE_ID ON)
@@ -187,7 +202,7 @@ target_link_libraries(mcp-http PUBLIC mcp-transport mcp-ext)
 if(WIN32)
     target_link_libraries(mcp-http PUBLIC ws2_32)
 endif()
-target_include_directories(mcp-http PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+mcp_setup_library(mcp-http)
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
@@ -198,20 +213,26 @@ target_sources(mcp-ext PRIVATE
     src/ext/ServerCard.cpp
     src/ext/Triggers.cpp)
 target_link_libraries(mcp-ext PUBLIC mcp-core mcp-transport)
-target_include_directories(mcp-ext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+mcp_setup_library(mcp-ext)
 set_property(TARGET mcp-ext PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-ext PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
+set(MCP_OPENSSL_LINK_LIBS OpenSSL::SSL OpenSSL::Crypto)
+set(MCP_OPENSSL_COMPILE_DEFINE MCP_HAVE_OPENSSL)
+
 if(MCP_OPENSSL_ENABLED)
     add_library(mcp-openssl INTERFACE)
-    target_link_libraries(mcp-openssl INTERFACE OpenSSL::SSL OpenSSL::Crypto)
-    target_compile_definitions(mcp-openssl INTERFACE MCP_HAVE_OPENSSL)
+    target_link_libraries(mcp-openssl INTERFACE ${MCP_OPENSSL_LINK_LIBS})
+    target_compile_definitions(mcp-openssl INTERFACE ${MCP_OPENSSL_COMPILE_DEFINE})
     foreach(_t mcp-transport mcp-client mcp-ext)
-        target_link_libraries(${_t} PUBLIC mcp-openssl)
+        target_link_libraries(${_t} PUBLIC
+            $<BUILD_INTERFACE:mcp-openssl>
+            "$<INSTALL_INTERFACE:${MCP_OPENSSL_LINK_LIBS}>")
+        target_compile_definitions(${_t} PUBLIC ${MCP_OPENSSL_COMPILE_DEFINE})
     endforeach()
 endif()
 
-foreach(_t mcp-core mcp-transport mcp-protocol mcp-server mcp-client mcp-http mcp-ext)
+foreach(_t ${MCP_LIBRARY_TARGETS})
     mcp_enable_werror(${_t})
 endforeach()
 
@@ -256,3 +277,36 @@ file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "lto=${MCP_LTO}\n"
     "unity_enabled=${MCP_UNITY_ENABLED}\n"
     "unity_batch=${MCP_UNITY_BATCH}\n")
+
+set(MCP_PACKAGE_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
+
+install(TARGETS ${MCP_LIBRARY_TARGETS}
+    EXPORT mcpTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(FILES LICENSE
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/mcp-cpp-sdk)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mcpConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/mcpConfig.cmake
+    INSTALL_DESTINATION ${MCP_PACKAGE_CMAKEDIR})
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/mcpConfigVersion.cmake
+    VERSION ${MCP_SDK_VERSION}
+    COMPATIBILITY SameMajorVersion)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/mcpConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/mcpConfigVersion.cmake
+    DESTINATION ${MCP_PACKAGE_CMAKEDIR})
+
+install(EXPORT mcpTargets
+    FILE mcpTargets.cmake
+    NAMESPACE mcp::
+    DESTINATION ${MCP_PACKAGE_CMAKEDIR})

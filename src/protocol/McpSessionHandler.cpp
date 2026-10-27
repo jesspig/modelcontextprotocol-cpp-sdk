@@ -92,6 +92,30 @@ void AttachTraceContext(SpanEvent& event, const IncomingRequestMeta& meta) {
     if (meta.baggage) event.baggage = *meta.baggage;
 }
 
+void DeliverOutcome(const std::shared_ptr<PendingRequest>& pending,
+                    RequestOutcome outcome,
+                    std::string_view label) {
+    if (const auto* error = std::get_if<ErrorData>(&outcome)) {
+        InvokeSafely([&pending, error] {
+            pending->callback(SerializeErrorData(*error));
+        }, label);
+    } else {
+        const JsonValue& result = std::get<JsonValue>(outcome);
+        InvokeSafely([&pending, &result] {
+            pending->callback(result);
+        }, label);
+    }
+    if (pending->outcome_callback) {
+        InvokeSafely([&pending, outcome = std::move(outcome)]() mutable {
+            pending->outcome_callback(std::move(outcome));
+        }, label);
+    }
+}
+
+std::string GeneralizeFailureMessage(std::string_view category) {
+    return std::string(category) + " failed";
+}
+
 SpanEvent MakeServerRequestEvent(const JsonRpcRequest& req, SpanPhase phase, bool failed) {
     SpanEvent event;
     event.phase = phase;
@@ -229,10 +253,14 @@ void McpSessionHandler::Close() {
     }
     for (auto& pending : to_fire) {
         if (pending) {
-            InvokeSafely([&pending] {
-                pending->callback(SerializeErrorData(
-                    ErrorData{McpErrorCode::ConnectionClosed, "connection closed"}));
-            }, "pending-callback");
+            LogContext ctx;
+            ctx.method = pending->method;
+            ctx.request_id = pending->request_id;
+            MCP_LOG_CTX(Warning, ctx, "pending request aborted: connection closed");
+            DeliverOutcome(pending,
+                RequestOutcome{ErrorData{
+                    McpErrorCode::ConnectionClosed, "connection closed"}},
+                "pending-callback");
         }
     }
 
@@ -284,10 +312,14 @@ void McpSessionHandler::CheckTimeouts() {
     }
     for (auto& pending : to_fire) {
         if (pending) {
-            InvokeSafely([&pending] {
-                pending->callback(SerializeErrorData(
-                    ErrorData{McpErrorCode::RequestTimeout, "request timed out"}));
-            }, "timeout-callback");
+            LogContext ctx;
+            ctx.method = pending->method;
+            ctx.request_id = pending->request_id;
+            MCP_LOG_CTX(Warning, ctx, "pending request timed out");
+            DeliverOutcome(pending,
+                RequestOutcome{ErrorData{
+                    McpErrorCode::RequestTimeout, "request timed out"}},
+                "timeout-callback");
         }
     }
 }
@@ -343,6 +375,10 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     } span_guard{span_handler_, req, span_open};
     auto reject = [&](McpErrorCode code, std::string_view message,
                       std::optional<JsonValue> data = std::nullopt) {
+        LogContext ctx;
+        ctx.method = req.method;
+        ctx.request_id = RequestIdToText(req.id);
+        MCP_LOG_CTX(Warning, ctx, "request rejected: " + std::string(message));
         if (span_handler_) {
             auto event = MakeServerRequestEvent(req, SpanPhase::End, true);
             AttachTraceFromRequest(event, req);
@@ -353,22 +389,17 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
     };
 
     std::shared_ptr<WireCodec> codec;
+    bool negotiated = false;
     {
         std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
+        negotiated = negotiated_version_ && !negotiated_version_->empty();
     }
-    JsonValue validation_view(JsonValue::object_tag);
-    validation_view[detail::kMethod] = JsonValue(req.method);
-    if (req.method == methods::kInitialize && req.params)
-        validation_view[detail::kParams] = *req.params;
-    if (req.meta) {
-        JsonValue& view_params = validation_view[detail::kParams];
-        if (!view_params.IsObject()) view_params = JsonValue(JsonValue::object_tag);
-        view_params[detail::kMeta] = *req.meta;
-    }
-    auto validation = codec->ValidateRequest(req.method, validation_view);
-    if (validation == WireValidation::NotInEra &&
-        (req.method != methods::kInitialize || IsJuly2026OrLater())) {
+    auto view = MakeWireRequestView(req);
+    auto validation = codec->ValidateRequest(req.method, view);
+    const bool handshake_entry = !negotiated &&
+        (req.method == methods::kInitialize || req.method == methods::kDiscover);
+    if (validation == WireValidation::NotInEra && !handshake_entry) {
         reject(McpErrorCode::MethodNotFound, "method not found: " + req.method);
         return;
     }
@@ -446,11 +477,27 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         handler(req, std::move(*promise));
     } catch (const McpError& e) {
         EraseIncomingCancellationFlag(cancel_key);
+        LogContext ctx;
+        ctx.method = req.method;
+        ctx.request_id = RequestIdToText(req.id);
+        MCP_LOG_CTX(Error, ctx, "request handler rejected: " + std::string(e.what()));
         reject(e.Code(), std::string(e.what()), e.Data());
         return;
     } catch (const std::exception& e) {
         EraseIncomingCancellationFlag(cancel_key);
-        reject(McpErrorCode::InternalError, std::string("handler error: ") + e.what());
+        LogContext ctx;
+        ctx.method = req.method;
+        ctx.request_id = RequestIdToText(req.id);
+        MCP_LOG_CTX(Error, ctx, "request handler failed: " + std::string(e.what()));
+        reject(McpErrorCode::InternalError, GeneralizeFailureMessage("request handler"));
+        return;
+    } catch (...) {
+        EraseIncomingCancellationFlag(cancel_key);
+        LogContext ctx;
+        ctx.method = req.method;
+        ctx.request_id = RequestIdToText(req.id);
+        MCP_LOG_CTX(Error, ctx, "request handler failed with unknown exception");
+        reject(McpErrorCode::InternalError, GeneralizeFailureMessage("request handler"));
         return;
     }
 
@@ -527,7 +574,24 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.id = item.req.id;
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
-        err_resp.error.message = std::string("internal error: ") + e.what();
+        err_resp.error.message = "internal error";
+        LogContext ctx;
+        ctx.method = item.req.method;
+        ctx.request_id = RequestIdToText(item.req.id);
+        MCP_LOG_CTX(Error, ctx, "response delivery failed: " + std::string(e.what()));
+        finish_span(true);
+        SendMessage(JsonRpcMessage{std::move(err_resp)});
+    } catch (...) {
+        if (closed_.load()) return;
+        JsonRpcErrorResponse err_resp;
+        err_resp.id = item.req.id;
+        err_resp.error.code = static_cast<McpErrorCode>(
+            codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
+        err_resp.error.message = "internal error";
+        LogContext ctx;
+        ctx.method = item.req.method;
+        ctx.request_id = RequestIdToText(item.req.id);
+        MCP_LOG_CTX(Error, ctx, "response delivery failed with unknown exception");
         finish_span(true);
         SendMessage(JsonRpcMessage{std::move(err_resp)});
     }
@@ -599,7 +663,7 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
         }
     }
     if (pending) {
-        InvokeSafely([&] { pending->callback(resp.result); }, "response-callback");
+        DeliverOutcome(pending, RequestOutcome{resp.result}, "response-callback");
     }
 }
 
@@ -622,8 +686,7 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
         }
     }
     if (pending) {
-        auto error_json = SerializeErrorData(err.error);
-        InvokeSafely([&] { pending->callback(std::move(error_json)); }, "error-callback");
+        DeliverOutcome(pending, RequestOutcome{err.error}, "error-callback");
     }
 }
 
@@ -633,17 +696,14 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
         std::shared_lock<std::shared_mutex> lock(codec_mutex_);
         codec = codec_;
     }
-    JsonValue validation_view(JsonValue::object_tag);
-    validation_view[detail::kMethod] = JsonValue(notif.method);
-    if (notif.params) validation_view[detail::kParams] = *notif.params;
-    auto validation = codec->ValidateNotification(notif.method, validation_view);
+    auto view = MakeWireNotificationView(notif);
+    auto validation = codec->ValidateNotification(notif.method, view);
     if (validation != WireValidation::Ok) {
         LogContext ctx;
         ctx.method = notif.method;
         MCP_LOG_CTX(Warning, ctx, "dropping notification: not valid for the current protocol era");
         return;
     }
-
     if (on_notification_cb_) {
         InvokeSafely([&] { on_notification_cb_(notif); }, "on-notification");
     }
@@ -671,6 +731,16 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     JsonValue params,
     const RequestMeta& meta,
     std::chrono::milliseconds timeout)
+{
+    return SendRequest(method, std::move(params), meta, timeout, nullptr);
+}
+
+std::future<JsonValue> McpSessionHandler::SendRequest(
+    std::string_view method,
+    JsonValue params,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout,
+    OutcomeCallback on_outcome)
 {
     auto promise = std::make_shared<std::promise<JsonValue>>();
     auto future = promise->get_future();
@@ -709,8 +779,11 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     pending->callback = [promise](JsonValue result) {
         promise->set_value(std::move(result));
     };
+    pending->outcome_callback = std::move(on_outcome);
     pending->deadline = std::chrono::steady_clock::now() + timeout;
     pending->progress_token = meta.progress_token;
+    pending->method = std::string(method);
+    pending->request_id = std::to_string(id);
 
     const std::string id_key = std::to_string(id);
     std::optional<std::string> pt_key;
@@ -736,8 +809,14 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     }
 
     if (closed_after_register) {
-        pending->callback(SerializeErrorData(
-            ErrorData{McpErrorCode::ConnectionClosed, "connection closed"}));
+        LogContext ctx;
+        ctx.method = std::string(method);
+        ctx.request_id = std::to_string(id);
+        MCP_LOG_CTX(Warning, ctx, "request rejected: connection closed");
+        DeliverOutcome(pending,
+            RequestOutcome{ErrorData{
+                McpErrorCode::ConnectionClosed, "connection closed"}},
+            "closed-callback");
         return future;
     }
 
@@ -947,24 +1026,23 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
         }
     }
     if (pending) {
-        auto make_error = [&]() {
-            std::optional<JsonValue> data;
-            if (!reason.empty()) {
-                JsonValue d(JsonValue::object_tag);
-                d[detail::kReason] = JsonValue(reason);
-                data = std::move(d);
-            }
-            return SerializeErrorData(
-                ErrorData{McpErrorCode::RequestCancelled, "request cancelled", std::move(data)});
+        ErrorData error{McpErrorCode::RequestCancelled, "request cancelled"};
+        if (!reason.empty()) {
+            JsonValue d(JsonValue::object_tag);
+            d[detail::kReason] = JsonValue(reason);
+            error.data = std::move(d);
+        }
+        LogContext ctx;
+        ctx.method = std::string(notifications::kCancelled);
+        ctx.request_id = target_id_key;
+        MCP_LOG_CTX(Warning, ctx, "request cancelled by peer");
+        auto deliver = [pending, error]() {
+            DeliverOutcome(pending, RequestOutcome{error}, "cancel-callback");
         };
-        auto callback = pending->callback;
         try {
-            std::thread([callback, err = make_error()]() mutable {
-                InvokeSafely([&] { callback(std::move(err)); }, "cancel-callback");
-            }).detach();
+            std::thread(deliver).detach();
         } catch (...) {
-            auto err = make_error();
-            InvokeSafely([&] { callback(std::move(err)); }, "cancel-callback");
+            deliver();
         }
     }
 }

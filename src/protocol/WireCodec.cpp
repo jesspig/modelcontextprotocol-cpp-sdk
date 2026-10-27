@@ -18,6 +18,7 @@ inline const std::unordered_set<std::string_view> kCommonRequestMethods = {
     "resources/list", "resources/read", "resources/templates/list",
     "prompts/list", "prompts/get",
     "completion/complete",
+    "server/extensions/list",
 };
 
 inline const std::unordered_set<std::string_view> k2025OnlyRequestMethods = {
@@ -45,18 +46,19 @@ inline const std::unordered_set<std::string_view> kCommonNotifMethods = {
     "notifications/resources/list_changed",
     "notifications/tools/list_changed",
     "notifications/prompts/list_changed",
-};
-
-inline const std::unordered_set<std::string_view> k2025OnlyNotifMethods = {
-    "notifications/initialized",
     "notifications/roots/list_changed",
-    "notifications/elicitation/complete",
     "notifications/tasks/status",
     "notifications/tasks/working",
     "notifications/tasks/completed",
     "notifications/tasks/failed",
     "notifications/tasks/cancelled",
     "notifications/tasks/input_required",
+    "notifications/triggers/event",
+};
+
+inline const std::unordered_set<std::string_view> k2025OnlyNotifMethods = {
+    "notifications/initialized",
+    "notifications/elicitation/complete",
 };
 
 inline const std::unordered_set<std::string_view> k2026OnlyNotifMethods = {
@@ -74,6 +76,27 @@ inline std::unordered_set<std::string_view> MakeEraMethods(
 inline bool IsTaskNameCheckedMethod(std::string_view method) {
     return method == "tasks/get" || method == "tasks/update" ||
         method == "tasks/cancel";
+}
+
+WireMessageView BuildWireMessageView(std::string_view jsonrpc,
+                                     std::string_view method,
+                                     const std::optional<JsonValue>& params,
+                                     const std::optional<JsonValue>& meta) {
+    WireMessageView view;
+    view.raw[detail::kJsonrpc] = JsonValue(std::string(jsonrpc));
+    view.raw[detail::kMethod] = JsonValue(std::string(method));
+    if (params) {
+        view.raw[detail::kParams] = *params;
+    }
+    if (meta) {
+        JsonValue& slot = view.raw[detail::kParams];
+        if (!slot.IsObject()) {
+            slot = JsonValue(JsonValue::object_tag);
+        }
+        slot[detail::kMeta] = *meta;
+        view.meta_backfilled = true;
+    }
+    return view;
 }
 
 class Rev2025Codec : public WireCodec {
@@ -94,6 +117,9 @@ public:
 
     WireValidation ValidateRequest(
         std::string_view method, const JsonValue& raw) const override {
+        if (!HasRequestMethod(method)) {
+            return WireValidation::NotInEra;
+        }
         if (method == "initialize") {
             const JsonValue* params = raw.Find(detail::kParams);
             if (!params || !params->IsObject() ||
@@ -112,7 +138,10 @@ public:
     }
 
     WireValidation ValidateNotification(
-        std::string_view, const JsonValue&) const override {
+        std::string_view method, const JsonValue&) const override {
+        if (!HasNotificationMethod(method)) {
+            return WireValidation::NotInEra;
+        }
         return WireValidation::Ok;
     }
 
@@ -151,12 +180,22 @@ public:
 
     WireValidation ValidateRequest(
         std::string_view method, const JsonValue& raw) const override {
+        return ValidateRequest(method, WireMessageView{raw, false});
+    }
+
+    WireValidation ValidateRequest(
+        std::string_view method, const WireMessageView& view) const override {
         if (!HasRequestMethod(method)) {
             return WireValidation::NotInEra;
         }
         if (method != "server/discover") {
-            const JsonValue* params = raw.Find(detail::kParams);
-            if (!params || !params->IsObject() || !params->Contains(detail::kMeta)) {
+            const JsonValue* params = view.raw.Find(detail::kParams);
+            if (!params || !params->IsObject()) {
+                return WireValidation::Invalid;
+            }
+            const bool has_meta =
+                params->Contains(detail::kMeta) || view.meta_backfilled;
+            if (!has_meta) {
                 return WireValidation::Invalid;
             }
         }
@@ -182,7 +221,10 @@ public:
     }
 
     WireValidation ValidateNotification(
-        std::string_view, const JsonValue& raw) const override {
+        std::string_view method, const JsonValue& raw) const override {
+        if (!HasNotificationMethod(method)) {
+            return WireValidation::NotInEra;
+        }
         if (raw.Contains("id") || raw.Contains("result") || raw.Contains("error")) {
             return WireValidation::Invalid;
         }
@@ -244,6 +286,14 @@ public:
 };
 
 } // anonymous namespace
+
+WireMessageView MakeWireRequestView(const JsonRpcRequest& req) {
+    return BuildWireMessageView(req.jsonrpc, req.method, req.params, req.meta);
+}
+
+WireMessageView MakeWireNotificationView(const JsonRpcNotification& notif) {
+    return BuildWireMessageView(notif.jsonrpc, notif.method, notif.params, notif.meta);
+}
 
 void WireCodec::ValidateTaskHeaders(
     std::string_view method,

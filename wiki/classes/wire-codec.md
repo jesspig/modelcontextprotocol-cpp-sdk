@@ -3,7 +3,7 @@ type: Class
 title: WireCodec
 description: 按协议时代划分的线协议词汇表：方法成员判定、消息校验、meta 处理与错误码映射。
 tags: [protocol, codec, 双时代, 2026, meta, tasks, skills]
-timestamp: 2026-10-11T16:35:00+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: src/protocol/WireCodec.cpp
 ---
 
@@ -15,27 +15,30 @@ resource: src/protocol/WireCodec.cpp
 
 | | Rev2025Codec（"2025-11-25"） | Rev2026Codec（"2026-07-28"） |
 |--|--|--|
-| 请求校验 | 仅 initialize 检查 `params` 含 protocolVersion/capabilities/clientInfo | 方法不在时代→NotInEra；除 discover 外缺 `params._meta`→Invalid |
+| 请求校验 | 方法不在时代→NotInEra；仅 initialize 检查 `params` 含 protocolVersion/capabilities/clientInfo | 方法不在时代→NotInEra；除 discover 外缺 `params._meta`→Invalid（`WireMessageView` 的 `meta_backfilled` 视为已有） |
 | 响应校验 | 无额外要求 | 所有响应必须含 `resultType`；5 个列表方法（tools/list、resources/list、resources/templates/list、prompts/list、skills/list）要求 `"complete"` |
+| 通知校验 | 通知不在时代→NotInEra | 通知不在时代→NotInEra；含 id/result/error→Invalid |
 | StampOutgoingRequest | 空操作 | 写 `params._meta`：protocolVersion/clientInfo/clientCapabilities |
 | ExtractIncomingMeta | 无 override | 无 override——基类为非纯虚默认返回 `nullopt`（WireCodec.hpp:48），meta 解析在 McpSessionHandler 层 |
 | EncodeResult | 原样 | 嵌套 `cacheHint` 扁平化为顶层 `ttlMs`/`cacheScope`（移除嵌套键）；无 resultType 补 `"complete"` |
 | EncodeErrorCode | 原样 | 内部错误（RequestTimeout/ConnectionRefused/TlsHandshakeFailed）记日志并映射为 InternalError(-32603)；协议码（-32020/-32021/-32022/-32042）原样传递 |
 
+两代 codec 均提供 `WireMessageView` 重载（`ValidateRequest/ValidateNotification`，默认转发原 `JsonValue` 签名）：视图把 `jsonrpc/method/params/_meta` 组装为线格式并允许 `_meta` 由传输/会话层注入（`meta_backfilled`），Rev2026 覆写视图版校验——`_meta` 不必物理存在于 `params` 中。`MakeWireRequestView/MakeWireNotificationView` 由 `JsonRpcRequest/JsonRpcNotification` 构造视图。
+
 工厂 `MakeWireCodec`：`version >= "2026-07-28"` → Rev2026，否则 Rev2025。
 
 ## 方法注册表
 
-请求方法（并集共 26 个）：
+请求方法（并集共 27 个）：
 
-- 公共（8）：tools/list、tools/call、resources/list、resources/read、resources/templates/list、prompts/list、prompts/get、completion/complete
+- 公共（9）：tools/list、tools/call、resources/list、resources/read、resources/templates/list、prompts/list、prompts/get、completion/complete、server/extensions/list
 - 2025 独有（13）：initialize、ping、resources/subscribe、resources/unsubscribe、logging/setLevel、roots/list、sampling/createMessage、elicitation/create、tasks/get、tasks/update、tasks/cancel、tasks/result、tasks/list
 - 2026 独有（8）：server/discover、subscriptions/listen、tasks/get、tasks/update、tasks/cancel、skills/list、skills/get、resources/directory/read（2026 合计 16 个请求方法）
 - 双时代交集：tasks/get、tasks/update、tasks/cancel 同时属于 2025 与 2026 集合（SEP-2663 任务扩展）；tasks/result、tasks/list 仍仅 2025（`kLegacyGetTaskPayload`/`kLegacyListTasks`）；skills/list、skills/get、resources/directory/read 仅 2026（SEP-2640 技能扩展）
 
-通知共 **17 种**：公共 7 + 2025 独有 9（initialized、roots/list_changed、elicitation/complete、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required）+ 2026 独有 1（subscriptions/acknowledged）。2026 = 8 种、2025 = 16 种。6 个 `notifications/tasks/*` 独有通知于 2026-08-15 加回 2025-only 集合（服务端 `SendTaskStatus`/任务完成通知使用，[WireCodec.cpp:50](../../src/protocol/WireCodec.cpp)）。
+通知共 **18 种**：公共 15（cancelled、progress、message、resources/updated、resources/list_changed、tools/list_changed、prompts/list_changed、roots/list_changed、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required、triggers/event）+ 2025 独有 2（initialized、elicitation/complete）+ 2026 独有 1（subscriptions/acknowledged）。任务 6 通知与 triggers/event 为两代共用（服务端实际在发，[WireCodec.cpp](../../src/protocol/WireCodec.cpp)）。
 
-2026 时代入站收到 ping、tasks/result、tasks/list、elicitation/create 等不在时代的方法：`ValidateRequest` 判定为 `NotInEra`，McpSessionHandler 回 `-32601 MethodNotFound`（initialize 豁免，[McpSessionHandler.cpp:245](../../src/protocol/McpSessionHandler.cpp)）。tasks/get、tasks/update、tasks/cancel 在 2026 时代合法，不再拒绝。
+2026 时代入站收到 ping、tasks/result、tasks/list、elicitation/create 等不在时代的方法：`ValidateRequest` 判定为 `NotInEra`，McpSessionHandler 回 `-32601 MethodNotFound`（未协商会话的握手入口 initialize/discover 豁免，[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）；2025 时代同样按集合拒绝时代外方法（如 skills 族）。通知不在时代时在会话层静默丢弃并记 Warning。
 
 ## 任务头校验
 

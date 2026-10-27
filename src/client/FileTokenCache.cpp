@@ -1,6 +1,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/storage/FileTokenCache.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/McpError.hpp>
 #include <mcp/detail/AtomicJsonFile.hpp>
 
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <wincrypt.h>
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -42,6 +44,33 @@ std::string UnprotectData(const std::vector<BYTE>& data) {
 }
 #endif
 
+std::filesystem::path IssuerAnchorPath(const std::filesystem::path& cache_path) {
+    auto anchor = cache_path;
+    anchor += ".issuer";
+    return anchor;
+}
+
+#ifndef _WIN32
+bool ValidateTokenCachePermissions(const std::filesystem::path& path) {
+    struct stat info {};
+    if (::stat(path.c_str(), &info) != 0) {
+        MCP_LOG(Error, "token cache: cannot stat " + path.string());
+        return false;
+    }
+    if (info.st_uid != ::getuid()) {
+        MCP_LOG(Error, "token cache: refusing to load " + path.string() +
+            " because it is owned by another user");
+        return false;
+    }
+    if ((info.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        MCP_LOG(Error, "token cache: refusing to load " + path.string() +
+            " because it is readable by group or others");
+        return false;
+    }
+    return true;
+}
+#endif
+
 } // namespace
 
 namespace mcp {
@@ -53,7 +82,11 @@ FileTokenCache::FileTokenCache(std::filesystem::path cache_path)
 }
 
 FileTokenCache::~FileTokenCache() {
-    Save();
+    try {
+        Save();
+    } catch (const std::exception& e) {
+        MCP_LOG(Error, std::string("token cache: failed to persist tokens: ") + e.what());
+    }
 }
 
 void FileTokenCache::StoreTokens(const TokenContainer& tokens) {
@@ -71,6 +104,35 @@ void FileTokenCache::ClearTokens() {
     std::lock_guard<std::mutex> lock(mutex_);
     tokens_.reset();
     Save();
+}
+
+void FileTokenCache::StoreBoundIssuer(const std::string& issuer) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto anchor = IssuerAnchorPath(cache_path_);
+    if (issuer.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(anchor, ec);
+        return;
+    }
+    try {
+        detail::WriteAtomicSecure(anchor, issuer);
+    } catch (const std::exception& e) {
+        MCP_LOG(Error, "token cache: failed to persist the issuer anchor: " +
+            std::string(e.what()));
+    }
+}
+
+std::optional<std::string> FileTokenCache::GetBoundIssuer() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto anchor = IssuerAnchorPath(cache_path_);
+    std::error_code ec;
+    if (!std::filesystem::exists(anchor, ec)) return std::nullopt;
+    std::ifstream file(anchor, std::ios::binary);
+    if (!file.is_open()) return std::nullopt;
+    std::string content((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+    if (content.empty()) return std::nullopt;
+    return content;
 }
 
 void FileTokenCache::Load() {
@@ -108,6 +170,7 @@ void FileTokenCache::Load() {
         MCP_LOG(Warning, "token cache parse failed (Win32)");
     }
 #else
+    if (!ValidateTokenCachePermissions(cache_path_)) return;
     std::ifstream file(cache_path_);
     if (!file.is_open()) return;
     try {
@@ -130,9 +193,6 @@ void FileTokenCache::Load() {
         MCP_LOG(Warning, "token cache parse failed");
     }
     file.close();
-    if (chmod(cache_path_.string().c_str(), 0600) != 0) {
-        MCP_LOG(Error, "token cache: chmod failed for " + cache_path_.string());
-    }
 #endif
 }
 
@@ -165,16 +225,10 @@ void FileTokenCache::Save() {
         MCP_LOG(Error, "token cache: CryptProtectData failed for " + cache_path_.string());
         return;
     }
-    if (!detail::WriteAtomic(cache_path_,
-            std::string(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()))) {
-        MCP_LOG(Error, "token cache: failed to write " + cache_path_.string());
-    }
+    detail::WriteAtomicSecure(cache_path_,
+        std::string(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()));
 #else
-    if (detail::WriteAtomic(cache_path_, dump_str)) {
-        if (chmod(cache_path_.string().c_str(), 0600) != 0) {
-            MCP_LOG(Error, "token cache: chmod failed for " + cache_path_.string());
-        }
-    }
+    detail::WriteAtomicSecure(cache_path_, dump_str);
 #endif
 }
 

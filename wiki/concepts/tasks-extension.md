@@ -3,7 +3,7 @@ type: Concept
 title: 任务扩展
 description: SEP-2663 任务扩展：双时代 tasks/get|update|cancel、2025-only tasks/result|list、任务化 tools/call、inputResponses 推进、Mcp-Name 头校验与现代订阅路由。
 tags: [tasks, 扩展, 双时代, 2026]
-timestamp: 2026-10-15T13:14:29+08:00
+timestamp: 2026-10-27T04:48:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -36,9 +36,15 @@ wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../..
 
 `UpdateTaskRequestParams` 新增 `inputResponses`（与 `result` 互斥，同带回 `InvalidParams`）。带 `inputResponses` 时服务端要求任务存在且状态为 `InputRequired`，经 `IMcpTaskStore::AdvanceTaskWithInput`（`FileTaskStore` 实现：存 `input_responses`、状态 InputRequired→Working、刷新 `last_updated_at`、同快照回滚路径持久化）推进后回空结果；modern 下经订阅路由补发 `tasks/working`（legacy 广播）。客户端签名 `UpdateTask(task_id, result?, input_responses?)`，`PollTaskToCompletion`（默认 500ms 间隔 / 300s 超时）轮询至终态——任务 `poll_interval_ms > 0` 时改用服务端指示间隔（钳制 300s 上限 `kMaxServerPollInterval`），临 deadline 前停轮询直接抛超时。
 
+## 会话作用域与生命周期守卫
+
+- **owner 会话隔离**：服务端构造时生成安全随机 `session_id`（`McpServer::SessionId()`），任务 ID 形如 `task-<session>-<16 字节随机 hex>`（不可枚举、非顺序）；任务化 `tools/call` 创建任务时记 `owner = session_id`，`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/list` 一律按 owner 过滤——他人任务与不存在任务同样回 `InvalidParams "task not found"`（不泄露存在性），`tasks/list` 仅列本会话任务
+- **TTL 与回收**：任务创建默认 `ttl_ms = 300000`（5 分钟，`kDefaultTaskTtlMs`）；`IMcpTaskStore::GetExpiredTaskIds/RemoveTask` 供回收用，服务端在每次创建新任务前顺带清扫过期任务（`SweepExpiredTasks`）
+- **终态守卫**：`tasks/update` 对已终态（Completed/Failed/Cancelled）任务直接回 `InvalidParams`（存储层 `UpdateTask/CancelTask/FailTask/ParkTaskForInput` 同样拒绝再变更，`SetTaskStatus` 保留同状态幂等）；服务端失败落态经 `FailTask` 一步原子完成（原「写错误结果再改状态」两步序列废除）
+
 ## 存储字段
 
-`TaskState` 新增 `status_message`、`last_updated_at`（Create/Update/Cancel/SetStatus/Advance 全路径刷新）、`ttl_ms`、`poll_interval_ms`、`input_requests`、`input_responses`，`FileTaskStore` 持久化（旧文件容缺可读），经 `MakeGetTaskResultJson` 透传到 `GetTaskResult`。详见 [/classes/file-task-store.md](../classes/file-task-store.md)。
+`TaskState` 含 `status_message`、`last_updated_at`（Create/Update/Cancel/SetStatus/Advance 全路径刷新）、`ttl_ms`、`poll_interval_ms`、`input_requests`、`input_responses`、`owner`，`FileTaskStore` 持久化（旧文件容缺可读），经 `MakeGetTaskResultJson` 透传到 `GetTaskResult`。持久化格式为 JSONL 追加 + 阈值压缩，详见 [/classes/file-task-store.md](../classes/file-task-store.md)。
 
 ## 相关页面
 

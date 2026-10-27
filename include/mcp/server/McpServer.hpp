@@ -103,9 +103,10 @@ public:
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
     std::string GetNegotiatedProtocolVersion() const;
-    const ServerCapabilities& GetCapabilities() const;
+    ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
+    const std::string& SessionId() const { return session_id_; }
 
     McpSessionHandler& GetSessionHandler() { return *handler_; }
 
@@ -162,6 +163,9 @@ private:
         const SubscriptionFilter& honored, std::string_view subscription_id);
     void AbandonPendingUrlElicitation(
         const std::string& elicitation_id, std::exception_ptr error);
+    std::string MakeTaskId() const;
+    void SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store);
+    bool IsTaskOwnedBySession(const TaskState& task) const;
 
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
@@ -202,6 +206,7 @@ private:
     mutable std::mutex client_info_mutex_;
 
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
+    mutable std::mutex completion_handler_mutex_;
 
     std::mutex pending_async_mutex_;
     std::vector<std::shared_future<void>> pending_async_futures_;
@@ -221,9 +226,9 @@ private:
 
     std::atomic<uint64_t> next_subscription_id_{1};
 
-    std::atomic<uint64_t> next_task_id_{1};
-
     std::atomic<uint64_t> next_elicitation_id_{1};
+
+    std::string session_id_;
 
     struct PendingUrlElicitation {
         std::promise<ElicitResult> promise;

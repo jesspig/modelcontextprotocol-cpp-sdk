@@ -11,6 +11,8 @@ bool WriteAtomic(const std::filesystem::path& path, const std::string& contents)
 
 bool WriteAtomic(const std::filesystem::path& path, const JsonValue& json);
 
+bool WriteAtomicSecure(const std::filesystem::path& path, const std::string& contents);
+
 JsonValue LoadJson(const std::filesystem::path& path);
 
 } // namespace mcp::detail
