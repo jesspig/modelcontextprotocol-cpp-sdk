@@ -1353,6 +1353,7 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
     if (notif->method == notifications::kToolListChanged ||
         notif->method == notifications::kPromptListChanged ||
         notif->method == notifications::kResourceListChanged) {
+        bool appended = false;
         for (const auto& [id_str, filter] : listen_filters_) {
             if (hold_open_requests_.count(id_str) == 0) continue;
             bool match = false;
@@ -1362,12 +1363,14 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
             if (!match) continue;
             request_stream_frames_[id_str].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));
+            appended = true;
         }
-        return true;
+        return appended;
     }
     if (notif->method == notifications::kResourceUpdated) {
         auto uri = UpdatedResourceUri(*notif);
         if (!uri) return false;
+        bool appended = false;
         for (const auto& [id_str, filter] : listen_filters_) {
             if (hold_open_requests_.count(id_str) == 0) continue;
             bool match = false;
@@ -1380,16 +1383,19 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
             if (!match) continue;
             request_stream_frames_[id_str].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));
+            appended = true;
         }
-        return true;
+        return appended;
     }
     if (IsTaskStreamNotification(notif->method)) {
+        bool appended = false;
         for (const auto& entry : listen_filters_) {
             if (hold_open_requests_.count(entry.first) == 0) continue;
             request_stream_frames_[entry.first].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));
+            appended = true;
         }
-        return true;
+        return appended;
     }
     return false;
 }
