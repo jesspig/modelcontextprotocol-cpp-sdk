@@ -5,31 +5,23 @@
 #include <mcp/client/VersionNegotiation.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace mcp {
 
 namespace detail { class ResponseCache; }
-
-using SamplingHandler = std::function<CreateMessageResult(
-    const CreateMessageRequestParams&)>;
-
-using RootsHandler = std::function<ListRootsResult(
-    const ListRootsRequestParams&)>;
-
-using ElicitationHandler = std::function<ElicitResult(
-    const ElicitRequestParams&)>;
-
-using UrlElicitationHandler = std::function<void(const ElicitRequestParams&)>;
 
 using ProgressCallback = std::function<void(const ProgressNotificationParams&)>;
 
@@ -123,6 +115,9 @@ public:
     void SetRootsHandler(RootsHandler handler);
     void SetElicitationHandler(ElicitationHandler handler);
     void SetUrlElicitationHandler(UrlElicitationHandler handler);
+    [[deprecated("use ElicitResult-returning handler")]]
+    void SetLegacyUrlElicitationHandler(
+        std::function<void(const ElicitRequestParams&)> handler);
     void SetNotificationHandler(
         std::string_view method,
         ClientNotificationHandler handler);
@@ -130,6 +125,15 @@ public:
     void SetLoggingHandler(std::function<void(const LoggingMessageNotificationParams&)> handler);
 
     void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
+
+    std::future<JsonValue> SendRequest(
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta = {},
+        std::chrono::milliseconds timeout = kDefaultRequestTimeout);
+    void SendNotification(std::string_view method, JsonValue params = {});
+    void CancelRequest(const RequestId& id, std::string_view reason = {});
+    void SetLoggingLevel(LoggingLevel level);
 
     void SendRootsListChanged();
 
@@ -143,6 +147,8 @@ private:
     void WireClientHandlers();
     void WireTransportCallbacks();
     void DetachTransportCallbacks();
+    void InstallSamplingHandler();
+    void InstallRootsHandler();
     NegotiationResult NegotiateProtocol();
 
     std::optional<std::string> AttachProgressCallback(
@@ -163,7 +169,9 @@ private:
 
     void RecoverExpiredSession();
 
-    void CacheIfHinted(std::string_view key, const JsonValue& result);
+    void CacheIfHinted(std::string_view key, const JsonValue& result,
+        std::string_view auth_context);
+    std::string CurrentCacheAuthContext();
 
     struct EtagEntry {
         std::string etag;
@@ -190,6 +198,8 @@ private:
     std::optional<std::function<void(const LoggingMessageNotificationParams&)>> logging_handler_;
 
     std::unique_ptr<detail::ResponseCache> response_cache_;
+    std::string last_cache_auth_context_;
+    std::mutex cache_auth_mutex_;
 
     std::mutex ack_mutex_;
     std::condition_variable ack_cv_;

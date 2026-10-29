@@ -196,6 +196,7 @@ struct CompleteRequestParams {
     JsonValue ref;
     std::string argument_name;
     std::string argument_value;
+    std::map<std::string, std::string, std::less<>> context_arguments;
     std::optional<RequestMeta> meta;
 };
 

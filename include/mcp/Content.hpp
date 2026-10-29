@@ -2,6 +2,7 @@
 
 #include <mcp/JsonValue.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <variant>
@@ -72,7 +73,12 @@ struct EmbeddedResource {
 struct ResourceLink {
     std::string type = "resource_link";
     std::string uri;
+    std::string name;
     std::optional<std::string> title = std::nullopt;
+    std::optional<std::string> description = std::nullopt;
+    std::optional<std::string> mime_type = std::nullopt;
+    std::optional<int64_t> size = std::nullopt;
+    std::vector<Icon> icons;
     std::optional<Annotations> annotations = std::nullopt;
     std::optional<JsonValue> meta = std::nullopt;
 };

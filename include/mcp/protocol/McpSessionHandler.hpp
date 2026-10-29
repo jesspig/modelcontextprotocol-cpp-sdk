@@ -1,5 +1,6 @@
 #pragma once
 #include <mcp/Export.hpp>
+#include <mcp/Implementation.hpp>
 #include <mcp/protocol/IncomingRequestMeta.hpp>
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/protocol/WireCodec.hpp>
@@ -79,6 +80,7 @@ public:
 
     static std::optional<std::string> RequiredClientCapability(std::string_view method);
     void SetClientCapabilities(ClientCapabilities caps);
+    void SetServerInfo(const Implementation& info);
 
     IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
 
@@ -196,6 +198,7 @@ private:
     std::function<bool(std::string_view)> request_state_verifier_;
 
     std::optional<ClientCapabilities> client_capabilities_;
+    std::optional<Implementation> server_info_;
 };
 
 } // namespace mcp

@@ -85,7 +85,9 @@ client->SetElicitationHandler(
     });
 ```
 
-The client dispatches on each input request's `method`: `elicitation/create` → `ElicitationHandler`, `sampling/createMessage` → `SamplingHandler`, `roots/list` → `RootsHandler` (`SamplingHandler`/`RootsHandler` are deprecated, new code uses `ElicitationHandler`). An unregistered handler or an unknown method raises `McpError` (`MethodNotFound`).
+The client dispatches on each input request's `method`: `elicitation/create` → `ElicitationHandler`, `sampling/createMessage` → `SamplingHandler`, `roots/list` → `RootsHandler` (`SamplingHandler`/`RootsHandler` are deprecated, new code uses `ElicitationHandler`). For `elicitation/create` form mode, `sampling/createMessage`, and `roots/list`, a missing handler leaves the round unfulfilled and returns the intermediate `input_required` result to the caller (a URL elicitation without a handler defaults to `decline`); an unknown `method` raises `McpError` (`HandlerError`).
+
+MRTR is driven automatically by default: `ClientOptions::input_required_config` is default-constructed (`auto_fulfill=true`, at most 10 rounds), so with the handlers in place the client fulfills `input_required` and retries on its own; assign `std::nullopt` to `input_required_config` (or set `auto_fulfill=false`) to disable auto-fulfillment.
 
 `inputResponses` values are **bare results** (elicitation: `{action, content}`, sampling: `{role, content, model, stopReason}`, roots: `{roots}`) with no `resultType` / `meta` envelope.
 
@@ -133,8 +135,7 @@ if (IsInputRequiredResult(raw_result)) {
 ServerOptions opts;
 opts.input_required_config = ServerOptions::InputRequiredConfig{
     .max_rounds = 10,
-    .round_timeout = std::chrono::seconds(600),
-    .legacy_shim = true
+    .round_timeout = std::chrono::seconds(600)
 };
 opts.request_state_key = "server-secret";              // auto-signs requestState
 opts.request_state_ttl = std::chrono::seconds(300);    // state lifetime; 0 = never expires
@@ -156,7 +157,6 @@ opts.input_required_config = ClientOptions::InputRequiredConfig{
 |--------|--------|--------|-------------|
 | `max_rounds` | Yes | Yes | Maximum MRTR rounds (default: 10) |
 | `round_timeout` | Yes | Yes | Per-round timeout (default: 600s) |
-| `legacy_shim` | Yes | No | Placeholder field, not yet implemented |
-| `auto_fulfill` | No | Yes | Auto-fulfill without prompting if possible |
+| `auto_fulfill` | No | Yes | Auto-fulfill without prompting if possible (default `true`) |
 | `max_total_timeout` | No | Yes | Hard budget for the whole MRTR flow (default 0 = unlimited; `round_timeout` applies per round) |
 | `request_state_key` / `request_state_ttl` | Yes | No | Server-side requestState signing key and lifetime |

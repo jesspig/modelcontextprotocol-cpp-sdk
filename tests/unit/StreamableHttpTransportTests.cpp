@@ -2684,22 +2684,20 @@ TEST(StreamableHttpTransportTest, ListenHoldOpenBuffersListChangedIntoListenStre
         std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
         R"(,"notifications":{"toolsListChanged":true}}})";
     SseStreamReader stream;
-    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 3);
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
 
     EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
     EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
     stream.Stop();
-    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{3});
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{2});
     auto changed_pos = stream.chunks.find("notifications/tools/list_changed");
     auto ack_pos = stream.chunks.find("notifications/subscriptions/acknowledged");
-    auto result_pos = stream.chunks.find("\"ok\":true");
     EXPECT_NE(changed_pos, std::string::npos);
     EXPECT_NE(ack_pos, std::string::npos);
-    EXPECT_NE(result_pos, std::string::npos);
     EXPECT_LT(changed_pos, ack_pos);
-    EXPECT_LT(ack_pos, result_pos);
+    EXPECT_EQ(stream.chunks.find("\"ok\":true"), std::string::npos);
     EXPECT_NE(stream.chunks.find("sub-hold"), std::string::npos);
 
     server.Close();
@@ -2745,20 +2743,82 @@ TEST(StreamableHttpTransportTest, ListenHoldOpenSkipsUnmatchedListChanged) {
         std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
         R"(,"notifications":{"promptsListChanged":true}}})";
     SseStreamReader stream;
-    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 1);
 
     EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
     EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
     stream.Stop();
-    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{2});
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{1});
     EXPECT_EQ(stream.chunks.find("notifications/tools/list_changed"),
               std::string::npos);
     EXPECT_NE(stream.chunks.find("notifications/subscriptions/acknowledged"),
               std::string::npos);
-    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+    EXPECT_EQ(stream.chunks.find("\"ok\":true"), std::string::npos);
     EXPECT_NE(stream.chunks.find("sub-skip"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenHoldOpenAckOnlyThenBroadcastReachesStream) {
+    auto port = PickFreePort(kTestBasePort + 2128);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::promise<void> consumed;
+    auto consumed_future = consumed.get_future();
+    std::thread consumer([&] {
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                auto* req = AsRequest(msg);
+                if (!req) return;
+                JsonRpcNotification ack;
+                ack.method = "notifications/subscriptions/acknowledged";
+                JsonValue ack_params(JsonValue::object_tag);
+                JsonValue ack_meta(JsonValue::object_tag);
+                ack_meta["io.modelcontextprotocol/subscriptionId"] =
+                    JsonValue("sub-ack-only");
+                ack_params["_meta"] = std::move(ack_meta);
+                ack.params = std::move(ack_params);
+                server.SendMessageAsync(JsonRpcMessage(std::move(ack)));
+                RespondWithResult(server, req->id, &consumed);
+            });
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string body =
+        std::string(R"({"jsonrpc":"2.0","id":717,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"toolsListChanged":true}}})";
+    SseStreamReader stream;
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+
+    EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    JsonRpcNotification changed;
+    changed.method = "notifications/tools/list_changed";
+    changed.params = JsonValue(JsonValue::object_tag);
+    server.SendMessageAsync(JsonRpcMessage(std::move(changed)));
+
+    EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    stream.Stop();
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{2});
+    auto ack_pos = stream.chunks.find("notifications/subscriptions/acknowledged");
+    auto changed_pos = stream.chunks.find("notifications/tools/list_changed");
+    EXPECT_NE(ack_pos, std::string::npos);
+    EXPECT_NE(changed_pos, std::string::npos);
+    EXPECT_LT(ack_pos, changed_pos);
+    EXPECT_EQ(stream.chunks.find("\"ok\":true"), std::string::npos);
+    EXPECT_NE(stream.chunks.find("sub-ack-only"), std::string::npos);
 
     server.Close();
     consumer.join();
@@ -2790,7 +2850,7 @@ TEST(StreamableHttpTransportTest, ListenBroadcastSkipsForeignToolsChangedOnPromp
         std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
         R"(,"notifications":{"promptsListChanged":true}}})";
     SseStreamReader stream;
-    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 1);
 
     EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
@@ -2807,10 +2867,10 @@ TEST(StreamableHttpTransportTest, ListenBroadcastSkipsForeignToolsChangedOnPromp
     EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::milliseconds(800)),
               std::future_status::timeout);
     stream.Stop();
-    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{1});
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{0});
     EXPECT_EQ(stream.chunks.find("notifications/tools/list_changed"),
               std::string::npos);
-    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+    EXPECT_EQ(stream.chunks.find("\"ok\":true"), std::string::npos);
 
     server.Close();
     consumer.join();
@@ -2842,7 +2902,7 @@ TEST(StreamableHttpTransportTest, ListenBroadcastSkipsForeignPromptsChangedOnToo
         std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
         R"(,"notifications":{"toolsListChanged":true}}})";
     SseStreamReader stream;
-    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 1);
 
     EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
@@ -2859,10 +2919,10 @@ TEST(StreamableHttpTransportTest, ListenBroadcastSkipsForeignPromptsChangedOnToo
     EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::milliseconds(800)),
               std::future_status::timeout);
     stream.Stop();
-    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{1});
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{0});
     EXPECT_EQ(stream.chunks.find("notifications/prompts/list_changed"),
               std::string::npos);
-    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+    EXPECT_EQ(stream.chunks.find("\"ok\":true"), std::string::npos);
 
     server.Close();
     consumer.join();
@@ -2894,7 +2954,7 @@ TEST(StreamableHttpTransportTest, ListenBroadcastDeliversMatchingToolsChangedToO
         std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
         R"(,"notifications":{"toolsListChanged":true}}})";
     SseStreamReader stream;
-    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 2);
+    stream.Start(port, body, StatelessModernHeaders("subscriptions/listen"), 1);
 
     EXPECT_EQ(consumed_future.wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
@@ -2911,10 +2971,91 @@ TEST(StreamableHttpTransportTest, ListenBroadcastDeliversMatchingToolsChangedToO
     EXPECT_EQ(stream.done.get_future().wait_for(std::chrono::seconds(5)),
               std::future_status::ready);
     stream.Stop();
-    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{2});
+    EXPECT_EQ(CountSseFrames(stream.chunks), size_t{1});
     EXPECT_NE(stream.chunks.find("notifications/tools/list_changed"),
               std::string::npos);
-    EXPECT_NE(stream.chunks.find("\"ok\":true"), std::string::npos);
+    EXPECT_EQ(stream.chunks.find("\"ok\":true"), std::string::npos);
+
+    server.Close();
+    consumer.join();
+}
+
+TEST(StreamableHttpTransportTest, ListenBroadcastNotSwallowedByUnrelatedHoldOpen) {
+    auto port = PickFreePort(kTestBasePort + 2126);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    opts.listen_hold_open = true;
+    StreamableHttpServerTransport server(opts);
+    std::mutex request_mutex;
+    std::optional<RequestId> tool_request_id;
+    std::promise<void> tool_seen;
+    auto tool_seen_future = tool_seen.get_future();
+    std::thread consumer([&] {
+        for (int i = 0; i < 2; ++i) {
+            server.GetMessageChannel().AsyncReceive(
+                [&](std::error_code ec, JsonRpcMessage msg) {
+                    if (ec) return;
+                    auto* req = AsRequest(msg);
+                    if (!req) return;
+                    if (req->method == "subscriptions/listen") {
+                        RespondWithResult(server, req->id, nullptr);
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(request_mutex);
+                        tool_request_id = req->id;
+                    }
+                    tool_seen.set_value();
+                });
+        }
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string listen_body =
+        std::string(R"({"jsonrpc":"2.0","id":715,"method":"subscriptions/listen",)") +
+        std::string(R"("params":{)") + std::string(kStatelessMetaFull) +
+        R"(,"notifications":{"toolsListChanged":true}}})";
+    SseStreamReader listener;
+    listener.Start(port, listen_body,
+                   StatelessModernHeaders("subscriptions/listen"), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    auto tool_headers = StatelessModernHeaders("tools/call");
+    tool_headers["Mcp-Name"] = "echo";
+    SseStreamReader caller;
+    caller.Start(port,
+        R"({"jsonrpc":"2.0","id":716,"method":"tools/call",)"
+        R"("params":{"name":"echo","arguments":{}}})",
+        tool_headers, 1);
+    ASSERT_EQ(tool_seen_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+
+    JsonRpcNotification changed;
+    changed.method = "notifications/tools/list_changed";
+    changed.params = JsonValue(JsonValue::object_tag);
+    server.SendMessageAsync(JsonRpcMessage(std::move(changed)));
+
+    EXPECT_EQ(listener.done.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+
+    RequestId pending_tool_id;
+    {
+        std::lock_guard<std::mutex> lock(request_mutex);
+        ASSERT_TRUE(tool_request_id.has_value());
+        pending_tool_id = *tool_request_id;
+    }
+    RespondWithResult(server, pending_tool_id, nullptr);
+    EXPECT_EQ(caller.done.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+
+    listener.Stop();
+    caller.Stop();
+    EXPECT_EQ(CountSseFrames(listener.chunks), size_t{1});
+    EXPECT_NE(listener.chunks.find("notifications/tools/list_changed"),
+              std::string::npos);
+    EXPECT_EQ(listener.chunks.find("\"ok\":true"), std::string::npos);
 
     server.Close();
     consumer.join();

@@ -116,6 +116,18 @@ std::string GeneralizeFailureMessage(std::string_view category) {
     return std::string(category) + " failed";
 }
 
+void InjectServerInfoMeta(JsonValue& result, const Implementation& info) {
+    if (!result.IsObject()) return;
+    JsonValue* meta = result.Find(detail::kMeta);
+    if (!meta || !meta->IsObject()) {
+        result[detail::kMeta] = JsonValue(JsonValue::object_tag);
+        meta = result.Find(detail::kMeta);
+    }
+    if (!meta->Contains(detail::kMetaServerInfoKey)) {
+        (*meta)[detail::kMetaServerInfoKey] = SerializeImplementation(info);
+    }
+}
+
 SpanEvent MakeServerRequestEvent(const JsonRpcRequest& req, SpanPhase phase, bool failed) {
     SpanEvent event;
     event.phase = phase;
@@ -556,6 +568,9 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         JsonRpcResponse resp;
         resp.id = item.req.id;
         resp.result = codec->EncodeResult(item.req.method, result);
+        if (server_info_ && IsJuly2026OrLater()) {
+            InjectServerInfoMeta(resp.result, *server_info_);
+        }
         finish_span(false);
         SendMessage(JsonRpcMessage{std::move(resp)});
     } catch (const McpError& e) {
@@ -1111,6 +1126,10 @@ std::optional<std::string> McpSessionHandler::RequiredClientCapability(std::stri
 
 void McpSessionHandler::SetClientCapabilities(ClientCapabilities caps) {
     client_capabilities_ = std::move(caps);
+}
+
+void McpSessionHandler::SetServerInfo(const Implementation& info) {
+    server_info_ = info;
 }
 
 void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view version) {

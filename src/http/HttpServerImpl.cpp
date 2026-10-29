@@ -45,6 +45,40 @@ inline constexpr std::chrono::milliseconds kKeepAliveIdleTimeout(30000);
 inline constexpr std::chrono::milliseconds kIoTimeout(30000);
 inline constexpr std::string_view kSsePingFrame = ": ping\r\n\r\n";
 
+namespace {
+
+class SseSendBuffer {
+public:
+    explicit SseSendBuffer(std::function<void(std::string_view)> sink)
+        : sink_(std::move(sink)) {}
+
+    void Send(std::string_view data) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_) {
+            pending_.append(data.data(), data.size());
+            return;
+        }
+        sink_(data);
+    }
+
+    void MarkReady() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ready_ = true;
+        if (pending_.empty())
+            return;
+        std::string pending = std::move(pending_);
+        sink_(pending);
+    }
+
+private:
+    std::mutex mutex_;
+    std::function<void(std::string_view)> sink_;
+    std::string pending_;
+    bool ready_{false};
+};
+
+} // namespace
+
 inline void CloseFd(int fd) {
 #ifdef _WIN32
     ::closesocket(static_cast<SOCKET>(fd));
@@ -466,20 +500,32 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
         }
 
         if (resp.is_sse) {
+            if (resp.sse_close_after_write) {
+                try {
+                    WriteSseHeaders(*conn, safe_headers, true);
+                    if (!resp.body.empty())
+                        conn->Write(resp.body.data(), resp.body.size());
+                    conn->Close();
+                } catch (const std::exception&) {
+                }
+                return;
+            }
+            auto buffer = std::make_shared<SseSendBuffer>(
+                [conn](std::string_view data) {
+                    conn->Write(data.data(), data.size());
+                });
+            auto id = AddSseClient([buffer](std::string_view data) {
+                buffer->Send(data);
+            }, resp.sse_client_tag);
             try {
-                WriteSseHeaders(*conn, safe_headers, resp.sse_close_after_write);
+                WriteSseHeaders(*conn, safe_headers, false);
                 if (!resp.body.empty())
                     conn->Write(resp.body.data(), resp.body.size());
+                buffer->MarkReady();
             } catch (const std::exception&) {
+                RemoveSseClient(id);
                 return;
             }
-            if (resp.sse_close_after_write) {
-                conn->Close();
-                return;
-            }
-            auto id = AddSseClient([conn](std::string_view data) {
-                conn->Write(data.data(), data.size());
-            }, resp.sse_client_tag);
             if (options_.on_connect) {
                 try {
                     options_.on_connect();

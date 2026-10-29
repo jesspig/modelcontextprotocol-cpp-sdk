@@ -22,6 +22,7 @@ C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 - [Conformance Tests](#conformance-tests)
 - [Examples](#examples)
 - [Related Projects](#related-projects)
+- [Non-standard Extensions](#non-standard-extensions)
 - [Unsupported Declarations](#unsupported-declarations)
 - [License](#license)
 
@@ -170,6 +171,8 @@ auto result = client->CallTool("echo",
     JsonValue::Object{{"text", "Hello, MCP!"}});
 ```
 
+Handlers can be supplied before negotiation through `ClientOptions`: `elicitation_handler`, `url_elicitation_handler`, `sampling_handler` (legacy), and `roots_handler` (legacy). `DeriveClientCapabilities` advertises the matching capabilities automatically and only fills in what an explicit `capabilities` value leaves out. MRTR is driven automatically by default (`input_required_config`, `auto_fulfill=true`, 10 rounds); assign `std::nullopt` to `input_required_config` to receive `input_required` results unfulfilled. `url_elicitation_handler` returns an `ElicitResult` whose action must be `accept`, `decline`, or `cancel` (no handler means `decline`); the deprecated void callback remains available as `SetLegacyUrlElicitationHandler` and fixes the action to `accept`. `ClientOptions::cache_auth_context` returns an authorization context so private cached responses are partitioned per context and cleared when it changes. For custom methods, `SendRequest` / `SendNotification` / `CancelRequest` provide raw control, and `SetLoggingLevel` sends `logging/setLevel` on legacy sessions only (modern sessions reject it; pass `logLevel` per request instead).
+
 ## OAuth Support
 
 The client supports the MCP OAuth authorization flow:
@@ -267,18 +270,24 @@ Implementation notes on the official Ruby SDK (`mcp` gem, `main` branch as of 20
 | Tasks (SEP-2663) | Not implemented — "remains planned" ([ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md), [#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)) | `tasks/get\|update\|cancel` dual-era + `FileTaskStore` ([tasks-extension](wiki/concepts/tasks-extension.md)) |
 | Skills (SEP-2640) | Not implemented【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`, 2026-only ([skills-extension](wiki/concepts/skills-extension.md)) |
 
+## Non-standard Extensions
+
+These capabilities are SDK extensions, not part of the 2026 core specification; each is opt-in and degrades to the baseline path when a peer does not implement it.
+
+- **ETag conditional requests** — an SDK extension independent of the 2026 `ttlMs`/`cacheScope` response cache. The client stores response bodies and sends `_meta.ifNoneMatch` when `ClientOptions::enable_etag_cache` (default true) and the global `SetEtagCacheEnabled` gate are both on; the server enables the gate through `ServerOptions::enable_etag_cache` (default false). Peers that do not implement the extension ignore it and return full responses, while TTL caching continues to work independently.
+- **Progressive discovery / `SearchTools`** — an experimental SDK extension disabled by default on both sides (`ServerOptions::enable_progressive_discovery` / `ClientOptions::enable_progressive_discovery`). When enabled, the server accepts `query`/`pageSize` on `tools/list` and the client exposes `SearchTools(query, page_size)`; it is not part of the 2026 core specification, and with the flags off `SearchTools` degrades to plain paginated `tools/list`.
+- **Server Cards** — the server can generate a card (`McpServer::GetServerCard()`) and expose it over Streamable HTTP at `GET /server-card` when `enable_server_card` is configured on `ServerOptions` / `StreamableHttpServerOptions`; the client does not consume server cards, and `serverInfo` from the handshake remains its identity source.
+
 ## Unsupported Declarations
 
 The following items are explicitly declared unsupported in this round; when a peer sends them, this SDK degrades gracefully (ignores the unknown field or falls back to the baseline path) instead of failing the session.
 
 - **Apps UI rendering** — server-pushed UI components are not rendered and pass through as opaque data only.
+- **Full sampling** — sampling is legacy partial only: the deprecated `sampling_handler` covers basic form and single-content sampling, and the modern 2026 era is not treated as a complete sampling capability; full sampling is out of scope for this round and is not counted as a Tier 1 parity closure item.
 - **EMA** — EMA negotiation is not implemented and peers fall back to baseline capability negotiation.
 - **DPoP client-side per-request proofs** — server-side proof verification is implemented (off by default, experimental `enable_dpop`, requires OpenSSL; see OAuth Support above); without the two callbacks above no proof is attached, while configured callbacks drive a DPoP session with a single `use_dpop_nonce` retry; with the switch off the plain Bearer path is unchanged ([dpop](wiki/concepts/dpop.md)).
 - **jwt-bearer** — `private_key_jwt` client authentication is supported (an ES256 client assertion is sent on the token requests when `private_key_pem` is configured and the authorization server advertises `private_key_jwt` in `token_endpoint_auth_methods_supported`; requires OpenSSL), while the authorization-owner `jwt-bearer` grant is not, and the public-client PKCE/CIMD flow remains the supported path.
-- **ETags** — `ETag` / `If-None-Match` validators are not stored or compared, and cached responses are governed by TTL only.
-- **Progressive discovery** — incremental capability discovery is not implemented, and the full `server/discover` (modern) / `initialize` (legacy) handshake is always used.
 - **File Uploads** — resumable file-upload primitives are not implemented, and file content moves through existing tool/resource payloads only.
-- **Server Cards** — server cards are not surfaced, and `serverInfo` from the handshake remains the identity source.
 
 ### Breaking changes in this round
 

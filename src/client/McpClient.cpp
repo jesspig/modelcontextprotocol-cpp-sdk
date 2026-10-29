@@ -21,6 +21,7 @@ namespace {
     constexpr std::chrono::seconds kTaskRequestTimeout(600);
     constexpr std::chrono::seconds kPingTimeout(10);
     constexpr std::chrono::milliseconds kSubscriptionAckTimeout(5000);
+    constexpr std::chrono::milliseconds kSubscriptionAckPollInterval(50);
     constexpr std::chrono::milliseconds kMaxServerPollInterval(300000);
 
     constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffBase(50);
@@ -281,6 +282,29 @@ namespace {
         }
     }
 
+    static ElicitResult ValidateUrlElicitationResult(ElicitResult result) {
+        if (result.action != "accept" && result.action != "decline" &&
+            result.action != "cancel") {
+            const std::string action =
+                result.action.empty() ? std::string("<empty>") : result.action;
+            throw McpError(McpErrorCode::HandlerError,
+                "invalid url elicitation action: " + action);
+        }
+        return result;
+    }
+
+    static ElicitResult InvokeUrlElicitationHandler(
+        const std::optional<UrlElicitationHandler>& handler,
+        const ElicitRequestParams& params)
+    {
+        if (!handler) {
+            ElicitResult result;
+            result.action = "decline";
+            return result;
+        }
+        return ValidateUrlElicitationResult((*handler)(params));
+    }
+
     class ScopedProgressCleanup {
     public:
         explicit ScopedProgressCleanup(std::function<void()> cleanup)
@@ -293,6 +317,40 @@ namespace {
     private:
         std::function<void()> cleanup_;
     };
+}
+
+std::optional<ClientCapabilities> DeriveClientCapabilities(
+    const ClientOptions& options)
+{
+    if (!options.capabilities &&
+        !options.elicitation_handler &&
+        !options.url_elicitation_handler &&
+        !options.sampling_handler &&
+        !options.roots_handler) {
+        return std::nullopt;
+    }
+
+    ClientCapabilities caps = options.capabilities.value_or(ClientCapabilities{});
+
+    if (options.elicitation_handler) {
+        if (!caps.elicitation) caps.elicitation = ElicitationCapability{};
+        if (!caps.elicitation->form.has_value())
+            caps.elicitation->form = JsonValue(JsonValue::object_tag);
+    }
+    if (options.url_elicitation_handler) {
+        if (!caps.elicitation) caps.elicitation = ElicitationCapability{};
+        if (!caps.elicitation->url.has_value())
+            caps.elicitation->url = JsonValue(JsonValue::object_tag);
+    }
+    if (options.sampling_handler && !caps.sampling) {
+        caps.sampling = SamplingCapability{};
+    }
+    if (options.roots_handler) {
+        if (!caps.roots) caps.roots = RootsCapability{};
+        if (!caps.roots->list_changed.has_value())
+            caps.roots->list_changed = true;
+    }
+    return caps;
 }
 
 static RequestMeta BuildClientMeta(
@@ -519,6 +577,12 @@ McpClient::McpClient(
     , options_(std::move(options))
     , response_cache_(std::make_unique<detail::ResponseCache>())
 {
+    sampling_handler_ = options_.sampling_handler;
+    roots_handler_ = options_.roots_handler;
+    elicitation_handler_ = options_.elicitation_handler;
+    url_elicitation_handler_ = options_.url_elicitation_handler;
+    options_.capabilities = DeriveClientCapabilities(options_);
+
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(
         transport_, std::move(codec));
@@ -529,6 +593,8 @@ McpClient::McpClient(
     WireTransportCallbacks();
     handler_->Start();
     WireClientHandlers();
+    if (sampling_handler_) InstallSamplingHandler();
+    if (roots_handler_) InstallRootsHandler();
 }
 
 McpClient::~McpClient() {
@@ -588,7 +654,9 @@ NegotiationResult McpClient::NegotiateProtocol() {
 
 void McpClient::Close() {
     if (handler_) handler_->Close();
+    std::lock_guard<std::mutex> lock(cache_auth_mutex_);
     response_cache_->ClearPrivate();
+    last_cache_auth_context_.clear();
 }
 
 void McpClient::WireClientHandlers() {
@@ -605,18 +673,15 @@ void McpClient::WireClientHandlers() {
                             "url elicitation missing elicitationId")));
                     return;
                 }
-                std::string action = "decline";
-                if (url_elicitation_handler_) {
-                    try {
-                        (*url_elicitation_handler_)(params);
-                        action = "accept";
-                    } catch (...) {
-                        p.set_exception(std::current_exception());
-                        return;
-                    }
+                ElicitResult elicit_result;
+                try {
+                    elicit_result =
+                        InvokeUrlElicitationHandler(url_elicitation_handler_, params);
+                } catch (...) {
+                    p.set_exception(std::current_exception());
+                    return;
                 }
-                JsonValue result = SerializeElicitResult(ElicitResult{});
-                result["action"] = JsonValue(action);
+                JsonValue result = SerializeElicitResult(elicit_result);
                 if (!modern_era) {
                     JsonValue complete_params(JsonValue::object_tag);
                     complete_params["elicitationId"] = JsonValue(*params.elicitation_id);
@@ -734,6 +799,10 @@ bool McpClient::IsModernProtocol() const {
 
 void McpClient::SetSamplingHandler(SamplingHandler handler) {
     sampling_handler_ = std::move(handler);
+    InstallSamplingHandler();
+}
+
+void McpClient::InstallSamplingHandler() {
     handler_->SetRequestHandler(methods::kCreateMessage,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             if (!sampling_handler_) {
@@ -754,6 +823,10 @@ void McpClient::SetSamplingHandler(SamplingHandler handler) {
 
 void McpClient::SetRootsHandler(RootsHandler handler) {
     roots_handler_ = std::move(handler);
+    InstallRootsHandler();
+}
+
+void McpClient::InstallRootsHandler() {
     handler_->SetRequestHandler(methods::kListRoots,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             (void)req;
@@ -777,6 +850,18 @@ void McpClient::SetElicitationHandler(ElicitationHandler handler) {
 
 void McpClient::SetUrlElicitationHandler(UrlElicitationHandler handler) {
     url_elicitation_handler_ = std::move(handler);
+}
+
+void McpClient::SetLegacyUrlElicitationHandler(
+    std::function<void(const ElicitRequestParams&)> handler)
+{
+    url_elicitation_handler_ = [handler = std::move(handler)](
+        const ElicitRequestParams& params) {
+        handler(params);
+        ElicitResult result;
+        result.action = "accept";
+        return result;
+    };
 }
 
 void McpClient::SetNotificationHandler(
@@ -870,6 +955,21 @@ static bool TryFulfillInputRequired(
     }
 
     auto input_req = DeserializeInputRequiredResult(result_json);
+
+    for (const auto& entry : input_req.input_requests) {
+        const auto& request = entry.second;
+        if (request.method == methods::kElicit) {
+            auto params = DeserializeElicitRequestParams(request.params);
+            if (params.mode != "url" && !elicitation_handler) {
+                return false;
+            }
+        } else if (request.method == methods::kCreateMessage) {
+            if (!sampling_handler) return false;
+        } else if (request.method == methods::kListRoots) {
+            if (!roots_handler) return false;
+        }
+    }
+
     out_request_state = input_req.request_state;
 
     if (input_req.input_requests.empty()) {
@@ -884,33 +984,19 @@ static bool TryFulfillInputRequired(
         if (request.method == methods::kElicit) {
             auto elicit_params = DeserializeElicitRequestParams(request.params);
             if (elicit_params.mode == "url") {
-                std::string action = "decline";
-                if (url_elicitation_handler) {
-                    (*url_elicitation_handler)(elicit_params);
-                    action = "accept";
-                }
-                ElicitResult url_result;
-                url_result.action = std::move(action);
+                auto url_result = InvokeUrlElicitationHandler(
+                    url_elicitation_handler, elicit_params);
                 responses[key] = MakeInputResponseFromElicitResult(url_result);
             } else {
-                if (!elicitation_handler) {
-                    throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
-                }
                 auto elicit_result = (*elicitation_handler)(elicit_params);
                 MaybeApplyElicitationDefaults(elicit_result, elicit_params, options);
                 responses[key] = MakeInputResponseFromElicitResult(elicit_result);
             }
         } else if (request.method == methods::kCreateMessage) {
-            if (!sampling_handler) {
-                throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
-            }
             auto sampling_result = (*sampling_handler)(
                 DeserializeCreateMessageRequestParams(request.params));
             responses[key] = MakeInputResponseFromCreateMessageResult(sampling_result);
         } else if (request.method == methods::kListRoots) {
-            if (!roots_handler) {
-                throw McpError(McpErrorCode::MethodNotFound, "roots not supported");
-            }
             auto roots_result = (*roots_handler)(
                 DeserializeListRootsRequestParams(request.params));
             responses[key] = MakeInputResponseFromListRootsResult(roots_result);
@@ -950,7 +1036,11 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
 {
     auto& cfg = options_.input_required_config;
     int max_rounds = cfg ? cfg->max_rounds : 0;
-    auto round_timeout = cfg ? cfg->round_timeout : timeout;
+    auto round_timeout = cfg
+        ? (std::min)(
+            std::chrono::duration_cast<std::chrono::milliseconds>(cfg->round_timeout),
+            timeout)
+        : timeout;
     auto total_budget = cfg ? cfg->max_total_timeout : std::chrono::seconds(0);
     auto flow_start = std::chrono::steady_clock::now();
     int state_only_rounds = 0;
@@ -1014,7 +1104,9 @@ void McpClient::RecoverExpiredSession() {
     session_generation_.fetch_add(1);
 }
 
-void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
+void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result,
+    std::string_view auth_context)
+{
     auto* ttl = result.Find(detail::kCacheHint);
     if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
     if (!ttl) ttl = result.Find(detail::kTTLMs);
@@ -1027,8 +1119,21 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
             ? detail::ResponseCache::Scope::Private
             : detail::ResponseCache::Scope::Public;
         response_cache_->Store(
-            key, entry_scope, result, std::chrono::milliseconds(ttl->GetInt()));
+            key, entry_scope, result,
+            std::chrono::milliseconds(ttl->GetInt()), auth_context);
     }
+}
+
+std::string McpClient::CurrentCacheAuthContext() {
+    std::string current = options_.cache_auth_context
+        ? options_.cache_auth_context()
+        : std::string();
+    std::lock_guard<std::mutex> lock(cache_auth_mutex_);
+    if (current != last_cache_auth_context_) {
+        response_cache_->ClearPrivate();
+        last_cache_auth_context_ = current;
+    }
+    return current;
 }
 
 std::optional<std::string> McpClient::GetStoredEtag(const std::string& key) {
@@ -1075,7 +1180,9 @@ ListToolsResult McpClient::ListTools(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListTools,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListToolsResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1085,7 +1192,7 @@ ListToolsResult McpClient::ListTools(
             return DeserializeListToolsResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListToolsResult(result);
 }
 
@@ -1217,7 +1324,9 @@ ListResourcesResult McpClient::ListResources(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListResources,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListResourcesResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1227,7 +1336,7 @@ ListResourcesResult McpClient::ListResources(
             return DeserializeListResourcesResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListResourcesResult(result);
 }
 
@@ -1253,7 +1362,9 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListResourceTemplates,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListResourceTemplatesResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1263,7 +1374,7 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
             return DeserializeListResourceTemplatesResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListResourceTemplatesResult(result);
 }
 
@@ -1291,11 +1402,13 @@ ReadResourceResult McpClient::ReadResource(
 
     auto mode = options.cache_mode.value_or("use");
     auto key = CacheKey(methods::kReadResource, uri);
+    auto auth_context = CurrentCacheAuthContext();
     if (mode != "bypass" && mode != "refresh") {
         std::optional<std::chrono::milliseconds> max_age;
         if (options.max_age_ms)
             max_age = std::chrono::milliseconds(*options.max_age_ms);
-        if (auto cached = response_cache_->GetAny(key, max_age)) {
+        if (auto cached = response_cache_->GetAny(
+                key, max_age, auth_context)) {
             return DeserializeReadResourceResult(*cached);
         }
     }
@@ -1314,7 +1427,7 @@ ReadResourceResult McpClient::ReadResource(
             return DeserializeReadResourceResult(*cached);
     }
     StoreEtagBody(key, result_json);
-    if (mode != "bypass") CacheIfHinted(key, result_json);
+    if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeReadResourceResult(result_json);
 }
 
@@ -1342,7 +1455,9 @@ ListPromptsResult McpClient::ListPrompts(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListPrompts,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListPromptsResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1352,7 +1467,7 @@ ListPromptsResult McpClient::ListPrompts(
             return DeserializeListPromptsResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListPromptsResult(result);
 }
 
@@ -1413,7 +1528,9 @@ SkillsListResult McpClient::ListSkills(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListSkills,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeSkillsListResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1432,7 +1549,7 @@ SkillsListResult McpClient::ListSkills(
         }
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeSkillsListResult(result);
 }
 
@@ -1447,11 +1564,13 @@ SkillsGetResult McpClient::GetSkill(
 
     auto mode = options.cache_mode.value_or("use");
     auto key = CacheKey(methods::kGetSkill, uri);
+    auto auth_context = CurrentCacheAuthContext();
     if (mode != "bypass" && mode != "refresh") {
         std::optional<std::chrono::milliseconds> max_age;
         if (options.max_age_ms)
             max_age = std::chrono::milliseconds(*options.max_age_ms);
-        if (auto cached = response_cache_->GetAny(key, max_age)) {
+        if (auto cached = response_cache_->GetAny(
+                key, max_age, auth_context)) {
             return DeserializeSkillsGetResult(*cached);
         }
     }
@@ -1470,7 +1589,7 @@ SkillsGetResult McpClient::GetSkill(
             return DeserializeSkillsGetResult(*cached);
     }
     StoreEtagBody(key, result_json);
-    if (mode != "bypass") CacheIfHinted(key, result_json);
+    if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeSkillsGetResult(result_json);
 }
 
@@ -1491,11 +1610,13 @@ ReadDirectoryResult McpClient::ReadDirectory(
         context += *cursor;
     }
     auto key = CacheKey(methods::kReadDirectory, context);
+    auto auth_context = CurrentCacheAuthContext();
     if (mode != "bypass" && mode != "refresh") {
         std::optional<std::chrono::milliseconds> max_age;
         if (options.max_age_ms)
             max_age = std::chrono::milliseconds(*options.max_age_ms);
-        if (auto cached = response_cache_->GetAny(key, max_age)) {
+        if (auto cached = response_cache_->GetAny(
+                key, max_age, auth_context)) {
             return DeserializeReadDirectoryResult(*cached);
         }
     }
@@ -1515,7 +1636,7 @@ ReadDirectoryResult McpClient::ReadDirectory(
             return DeserializeReadDirectoryResult(*cached);
     }
     StoreEtagBody(key, result_json);
-    if (mode != "bypass") CacheIfHinted(key, result_json);
+    if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeReadDirectoryResult(result_json);
 }
 
@@ -1675,6 +1796,52 @@ DiscoverResult McpClient::Discover() {
     return DeserializeDiscoverResult(result);
 }
 
+static bool HasExplicitRequestMeta(const RequestMeta& meta) {
+    return meta.progress_token || meta.client_info || meta.client_capabilities ||
+           meta.log_level || meta.extensions || meta.traceparent ||
+           meta.tracestate || meta.baggage ||
+           meta.protocol_version != std::string(kLatestProtocolVersion);
+}
+
+std::future<JsonValue> McpClient::SendRequest(
+    std::string_view method,
+    JsonValue params,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout)
+{
+    auto effective_meta = HasExplicitRequestMeta(meta)
+        ? meta
+        : BuildClientMeta(options_, negotiation_.negotiated_version);
+    return handler_->SendRequest(method, std::move(params), effective_meta, timeout);
+}
+
+void McpClient::SendNotification(std::string_view method, JsonValue params) {
+    handler_->SendNotification(method, std::move(params));
+}
+
+void McpClient::CancelRequest(const RequestId& id, std::string_view reason) {
+    JsonValue params(JsonValue::object_tag);
+    std::visit([&params](const auto& value) {
+        params[detail::kRequestId] = JsonValue(value);
+    }, id);
+    if (!reason.empty()) params[detail::kReason] = JsonValue(std::string(reason));
+    handler_->SendNotification(notifications::kCancelled, std::move(params));
+}
+
+void McpClient::SetLoggingLevel(LoggingLevel level) {
+    if (IsModernProtocolVersion(negotiation_.negotiated_version)) {
+        throw McpError(McpErrorCode::ProtocolViolation,
+            "logging/setLevel is not available in protocol version " +
+            negotiation_.negotiated_version +
+            "; use a per-request logLevel instead");
+    }
+    SetLevelRequestParams params;
+    params.level = level;
+    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    (void)DoSendRequest(*handler_, methods::kSetLoggingLevel,
+        SerializeSetLevelRequestParams(params), meta, kDefaultRequestTimeout);
+}
+
 void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     std::string subscription_id;
@@ -1697,8 +1864,10 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
         std::lock_guard<std::mutex> lk(ack_mutex_);
         pending_ack_id_ = subscription_id;
     }
+
+    std::future<JsonValue> future;
     try {
-        DoSendRequest(*handler_, methods::kSubscribe,
+        future = handler_->SendRequest(methods::kSubscribe,
             SerializeSubscriptionsListenRequestParams(params),
             std::move(meta), kDefaultRequestTimeout);
     } catch (...) {
@@ -1707,20 +1876,46 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
         throw;
     }
 
+    const auto deadline =
+        std::chrono::steady_clock::now() + kSubscriptionAckTimeout;
     std::unique_lock<std::mutex> lk(ack_mutex_);
-    if (pending_ack_id_ &&
-        !ack_cv_.wait_for(lk, kSubscriptionAckTimeout,
-                          [this] { return !pending_ack_id_; })) {
-        pending_ack_id_.reset();
-        throw McpError(McpErrorCode::InternalError,
-            "subscriptions/listen: acknowledged frame not received within " +
-            std::to_string(kSubscriptionAckTimeout.count()) + "ms");
+    while (true) {
+        if (future.wait_for(std::chrono::milliseconds(0)) ==
+            std::future_status::ready) {
+            pending_ack_id_.reset();
+            lk.unlock();
+            auto response = future.get();
+            auto error = ExtractProtocolError(response);
+            if (error.is_error) {
+                throw McpError(error.code, std::move(error.message));
+            }
+            return;
+        }
+        if (!pending_ack_id_) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            pending_ack_id_.reset();
+            throw McpError(McpErrorCode::InternalError,
+                "subscriptions/listen: acknowledged frame not received within " +
+                std::to_string(kSubscriptionAckTimeout.count()) + "ms");
+        }
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        ack_cv_.wait_for(lk,
+            std::min(remaining, kSubscriptionAckPollInterval),
+            [this] { return !pending_ack_id_; });
     }
 }
 
 void McpClient::SendRootsListChanged() {
     static constexpr std::string_view kMinVersion = "2025-06-18";
     const std::string_view negotiated = negotiation_.negotiated_version;
+    if (IsModernProtocolVersion(negotiated)) {
+        throw McpError(McpErrorCode::ProtocolViolation,
+            "notifications/roots/list_changed was removed in protocol version " +
+            std::string(kLatestProtocolVersion) + ", negotiated: " +
+            std::string(negotiated));
+    }
     std::optional<size_t> negotiated_index;
     std::optional<size_t> min_index;
     size_t i = 0;

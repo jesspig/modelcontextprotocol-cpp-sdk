@@ -16,6 +16,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <atomic>
 #include <mutex>
@@ -106,6 +107,7 @@ public:
     ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
+    bool IsRunning() const;
     const std::string& SessionId() const { return session_id_; }
 
     McpSessionHandler& GetSessionHandler() { return *handler_; }
@@ -129,6 +131,7 @@ private:
 
     JsonValue BuildToolsJson();
     std::vector<std::string> EffectiveSupportedVersions() const;
+    Implementation ResolveServerInfo() const;
     CacheHint ResolveCacheHint(std::string_view method) const;
     void EmitLoggingMessage(LoggingLevel level, std::string_view data);
     void HandleListTools(
@@ -173,7 +176,7 @@ private:
     ServerCapabilities capabilities_;
 
     mutable std::shared_mutex registry_mutex_;
-    std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
+    std::map<std::string, std::shared_ptr<McpServerTool>, std::less<>> tools_;
     std::optional<JsonValue> cached_tools_json_;
     struct ResourceEntry {
         std::string name;

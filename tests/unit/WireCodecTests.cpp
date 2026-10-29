@@ -197,7 +197,7 @@ TEST(WireCodecTest, Rev2026HasMessageSubscriptionAndTaskNotifications) {
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/cancelled"));
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/input_required"));
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/triggers/event"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/roots/list_changed"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/roots/list_changed"));
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/initialized"));
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/elicitation/complete"));
 }
@@ -263,6 +263,8 @@ TEST(WireCodecTest, Rev2025ValidateNotificationRejectsModernOnly) {
               WireValidation::Ok);
     EXPECT_EQ(legacy->ValidateNotification("notifications/elicitation/complete", raw),
               WireValidation::Ok);
+    EXPECT_EQ(legacy->ValidateNotification("notifications/roots/list_changed", raw),
+              WireValidation::Ok);
     EXPECT_EQ(legacy->ValidateNotification("notifications/triggers/event", raw),
               WireValidation::Ok);
 }
@@ -276,8 +278,9 @@ TEST(WireCodecTest, Rev2026ValidateNotificationRejectsLegacyOnly) {
               WireValidation::NotInEra);
     EXPECT_EQ(modern->ValidateNotification("notifications/tasks/status", raw),
               WireValidation::Ok);
+    EXPECT_FALSE(modern->HasNotificationMethod("notifications/roots/list_changed"));
     EXPECT_EQ(modern->ValidateNotification("notifications/roots/list_changed", raw),
-              WireValidation::Ok);
+              WireValidation::NotInEra);
 }
 
 TEST(WireCodecTest, WireRequestViewRestoresMetaIntoParams) {
