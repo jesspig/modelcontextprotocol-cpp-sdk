@@ -1,7 +1,7 @@
-# C++ SDK 官方 conformance 已知偏差基线。
+# C++ SDK 官方 conformance 已知偏差基线（未知版本回退默认）。
 # per-leg 拆分：baseline-2025-11-25.yaml（legacy leg）与 baseline-2026-07-28.yaml（modern leg）；
 # 选用规则见 scripts/run-conformance.sh（按 CONFORMANCE_SPEC_VERSION 映射，未知版本回退本文件）。
-# 本文件条目冻结，仅作回退默认；各 leg 真源以对应 per-leg 文件为准（条目逐字一致）。
+# 本文件仅作回退默认，各 leg 真源以对应 per-leg 文件为准；跨 leg 条目改动须同步，禁止只改一处。
 #
 # 驱动包：@modelcontextprotocol/conformance@0.2.0-alpha.12（alpha 通道最新，
 # 2026-10-01；requirements 内核与 alpha.11 一致，升级只收 referee 修补）。
@@ -26,43 +26,62 @@
 # skills/tasks/sse-retry 等扩展场景默认被 referee skip（extension 不在
 # active 适用集内），只在 --suite all / --force 下 run for visibility。
 #
-# server 侧现状：legacy leg 31 场景绿（server 基线仅留跨 leg 保留的
-# server-sse-multiple-streams 1 条，见下）；
-# modern leg（--requirements 2026-07-28）当前为红：GATE1 主会话结论为
-# 23 个 scored 失败（归因表见主会话收口，wiki/tests.md 转述，本任务未复跑
-# server leg）。G 系列冻结批已解决旧 4 缺口中的 3 个（单测守护，不另增条目）：
-#   - input-required-result-non-tool-request：resources/read 与 prompts/get
-#     已支持 InputRequiredResult（自动签名 request_state），fixture 改两阶段
-#     首轮回 input_required
-#   - sep-2164-resource-not-found：data 通道修补后 data.uri 回声已补
-#     （SHOULD WARNING，本就非 scored 红项）
-#   - tools-call-with-progress：modern 下 POST 常开 + progress/logging 按
-#     token 路由缓冲进同一 SSE 流（BufferRequestStreamNotification），
-#     单写即关无流可达已修复（legacy leg 早已绿）
-# 剩余生产缺口（modern leg 为红的主因）：
-#   - server-stateless：_meta 缺失拒收的 400 映射、-32020 对 -32022、
-#     initialize 现代 404、-32021 能力拒收、subscriptions/listen 流
+# 2026-10-29 四 leg 实测（referee 0.2.0-alpha.12）：
+#   server modern 195 passed / 0 failed + 2 SHOULD warnings（server-stateless 场景
+#   28/0 通过，仍报 ServerSendsToolsListChangedOnSubscription /
+#   ServerSendsPromptsListChangedOnSubscription）；server legacy 67 passed / 0 failed；
+#   client modern 450 passed / 9 failed（9 项均为本地无 OpenSSL 的 DPoP/ES256
+#   环境限制：auth/client-credentials-jwt、auth/dpop、auth/dpop-nonce，不新增基线）；
+#   client legacy 233 passed / 0 failed。
+# 据此删除 auth/client-credentials-basic、auth/enterprise-managed-authorization、
+# auth/wif-jwt-bearer（modern 实测均 passed）；server-stateless 因 referee
+# 诊断路径仍报 warning 保留（modern leg 基线 1 条）。
+#
+# 跨 leg 保留条目（有证据，禁删）：
+#   - server-sse-multiple-streams：modern 2/2 与 legacy 单跑 2/2 曾构成删除证据，
+#     已删；后发现 legacy suite 内 skip 以 WARNING 记账，无条目 legacy 退出 1，
+#     故恢复。该条目为 legacy 保绿所必需；modern leg 使用
+#     baseline-2026-07-28.yaml（无本条目），不会判过期。
 #
 # 已删条目归因（删前均有 referee 变绿证据，禁恢复）：
 #   - tools-call-with-progress：双因——其一传输未开 GET 流
 #     广播无人收（enable_legacy_sse=true 修好 logging/sampling/
 #     elicitation 系列），其二 _meta 反序列化剥离后 Params().meta
 #     恒空（fixture 改读 GetRequest().meta 取 progressToken，
-#     同法修好 LoggingTool 的 logLevel 门控）。
-#     legacy leg 2/2 变绿故删；modern leg 仍失败（上），删后 modern
-#     报 unexpected，属已知缺口不另增条目。
+#     同法修好 LoggingTool 的 logLevel 门控）。legacy leg 2/2 变绿故删；
+#     modern leg 2026-10-29 实测 195/0 亦已通过，不另设条目。
+#   - sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
+#     本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
+#     event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报
+#     stale，故删。生产侧为 G8b：POST SSE 过早 EOF 后按钳制延迟重建
+#     GET 并把原 ID 结果递回 pending，失败仍走 G8 fail-fast。
+#     2026-10-12 core leg（2025）复跑再确认 3/3，禁恢复。
+#   - http-standard-headers（9/0）、http-invalid-tool-headers（12/0）：
+#     2026-10-11 --requirements 2026-07-28 实测全过，2026-10-12 复跑仍全绿，
+#     禁恢复。
+#   - sep-2322-client-request-state：2026-10-11 以 5/0 删除；2026-10-12
+#     --requirements 复跑 0/5 使删除证据作废；2026-10-29 client modern
+#     450/9（失败全为 auth）未再出现本场景失败，保持删除，禁恢复。
+#   - elicitation-sep1034-client-defaults：G 批实现 applyDefaults（7 单测
+#     守护）后删除；2026-10-12 core leg（2025）复跑 0/5，疑 fixture 未声明
+#     applyDefaults 致回填短路（推测）；2026-10-29 client legacy 233/0 已
+#     全绿，保持删除，禁恢复。
+#   - json-schema-ref-no-deref：2026 requirements 集内新场景，2026-10-12
+#     复跑 0/1 unexpected，未入基线；2026-10-29 client modern 450/9（失败
+#     全为 auth）未再出现本场景失败，按基线只减不增保持不入基线。
+#   - auth 已删条目（metadata-default、basic-cimd、scope×5、token-endpoint×3、
+#     pre-registration、resource-mismatch、offline-access×2、
+#     authorization-server-migration、iss×6、metadata-issuer-mismatch、
+#     metadata-var1/var2/var3、scope-step-up、client-credentials-jwt、
+#     dpop、dpop-nonce）均在 referee 报 stale 或 Linux+OpenSSL 实测
+#     checks.json 全 SUCCESS 后删除，禁恢复。
+#   - 2026-10-29 新增删除 3 条：auth/client-credentials-basic、
+#     auth/enterprise-managed-authorization、auth/wif-jwt-bearer（依据见上）。
 #
-# 恢复保留条目（曾删后恢复，有证据，禁再删）：
-#   - server-sse-multiple-streams：modern 2/2 与 legacy 单跑 2/2 曾
-#     构成删除证据，已删；后发现 legacy suite 内 skip 以 WARNING
-#     记账，无条目 legacy 退出 1，故恢复。跨 leg 状态见 server 键注释。
-
-# （server 键：仅 server-sse-multiple-streams 一条。注意跨 leg 语义——
-# legacy suite 内它以 WARNING 形式 skip（0/0，无 session 时 referee
-# 记 WARNING 不记失败），无条目则 legacy 报 unexpected 退出 1；
-# modern requirements 内它 2/2 通过（该 invocation 会顺带报 stale，
-# 但该 invocation 本就因生产缺口为红，见上）。条目为 legacy 保绿所
-# 必需，禁止以 modern 的 stale 为由删除；删则 legacy 变红。）
+# client 侧遗留说明：http-custom-headers 仅 legacy leg 保留，条目真源见
+# baseline-2025-11-25.yaml；Windows 非 ASCII context 致 JsonValue::Parse 报
+# invalid UTF-8，Linux CI（UTF-8 locale）预期通过。2026-10-29 client legacy
+# 233/0 中本场景未运行，保留待复跑，故本文件 client 段不设该条目。
 
 server:
     # --- server-sse-multiple-streams（跨 leg 保留，见上）---
@@ -72,58 +91,12 @@ server:
     # 而单通道传输的 DELETE 关闭共享 channel 毒化后续全场景（生产缺口），
     # 故 stateful fixture 显式不设 session_store。
     - server-sse-multiple-streams
-    # --- server-stateless（modern leg 保绿，真源见 baseline-2026-07-28.yaml，本条目与之逐字一致）---
-    # 2026-10-12 referee 实测 28/28 通过但带 2 个 WARNING
-    # （ServerSendsPromptsListChangedOnSubscription 与
-    # ServerSendsToolsListChangedOnSubscription，均为 SHOULD 级：
-    # 诊断工具变更列表后 listen 流未收到 list_changed 推送），
-    # referee 将其判为 unexpected 致 modern server leg 退出 1。
-    # 待生产实现变更推送后 referee 会报 stale，届时删除本条目。
+
+    # --- server-stateless（modern leg；SHOULD WARNING 已知偏差）---
+    # 2026-10-29 referee 实测场景 28/0，但仍有 2 条 SHOULD WARNING：
+    # ServerSendsToolsListChangedOnSubscription / ServerSendsPromptsListChangedOnSubscription。
+    # T-10 自动推送与传输回退/首帧注册已修，单测与 raw probe 均证明通知可送达；
+    # referee 诊断路径仍报 warning，保留基线待后续复现，不作过期删除。
     - server-stateless
 
-client:
-    # --- 已删 client 条目（逐条证据，结论以最新复跑为准）---
-    # http-custom-headers：fallback 跟随 modern per-leg 删除
-    # （baseline-2026-07-28.yaml client 段已无此条目；原注释以“CI modern
-    # invocation 报 stale”为删除证据，legacy 条目仍保留于
-    # baseline-2025-11-25.yaml）。最终以 leg 复跑确认为准。
-    # sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
-    # 本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
-    # event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报
-    # stale，故删。生产侧为 G8b：POST SSE 过早 EOF 后按钳制延迟重建
-    # GET 并把原 ID 结果递回 pending，失败仍走 G8 fail-fast。
-    # 2026-10-12 core leg（2025）复跑再确认 3/3，禁恢复。
-    # http-standard-headers（9/0）、http-invalid-tool-headers（12/0）：
-    # 2026-10-11 --requirements 2026-07-28 实测全过，2026-10-12 复跑仍全绿，
-    # 禁恢复。
-    # sep-2322-client-request-state：2026-10-11 以 5/0 删除；但 2026-10-12
-    # --requirements 复跑 0/5 且为 unexpected（5 项 MRTR 客户端检查全败），
-    # 删除证据作废，待主会话裁决（恢复条目或修 request_state 链路回归）。
-    # elicitation-sep1034-client-defaults：G 批实现 applyDefaults
-    # （7 单测守护）后删除；但 2026-10-12 core leg（2025）复跑 0/5 且为
-    # unexpected（string/integer/number/enum/boolean 五项缺省全未生效），
-    # 疑 fixture 未声明 applyDefaults 能力致回填短路（推测），待主会话裁决
-    # （恢复条目或补 fixture 声明）。
-    #
-    # --- json-schema-ref-no-deref（新场景，未归因未入基线）---
-    # 2026 requirements 集内场景（工具带网络 $ref 时客户端应调 tools/list），
-    # C++ client 未观测到该调用，2026-10-12 复跑 0/1 unexpected。
-    # 基线只减不增：待主会话归因后再议是否入基线，本次不动条目。
-    #
-    # --- auth/*：fallback 跟随 per-leg，仅收两 leg 真源仍未绿的条目 ---
-    # 2026-10-13 对账：per-leg 两文件均已按 referee stale 证据清空转绿条目，
-    # 本 fallback 与之逐字一致，仅保留
-    #   - client-credentials-basic / enterprise-managed-authorization / wif-jwt-bearer
-    #     （本 leg 0 failed 但 referee 未标 stale，暂留兜底，见上）
-    # 另 http-custom-headers 仅 legacy leg 保留（Windows 非 ASCII context 致
-    # JsonValue::Parse 报 invalid UTF-8，Linux CI 预期通过），真源见
-    # baseline-2025-11-25.yaml。
-    # 已删的 28 个 auth 条目（metadata-default、basic-cimd、scope×5、
-    # token-endpoint×3、pre-registration、resource-mismatch、offline-access×2、
-    # authorization-server-migration、iss×6、metadata-issuer-mismatch、
-    # metadata-var1/var2/var3、scope-step-up、client-credentials-jwt、
-    # dpop、dpop-nonce）均在 referee 报 stale 或 Linux+OpenSSL 实测
-    # checks.json 全 SUCCESS 后删除，禁恢复。
-    - auth/client-credentials-basic
-    - auth/enterprise-managed-authorization
-    - auth/wif-jwt-bearer
+client: []
