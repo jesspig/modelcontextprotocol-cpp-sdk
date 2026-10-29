@@ -1140,8 +1140,10 @@ void StreamableHttpServerTransport::HandlePost(
         resp.headers["x-accel-buffering"] = "no";
         resp.body.clear();
         for (auto& hold_frame : hold_frames) resp.body += hold_frame;
-        resp.body += "event: message\ndata: " +
-                    SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
+        if (!hold_listen || !std::get_if<JsonRpcResponse>(&response)) {
+            resp.body += "event: message\ndata: " +
+                        SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
+        }
         if (resp.body.size() > SseEventLimit()) resp.body.resize(SseEventLimit());
     } else {
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {

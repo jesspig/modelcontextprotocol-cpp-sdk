@@ -1586,8 +1586,6 @@ TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
     auto resp = future.get();
     ASSERT_FALSE(resp.Contains("code"));
     EXPECT_TRUE(resp.IsObject());
-    ASSERT_TRUE(resp.Contains("resultType"));
-    EXPECT_EQ(resp["resultType"], JsonValue("complete"));
 
     auto ack = ack_future.get();
     EXPECT_EQ(ack.method, std::string(notifications::kSubscriptionsAcknowledged));
