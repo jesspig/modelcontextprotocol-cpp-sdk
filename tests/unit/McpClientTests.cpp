@@ -1778,9 +1778,10 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
             result["serverInfo"] = SerializeImplementation(Implementation{"silent-server", "1.0"});
             p.set_value(std::move(result));
         });
+    auto held_response = std::make_shared<std::promise<JsonValue>>();
     server_handler->SetRequestHandler(methods::kSubscribe,
-        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            p.set_value(JsonValue(JsonValue::object_tag));
+        [held_response](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            *held_response = std::move(p);
         });
     server_handler->Start();
 
@@ -1793,6 +1794,54 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
     SubscriptionsListenRequestParams params;
     params.notifications.tools_list_changed = true;
     EXPECT_THROW(client->SubscribeAsync(params), McpError);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SubscribeAsyncReturnsOnAcknowledgedWithoutResult) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto held_response = std::make_shared<std::promise<JsonValue>>();
+    std::weak_ptr<McpSessionHandler> weak_server = server_handler;
+    server_handler->SetRequestHandler(methods::kSubscribe,
+        [held_response, weak_server](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            *held_response = std::move(p);
+            std::string subscription_id;
+            if (req.meta) {
+                if (auto* v = req.meta->Find("io.modelcontextprotocol/subscriptionId");
+                    v && v->IsString()) {
+                    subscription_id = v->GetString();
+                }
+            }
+            JsonRpcNotification notif;
+            notif.method = std::string(notifications::kSubscriptionsAcknowledged);
+            notif.params = SerializeSubscriptionsAcknowledgedNotificationParams(
+                SubscriptionsAcknowledgedNotificationParams{});
+            JsonValue meta(JsonValue::object_tag);
+            meta["io.modelcontextprotocol/protocolVersion"] =
+                JsonValue(std::string(kLatestProtocolVersion));
+            meta["io.modelcontextprotocol/subscriptionId"] =
+                JsonValue(subscription_id);
+            notif.meta = std::move(meta);
+            if (auto server = weak_server.lock()) {
+                server->SendMessage(JsonRpcMessage{std::move(notif)});
+            }
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_TRUE(client->IsModernProtocol());
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_NO_THROW(client->SubscribeAsync(params));
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(3));
 
     client->Close();
     server_handler->Close();

@@ -21,6 +21,7 @@ namespace {
     constexpr std::chrono::seconds kTaskRequestTimeout(600);
     constexpr std::chrono::seconds kPingTimeout(10);
     constexpr std::chrono::milliseconds kSubscriptionAckTimeout(5000);
+    constexpr std::chrono::milliseconds kSubscriptionAckPollInterval(50);
     constexpr std::chrono::milliseconds kMaxServerPollInterval(300000);
 
     constexpr std::chrono::milliseconds kMrtrStateOnlyBackoffBase(50);
@@ -1863,8 +1864,10 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
         std::lock_guard<std::mutex> lk(ack_mutex_);
         pending_ack_id_ = subscription_id;
     }
+
+    std::future<JsonValue> future;
     try {
-        DoSendRequest(*handler_, methods::kSubscribe,
+        future = handler_->SendRequest(methods::kSubscribe,
             SerializeSubscriptionsListenRequestParams(params),
             std::move(meta), kDefaultRequestTimeout);
     } catch (...) {
@@ -1873,14 +1876,34 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
         throw;
     }
 
+    const auto deadline =
+        std::chrono::steady_clock::now() + kSubscriptionAckTimeout;
     std::unique_lock<std::mutex> lk(ack_mutex_);
-    if (pending_ack_id_ &&
-        !ack_cv_.wait_for(lk, kSubscriptionAckTimeout,
-                          [this] { return !pending_ack_id_; })) {
-        pending_ack_id_.reset();
-        throw McpError(McpErrorCode::InternalError,
-            "subscriptions/listen: acknowledged frame not received within " +
-            std::to_string(kSubscriptionAckTimeout.count()) + "ms");
+    while (true) {
+        if (future.wait_for(std::chrono::milliseconds(0)) ==
+            std::future_status::ready) {
+            pending_ack_id_.reset();
+            lk.unlock();
+            auto response = future.get();
+            auto error = ExtractProtocolError(response);
+            if (error.is_error) {
+                throw McpError(error.code, std::move(error.message));
+            }
+            return;
+        }
+        if (!pending_ack_id_) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            pending_ack_id_.reset();
+            throw McpError(McpErrorCode::InternalError,
+                "subscriptions/listen: acknowledged frame not received within " +
+                std::to_string(kSubscriptionAckTimeout.count()) + "ms");
+        }
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        ack_cv_.wait_for(lk,
+            std::min(remaining, kSubscriptionAckPollInterval),
+            [this] { return !pending_ack_id_; });
     }
 }
 
