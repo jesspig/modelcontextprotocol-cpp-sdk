@@ -773,6 +773,9 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
     }
     WireHandlers();
     DeriveCapabilities();
+    if (IsRunning()) {
+        SendListChangedNotification(notifications::kToolListChanged);
+    }
 }
 
 void McpServer::RegisterResource(
@@ -810,6 +813,9 @@ void McpServer::RegisterResource(
     }
     WireHandlers();
     DeriveCapabilities();
+    if (IsRunning()) {
+        SendListChangedNotification(notifications::kResourceListChanged);
+    }
 }
 
 void McpServer::RegisterResourceTemplate(
@@ -856,6 +862,9 @@ void McpServer::RegisterResourceTemplate(
     }
     WireHandlers();
     DeriveCapabilities();
+    if (IsRunning()) {
+        SendListChangedNotification(notifications::kResourceListChanged);
+    }
 }
 
 void McpServer::RegisterPrompt(
@@ -888,6 +897,9 @@ void McpServer::RegisterPrompt(
     }
     WireHandlers();
     DeriveCapabilities();
+    if (IsRunning()) {
+        SendListChangedNotification(notifications::kPromptListChanged);
+    }
 }
 
 void McpServer::RegisterSkill(Skill skill) {
@@ -3236,6 +3248,10 @@ bool McpServer::IsMrtrSupported() const {
     if (is_stateless_) return false;
     auto caps = GetClientCapabilities();
     return caps && caps->elicitation.has_value();
+}
+
+bool McpServer::IsRunning() const {
+    return initialized_.load() && handler_->IsRunning();
 }
 
 } // namespace mcp

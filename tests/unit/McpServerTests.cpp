@@ -1596,6 +1596,164 @@ TEST(McpServerTest, ToolListChangedHonorsSubscriptionFilter) {
     ctx.client->Close();
 }
 
+TEST(McpServerTest, RegisterPushesListChangedToSubscribers) {
+    auto ctx = MakeModernServerWithClient();
+
+    DiscoverRequestParams discover_params;
+    auto discover_future = ctx.client->SendRequest(methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(discover_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_FALSE(discover_future.get().Contains("code"));
+    ASSERT_TRUE(ctx.server->IsRunning());
+
+    std::promise<JsonRpcNotification> ack_received;
+    auto ack_future = ack_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_received](const JsonRpcNotification& n) {
+            ack_received.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams listener;
+    listener.notifications.tools_list_changed = true;
+    listener.notifications.resources_list_changed = true;
+    listener.notifications.prompts_list_changed = true;
+    auto listen_future = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(listener),
+        MetaWithSubscriptionId("sub-auto"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(listen_future.get().Contains("code"));
+
+    std::promise<JsonRpcNotification> tool_changed;
+    auto tool_future = tool_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&tool_changed](const JsonRpcNotification& n) {
+            tool_changed.set_value(n);
+        });
+    ctx.server->RegisterTool("auto_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    ASSERT_EQ(tool_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto tool_notification = tool_future.get();
+    EXPECT_EQ(tool_notification.method, std::string(notifications::kToolListChanged));
+    ASSERT_TRUE(tool_notification.meta.has_value());
+    auto* tool_sid = tool_notification.meta->Find(
+        "io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(tool_sid, nullptr);
+    EXPECT_EQ(tool_sid->GetString(), "sub-auto");
+
+    std::promise<JsonRpcNotification> resource_changed;
+    auto resource_future = resource_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&resource_changed](const JsonRpcNotification& n) {
+            resource_changed.set_value(n);
+        });
+    ctx.server->RegisterResource("auto_resource", "test://auto/resource",
+        ResourceOptions{},
+        [](const std::string&) { return ReadResourceResult{}; });
+    ASSERT_EQ(resource_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto resource_notification = resource_future.get();
+    EXPECT_EQ(resource_notification.method,
+              std::string(notifications::kResourceListChanged));
+    ASSERT_TRUE(resource_notification.meta.has_value());
+    auto* resource_sid = resource_notification.meta->Find(
+        "io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(resource_sid, nullptr);
+    EXPECT_EQ(resource_sid->GetString(), "sub-auto");
+
+    std::promise<JsonRpcNotification> template_changed;
+    auto template_future = template_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&template_changed](const JsonRpcNotification& n) {
+            template_changed.set_value(n);
+        });
+    ctx.server->RegisterResourceTemplate("auto_template", "test://auto/{id}",
+        ResourceOptions{},
+        [](const std::string&,
+           const std::map<std::string, std::string>&) {
+            return ReadResourceResult{};
+        });
+    ASSERT_EQ(template_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto template_notification = template_future.get();
+    EXPECT_EQ(template_notification.method,
+              std::string(notifications::kResourceListChanged));
+
+    std::promise<JsonRpcNotification> prompt_changed;
+    auto prompt_future = prompt_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&prompt_changed](const JsonRpcNotification& n) {
+            prompt_changed.set_value(n);
+        });
+    ctx.server->RegisterPrompt("auto_prompt", PromptOptions{},
+        [](const std::string&,
+           const std::optional<JsonValue>&) {
+            return GetPromptResult{};
+        });
+    ASSERT_EQ(prompt_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto prompt_notification = prompt_future.get();
+    EXPECT_EQ(prompt_notification.method,
+              std::string(notifications::kPromptListChanged));
+    ASSERT_TRUE(prompt_notification.meta.has_value());
+    auto* prompt_sid = prompt_notification.meta->Find(
+        "io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(prompt_sid, nullptr);
+    EXPECT_EQ(prompt_sid->GetString(), "sub-auto");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, RegisterBeforeDiscoverDoesNotPushListChanged) {
+    auto ctx = MakeModernServerWithClient();
+    EXPECT_FALSE(ctx.server->IsRunning());
+
+    std::atomic<int> tool_notifications{0};
+    std::atomic<int> resource_notifications{0};
+    std::atomic<int> prompt_notifications{0};
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&tool_notifications](const JsonRpcNotification&) {
+            tool_notifications.fetch_add(1);
+        });
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&resource_notifications](const JsonRpcNotification&) {
+            resource_notifications.fetch_add(1);
+        });
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&prompt_notifications](const JsonRpcNotification&) {
+            prompt_notifications.fetch_add(1);
+        });
+
+    ctx.server->RegisterTool("early_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    ctx.server->RegisterResource("early_resource", "test://early/resource",
+        ResourceOptions{},
+        [](const std::string&) { return ReadResourceResult{}; });
+    ctx.server->RegisterPrompt("early_prompt", PromptOptions{},
+        [](const std::string&,
+           const std::optional<JsonValue>&) {
+            return GetPromptResult{};
+        });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(tool_notifications.load(), 0);
+    EXPECT_EQ(resource_notifications.load(), 0);
+    EXPECT_EQ(prompt_notifications.load(), 0);
+
+    auto capabilities = ctx.server->GetCapabilities();
+    EXPECT_TRUE(capabilities.tools.has_value());
+    EXPECT_TRUE(capabilities.resources.has_value());
+    EXPECT_TRUE(capabilities.prompts.has_value());
+    EXPECT_FALSE(ctx.server->IsRunning());
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
 namespace {
 
 struct TaskEraEnv {

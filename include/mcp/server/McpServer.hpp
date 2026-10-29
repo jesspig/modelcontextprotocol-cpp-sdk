@@ -106,6 +106,7 @@ public:
     ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
+    bool IsRunning() const;
     const std::string& SessionId() const { return session_id_; }
 
     McpSessionHandler& GetSessionHandler() { return *handler_; }
