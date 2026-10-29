@@ -629,6 +629,11 @@ std::vector<std::string> McpServer::EffectiveSupportedVersions() const {
     return versions;
 }
 
+Implementation McpServer::ResolveServerInfo() const {
+    if (options_.server_info) return *options_.server_info;
+    return Implementation{"mcp-server", std::string(kSdkVersion), {}};
+}
+
 void McpServer::SetCacheable(
     std::function<std::optional<CacheHint>(std::string_view method)> resolver) {
     std::lock_guard<std::mutex> lock(cache_hook_mutex_);
@@ -657,6 +662,7 @@ McpServer::McpServer(
         transport_, std::move(codec),
         options_.incoming_filters,
         options_.outgoing_filters);
+    handler_->SetServerInfo(ResolveServerInfo());
 
     is_stateless_ = transport_->IsStateless();
 
@@ -3066,15 +3072,7 @@ void McpServer::HandleDiscover(
     DiscoverResult result;
     result.supported_versions = EffectiveSupportedVersions();
     result.capabilities = capabilities_;
-    if (options_.server_info) {
-        result.server_info = Implementation{
-            options_.server_info->name,
-            options_.server_info->version,
-            {}
-        };
-    } else {
-        result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
-    }
+    result.server_info = ResolveServerInfo();
     JsonValue discover_meta(JsonValue::object_tag);
     discover_meta[detail::kMetaServerInfoKey] =
         SerializeImplementation(result.server_info);
@@ -3130,15 +3128,7 @@ void McpServer::HandleInitialize(
     InitializeResult result;
     result.protocol_version = std::string(handler_->NegotiatedProtocolVersion());
     result.capabilities = capabilities_;
-    if (options_.server_info) {
-        result.server_info = Implementation{
-            options_.server_info->name,
-            options_.server_info->version,
-            {}
-        };
-    } else {
-        result.server_info = Implementation{"mcp-server", std::string(kSdkVersion), {}};
-    }
+    result.server_info = ResolveServerInfo();
     if (options_.server_instructions) {
         result.instructions = options_.server_instructions;
     }

@@ -129,6 +129,7 @@ private:
 
     JsonValue BuildToolsJson();
     std::vector<std::string> EffectiveSupportedVersions() const;
+    Implementation ResolveServerInfo() const;
     CacheHint ResolveCacheHint(std::string_view method) const;
     void EmitLoggingMessage(LoggingLevel level, std::string_view data);
     void HandleListTools(

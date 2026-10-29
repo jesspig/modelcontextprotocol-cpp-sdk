@@ -959,6 +959,226 @@ TEST(McpServerTest, DiscoverMirrorsServerInfoInResultMeta) {
 
 namespace {
 
+void ExpectServerInfoMeta(const JsonValue& result,
+                          std::string_view name,
+                          std::string_view version) {
+    ASSERT_TRUE(result.IsObject());
+    auto* meta = result.Find("_meta");
+    ASSERT_NE(meta, nullptr);
+    ASSERT_TRUE(meta->IsObject());
+    auto* info = meta->Find("io.modelcontextprotocol/serverInfo");
+    ASSERT_NE(info, nullptr);
+    ASSERT_TRUE(info->IsObject());
+    auto* actual_name = info->Find("name");
+    ASSERT_NE(actual_name, nullptr);
+    EXPECT_EQ(actual_name->GetString(), std::string(name));
+    auto* actual_version = info->Find("version");
+    ASSERT_NE(actual_version, nullptr);
+    EXPECT_EQ(actual_version->GetString(), std::string(version));
+}
+
+JsonValue SendServerInfoRequest(
+    const std::shared_ptr<McpSessionHandler>& client,
+    std::string_view method,
+    JsonValue params) {
+    auto future = client->SendRequest(method, std::move(params), RequestMeta{},
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+} // namespace
+
+TEST(McpServerTest, ModernResultsCarryServerInfoMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    opts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), opts);
+    server->RegisterTool("echo", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            return result;
+        });
+    server->RegisterResource("info-resource", "test://server-info",
+        ResourceOptions{},
+        [](const std::string& uri) {
+            TextResourceContents contents;
+            contents.uri = uri;
+            contents.text = "info";
+            ReadResourceResult result;
+            result.contents = {mcp::ResourceContents{contents}};
+            return result;
+        });
+    server->RegisterPrompt("greet", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) {
+            PromptMessage message;
+            message.role = "user";
+            message.content = TextContent{"text", "Hello"};
+            GetPromptResult result;
+            result.messages = {std::move(message)};
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    auto tools = SendServerInfoRequest(client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_FALSE(tools.Contains("code"));
+    ExpectServerInfoMeta(tools, "meta-server", "2.0.0");
+
+    CallToolRequestParams call_params;
+    call_params.name = "echo";
+    auto call = SendServerInfoRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(call_params));
+    ASSERT_FALSE(call.Contains("code"));
+    ExpectServerInfoMeta(call, "meta-server", "2.0.0");
+
+    ResourceRequestParams read_params;
+    read_params.uri = "test://server-info";
+    auto read = SendServerInfoRequest(client, methods::kReadResource,
+        SerializeResourceRequestParams(read_params));
+    ASSERT_FALSE(read.Contains("code"));
+    ExpectServerInfoMeta(read, "meta-server", "2.0.0");
+
+    JsonValue prompt_params(JsonValue::object_tag);
+    prompt_params["name"] = JsonValue("greet");
+    auto prompt = SendServerInfoRequest(client, methods::kGetPrompt,
+        std::move(prompt_params));
+    ASSERT_FALSE(prompt.Contains("code"));
+    ExpectServerInfoMeta(prompt, "meta-server", "2.0.0");
+
+    auto discover = SendServerInfoRequest(client, methods::kDiscover,
+        SerializeDiscoverRequestParams(DiscoverRequestParams{}));
+    ASSERT_FALSE(discover.Contains("code"));
+    ExpectServerInfoMeta(discover, "meta-server", "2.0.0");
+
+    server->Close();
+    client->Close();
+}
+
+TEST(McpServerTest, LegacyResultsDoNotCarryServerInfoMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    opts.protocol_version = std::string(kLegacyProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), opts);
+    server->RegisterTool("echo", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    InitializeRequestParams init_params;
+    init_params.protocol_version = std::string(kLegacyProtocolVersion);
+    init_params.client_info = Implementation{"test-client", "1.0"};
+    auto init_future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(init_params), meta,
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto init_result = init_future.get();
+    ASSERT_FALSE(init_result.Contains("code"));
+    EXPECT_FALSE(init_result.Contains("_meta"));
+    auto* legacy_info = init_result.Find("serverInfo");
+    ASSERT_NE(legacy_info, nullptr);
+    ASSERT_NE(legacy_info->Find("name"), nullptr);
+    EXPECT_EQ(legacy_info->Find("name")->GetString(), "meta-server");
+    client->SendNotification(notifications::kInitialized, JsonValue{});
+
+    CallToolRequestParams call_params;
+    call_params.name = "echo";
+    auto future = client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(call_params), meta,
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_FALSE(result.Contains("code"));
+    EXPECT_FALSE(result.Contains("_meta"));
+    EXPECT_FALSE(result.Contains("io.modelcontextprotocol/serverInfo"));
+
+    server->Close();
+    client->Close();
+}
+
+TEST(McpServerTest, ModernResultsPreserveCallerServerInfoMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    opts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), opts);
+    server->RegisterTool("custom-meta", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            JsonValue meta(JsonValue::object_tag);
+            meta["custom"] = JsonValue("kept");
+            meta["io.modelcontextprotocol/serverInfo"] =
+                SerializeImplementation(Implementation{"caller-server", "9.9.9"});
+            result.meta = std::move(meta);
+            return result;
+        });
+    server->RegisterTool("partial-meta", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            JsonValue meta(JsonValue::object_tag);
+            meta["custom"] = JsonValue("kept");
+            result.meta = std::move(meta);
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    CallToolRequestParams call_params;
+    call_params.name = "custom-meta";
+    auto custom = SendServerInfoRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(call_params));
+    ASSERT_FALSE(custom.Contains("code"));
+    auto* custom_meta = custom.Find("_meta");
+    ASSERT_NE(custom_meta, nullptr);
+    ASSERT_TRUE(custom_meta->IsObject());
+    ASSERT_NE(custom_meta->Find("custom"), nullptr);
+    EXPECT_EQ(custom_meta->Find("custom")->GetString(), "kept");
+    auto* caller_info =
+        custom_meta->Find("io.modelcontextprotocol/serverInfo");
+    ASSERT_NE(caller_info, nullptr);
+    ASSERT_NE(caller_info->Find("name"), nullptr);
+    EXPECT_EQ(caller_info->Find("name")->GetString(), "caller-server");
+    ASSERT_NE(caller_info->Find("version"), nullptr);
+    EXPECT_EQ(caller_info->Find("version")->GetString(), "9.9.9");
+
+    call_params.name = "partial-meta";
+    auto partial = SendServerInfoRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(call_params));
+    ASSERT_FALSE(partial.Contains("code"));
+    ExpectServerInfoMeta(partial, "meta-server", "2.0.0");
+    auto* partial_meta = partial.Find("_meta");
+    ASSERT_NE(partial_meta, nullptr);
+    ASSERT_NE(partial_meta->Find("custom"), nullptr);
+    EXPECT_EQ(partial_meta->Find("custom")->GetString(), "kept");
+
+    server->Close();
+    client->Close();
+}
+
+namespace {
+
 std::filesystem::path MakeTaskStorePath() {
     auto temp_dir = std::filesystem::temp_directory_path();
     return temp_dir / ("mcp_server_tasks_" +
