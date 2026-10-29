@@ -419,6 +419,152 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
     EXPECT_EQ(rc->text, "embedded");
 }
 
+TEST(McpTypesTest, ResourceLinkRoundTrip) {
+    ResourceLink link;
+    link.uri = "file:///docs/readme.md";
+    link.name = "readme.md";
+    link.title = "README";
+    link.description = "Project readme";
+    link.mime_type = "text/markdown";
+    link.size = int64_t{4096};
+    link.icons = {Icon{"https://example.com/readme.svg", "image/svg+xml",
+                       std::vector<std::string>{"any"}, "light"}};
+    link.annotations = Annotations{};
+    link.annotations->audience = std::vector<std::string>{"user"};
+    link.annotations->priority = 0.5;
+    link.annotations->last_modified = "2026-07-28T00:00:00Z";
+    JsonValue meta(JsonValue::object_tag);
+    meta["trace"] = JsonValue("abc");
+    link.meta = meta;
+
+    auto jv = SerializeResourceLink(link);
+    EXPECT_EQ(jv["type"].GetString(), "resource_link");
+    EXPECT_EQ(jv["uri"].GetString(), link.uri);
+    EXPECT_EQ(jv["name"].GetString(), link.name);
+    EXPECT_EQ(jv["title"].GetString(), link.title);
+    EXPECT_EQ(jv["description"].GetString(), link.description);
+    EXPECT_EQ(jv["mimeType"].GetString(), link.mime_type);
+    EXPECT_EQ(jv["size"].GetInt(), int64_t{4096});
+    ASSERT_TRUE(jv.Contains("icons"));
+    ASSERT_TRUE(jv["icons"].IsArray());
+    ASSERT_EQ(jv["icons"].Size(), size_t{1});
+    EXPECT_EQ(jv["icons"][size_t{0}]["src"].GetString(),
+        "https://example.com/readme.svg");
+    EXPECT_DOUBLE_EQ(jv["annotations"]["priority"].GetDouble(), 0.5);
+    EXPECT_EQ(jv["_meta"]["trace"].GetString(), "abc");
+
+    auto link2 = DeserializeResourceLink(jv);
+    EXPECT_EQ(link2.type, "resource_link");
+    EXPECT_EQ(link2.uri, link.uri);
+    EXPECT_EQ(link2.name, link.name);
+    ASSERT_TRUE(link2.title.has_value());
+    EXPECT_EQ(*link2.title, "README");
+    ASSERT_TRUE(link2.description.has_value());
+    EXPECT_EQ(*link2.description, "Project readme");
+    ASSERT_TRUE(link2.mime_type.has_value());
+    EXPECT_EQ(*link2.mime_type, "text/markdown");
+    ASSERT_TRUE(link2.size.has_value());
+    EXPECT_EQ(*link2.size, int64_t{4096});
+    ASSERT_EQ(link2.icons.size(), size_t{1});
+    EXPECT_EQ(link2.icons[0].src, "https://example.com/readme.svg");
+    ASSERT_TRUE(link2.icons[0].mime_type.has_value());
+    EXPECT_EQ(*link2.icons[0].mime_type, "image/svg+xml");
+    ASSERT_TRUE(link2.icons[0].sizes.has_value());
+    EXPECT_EQ(link2.icons[0].sizes->at(0), "any");
+    ASSERT_TRUE(link2.icons[0].theme.has_value());
+    EXPECT_EQ(*link2.icons[0].theme, "light");
+    ASSERT_TRUE(link2.annotations.has_value());
+    ASSERT_TRUE(link2.annotations->audience.has_value());
+    EXPECT_EQ(link2.annotations->audience->at(0), "user");
+    ASSERT_TRUE(link2.annotations->priority.has_value());
+    EXPECT_DOUBLE_EQ(*link2.annotations->priority, 0.5);
+    ASSERT_TRUE(link2.annotations->last_modified.has_value());
+    EXPECT_EQ(*link2.annotations->last_modified, "2026-07-28T00:00:00Z");
+    ASSERT_TRUE(link2.meta.has_value());
+    EXPECT_EQ((*link2.meta)["trace"].GetString(), "abc");
+}
+
+TEST(McpTypesTest, ResourceLinkEmptyIconsOmitted) {
+    ResourceLink link;
+    link.uri = "file:///docs/readme.md";
+    link.name = "readme.md";
+
+    auto jv = SerializeResourceLink(link);
+    EXPECT_FALSE(jv.Contains("icons"));
+    EXPECT_FALSE(jv.Contains("description"));
+    EXPECT_FALSE(jv.Contains("mimeType"));
+    EXPECT_FALSE(jv.Contains("size"));
+}
+
+TEST(McpTypesTest, ResourceLinkRejectsMissingNameOrUri) {
+    auto rejects_invalid_params = [](auto&& fn) {
+        try {
+            fn();
+        } catch (const McpError& e) {
+            return e.Code() == McpErrorCode::InvalidParams;
+        }
+        return false;
+    };
+
+    ResourceLink missing_name;
+    missing_name.uri = "file:///x.md";
+    EXPECT_TRUE(rejects_invalid_params([&] { (void)SerializeResourceLink(missing_name); }));
+
+    ResourceLink missing_uri;
+    missing_uri.name = "x.md";
+    EXPECT_TRUE(rejects_invalid_params([&] { (void)SerializeResourceLink(missing_uri); }));
+
+    ResourceLink negative_size;
+    negative_size.uri = "file:///x.md";
+    negative_size.name = "x.md";
+    negative_size.size = int64_t{-1};
+    EXPECT_TRUE(rejects_invalid_params([&] { (void)SerializeResourceLink(negative_size); }));
+
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","uri":"file:///x.md"})"));
+    }));
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","uri":"file:///x.md","name":""})"));
+    }));
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","name":"x.md"})"));
+    }));
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","uri":"file:///x.md","name":"x.md","size":-3})"));
+    }));
+}
+
+TEST(McpTypesTest, ContentVariantResourceLinkRoundTrip) {
+    ResourceLink link;
+    link.uri = "file:///docs/spec.md";
+    link.name = "spec.md";
+    link.description = "Protocol spec";
+    link.mime_type = "text/markdown";
+    link.size = int64_t{128};
+    link.icons = {Icon{"https://example.com/spec.png", "image/png"}};
+
+    ContentVariant cv = link;
+    auto jv = SerializeContentVariant(cv);
+    EXPECT_EQ(jv["type"].GetString(), "resource_link");
+    EXPECT_EQ(jv["name"].GetString(), "spec.md");
+
+    auto cv2 = DeserializeContentVariant(jv);
+    ASSERT_TRUE(std::holds_alternative<ResourceLink>(cv2));
+    const auto& link2 = std::get<ResourceLink>(cv2);
+    EXPECT_EQ(link2.name, "spec.md");
+    EXPECT_EQ(link2.uri, "file:///docs/spec.md");
+    ASSERT_TRUE(link2.description.has_value());
+    EXPECT_EQ(*link2.description, "Protocol spec");
+    ASSERT_TRUE(link2.size.has_value());
+    EXPECT_EQ(*link2.size, int64_t{128});
+    ASSERT_EQ(link2.icons.size(), size_t{1});
+    EXPECT_EQ(link2.icons[0].src, "https://example.com/spec.png");
+}
+
 TEST(McpTypesTest, EmptyResultSerializes) {
     EmptyResult r;
     auto jv = SerializeEmptyResult(r);
