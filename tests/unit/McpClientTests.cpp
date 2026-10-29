@@ -1354,7 +1354,7 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
 TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
     std::promise<void> received;
     auto received_future = received.get_future();
     server_handler->SetNotificationHandler(notifications::kRootsListChanged,
@@ -1378,7 +1378,7 @@ TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
 
     auto pair2 = InMemoryTransport::CreatePair();
     auto server_handler2 = std::make_shared<McpSessionHandler>(
-        std::move(pair2.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+        std::move(pair2.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
     std::promise<void> received2;
     auto received2_future = received2.get_future();
     server_handler2->SetNotificationHandler(notifications::kRootsListChanged,
@@ -1439,6 +1439,41 @@ TEST(McpClientTest, SendRootsListChangedRejectedBelowMinVersion) {
                   std::string::npos);
     }
     EXPECT_TRUE(threw);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SendRootsListChangedRejectedForModernVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    std::promise<void> received;
+    auto received_future = received.get_future();
+    server_handler->SetNotificationHandler(notifications::kRootsListChanged,
+        [&received](const JsonRpcNotification&) {
+            received.set_value();
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLatestProtocolVersion));
+
+    bool threw = false;
+    try {
+        client->SendRootsListChanged();
+    } catch (const McpError& e) {
+        threw = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::ProtocolViolation);
+        EXPECT_NE(std::string(e.ErrorMessage()).find("2026-07-28"),
+                  std::string::npos);
+    }
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(received_future.wait_for(std::chrono::milliseconds(200)),
+              std::future_status::timeout);
 
     client->Close();
     server_handler->Close();

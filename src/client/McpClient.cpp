@@ -1721,6 +1721,12 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
 void McpClient::SendRootsListChanged() {
     static constexpr std::string_view kMinVersion = "2025-06-18";
     const std::string_view negotiated = negotiation_.negotiated_version;
+    if (IsModernProtocolVersion(negotiated)) {
+        throw McpError(McpErrorCode::ProtocolViolation,
+            "notifications/roots/list_changed was removed in protocol version " +
+            std::string(kLatestProtocolVersion) + ", negotiated: " +
+            std::string(negotiated));
+    }
     std::optional<size_t> negotiated_index;
     std::optional<size_t> min_index;
     size_t i = 0;

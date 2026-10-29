@@ -1,6 +1,7 @@
 #include <mcp/Content.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Methods.hpp>
+#include <mcp/ProtocolVersion.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/client/McpClient.hpp>
@@ -73,6 +74,7 @@ struct Phase1InMemoryFixture : ::testing::Test {
 
         ServerOptions sopts;
         sopts.server_info = Implementation{"TestServer", "1.0.0"};
+        sopts.protocol_version = std::string(kLegacyProtocolVersion);
         server = McpServer::Create(pair.server, sopts);
         RegisterProgressTool(*server, progress_ack);
 
@@ -80,7 +82,7 @@ struct Phase1InMemoryFixture : ::testing::Test {
 
         ClientOptions cops;
         cops.client_info = Implementation{"TestClient", "1.0.0"};
-        cops.connect_mode = ConnectMode::Auto;
+        cops.connect_mode = ConnectMode::Legacy;
         client = McpClient::Create(pair.client, cops);
     }
 
@@ -118,8 +120,8 @@ TEST_F(Phase1InMemoryFixture, ProgressRoundTrip) {
 
 TEST_F(Phase1InMemoryFixture, RootsListChangedRoundTrip) {
     MCP_RUN_WITH_TIMEOUT([this]() {
-        ASSERT_GE(std::string(client->GetNegotiatedProtocolVersion()),
-                  std::string("2025-06-18"));
+        ASSERT_EQ(std::string(client->GetNegotiatedProtocolVersion()),
+                  std::string(kLegacyProtocolVersion));
 
         auto got = std::make_shared<std::promise<std::string>>();
         auto fut = got->get_future();
