@@ -3,27 +3,24 @@
 # 未知版本回退 tests/conformance/baseline.yaml。本文件只收本 leg 实际运行的场景条目，
 # 完整归因见 baseline.yaml。
 
-# 2026-10-29 实测（referee @modelcontextprotocol/conformance@0.2.0-alpha.12）：
-#   server modern（--requirements 2026-07-28）：195 passed / 0 failed，其中
-#   server-stateless 场景 28/0 通过但仍有 2 条 SHOULD WARNING，故保留基线条目。
+# 2026-10-29 复跑实测（referee @modelcontextprotocol/conformance@0.2.0-alpha.12）：
+#   server modern（--requirements 2026-07-28）：197 passed / 0 failed / 0 warnings；
+#   其中 server-stateless 场景 30 passed / 0 failed / 0 warnings（listen 成功响应
+#   不再追加空 result、客户端以 acknowledged 完成订阅，校验数由 28 增至 30）。
 #   client modern（--requirements 2026-07-28）：450 passed / 9 failed，9 项均为
 #   本地构建无 OpenSSL 的 DPoP/ES256 环境限制（auth/client-credentials-jwt、
 #   auth/dpop、auth/dpop-nonce）；CI runner 具备 OpenSSL 时预期通过，不新增基线。
 #
 # 本轮删除条目（均有 2026-10-29 实测证据，禁恢复）：
+#   - server-stateless（30/0/0 warnings）：旧 2 条 SHOULD WARNING
+#     （ServerSendsToolsListChangedOnSubscription /
+#     ServerSendsPromptsListChangedOnSubscription）已清零，删除。
 #   - auth/client-credentials-basic（6 passed）、auth/enterprise-managed-authorization
 #     （7 passed）、auth/wif-jwt-bearer（6 passed）：本 leg 实测均 passed；旧保留
 #     理由「referee 未标 stale 故兜底」由实测通过取代，删除。
 #
-# 本 leg 基线条目 1 条（server-stateless，见下）。基线只减不增：新增场景须先有
-# 实跑失败归因证据。
+# 本 leg 基线条目 0 条。基线只减不增：新增场景须先有实跑失败归因证据。
 
-server:
-    # --- server-stateless（SHOULD WARNING 已知偏差）---
-    # 2026-10-29 referee 实测 28/0，但仍有 2 条 SHOULD WARNING：
-    # ServerSendsToolsListChangedOnSubscription / ServerSendsPromptsListChangedOnSubscription。
-    # T-10 自动推送与传输回退/首帧注册已修，单测与 raw probe 均证明通知可送达；
-    # referee 诊断路径仍报 warning，保留基线待后续复现，不作过期删除。
-    - server-stateless
+server: []
 
 client: []

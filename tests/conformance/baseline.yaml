@@ -26,16 +26,16 @@
 # skills/tasks/sse-retry 等扩展场景默认被 referee skip（extension 不在
 # active 适用集内），只在 --suite all / --force 下 run for visibility。
 #
-# 2026-10-29 四 leg 实测（referee 0.2.0-alpha.12）：
-#   server modern 195 passed / 0 failed + 2 SHOULD warnings（server-stateless 场景
-#   28/0 通过，仍报 ServerSendsToolsListChangedOnSubscription /
-#   ServerSendsPromptsListChangedOnSubscription）；server legacy 67 passed / 0 failed；
-#   client modern 450 passed / 9 failed（9 项均为本地无 OpenSSL 的 DPoP/ES256
-#   环境限制：auth/client-credentials-jwt、auth/dpop、auth/dpop-nonce，不新增基线）；
+# 2026-10-29 复跑实测（referee 0.2.0-alpha.12）：
+#   server modern 197 passed / 0 failed / 0 warnings，其中 server-stateless 场景
+#   30/0/0 warnings（listen 成功响应不再追加空 result、客户端以 acknowledged 完成
+#   订阅后校验数由 28 增至 30）；据此删除 server-stateless 条目，modern leg 基线清空。
+#   server legacy 67 passed / 0 failed（同日四 leg 实测）；client modern 450 passed
+#   / 9 failed（9 项均为本地无 OpenSSL 的 DPoP/ES256 环境限制：
+#   auth/client-credentials-jwt、auth/dpop、auth/dpop-nonce，不新增基线）；
 #   client legacy 233 passed / 0 failed。
 # 据此删除 auth/client-credentials-basic、auth/enterprise-managed-authorization、
-# auth/wif-jwt-bearer（modern 实测均 passed）；server-stateless 因 referee
-# 诊断路径仍报 warning 保留（modern leg 基线 1 条）。
+# auth/wif-jwt-bearer（modern 实测均 passed）。
 #
 # 跨 leg 保留条目（有证据，禁删）：
 #   - server-sse-multiple-streams：modern 2/2 与 legacy 单跑 2/2 曾构成删除证据，
@@ -49,7 +49,7 @@
 #     elicitation 系列），其二 _meta 反序列化剥离后 Params().meta
 #     恒空（fixture 改读 GetRequest().meta 取 progressToken，
 #     同法修好 LoggingTool 的 logLevel 门控）。legacy leg 2/2 变绿故删；
-#     modern leg 2026-10-29 实测 195/0 亦已通过，不另设条目。
+#     modern leg 2026-10-29 复跑实测亦已通过，不另设条目。
 #   - sse-retry（SEP-1699，legacy client scored）：2026-10-11 Windows
 #     本地 alpha.12 单跑 3/3（POST 中断后 resume GET 带 Last-Event-ID
 #     event-2、2 次 GET 连接、实际延迟 559ms∈[450,700]），referee 报
@@ -77,6 +77,8 @@
 #     checks.json 全 SUCCESS 后删除，禁恢复。
 #   - 2026-10-29 新增删除 3 条：auth/client-credentials-basic、
 #     auth/enterprise-managed-authorization、auth/wif-jwt-bearer（依据见上）。
+#   - 2026-10-29 复跑再删 1 条：server-stateless（30/0/0 warnings，listen 成功
+#     响应不再追加空 result、客户端以 acknowledged 完成订阅，modern server 全绿）。
 #
 # client 侧遗留说明：http-custom-headers 仅 legacy leg 保留，条目真源见
 # baseline-2025-11-25.yaml；Windows 非 ASCII context 致 JsonValue::Parse 报
@@ -91,12 +93,5 @@ server:
     # 而单通道传输的 DELETE 关闭共享 channel 毒化后续全场景（生产缺口），
     # 故 stateful fixture 显式不设 session_store。
     - server-sse-multiple-streams
-
-    # --- server-stateless（modern leg；SHOULD WARNING 已知偏差）---
-    # 2026-10-29 referee 实测场景 28/0，但仍有 2 条 SHOULD WARNING：
-    # ServerSendsToolsListChangedOnSubscription / ServerSendsPromptsListChangedOnSubscription。
-    # T-10 自动推送与传输回退/首帧注册已修，单测与 raw probe 均证明通知可送达；
-    # referee 诊断路径仍报 warning，保留基线待后续复现，不作过期删除。
-    - server-stateless
 
 client: []
