@@ -58,7 +58,8 @@ struct MCP_API ClientOptions {
 
         std::chrono::seconds max_total_timeout{0};
     };
-    std::optional<InputRequiredConfig> input_required_config;
+    std::optional<InputRequiredConfig> input_required_config =
+        InputRequiredConfig{};
 
     std::optional<JsonValue> extensions;
 

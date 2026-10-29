@@ -920,6 +920,21 @@ static bool TryFulfillInputRequired(
     }
 
     auto input_req = DeserializeInputRequiredResult(result_json);
+
+    for (const auto& entry : input_req.input_requests) {
+        const auto& request = entry.second;
+        if (request.method == methods::kElicit) {
+            auto params = DeserializeElicitRequestParams(request.params);
+            if (params.mode != "url" && !elicitation_handler) {
+                return false;
+            }
+        } else if (request.method == methods::kCreateMessage) {
+            if (!sampling_handler) return false;
+        } else if (request.method == methods::kListRoots) {
+            if (!roots_handler) return false;
+        }
+    }
+
     out_request_state = input_req.request_state;
 
     if (input_req.input_requests.empty()) {
@@ -943,24 +958,15 @@ static bool TryFulfillInputRequired(
                 url_result.action = std::move(action);
                 responses[key] = MakeInputResponseFromElicitResult(url_result);
             } else {
-                if (!elicitation_handler) {
-                    throw McpError(McpErrorCode::MethodNotFound, "elicitation not supported");
-                }
                 auto elicit_result = (*elicitation_handler)(elicit_params);
                 MaybeApplyElicitationDefaults(elicit_result, elicit_params, options);
                 responses[key] = MakeInputResponseFromElicitResult(elicit_result);
             }
         } else if (request.method == methods::kCreateMessage) {
-            if (!sampling_handler) {
-                throw McpError(McpErrorCode::MethodNotFound, "sampling not supported");
-            }
             auto sampling_result = (*sampling_handler)(
                 DeserializeCreateMessageRequestParams(request.params));
             responses[key] = MakeInputResponseFromCreateMessageResult(sampling_result);
         } else if (request.method == methods::kListRoots) {
-            if (!roots_handler) {
-                throw McpError(McpErrorCode::MethodNotFound, "roots not supported");
-            }
             auto roots_result = (*roots_handler)(
                 DeserializeListRootsRequestParams(request.params));
             responses[key] = MakeInputResponseFromListRootsResult(roots_result);
@@ -1000,7 +1006,11 @@ JsonValue McpClient::SendRequestWithMrtrOnce(
 {
     auto& cfg = options_.input_required_config;
     int max_rounds = cfg ? cfg->max_rounds : 0;
-    auto round_timeout = cfg ? cfg->round_timeout : timeout;
+    auto round_timeout = cfg
+        ? (std::min)(
+            std::chrono::duration_cast<std::chrono::milliseconds>(cfg->round_timeout),
+            timeout)
+        : timeout;
     auto total_budget = cfg ? cfg->max_total_timeout : std::chrono::seconds(0);
     auto flow_start = std::chrono::steady_clock::now();
     int state_only_rounds = 0;

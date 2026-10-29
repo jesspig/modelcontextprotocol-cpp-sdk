@@ -1052,6 +1052,148 @@ TEST(McpClientTest, MrtrMaxRoundsDefaultTen) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, MrtrDefaultAutoFulfillsEmbeddedElicitation) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> round{0};
+    std::atomic<bool> saw_response{false};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&round, &saw_response](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (round.load() == 0) {
+                round.store(1);
+                InputRequiredResult ir;
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "What is your name?";
+                ir.input_requests["user_name"] =
+                    MakeInputRequestForElicitation(elicit_params);
+                ir.request_state = "st-default";
+                p.set_value(SerializeInputRequiredResult(ir));
+                return;
+            }
+            round.store(2);
+            auto* responses = req.params ? req.params->Find("inputResponses") : nullptr;
+            auto* entry = responses && responses->IsObject()
+                ? responses->Find("user_name") : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            auto* content = entry && entry->IsObject() ? entry->Find("content") : nullptr;
+            auto* name = content && content->IsObject() ? content->Find("name") : nullptr;
+            saw_response.store(action && action->IsString()
+                && action->GetString() == "accept"
+                && name && name->IsString() && name->GetString() == "Alice");
+            JsonValue result(JsonValue::object_tag);
+            result["structuredContent"] = JsonValue(JsonValue::object_tag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    std::atomic<int> handler_calls{0};
+    client->SetElicitationHandler([&handler_calls](const ElicitRequestParams&) {
+        handler_calls.fetch_add(1);
+        ElicitResult r;
+        r.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["name"] = JsonValue("Alice");
+        r.content = std::move(content);
+        return r;
+    });
+
+    auto result = client->CallTool("echo", JsonValue(JsonValue::object_tag));
+    EXPECT_EQ(handler_calls.load(), 1);
+    EXPECT_TRUE(saw_response.load());
+    EXPECT_EQ(round.load(), 2);
+    EXPECT_FALSE(result.input_required.has_value());
+    EXPECT_EQ(result.result_type, ResultType::Complete);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrDefaultWithoutHandlersReturnsInputRequired) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "What is your name?";
+            ir.input_requests["user_name"] =
+                MakeInputRequestForElicitation(elicit_params);
+            ir.request_state = "st-manual";
+            p.set_value(SerializeInputRequiredResult(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    CallToolResult result;
+    EXPECT_NO_THROW(result = client->CallTool(
+        "echo", JsonValue(JsonValue::object_tag)));
+    EXPECT_EQ(calls.load(), 1);
+    ASSERT_TRUE(result.input_required.has_value());
+    EXPECT_EQ(result.result_type, ResultType::InputRequired);
+    ASSERT_TRUE(result.input_required->request_state.has_value());
+    EXPECT_EQ(*result.input_required->request_state, "st-manual");
+    ASSERT_EQ(result.input_required->input_requests.size(), size_t{1});
+    EXPECT_EQ(result.input_required->input_requests.count("user_name"), size_t{1});
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrExplicitNulloptKeepsManualMode) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "What is your name?";
+            ir.input_requests["user_name"] =
+                MakeInputRequestForElicitation(elicit_params);
+            p.set_value(SerializeInputRequiredResult(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.input_required_config = std::nullopt;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    std::atomic<int> handler_calls{0};
+    client->SetElicitationHandler([&handler_calls](const ElicitRequestParams&) {
+        handler_calls.fetch_add(1);
+        return ElicitResult{};
+    });
+
+    CallToolResult result;
+    EXPECT_NO_THROW(result = client->CallTool(
+        "echo", JsonValue(JsonValue::object_tag)));
+    EXPECT_EQ(handler_calls.load(), 0);
+    EXPECT_EQ(calls.load(), 1);
+    ASSERT_TRUE(result.input_required.has_value());
+    EXPECT_EQ(result.result_type, ResultType::InputRequired);
+
+    client->Close();
+    server_handler->Close();
+}
+
 TEST(McpClientTest, ListToolsCachesAndInvalidatesOnListChanged) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
