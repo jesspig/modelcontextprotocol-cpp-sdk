@@ -71,7 +71,9 @@ TEST(McpClientTest, DeriveClientCapabilitiesDeclaresHandlers) {
     EXPECT_FALSE(form_caps->elicitation->url.has_value());
 
     ClientOptions url_opts;
-    url_opts.url_elicitation_handler = [](const ElicitRequestParams&) {};
+    url_opts.url_elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
     auto url_caps = DeriveClientCapabilities(url_opts);
     ASSERT_TRUE(url_caps.has_value());
     ASSERT_TRUE(url_caps->elicitation.has_value());
@@ -118,7 +120,9 @@ TEST(McpClientTest, DeriveClientCapabilitiesMergesExplicitCapabilities) {
     opts.elicitation_handler = [](const ElicitRequestParams&) {
         return ElicitResult{};
     };
-    opts.url_elicitation_handler = [](const ElicitRequestParams&) {};
+    opts.url_elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
     opts.sampling_handler = [](const CreateMessageRequestParams&) {
         return CreateMessageResult{};
     };
@@ -1110,6 +1114,109 @@ TEST(McpClientTest, MrtrDefaultAutoFulfillsEmbeddedElicitation) {
     EXPECT_EQ(round.load(), 2);
     EXPECT_FALSE(result.input_required.has_value());
     EXPECT_EQ(result.result_type, ResultType::Complete);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrUrlElicitationPropagatesHandlerAction) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> round{0};
+    std::atomic<bool> saw_decline{false};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&round, &saw_decline](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (round.load() == 0) {
+                round.store(1);
+                ElicitRequestParams params;
+                params.message = "Open the URL and approve access";
+                params.mode = "url";
+                params.url = "https://example.com/authorize";
+                InputRequiredResult ir;
+                ir.input_requests["consent"] =
+                    MakeInputRequestForElicitation(params);
+                p.set_value(SerializeInputRequiredResult(ir));
+                return;
+            }
+            round.store(2);
+            auto* responses = req.params ? req.params->Find("inputResponses") : nullptr;
+            auto* entry = responses && responses->IsObject()
+                ? responses->Find("consent") : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            saw_decline.store(action && action->IsString() &&
+                action->GetString() == "decline");
+            JsonValue result(JsonValue::object_tag);
+            result["structuredContent"] = JsonValue(JsonValue::object_tag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetUrlElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "decline";
+        return result;
+    });
+
+    auto result = client->CallTool("echo", JsonValue(JsonValue::object_tag));
+    EXPECT_TRUE(saw_decline.load());
+    EXPECT_EQ(round.load(), 2);
+    EXPECT_EQ(result.result_type, ResultType::Complete);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrUrlElicitationInvalidActionThrowsHandlerError) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> server_calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&server_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            server_calls.fetch_add(1);
+            ElicitRequestParams params;
+            params.message = "Open the URL and approve access";
+            params.mode = "url";
+            params.url = "https://example.com/authorize";
+            InputRequiredResult ir;
+            ir.input_requests["consent"] = MakeInputRequestForElicitation(params);
+            p.set_value(SerializeInputRequiredResult(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    const std::vector<std::string> actions{"maybe", ""};
+    std::atomic<size_t> handler_calls{0};
+    client->SetUrlElicitationHandler(
+        [&actions, &handler_calls](const ElicitRequestParams&) {
+            ElicitResult result;
+            result.action = actions[handler_calls.fetch_add(1) % actions.size()];
+            return result;
+        });
+
+    for (size_t i = 0; i < actions.size(); ++i) {
+        try {
+            client->CallTool("echo", JsonValue(JsonValue::object_tag));
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(e.Code(), McpErrorCode::HandlerError);
+            EXPECT_NE(std::string(e.what()).find("invalid url elicitation action"),
+                std::string::npos);
+        }
+    }
+    EXPECT_EQ(server_calls.load(), 2);
+    EXPECT_EQ(handler_calls.load(), static_cast<size_t>(2));
 
     client->Close();
     server_handler->Close();
@@ -2351,10 +2458,13 @@ TEST(McpClientTest, UrlElicitationInvokesHandlerAndSendsComplete) {
         [&handler_called](const ElicitRequestParams& params) {
             handler_called.store(true);
             EXPECT_EQ(params.mode, "url");
-            ASSERT_TRUE(params.url.has_value());
+            EXPECT_TRUE(params.url.has_value());
             EXPECT_EQ(*params.url, "https://example.com/authorize");
-            ASSERT_TRUE(params.elicitation_id.has_value());
+            EXPECT_TRUE(params.elicitation_id.has_value());
             EXPECT_EQ(*params.elicitation_id, "elicit-1");
+            ElicitResult result;
+            result.action = "accept";
+            return result;
         });
 
     JsonValue elicit_params(JsonValue::object_tag);
@@ -2377,6 +2487,104 @@ TEST(McpClientTest, UrlElicitationInvokesHandlerAndSendsComplete) {
     auto* elicitation_id = complete_params.Find("elicitationId");
     ASSERT_NE(elicitation_id, nullptr);
     EXPECT_EQ(elicitation_id->GetString(), "elicit-1");
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, UrlElicitationHandlerDeclineReturnsDecline) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+
+    std::promise<JsonValue> complete_received;
+    auto complete_future = complete_received.get_future();
+    server_handler->SetNotificationHandler(notifications::kElicitationComplete,
+        [&complete_received](const JsonRpcNotification& notif) {
+            complete_received.set_value(
+                notif.params ? *notif.params : JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetUrlElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "decline";
+        return result;
+    });
+
+    JsonValue elicit_params(JsonValue::object_tag);
+    elicit_params["message"] = JsonValue("Open the URL and approve access");
+    elicit_params["mode"] = JsonValue("url");
+    elicit_params["url"] = JsonValue("https://example.com/authorize");
+    elicit_params["elicitationId"] = JsonValue("elicit-decline");
+    auto response = server_handler->SendRequest(
+        methods::kElicit, std::move(elicit_params), RequestMeta{},
+        std::chrono::seconds(5)).get();
+
+    auto* action = response.Find("action");
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->GetString(), "decline");
+
+    ASSERT_EQ(complete_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    JsonValue complete_params = complete_future.get();
+    auto* elicitation_id = complete_params.Find("elicitationId");
+    ASSERT_NE(elicitation_id, nullptr);
+    EXPECT_EQ(elicitation_id->GetString(), "elicit-decline");
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, UrlElicitationHandlerCancelReturnsCancel) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+
+    std::promise<JsonValue> complete_received;
+    auto complete_future = complete_received.get_future();
+    server_handler->SetNotificationHandler(notifications::kElicitationComplete,
+        [&complete_received](const JsonRpcNotification& notif) {
+            complete_received.set_value(
+                notif.params ? *notif.params : JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetUrlElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "cancel";
+        return result;
+    });
+
+    JsonValue elicit_params(JsonValue::object_tag);
+    elicit_params["message"] = JsonValue("Open the URL and approve access");
+    elicit_params["mode"] = JsonValue("url");
+    elicit_params["url"] = JsonValue("https://example.com/authorize");
+    elicit_params["elicitationId"] = JsonValue("elicit-cancel");
+    auto response = server_handler->SendRequest(
+        methods::kElicit, std::move(elicit_params), RequestMeta{},
+        std::chrono::seconds(5)).get();
+
+    auto* action = response.Find("action");
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->GetString(), "cancel");
+
+    ASSERT_EQ(complete_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    JsonValue complete_params = complete_future.get();
+    auto* elicitation_id = complete_params.Find("elicitationId");
+    ASSERT_NE(elicitation_id, nullptr);
+    EXPECT_EQ(elicitation_id->GetString(), "elicit-cancel");
 
     client->Close();
     server_handler->Close();

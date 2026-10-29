@@ -281,6 +281,29 @@ namespace {
         }
     }
 
+    static ElicitResult ValidateUrlElicitationResult(ElicitResult result) {
+        if (result.action != "accept" && result.action != "decline" &&
+            result.action != "cancel") {
+            const std::string action =
+                result.action.empty() ? std::string("<empty>") : result.action;
+            throw McpError(McpErrorCode::HandlerError,
+                "invalid url elicitation action: " + action);
+        }
+        return result;
+    }
+
+    static ElicitResult InvokeUrlElicitationHandler(
+        const std::optional<UrlElicitationHandler>& handler,
+        const ElicitRequestParams& params)
+    {
+        if (!handler) {
+            ElicitResult result;
+            result.action = "decline";
+            return result;
+        }
+        return ValidateUrlElicitationResult((*handler)(params));
+    }
+
     class ScopedProgressCleanup {
     public:
         explicit ScopedProgressCleanup(std::function<void()> cleanup)
@@ -647,18 +670,15 @@ void McpClient::WireClientHandlers() {
                             "url elicitation missing elicitationId")));
                     return;
                 }
-                std::string action = "decline";
-                if (url_elicitation_handler_) {
-                    try {
-                        (*url_elicitation_handler_)(params);
-                        action = "accept";
-                    } catch (...) {
-                        p.set_exception(std::current_exception());
-                        return;
-                    }
+                ElicitResult elicit_result;
+                try {
+                    elicit_result =
+                        InvokeUrlElicitationHandler(url_elicitation_handler_, params);
+                } catch (...) {
+                    p.set_exception(std::current_exception());
+                    return;
                 }
-                JsonValue result = SerializeElicitResult(ElicitResult{});
-                result["action"] = JsonValue(action);
+                JsonValue result = SerializeElicitResult(elicit_result);
                 if (!modern_era) {
                     JsonValue complete_params(JsonValue::object_tag);
                     complete_params["elicitationId"] = JsonValue(*params.elicitation_id);
@@ -829,6 +849,18 @@ void McpClient::SetUrlElicitationHandler(UrlElicitationHandler handler) {
     url_elicitation_handler_ = std::move(handler);
 }
 
+void McpClient::SetLegacyUrlElicitationHandler(
+    std::function<void(const ElicitRequestParams&)> handler)
+{
+    url_elicitation_handler_ = [handler = std::move(handler)](
+        const ElicitRequestParams& params) {
+        handler(params);
+        ElicitResult result;
+        result.action = "accept";
+        return result;
+    };
+}
+
 void McpClient::SetNotificationHandler(
     std::string_view method, ClientNotificationHandler handler)
 {
@@ -949,13 +981,8 @@ static bool TryFulfillInputRequired(
         if (request.method == methods::kElicit) {
             auto elicit_params = DeserializeElicitRequestParams(request.params);
             if (elicit_params.mode == "url") {
-                std::string action = "decline";
-                if (url_elicitation_handler) {
-                    (*url_elicitation_handler)(elicit_params);
-                    action = "accept";
-                }
-                ElicitResult url_result;
-                url_result.action = std::move(action);
+                auto url_result = InvokeUrlElicitationHandler(
+                    url_elicitation_handler, elicit_params);
                 responses[key] = MakeInputResponseFromElicitResult(url_result);
             } else {
                 auto elicit_result = (*elicitation_handler)(elicit_params);

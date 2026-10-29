@@ -112,6 +112,9 @@ public:
     void SetRootsHandler(RootsHandler handler);
     void SetElicitationHandler(ElicitationHandler handler);
     void SetUrlElicitationHandler(UrlElicitationHandler handler);
+    [[deprecated("use ElicitResult-returning handler")]]
+    void SetLegacyUrlElicitationHandler(
+        std::function<void(const ElicitRequestParams&)> handler);
     void SetNotificationHandler(
         std::string_view method,
         ClientNotificationHandler handler);

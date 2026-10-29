@@ -26,7 +26,8 @@ using RootsHandler = std::function<ListRootsResult(
 using ElicitationHandler = std::function<ElicitResult(
     const ElicitRequestParams&)>;
 
-using UrlElicitationHandler = std::function<void(const ElicitRequestParams&)>;
+using UrlElicitationHandler = std::function<ElicitResult(
+    const ElicitRequestParams&)>;
 
 enum class ConnectMode {
     Auto,
