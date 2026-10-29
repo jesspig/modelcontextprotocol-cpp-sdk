@@ -16,6 +16,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <atomic>
 #include <mutex>
@@ -175,7 +176,7 @@ private:
     ServerCapabilities capabilities_;
 
     mutable std::shared_mutex registry_mutex_;
-    std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
+    std::map<std::string, std::shared_ptr<McpServerTool>, std::less<>> tools_;
     std::optional<JsonValue> cached_tools_json_;
     struct ResourceEntry {
         std::string name;

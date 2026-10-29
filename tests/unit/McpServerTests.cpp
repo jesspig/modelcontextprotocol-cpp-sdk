@@ -990,6 +990,46 @@ JsonValue SendServerInfoRequest(
     return future.get();
 }
 
+std::vector<std::string> ToolNames(const JsonValue& result) {
+    std::vector<std::string> names;
+    const JsonValue* tools = result.Find("tools");
+    if (!tools || !tools->IsArray()) return names;
+    for (const auto& tool : tools->GetArray()) {
+        const JsonValue* name = tool.Find("name");
+        if (name && name->IsString()) names.push_back(name->GetString());
+    }
+    return names;
+}
+
+struct ToolListEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+ToolListEnv MakeToolListEnv(std::initializer_list<std::string_view> names,
+                            bool progressive_discovery = false) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"tool-order-server", "1.0.0"};
+    opts.protocol_version = std::string(kLatestProtocolVersion);
+    opts.enable_progressive_discovery = progressive_discovery;
+    ToolListEnv env;
+    env.server = McpServer::Create(std::move(pair.server), opts);
+    for (auto name : names) {
+        env.server->RegisterTool(name, ToolOptions{},
+            [](const Ctx&) { return CallToolResult{}; });
+    }
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+void CloseToolListEnv(ToolListEnv& env) {
+    env.client->Close();
+    env.server->Close();
+}
+
 } // namespace
 
 TEST(McpServerTest, ModernResultsCarryServerInfoMeta) {
@@ -1061,6 +1101,58 @@ TEST(McpServerTest, ModernResultsCarryServerInfoMeta) {
 
     server->Close();
     client->Close();
+}
+
+TEST(McpServerTest, ToolsListReturnsToolsInNameOrder) {
+    auto env = MakeToolListEnv({"z", "a", "m"});
+
+    auto result = SendServerInfoRequest(env.client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_FALSE(result.Contains("code"));
+    EXPECT_EQ(ToolNames(result), (std::vector<std::string>{"a", "m", "z"}));
+
+    CloseToolListEnv(env);
+}
+
+TEST(McpServerTest, ToolsListOrderIgnoresRegistrationOrder) {
+    auto first = MakeToolListEnv({"z", "a", "m"});
+    auto second = MakeToolListEnv({"m", "z", "a"});
+
+    auto first_result = SendServerInfoRequest(first.client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    auto second_result = SendServerInfoRequest(second.client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_FALSE(first_result.Contains("code"));
+    ASSERT_FALSE(second_result.Contains("code"));
+    auto first_names = ToolNames(first_result);
+    EXPECT_EQ(first_names, ToolNames(second_result));
+    EXPECT_EQ(first_names, (std::vector<std::string>{"a", "m", "z"}));
+
+    CloseToolListEnv(first);
+    CloseToolListEnv(second);
+}
+
+TEST(McpServerTest, ProgressiveDiscoveryPaginatesToolsInNameOrder) {
+    auto env = MakeToolListEnv({"z", "a", "m"}, true);
+
+    std::vector<std::string> names;
+    std::optional<std::string> cursor;
+    for (int page = 0; page < 4; ++page) {
+        JsonValue params(JsonValue::object_tag);
+        params["pageSize"] = JsonValue(int64_t{1});
+        if (cursor) params["cursor"] = JsonValue(*cursor);
+        auto result = SendServerInfoRequest(env.client, methods::kListTools,
+            std::move(params));
+        ASSERT_FALSE(result.Contains("code"));
+        auto page_names = ToolNames(result);
+        names.insert(names.end(), page_names.begin(), page_names.end());
+        const JsonValue* next = result.Find("nextCursor");
+        if (!next || !next->IsString()) break;
+        cursor = next->GetString();
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"a", "m", "z"}));
+
+    CloseToolListEnv(env);
 }
 
 TEST(McpServerTest, LegacyResultsDoNotCarryServerInfoMeta) {
