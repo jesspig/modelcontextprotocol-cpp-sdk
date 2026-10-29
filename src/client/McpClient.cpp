@@ -1762,6 +1762,52 @@ DiscoverResult McpClient::Discover() {
     return DeserializeDiscoverResult(result);
 }
 
+static bool HasExplicitRequestMeta(const RequestMeta& meta) {
+    return meta.progress_token || meta.client_info || meta.client_capabilities ||
+           meta.log_level || meta.extensions || meta.traceparent ||
+           meta.tracestate || meta.baggage ||
+           meta.protocol_version != std::string(kLatestProtocolVersion);
+}
+
+std::future<JsonValue> McpClient::SendRequest(
+    std::string_view method,
+    JsonValue params,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout)
+{
+    auto effective_meta = HasExplicitRequestMeta(meta)
+        ? meta
+        : BuildClientMeta(options_, negotiation_.negotiated_version);
+    return handler_->SendRequest(method, std::move(params), effective_meta, timeout);
+}
+
+void McpClient::SendNotification(std::string_view method, JsonValue params) {
+    handler_->SendNotification(method, std::move(params));
+}
+
+void McpClient::CancelRequest(const RequestId& id, std::string_view reason) {
+    JsonValue params(JsonValue::object_tag);
+    std::visit([&params](const auto& value) {
+        params[detail::kRequestId] = JsonValue(value);
+    }, id);
+    if (!reason.empty()) params[detail::kReason] = JsonValue(std::string(reason));
+    handler_->SendNotification(notifications::kCancelled, std::move(params));
+}
+
+void McpClient::SetLoggingLevel(LoggingLevel level) {
+    if (IsModernProtocolVersion(negotiation_.negotiated_version)) {
+        throw McpError(McpErrorCode::ProtocolViolation,
+            "logging/setLevel is not available in protocol version " +
+            negotiation_.negotiated_version +
+            "; use a per-request logLevel instead");
+    }
+    SetLevelRequestParams params;
+    params.level = level;
+    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    (void)DoSendRequest(*handler_, methods::kSetLoggingLevel,
+        SerializeSetLevelRequestParams(params), meta, kDefaultRequestTimeout);
+}
+
 void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     std::string subscription_id;

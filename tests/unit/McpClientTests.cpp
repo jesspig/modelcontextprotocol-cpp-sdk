@@ -5,11 +5,18 @@
 #include <mcp/McpTypes.hpp>
 
 #include <gtest/gtest.h>
+#include <mcp/test/McpTimeout.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <future>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <variant>
 #include <vector>
 
 using namespace mcp;
@@ -4108,4 +4115,325 @@ TEST(McpClientTest, ClientEtagOptionGatesConditionalRequests) {
     client->Close();
     server_handler->Close();
     SetEtagCacheEnabled(false);
+}
+
+namespace {
+
+class CustomMethodCodec : public WireCodec {
+public:
+    explicit CustomMethodCodec(std::string_view version)
+        : inner_(MakeWireCodec(version)) {}
+
+    bool HasRequestMethod(std::string_view method) const override {
+        return IsCustom(method) || inner_->HasRequestMethod(method);
+    }
+
+    bool HasNotificationMethod(std::string_view method) const override {
+        return IsCustom(method) || inner_->HasNotificationMethod(method);
+    }
+
+    WireValidation ValidateRequest(
+        std::string_view method, const JsonValue& raw) const override {
+        return IsCustom(method)
+            ? WireValidation::Ok
+            : inner_->ValidateRequest(method, raw);
+    }
+
+    WireValidation ValidateResponse(
+        std::string_view method, const JsonValue& raw) const override {
+        return inner_->ValidateResponse(method, raw);
+    }
+
+    WireValidation ValidateNotification(
+        std::string_view method, const JsonValue& raw) const override {
+        return IsCustom(method)
+            ? WireValidation::Ok
+            : inner_->ValidateNotification(method, raw);
+    }
+
+    void StampOutgoingRequest(
+        JsonValue& body, const RequestMeta& meta) const override {
+        inner_->StampOutgoingRequest(body, meta);
+    }
+
+    JsonValue EncodeResult(
+        std::string_view method, const JsonValue& result) const override {
+        return inner_->EncodeResult(method, result);
+    }
+
+    int32_t EncodeErrorCode(int32_t code) const override {
+        return inner_->EncodeErrorCode(code);
+    }
+
+    std::string_view Era() const override {
+        return inner_->Era();
+    }
+
+private:
+    static bool IsCustom(std::string_view method) {
+        return method == "test/custom" || method == "test/hang" ||
+               method == "test/notify";
+    }
+
+    std::unique_ptr<WireCodec> inner_;
+};
+
+RequestHandler LegacyInitializeHandler() {
+    return [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+        JsonValue result(JsonValue::object_tag);
+        result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+        result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+        result["serverInfo"] =
+            SerializeImplementation(Implementation{"control-server", "1.0"});
+        p.set_value(std::move(result));
+    };
+}
+
+std::shared_ptr<McpSessionHandler> MakeControlServer(
+    std::shared_ptr<ITransport> transport)
+{
+    auto handler = std::make_shared<McpSessionHandler>(
+        std::move(transport),
+        std::make_unique<CustomMethodCodec>(kLegacyProtocolVersion));
+    handler->SetRequestHandler(methods::kInitialize, LegacyInitializeHandler());
+    return handler;
+}
+
+std::unique_ptr<McpClient> MakeLegacyControlClient(
+    std::shared_ptr<ITransport> transport)
+{
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Legacy;
+    opts.initialization_timeout = std::chrono::seconds(5);
+    return McpClient::Create(std::move(transport), opts);
+}
+
+} // namespace
+
+TEST(McpClientTest, SendRequestRoundTrip) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+        std::atomic<bool> handled{false};
+        server_handler->SetRequestHandler("test/custom",
+            [&handled](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                handled.store(true);
+                JsonValue result(JsonValue::object_tag);
+                if (req.params && req.params->IsObject()) {
+                    if (auto* value = req.params->Find("value"))
+                        result["echo"] = *value;
+                }
+                p.set_value(std::move(result));
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        JsonValue params(JsonValue::object_tag);
+        params["value"] = JsonValue("round-trip");
+        auto future = client->SendRequest("test/custom", std::move(params));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+                  std::future_status::ready);
+        auto result = future.get();
+        EXPECT_TRUE(handled.load());
+        ASSERT_TRUE(result.IsObject());
+        ASSERT_NE(result.Find("echo"), nullptr);
+        EXPECT_EQ(result["echo"].GetString(), "round-trip");
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, SendNotificationReachesServer) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool received = false;
+        JsonValue captured;
+        server_handler->SetNotificationHandler("test/notify",
+            [&](const JsonRpcNotification& notif) {
+                std::lock_guard<std::mutex> lock(mutex);
+                received = true;
+                if (notif.params) captured = *notif.params;
+                cv.notify_all();
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        JsonValue params(JsonValue::object_tag);
+        params["payload"] = JsonValue(42);
+        client->SendNotification("test/notify", std::move(params));
+
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(2),
+                                [&received] { return received; }));
+        ASSERT_TRUE(captured.IsObject());
+        ASSERT_NE(captured.Find("payload"), nullptr);
+        EXPECT_EQ(captured["payload"].GetInt(), 42);
+        lock.unlock();
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, CancelRequestSendsNotification) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+
+        std::mutex pending_mutex;
+        std::condition_variable pending_cv;
+        std::optional<RequestId> pending_id;
+        std::shared_ptr<std::promise<JsonValue>> pending_promise;
+        server_handler->SetRequestHandler("test/hang",
+            [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                std::lock_guard<std::mutex> lock(pending_mutex);
+                pending_id = req.id;
+                pending_promise =
+                    std::make_shared<std::promise<JsonValue>>(std::move(p));
+                pending_cv.notify_all();
+            });
+
+        std::mutex cancel_mutex;
+        std::condition_variable cancel_cv;
+        std::vector<RequestId> cancel_ids;
+        std::vector<std::string> cancel_reasons;
+        server_handler->SetOnNotificationCallback(
+            [&](const JsonRpcNotification& notif) {
+                if (notif.method != notifications::kCancelled) return;
+                if (!notif.params || !notif.params->IsObject()) return;
+                auto* id = notif.params->Find("requestId");
+                auto* reason = notif.params->Find("reason");
+                std::lock_guard<std::mutex> lock(cancel_mutex);
+                if (id && id->IsInt()) {
+                    cancel_ids.push_back(RequestId{id->GetInt()});
+                } else if (id && id->IsString()) {
+                    cancel_ids.push_back(RequestId{id->GetString()});
+                }
+                cancel_reasons.push_back(
+                    reason && reason->IsString() ? reason->GetString()
+                                                 : std::string());
+                cancel_cv.notify_all();
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        auto future =
+            client->SendRequest("test/hang", JsonValue(JsonValue::object_tag));
+
+        RequestId captured;
+        {
+            std::unique_lock<std::mutex> lock(pending_mutex);
+            ASSERT_TRUE(pending_cv.wait_for(lock, std::chrono::seconds(2),
+                [&pending_id] { return pending_id.has_value(); }));
+            captured = *pending_id;
+        }
+        ASSERT_TRUE(std::holds_alternative<int64_t>(captured));
+
+        client->CancelRequest(captured, "user aborted");
+        {
+            std::unique_lock<std::mutex> lock(cancel_mutex);
+            ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
+                [&cancel_ids] { return !cancel_ids.empty(); }));
+            ASSERT_TRUE(std::holds_alternative<int64_t>(cancel_ids[0]));
+            EXPECT_EQ(std::get<int64_t>(cancel_ids[0]),
+                      std::get<int64_t>(captured));
+            EXPECT_EQ(cancel_reasons[0], "user aborted");
+        }
+
+        client->CancelRequest(
+            RequestId{std::string("string-request-id")}, "typed");
+        {
+            std::unique_lock<std::mutex> lock(cancel_mutex);
+            ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
+                [&cancel_ids] { return cancel_ids.size() == 2; }));
+            ASSERT_TRUE(std::holds_alternative<std::string>(cancel_ids[1]));
+            EXPECT_EQ(std::get<std::string>(cancel_ids[1]),
+                      "string-request-id");
+            EXPECT_EQ(cancel_reasons[1], "typed");
+        }
+
+        JsonValue error(JsonValue::object_tag);
+        error["code"] =
+            JsonValue(static_cast<int64_t>(McpErrorCode::RequestCancelled));
+        error["message"] = JsonValue("cancelled by test");
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            ASSERT_NE(pending_promise, nullptr);
+            pending_promise->set_value(std::move(error));
+        }
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+                  std::future_status::ready);
+        auto result = future.get();
+        ASSERT_TRUE(result.IsObject());
+        ASSERT_NE(result.Find("message"), nullptr);
+        EXPECT_EQ(result["message"].GetString(), "cancelled by test");
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, SetLoggingLevelLegacySendsRequest) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"logging-server", "1.0"};
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::vector<LoggingMessageNotificationParams> messages;
+
+        ClientOptions opts;
+        opts.connect_mode = ConnectMode::Legacy;
+        opts.initialization_timeout = std::chrono::seconds(5);
+        auto client = McpClient::Create(std::move(pair.client), opts);
+        client->SetLoggingHandler(
+            [&](const LoggingMessageNotificationParams& message) {
+                std::lock_guard<std::mutex> lock(mutex);
+                messages.push_back(message);
+                cv.notify_all();
+            });
+
+        EXPECT_NO_THROW(client->SetLoggingLevel(LoggingLevel::Error));
+        server->SendLoggingMessage(LoggingLevel::Info, "below-threshold");
+        server->SendLoggingMessage(LoggingLevel::Critical, "at-threshold");
+
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(2),
+                                [&messages] { return !messages.empty(); }));
+        ASSERT_EQ(messages.size(), 1u);
+        EXPECT_EQ(messages[0].level, LoggingLevel::Critical);
+        ASSERT_TRUE(messages[0].data.IsString());
+        EXPECT_EQ(messages[0].data.GetString(), "at-threshold");
+        lock.unlock();
+
+        client->Close();
+        server->Close();
+    });
+}
+
+TEST(McpClientTest, SetLoggingLevelModernRejected) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        ClientOptions opts;
+        opts.connect_mode = ConnectMode::Pin;
+        opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+        auto client = McpClient::Create(std::move(pair.client), opts);
+
+        bool rejected = false;
+        try {
+            client->SetLoggingLevel(LoggingLevel::Info);
+        } catch (const McpError& e) {
+            rejected = true;
+            EXPECT_EQ(e.Code(), McpErrorCode::ProtocolViolation);
+        }
+        EXPECT_TRUE(rejected);
+
+        client->Close();
+    });
 }

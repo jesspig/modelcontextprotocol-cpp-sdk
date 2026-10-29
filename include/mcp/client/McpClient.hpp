@@ -5,14 +5,17 @@
 #include <mcp/client/VersionNegotiation.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -122,6 +125,15 @@ public:
     void SetLoggingHandler(std::function<void(const LoggingMessageNotificationParams&)> handler);
 
     void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
+
+    std::future<JsonValue> SendRequest(
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta = {},
+        std::chrono::milliseconds timeout = kDefaultRequestTimeout);
+    void SendNotification(std::string_view method, JsonValue params = {});
+    void CancelRequest(const RequestId& id, std::string_view reason = {});
+    void SetLoggingLevel(LoggingLevel level);
 
     void SendRootsListChanged();
 
