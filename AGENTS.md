@@ -15,7 +15,7 @@ ctest --preset debug --output-on-failure
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`。
 - `-DMCP_WERROR=ON` 才开警告即错误（CI 自动加，本地默认关）。
 - configure 无第三方拉取；唯一可选系统依赖是 OpenSSL，由 `-DMCP_WITH_OPENSSL=AUTO|ON|OFF`（默认 `AUTO`）控制——`AUTO` 按 `find_package(OpenSSL)` 结果启用，`ON` 未找到即 configure 失败，`OFF` 强制禁用（未启用则禁用 TLS；PKCE 随机源回退 `BCryptGenRandom`/`random_device`，SHA-256 恒为内置实现）。
-- 验证全量：`ctest -N` 看实际用例数（17 目标 / 947 用例；静态 `TEST/TEST_F/TEST_P` 952，差 5 为条件编译用例；静态断言统计 4419，详见 [wiki/tests.md](wiki/tests.md)）。
+- 验证全量：`ctest -N` 看实际用例数（17 目标 / 949 用例；静态 `TEST/TEST_F/TEST_P` 954，差 5 为条件编译用例；静态断言统计 4429，详见 [wiki/tests.md](wiki/tests.md)）。
 - 测试栈为 googletest（子模块 `third_party/googletest`）：套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*/ASSERT_*`，测试目标链 `mcp-test-support` + `GTest::gtest_main`，注册统一走 `mcp_discover_tests`。
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删。
 - 集成测试超时护栏：`MCP_RUN_WITH_TIMEOUT`（`tests/support/include/mcp/test/McpTimeout.hpp`，默认 10s）——超时打印 Failure 并以 `std::_Exit(EXIT_FAILURE)` 硬退出（整进程终止，非"跳过该用例继续跑"），勿改回永久阻塞。
@@ -51,7 +51,7 @@ ctest --preset debug --output-on-failure
 
 ## 项目知识库
 
-源码知识库在 `wiki/`（面向源码理解，与 `docs/zh`、`docs/en` 在线文档分离），入口 [wiki/index.md](wiki/index.md)。当前基线为 17 个测试目标、947 个 ctest 用例（静态 952，差 5 为条件编译）、4419 个源码断言 token。改动落地后及时更新对应页面并记 changelog，不推迟到提交前统一处理。
+源码知识库在 `wiki/`（面向源码理解，与 `docs/zh`、`docs/en` 在线文档分离），入口 [wiki/index.md](wiki/index.md)。当前基线为 17 个测试目标、949 个 ctest 用例（静态 954，差 5 为条件编译）、4429 个源码断言 token。改动落地后及时更新对应页面并记 changelog，不推迟到提交前统一处理。
 
 - **核查**：更新前 `git status` 与 `git diff HEAD` 对照全部实际变更（含用户手动修改），禁止凭对话记忆；无法核实处标 `> [!todo] 待补充`。彻底清除过时描述，不留废弃标记。
 - **frontmatter**：概念页（modules/classes/transports/concepts）必须含 YAML frontmatter——`type` 必填（同类一致），推荐 `title`/`description`/`tags`/`timestamp`（ISO 8601 真实时间，`Get-Date` 获取，仅内容实际变更时更新）；对应源码资产加 `resource`。`index.md` 与 `log.md` 为保留文件，无 frontmatter。
