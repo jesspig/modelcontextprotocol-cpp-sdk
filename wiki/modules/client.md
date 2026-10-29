@@ -1,9 +1,9 @@
 ---
 type: Module
 title: mcp-client 客户端库
-description: McpClient 门面：连接模式协商、请求/响应、progress 回调、任务化工具调用、MRTR elicit 回填、404 会话自愈、OAuth 与令牌缓存。
+description: McpClient 门面：连接模式协商、请求/响应、progress 回调、任务化工具调用、MRTR 默认自动驱动、URL elicitation 三态、客户端控制面 API、授权上下文缓存分区、404 会话自愈、OAuth 与令牌缓存。
 tags: [client, oauth, 缓存, 协商, progress, tasks]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-10-29T22:02:08+08:00
 resource: src/client/McpClient.cpp
 ---
 
@@ -24,19 +24,21 @@ resource: src/client/McpClient.cpp
 ## 客户端行为要点
 
 - **创建即阻塞**：`McpClient::Create` 构造后立即同步 `NegotiateProtocol()`，返回前协商完成
-- `WireClientHandlers()` 注册 6 个通知处理器：三个 listChanged（清空响应缓存）、`resources/updated`（按 uri 单键失效）、`notifications/progress`（重置对应请求超时 + 分发 `on_progress` 回调）、`subscriptions/acknowledged`（匹配 `SubscribeAsync` 待确认订阅并转发用户处理器）；另接线 `elicitation/create` 请求处理器（form 走 `elicitation_handler`，url 模式走 `url_elicitation_handler_` 并自动回 `notifications/elicitation/complete`）
+- `WireClientHandlers()` 注册 6 个通知处理器：三个 listChanged（清空响应缓存）、`resources/updated`（按 uri 单键失效）、`notifications/progress`（重置对应请求超时 + 分发 `on_progress` 回调）、`subscriptions/acknowledged`（匹配 `SubscribeAsync` 待确认订阅并转发用户处理器）；另接线 `elicitation/create` 请求处理器（form 走 `elicitation_handler`；url 模式走 `url_elicitation_handler` 并返回三态 `ElicitResult`，仅 legacy 自动回 `notifications/elicitation/complete`，modern 走 MRTR）
+- handler 可经 `ClientOptions` 的 `elicitation_handler`/`url_elicitation_handler`/`sampling_handler`/`roots_handler` 在创建时安装，`DeriveClientCapabilities` 在协商前自动补声明对应能力（显式 `capabilities` 优先），后置 `Set*Handler` 仍可覆盖
 - 懒注册：`SetSamplingHandler`/`SetRootsHandler` 未设置时收到请求抛 `MethodNotFound`（两 API 已因 SEP-2577 废弃，新代码改用 `SetElicitationHandler`）；`SetLoggingHandler` 未设置时静默丢弃
 - 自动翻页：无 cursor 的列表请求自动翻页，上限 `kMaxListPages = 64` 页，**不收敛抛 `McpError(ProtocolViolation)`**（修复原静默截断缺陷）
 - 聚合 API：`ListToolsAll/ListResourcesAll/ListResourceTemplatesAll/ListPromptsAll` 自带 cursor 循环聚合成单结果（同样 64 页上限防不收敛，超限抛 `ProtocolViolation`，返回时 `next_cursor` 为空）
 - 任务客户端流：`CallToolAsTask` 发起任务化 tools/call（对端返回 `resultType=="task"` 句柄时立即返回），与 `GetTask`/`PollTaskToCompletion`（500ms 间隔 / 300s 超时）/`CancelTask` 串成完整流
-- MRTR elicit/confirm 回填写入 `ElicitResult::content`（成员已由 `values` 改名对齐 wire 键，见 [/concepts/mrtr.md](../concepts/mrtr.md)）
+- MRTR elicit/confirm 回填写入 `ElicitResult::content`（成员已由 `values` 改名对齐 wire 键，见 [/concepts/mrtr.md](../concepts/mrtr.md)）；`input_required_config` 默认构造，默认自动驱动（`auto_fulfill=true`、10 轮），显式 `std::nullopt` 或缺少对应 handler 时把 `input_required` 结果原样返回调用方
+- 客户端控制面：`SendRequest`（缺省注入 client meta 与协商版本）、`SendNotification`、`CancelRequest`（发 `notifications/cancelled`）、`SetLoggingLevel`（仅 legacy 发 `logging/setLevel`，modern 抛 `ProtocolViolation`）
 - 404 会话自愈：HTTP 传输把 404 类型化为 `SessionExpired(-32009)` 错误；`ClientOptions::reinit_on_expired_session`（默认 true）时 `SendRequestWithMrtr` 捕获后 `RecoverExpiredSession()` 重协商并以原请求**恰一次重放**（`session_generation_` 原子世代计数 + `reinit_mutex_` 串行化，并发等待者见世代已变则跳过重初始化）
 - 总量超时封顶：`ClientOptions::max_total_timeout`（默认 0 禁用）构造时经 `SetMaxTotalTimeout` 接线至会话引擎——每请求记录绝对截止，progress 续命只顺延 idle deadline 不可越过总量（见 [/classes/mcp-session-handler.md](../classes/mcp-session-handler.md)）
 - 超时：任务类请求 `kTaskRequestTimeout = 600s`、Ping `kPingTimeout = 10s`
 - `ClientOptions::span_handler` 在会话 `Start()` 前传入 `McpSessionHandler::SetSpanHandler`；事件契约和线程约束见 [/concepts/span-hooks.md](../concepts/span-hooks.md)
 - OAuth provider 支持 RFC 8707 `resource`、CIMD client metadata、RFC 9207 授权响应 `iss` 校验，以及 `client_credentials` 入口（详见 [/concepts/oauth.md](../concepts/oauth.md)）
 
-### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp:296](../../src/client/McpClient.cpp)）
+### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp:442](../../src/client/McpClient.cpp)）
 
 - **stdio 类传输**（RTTI 判定 typeid name 含 `InMemoryTransportImpl`/`StdioClientSessionTransport`）：discover 探测超时/网络失败→回退 initialize
 - **HTTP 类传输**：超时→抛 `McpError(RequestTimeout)`；网络异常→`McpError(ConnectionClosed)`，不回退
@@ -46,7 +48,7 @@ resource: src/client/McpClient.cpp
 
 ### 缓存读取兼容
 
-`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp:964](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private），`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
+`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp:1106](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private）；private 键再附 `ClientOptions::cache_auth_context` 返回的授权上下文，上下文切换时清空 private（public 跨上下文共享），`Invalidate` 跨上下文删除同键，`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
 
 ### progress 接收（客户端方向）
 
@@ -56,7 +58,7 @@ resource: src/client/McpClient.cpp
 
 ### 客户端 → 服务端通知
 
-`SendRootsListChanged()` 发送 `notifications/roots/list_changed`，协商版本 **>= 2025-06-18** 才允许，否则抛 `McpError(ProtocolViolation)`（[McpClient.cpp:1453](../../src/client/McpClient.cpp)）。
+`SendRootsListChanged()` 发送 `notifications/roots/list_changed`，协商版本须为 legacy 且 **>= 2025-06-18**；modern（>= 2026-07-28）已移除该通知，发送抛 `McpError(ProtocolViolation)`（[McpClient.cpp:1887](../../src/client/McpClient.cpp)）。
 
 ## 相关页面
 
