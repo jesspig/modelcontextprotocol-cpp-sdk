@@ -45,6 +45,105 @@ TEST(McpClientTest, ClientOptionsDefaults) {
     EXPECT_EQ(opts.discover_probe_timeout.count(), 5);
 }
 
+TEST(McpClientTest, DeriveClientCapabilitiesNoHandlersReturnsNullopt) {
+    ClientOptions opts;
+    EXPECT_FALSE(DeriveClientCapabilities(opts).has_value());
+
+    opts.capabilities = ClientCapabilities{};
+    auto derived = DeriveClientCapabilities(opts);
+    ASSERT_TRUE(derived.has_value());
+    EXPECT_FALSE(derived->elicitation.has_value());
+    EXPECT_FALSE(derived->sampling.has_value());
+    EXPECT_FALSE(derived->roots.has_value());
+}
+
+TEST(McpClientTest, DeriveClientCapabilitiesDeclaresHandlers) {
+    ClientOptions form_opts;
+    form_opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto form_caps = DeriveClientCapabilities(form_opts);
+    ASSERT_TRUE(form_caps.has_value());
+    ASSERT_TRUE(form_caps->elicitation.has_value());
+    ASSERT_TRUE(form_caps->elicitation->form.has_value());
+    EXPECT_TRUE(form_caps->elicitation->form->IsObject());
+    EXPECT_TRUE(form_caps->elicitation->form->Empty());
+    EXPECT_FALSE(form_caps->elicitation->url.has_value());
+
+    ClientOptions url_opts;
+    url_opts.url_elicitation_handler = [](const ElicitRequestParams&) {};
+    auto url_caps = DeriveClientCapabilities(url_opts);
+    ASSERT_TRUE(url_caps.has_value());
+    ASSERT_TRUE(url_caps->elicitation.has_value());
+    ASSERT_TRUE(url_caps->elicitation->url.has_value());
+    EXPECT_TRUE(url_caps->elicitation->url->IsObject());
+    EXPECT_TRUE(url_caps->elicitation->url->Empty());
+    EXPECT_FALSE(url_caps->elicitation->form.has_value());
+
+    ClientOptions sampling_opts;
+    sampling_opts.sampling_handler = [](const CreateMessageRequestParams&) {
+        return CreateMessageResult{};
+    };
+    auto sampling_caps = DeriveClientCapabilities(sampling_opts);
+    ASSERT_TRUE(sampling_caps.has_value());
+    EXPECT_TRUE(sampling_caps->sampling.has_value());
+
+    ClientOptions roots_opts;
+    roots_opts.roots_handler = [](const ListRootsRequestParams&) {
+        return ListRootsResult{};
+    };
+    auto roots_caps = DeriveClientCapabilities(roots_opts);
+    ASSERT_TRUE(roots_caps.has_value());
+    ASSERT_TRUE(roots_caps->roots.has_value());
+    ASSERT_TRUE(roots_caps->roots->list_changed.has_value());
+    EXPECT_TRUE(*roots_caps->roots->list_changed);
+}
+
+TEST(McpClientTest, DeriveClientCapabilitiesMergesExplicitCapabilities) {
+    ClientOptions opts;
+    ClientCapabilities explicit_caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    explicit_caps.elicitation = elicitation;
+    RootsCapability roots;
+    roots.list_changed = false;
+    explicit_caps.roots = roots;
+    explicit_caps.sampling = SamplingCapability{};
+    explicit_caps.experimental = JsonValue(JsonValue::Object{{"feature", JsonValue(true)}});
+    std::map<std::string, JsonValue> extensions;
+    extensions.emplace("io.test/ext", JsonValue(true));
+    explicit_caps.extensions = std::move(extensions);
+    opts.capabilities = explicit_caps;
+
+    opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    opts.url_elicitation_handler = [](const ElicitRequestParams&) {};
+    opts.sampling_handler = [](const CreateMessageRequestParams&) {
+        return CreateMessageResult{};
+    };
+    opts.roots_handler = [](const ListRootsRequestParams&) {
+        return ListRootsResult{};
+    };
+
+    auto caps = DeriveClientCapabilities(opts);
+    ASSERT_TRUE(caps.has_value());
+    ASSERT_TRUE(caps->elicitation.has_value());
+    ASSERT_TRUE(caps->elicitation->form.has_value());
+    EXPECT_TRUE((*caps->elicitation->form)["applyDefaults"].GetBool());
+    ASSERT_TRUE(caps->elicitation->url.has_value());
+    EXPECT_TRUE(caps->elicitation->url->IsObject());
+    EXPECT_TRUE(caps->elicitation->url->Empty());
+    EXPECT_TRUE(caps->sampling.has_value());
+    ASSERT_TRUE(caps->roots.has_value());
+    ASSERT_TRUE(caps->roots->list_changed.has_value());
+    EXPECT_FALSE(*caps->roots->list_changed);
+    ASSERT_TRUE(caps->experimental.has_value());
+    EXPECT_TRUE((*caps->experimental)["feature"].GetBool());
+    ASSERT_TRUE(caps->extensions.has_value());
+    EXPECT_EQ(caps->extensions->count("io.test/ext"), 1u);
+}
+
 TEST(McpClientTest, LegacyNegotiationUsesInitialize) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -59,6 +158,32 @@ TEST(McpClientTest, LegacyNegotiationUsesInitialize) {
     EXPECT_FALSE(client->IsModernProtocol());
     EXPECT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLegacyProtocolVersion));
     EXPECT_EQ(client->GetServerInfo().name, "test-server");
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, ClientOptionsElicitationHandlerDeclaredOnInitialize) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Legacy;
+    opts.initialization_timeout = std::chrono::seconds(5);
+    opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto caps = server->GetClientCapabilities();
+    ASSERT_NE(caps, nullptr);
+    ASSERT_TRUE(caps->elicitation.has_value());
+    ASSERT_TRUE(caps->elicitation->form.has_value());
+    EXPECT_TRUE(caps->elicitation->form->IsObject());
+    EXPECT_FALSE(caps->sampling.has_value());
+    EXPECT_FALSE(caps->roots.has_value());
+
     client->Close();
     server->Close();
 }
@@ -3116,6 +3241,49 @@ TEST(McpClientTest, ModernDiscoverMetaUnaffected) {
     EXPECT_EQ(pv->GetString(), std::string(kLatestProtocolVersion));
 
     client_handler->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ClientOptionsElicitationHandlerDeclaredInDiscoverMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    std::optional<JsonValue> captured_meta;
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kDiscover,
+        [&captured_meta](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            captured_meta = req.meta;
+            JsonValue result(JsonValue::object_tag);
+            JsonValue supported(JsonValue::array_tag);
+            supported.PushBack(JsonValue(std::string(kLatestProtocolVersion)));
+            result["supportedVersions"] = std::move(supported);
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] =
+                SerializeImplementation(Implementation{"modern-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    EXPECT_TRUE(client->IsModernProtocol());
+    ASSERT_TRUE(captured_meta.has_value());
+    ASSERT_TRUE(captured_meta->IsObject());
+    auto* cc = captured_meta->Find("io.modelcontextprotocol/clientCapabilities");
+    ASSERT_NE(cc, nullptr);
+    auto caps = DeserializeClientCapabilities(*cc);
+    ASSERT_TRUE(caps.elicitation.has_value());
+    ASSERT_TRUE(caps.elicitation->form.has_value());
+    EXPECT_TRUE(caps.elicitation->form->IsObject());
+    EXPECT_FALSE(caps.sampling.has_value());
+    EXPECT_FALSE(caps.roots.has_value());
+
+    client->Close();
     server_handler->Close();
 }
 

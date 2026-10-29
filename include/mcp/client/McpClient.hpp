@@ -20,17 +20,6 @@ namespace mcp {
 
 namespace detail { class ResponseCache; }
 
-using SamplingHandler = std::function<CreateMessageResult(
-    const CreateMessageRequestParams&)>;
-
-using RootsHandler = std::function<ListRootsResult(
-    const ListRootsRequestParams&)>;
-
-using ElicitationHandler = std::function<ElicitResult(
-    const ElicitRequestParams&)>;
-
-using UrlElicitationHandler = std::function<void(const ElicitRequestParams&)>;
-
 using ProgressCallback = std::function<void(const ProgressNotificationParams&)>;
 
 using ClientNotificationHandler = std::function<void(
@@ -143,6 +132,8 @@ private:
     void WireClientHandlers();
     void WireTransportCallbacks();
     void DetachTransportCallbacks();
+    void InstallSamplingHandler();
+    void InstallRootsHandler();
     NegotiationResult NegotiateProtocol();
 
     std::optional<std::string> AttachProgressCallback(

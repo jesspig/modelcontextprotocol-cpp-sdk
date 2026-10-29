@@ -17,6 +17,17 @@
 
 namespace mcp {
 
+using SamplingHandler = std::function<CreateMessageResult(
+    const CreateMessageRequestParams&)>;
+
+using RootsHandler = std::function<ListRootsResult(
+    const ListRootsRequestParams&)>;
+
+using ElicitationHandler = std::function<ElicitResult(
+    const ElicitRequestParams&)>;
+
+using UrlElicitationHandler = std::function<void(const ElicitRequestParams&)>;
+
 enum class ConnectMode {
     Auto,
     Legacy,
@@ -26,6 +37,11 @@ enum class ConnectMode {
 struct MCP_API ClientOptions {
     Implementation client_info{"mcp-cpp-client", std::string(kSdkVersion)};
     std::optional<ClientCapabilities> capabilities;
+
+    std::optional<ElicitationHandler> elicitation_handler;
+    std::optional<UrlElicitationHandler> url_elicitation_handler;
+    std::optional<SamplingHandler> sampling_handler;
+    std::optional<RootsHandler> roots_handler;
 
     ConnectMode connect_mode{ConnectMode::Auto};
     std::optional<std::string> pin_protocol_version;
@@ -61,5 +77,8 @@ struct MCP_API ClientOptions {
     std::function<void(std::string_view)> on_transport_error;
 
 };
+
+MCP_API std::optional<ClientCapabilities> DeriveClientCapabilities(
+    const ClientOptions& options);
 
 } // namespace mcp

@@ -295,6 +295,40 @@ namespace {
     };
 }
 
+std::optional<ClientCapabilities> DeriveClientCapabilities(
+    const ClientOptions& options)
+{
+    if (!options.capabilities &&
+        !options.elicitation_handler &&
+        !options.url_elicitation_handler &&
+        !options.sampling_handler &&
+        !options.roots_handler) {
+        return std::nullopt;
+    }
+
+    ClientCapabilities caps = options.capabilities.value_or(ClientCapabilities{});
+
+    if (options.elicitation_handler) {
+        if (!caps.elicitation) caps.elicitation = ElicitationCapability{};
+        if (!caps.elicitation->form.has_value())
+            caps.elicitation->form = JsonValue(JsonValue::object_tag);
+    }
+    if (options.url_elicitation_handler) {
+        if (!caps.elicitation) caps.elicitation = ElicitationCapability{};
+        if (!caps.elicitation->url.has_value())
+            caps.elicitation->url = JsonValue(JsonValue::object_tag);
+    }
+    if (options.sampling_handler && !caps.sampling) {
+        caps.sampling = SamplingCapability{};
+    }
+    if (options.roots_handler) {
+        if (!caps.roots) caps.roots = RootsCapability{};
+        if (!caps.roots->list_changed.has_value())
+            caps.roots->list_changed = true;
+    }
+    return caps;
+}
+
 static RequestMeta BuildClientMeta(
     const ClientOptions& options, const std::string& version)
 {
@@ -519,6 +553,12 @@ McpClient::McpClient(
     , options_(std::move(options))
     , response_cache_(std::make_unique<detail::ResponseCache>())
 {
+    sampling_handler_ = options_.sampling_handler;
+    roots_handler_ = options_.roots_handler;
+    elicitation_handler_ = options_.elicitation_handler;
+    url_elicitation_handler_ = options_.url_elicitation_handler;
+    options_.capabilities = DeriveClientCapabilities(options_);
+
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(
         transport_, std::move(codec));
@@ -529,6 +569,8 @@ McpClient::McpClient(
     WireTransportCallbacks();
     handler_->Start();
     WireClientHandlers();
+    if (sampling_handler_) InstallSamplingHandler();
+    if (roots_handler_) InstallRootsHandler();
 }
 
 McpClient::~McpClient() {
@@ -734,6 +776,10 @@ bool McpClient::IsModernProtocol() const {
 
 void McpClient::SetSamplingHandler(SamplingHandler handler) {
     sampling_handler_ = std::move(handler);
+    InstallSamplingHandler();
+}
+
+void McpClient::InstallSamplingHandler() {
     handler_->SetRequestHandler(methods::kCreateMessage,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             if (!sampling_handler_) {
@@ -754,6 +800,10 @@ void McpClient::SetSamplingHandler(SamplingHandler handler) {
 
 void McpClient::SetRootsHandler(RootsHandler handler) {
     roots_handler_ = std::move(handler);
+    InstallRootsHandler();
+}
+
+void McpClient::InstallRootsHandler() {
     handler_->SetRequestHandler(methods::kListRoots,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             (void)req;
