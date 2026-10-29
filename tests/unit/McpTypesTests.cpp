@@ -604,6 +604,60 @@ TEST(McpTypesTest, CompleteRequestParamsFlatShapeCompat) {
     EXPECT_EQ(params.argument_value, "py");
 }
 
+TEST(McpTypesTest, CompleteRequestParamsContextRoundTrip) {
+    CompleteRequestParams params;
+    params.ref = JsonValue::Parse(
+        "{\"type\":\"ref/prompt\",\"name\":\"code_review\"}");
+    params.argument_name = "framework";
+    params.argument_value = "qt";
+    params.context_arguments = {
+        {"language", "cpp"},
+        {"framework", "qt"},
+        {"standard", "c++20"},
+    };
+
+    auto wire = SerializeCompleteRequestParams(params);
+    ASSERT_TRUE(wire.Contains("context"));
+    ASSERT_TRUE(wire["context"].IsObject());
+    ASSERT_TRUE(wire["context"].Contains("arguments"));
+    const auto& arguments = wire["context"]["arguments"];
+    ASSERT_TRUE(arguments.IsObject());
+    ASSERT_EQ(arguments.Size(), size_t{3});
+    EXPECT_EQ(arguments["language"], JsonValue("cpp"));
+    EXPECT_EQ(arguments["framework"], JsonValue("qt"));
+    EXPECT_EQ(arguments["standard"], JsonValue("c++20"));
+
+    auto decoded = DeserializeCompleteRequestParams(wire);
+    EXPECT_EQ(decoded.ref, params.ref);
+    EXPECT_EQ(decoded.argument_name, "framework");
+    EXPECT_EQ(decoded.argument_value, "qt");
+    EXPECT_EQ(decoded.context_arguments, params.context_arguments);
+}
+
+TEST(McpTypesTest, CompleteRequestParamsRejectsMalformedContext) {
+    auto rejects_invalid_params = [](const char* wire) {
+        try {
+            (void)DeserializeCompleteRequestParams(JsonValue::Parse(wire));
+        } catch (const McpError& e) {
+            return e.Code() == McpErrorCode::InvalidParams;
+        }
+        return false;
+    };
+
+    EXPECT_TRUE(rejects_invalid_params(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"},"
+        "\"context\":[]}"));
+    EXPECT_TRUE(rejects_invalid_params(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"},"
+        "\"context\":{\"arguments\":[]}}"));
+    EXPECT_TRUE(rejects_invalid_params(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"},"
+        "\"context\":{\"arguments\":{\"language\":1}}}"));
+}
+
 TEST(McpTypesTest, CompleteResultRoundTrip) {
     CompleteResult r;
     {

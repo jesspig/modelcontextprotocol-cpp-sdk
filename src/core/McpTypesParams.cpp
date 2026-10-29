@@ -81,6 +81,15 @@ JsonValue SerializeCompleteRequestParams(const CompleteRequestParams& v) {
     argument["name"] = JsonValue(v.argument_name);
     argument["value"] = JsonValue(v.argument_value);
     obj["argument"] = std::move(argument);
+    if (!v.context_arguments.empty()) {
+        JsonValue arguments(JsonValue::object_tag);
+        for (const auto& entry : v.context_arguments) {
+            arguments[entry.first] = JsonValue(entry.second);
+        }
+        JsonValue context(JsonValue::object_tag);
+        context[detail::kArguments] = std::move(arguments);
+        obj["context"] = std::move(context);
+    }
     if (v.meta) obj[detail::kMeta] = SerializeRequestMeta(*v.meta);
     return obj;
 }
@@ -94,6 +103,28 @@ CompleteRequestParams DeserializeCompleteRequestParams(const JsonValue& j) {
     } else {
         if (auto* n = j.Find("argumentName"); n && n->IsString()) v.argument_name = n->GetString();
         if (auto* val = j.Find("argumentValue"); val && val->IsString()) v.argument_value = val->GetString();
+    }
+    if (auto* context = j.Find("context")) {
+        if (!context->IsObject()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "DeserializeCompleteRequestParams: field 'context' expected an object, got "
+                + context->Dump());
+        }
+        if (auto* arguments = context->Find(detail::kArguments)) {
+            if (!arguments->IsObject()) {
+                throw McpError(McpErrorCode::InvalidParams,
+                    "DeserializeCompleteRequestParams: field 'context.arguments' expected an "
+                    "object, got " + arguments->Dump());
+            }
+            for (const auto& entry : arguments->GetObject()) {
+                if (!entry.second.IsString()) {
+                    throw McpError(McpErrorCode::InvalidParams,
+                        "DeserializeCompleteRequestParams: field 'context.arguments."
+                        + entry.first + "' expected a string, got " + entry.second.Dump());
+                }
+                v.context_arguments.emplace(entry.first, entry.second.GetString());
+            }
+        }
     }
     auto* m = j.Find(detail::kMeta);
     if (m) v.meta = DeserializeRequestMeta(*m);

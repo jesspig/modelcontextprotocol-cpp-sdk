@@ -5610,3 +5610,60 @@ TEST(McpServerTest, DiscoverRejectedWhenRequestDeclaresLegacyVersion) {
 
     server->Close();
 }
+
+TEST(McpServerTest, CompleteRequestCarriesContextArguments) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    std::mutex received_mutex;
+    std::map<std::string, std::string, std::less<>> received;
+    server->SetCompletionHandler(
+        [&](const CompleteRequestParams& params) -> CompleteResult {
+            {
+                std::lock_guard<std::mutex> lock(received_mutex);
+                received = params.context_arguments;
+            }
+            CompleteResult result;
+            JsonValue completion(JsonValue::object_tag);
+            JsonValue values(JsonValue::array_tag);
+            values.PushBack(JsonValue("c++"));
+            completion["values"] = std::move(values);
+            completion["total"] = JsonValue(int64_t{1});
+            completion["hasMore"] = JsonValue(false);
+            result.completion = std::move(completion);
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    CompleteRequestParams params;
+    params.ref = JsonValue::Parse(
+        "{\"type\":\"ref/prompt\",\"name\":\"code_review\"}");
+    params.argument_name = "framework";
+    params.argument_value = "qt";
+    params.context_arguments = {
+        {"language", "cpp"},
+        {"framework", "qt"},
+    };
+
+    auto future = client->SendRequest(methods::kComplete,
+        SerializeCompleteRequestParams(params), {}, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code")) << resp.Dump();
+
+    std::map<std::string, std::string, std::less<>> captured;
+    {
+        std::lock_guard<std::mutex> lock(received_mutex);
+        captured = received;
+    }
+    EXPECT_EQ(captured, params.context_arguments);
+
+    server->Close();
+    client->Close();
+}
