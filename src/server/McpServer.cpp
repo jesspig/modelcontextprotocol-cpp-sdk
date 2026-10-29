@@ -48,6 +48,52 @@ namespace {
     constexpr std::chrono::seconds kElicitTimeout(600);
     constexpr std::chrono::seconds kNoWait(0);
 
+    constexpr int64_t kMinCacheTtlMs = 0;
+    constexpr std::string_view kModernDefaultCacheScope = "private";
+    constexpr std::string_view kPublicCacheScope = "public";
+
+    bool HasCacheHint(const CacheHint& hint) {
+        return hint.ttl_ms.has_value() || hint.cache_scope.has_value();
+    }
+
+    void StripCacheWireFields(JsonValue& result) {
+        auto& object = result.GetObject();
+        object.erase(std::string(detail::kCacheHint));
+        object.erase(std::string(detail::kTTLMs));
+        object.erase(std::string(detail::kCacheScope));
+    }
+
+    void ValidateModernCacheHint(const CacheHint& hint, std::string_view method) {
+        std::string problem;
+        const auto append = [&problem](std::string text) {
+            if (!problem.empty()) problem += "; ";
+            problem += std::move(text);
+        };
+        if (!hint.ttl_ms) {
+            append("missing ttlMs");
+        } else if (*hint.ttl_ms < kMinCacheTtlMs) {
+            append("ttlMs must be >= 0, got " + std::to_string(*hint.ttl_ms));
+        }
+        if (!hint.cache_scope) {
+            append("missing cacheScope");
+        } else if (*hint.cache_scope != kPublicCacheScope &&
+                   *hint.cache_scope != kModernDefaultCacheScope) {
+            append("cacheScope must be \"public\" or \"private\", got \"" +
+                   *hint.cache_scope + "\"");
+        }
+        if (!problem.empty()) {
+            throw McpError(McpErrorCode::InvalidParams,
+                "invalid cache hint for " + std::string(method) + ": " + problem);
+        }
+    }
+
+    template <typename Result, typename SerializeFn>
+    JsonValue ApplyCacheHintAndSerialize(Result& result, const CacheHint& hint,
+                                         SerializeFn&& serialize) {
+        if (HasCacheHint(hint)) result.cache_hint = hint;
+        return serialize(result);
+    }
+
     constexpr std::string_view kUrlElicitationInputKey = "elicitation";
     constexpr std::string_view kFormElicitationInputKey = "elicitation";
 
@@ -544,17 +590,30 @@ static bool RequireInitialized(bool initialized, bool modern_era, std::promise<J
 }
 
 CacheHint McpServer::ResolveCacheHint(std::string_view method) const {
+    const bool modern = handler_->IsJuly2026OrLater();
     std::function<std::optional<CacheHint>(std::string_view)> hook;
     {
         std::lock_guard<std::mutex> lock(cache_hook_mutex_);
         hook = cache_hint_hook_;
     }
     if (hook) {
-        if (auto resolved = hook(method)) return *resolved;
+        if (auto resolved = hook(method)) {
+            if (modern) ValidateModernCacheHint(*resolved, method);
+            return *resolved;
+        }
     }
     if (options_.cache_hints) {
         auto it = options_.cache_hints->find(method);
-        if (it != options_.cache_hints->end()) return it->second;
+        if (it != options_.cache_hints->end()) {
+            if (modern) ValidateModernCacheHint(it->second, method);
+            return it->second;
+        }
+    }
+    if (modern) {
+        CacheHint hint;
+        hint.ttl_ms = kMinCacheTtlMs;
+        hint.cache_scope = std::string(kModernDefaultCacheScope);
+        return hint;
     }
     return {};
 }
@@ -1846,8 +1905,8 @@ JsonValue McpServer::BuildToolsJson() {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
     auto hint = ResolveCacheHint("tools/list");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    return SerializeListToolsResult(result);
+    return ApplyCacheHintAndSerialize(result, hint,
+        SerializeListToolsResult);
 }
 
 std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
@@ -1926,8 +1985,8 @@ void McpServer::HandleListTools(
         result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = ResolveCacheHint("tools/list");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    promise.set_value(SerializeListToolsResult(result));
+    promise.set_value(ApplyCacheHintAndSerialize(result, hint,
+        SerializeListToolsResult));
 }
 
 void McpServer::HandleCallTool(
@@ -2567,8 +2626,8 @@ void McpServer::HandleListResources(
         result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = ResolveCacheHint("resources/list");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    promise.set_value(SerializeListResourcesResult(result));
+    promise.set_value(ApplyCacheHintAndSerialize(result, hint,
+        SerializeListResourcesResult));
 }
 
 void McpServer::HandleListResourceTemplates(
@@ -2597,8 +2656,8 @@ void McpServer::HandleListResourceTemplates(
         result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = ResolveCacheHint("resources/templates/list");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    promise.set_value(SerializeListResourceTemplatesResult(result));
+    promise.set_value(ApplyCacheHintAndSerialize(result, hint,
+        SerializeListResourceTemplatesResult));
 }
 
 void McpServer::HandleReadResource(
@@ -2682,12 +2741,14 @@ void McpServer::HandleReadResource(
                         result.input_required->request_state =
                             detail::MintRequestState(*options_.request_state_key, payload);
                     }
-                    promise.set_value(SerializeReadResourceResult(result));
+                    auto json = SerializeReadResourceResult(result);
+                    StripCacheWireFields(json);
+                    promise.set_value(std::move(json));
                     return;
                 }
                 auto hint = ResolveCacheHint("resources/read");
-                if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-                promise.set_value(SerializeReadResourceResult(result));
+                promise.set_value(ApplyCacheHintAndSerialize(result, hint,
+                    SerializeReadResourceResult));
             } catch (...) {
                 promise.set_exception(std::current_exception());
             }
@@ -2727,8 +2788,8 @@ void McpServer::HandleListPrompts(
         result.next_cursor = MakeNextCursor(next_index);
     }
     auto hint = ResolveCacheHint("prompts/list");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    promise.set_value(SerializeListPromptsResult(result));
+    promise.set_value(ApplyCacheHintAndSerialize(result, hint,
+        SerializeListPromptsResult));
 }
 
 void McpServer::HandleGetPrompt(
@@ -3016,8 +3077,8 @@ void McpServer::HandleDiscover(
         result.instructions = options_.server_instructions;
     }
     auto hint = ResolveCacheHint("server/discover");
-    if (hint.ttl_ms || hint.cache_scope) result.cache_hint = hint;
-    promise.set_value(SerializeDiscoverResult(result));
+    promise.set_value(ApplyCacheHintAndSerialize(result, hint,
+        SerializeDiscoverResult));
 }
 
 void McpServer::HandleInitialize(

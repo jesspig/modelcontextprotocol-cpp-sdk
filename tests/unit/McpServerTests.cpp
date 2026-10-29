@@ -5068,6 +5068,186 @@ TEST(McpServerTest, ModernElicitRoutesThroughMrtrInputRoundTrip) {
     server->Close();
 }
 
+namespace {
+
+struct CacheHintTestEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+CacheHintTestEnv MakeCacheHintTestEnv(
+    std::string_view version,
+    std::optional<std::map<std::string, CacheHint, std::less<>>> hints = std::nullopt) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"cache-test-server", "1.0.0"};
+    sopts.protocol_version = std::string(version);
+    sopts.cache_hints = std::move(hints);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterTool("cache_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    server->RegisterResource("cache_resource", "test://cache/static",
+        ResourceOptions{},
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents contents;
+            contents.uri = uri;
+            contents.text = "cached";
+            ReadResourceResult result;
+            result.contents.push_back(ResourceContents{std::move(contents)});
+            return result;
+        });
+    server->RegisterResourceTemplate("cache_template", "test://cache/{id}",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>&) -> ReadResourceResult {
+            TextResourceContents contents;
+            contents.uri = uri;
+            contents.text = "template";
+            ReadResourceResult result;
+            result.contents.push_back(ResourceContents{std::move(contents)});
+            return result;
+        });
+    server->RegisterPrompt("cache_prompt", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) -> GetPromptResult {
+            return GetPromptResult{};
+        });
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(version));
+    client->Start();
+    return CacheHintTestEnv{std::move(server), std::move(client)};
+}
+
+JsonValue SendCacheProbe(const std::shared_ptr<McpSessionHandler>& client,
+                         std::string_view method) {
+    JsonValue params(JsonValue::object_tag);
+    if (method == methods::kDiscover) {
+        params = SerializeDiscoverRequestParams(DiscoverRequestParams{});
+    } else if (method == methods::kReadResource) {
+        ResourceRequestParams read_params;
+        read_params.uri = "test://cache/static";
+        params = SerializeResourceRequestParams(read_params);
+    } else {
+        params = SerializePaginatedRequestParams(PaginatedRequestParams{});
+    }
+    auto future = client->SendRequest(method, std::move(params), {},
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE() << "timed out waiting for " << std::string(method);
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+void ExpectInvalidCacheHint(const std::shared_ptr<McpSessionHandler>& client,
+                            std::string_view method, std::string_view needle) {
+    auto resp = SendCacheProbe(client, method);
+    ASSERT_TRUE(resp.Contains("code")) << std::string(method);
+    EXPECT_EQ(resp["code"].GetInt(), static_cast<int64_t>(McpErrorCode::InvalidParams))
+        << std::string(method);
+    auto* message = resp.Find("message");
+    ASSERT_NE(message, nullptr) << std::string(method);
+    EXPECT_NE(message->GetString().find(needle), std::string::npos)
+        << message->GetString();
+}
+
+void CloseCacheHintTestEnv(CacheHintTestEnv& env) {
+    env.server->Close();
+    env.client->Close();
+}
+
+} // namespace
+
+TEST(McpServerTest, ModernDefaultServerEmitsCacheHintOnSixResults) {
+    auto env = MakeCacheHintTestEnv(kLatestProtocolVersion);
+
+    const std::string_view probes[] = {
+        methods::kDiscover,
+        methods::kListTools,
+        methods::kListResources,
+        methods::kListResourceTemplates,
+        methods::kReadResource,
+        methods::kListPrompts,
+    };
+    for (auto method : probes) {
+        auto resp = SendCacheProbe(env.client, method);
+        ASSERT_FALSE(resp.Contains("code")) << std::string(method);
+        ASSERT_TRUE(resp.Contains("ttlMs")) << std::string(method);
+        EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t{0}) << std::string(method);
+        ASSERT_TRUE(resp.Contains("cacheScope")) << std::string(method);
+        EXPECT_EQ(resp["cacheScope"].GetString(), "private") << std::string(method);
+        EXPECT_FALSE(resp.Contains("cacheHint")) << std::string(method);
+    }
+
+    CloseCacheHintTestEnv(env);
+}
+
+TEST(McpServerTest, LegacyDefaultServerKeepsExistingCacheFields) {
+    auto env = MakeCacheHintTestEnv(kLegacyProtocolVersion);
+    PerformLegacyHandshake(env.client);
+
+    const std::string_view probes[] = {
+        methods::kListTools,
+        methods::kListResources,
+        methods::kListResourceTemplates,
+        methods::kReadResource,
+        methods::kListPrompts,
+    };
+    for (auto method : probes) {
+        auto resp = SendCacheProbe(env.client, method);
+        ASSERT_FALSE(resp.Contains("code")) << std::string(method);
+        ASSERT_TRUE(resp.Contains("ttlMs")) << std::string(method);
+        EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t{0}) << std::string(method);
+        ASSERT_TRUE(resp.Contains("cacheScope")) << std::string(method);
+        EXPECT_EQ(resp["cacheScope"].GetString(), "private") << std::string(method);
+        EXPECT_FALSE(resp.Contains("cacheHint")) << std::string(method);
+    }
+
+    auto discover = SendCacheProbe(env.client, methods::kDiscover);
+    ASSERT_TRUE(discover.Contains("code"));
+    EXPECT_EQ(discover["code"].GetInt(),
+        static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    CloseCacheHintTestEnv(env);
+}
+
+TEST(McpServerTest, ModernInvalidCacheHintReturnsInvalidParams) {
+    CacheHint missing_scope;
+    missing_scope.ttl_ms = int64_t{1000};
+    CacheHint missing_ttl;
+    missing_ttl.cache_scope = "public";
+    CacheHint negative_ttl;
+    negative_ttl.ttl_ms = int64_t{-1};
+    negative_ttl.cache_scope = "private";
+    CacheHint bad_scope;
+    bad_scope.ttl_ms = int64_t{0};
+    bad_scope.cache_scope = "shared";
+    CacheHint negative_public;
+    negative_public.ttl_ms = int64_t{-120};
+    negative_public.cache_scope = "public";
+    CacheHint empty_scope;
+    empty_scope.ttl_ms = int64_t{0};
+    empty_scope.cache_scope = "";
+
+    auto env = MakeCacheHintTestEnv(kLatestProtocolVersion,
+        std::map<std::string, CacheHint, std::less<>>{
+            {"tools/list", missing_scope},
+            {"resources/list", missing_ttl},
+            {"resources/templates/list", negative_ttl},
+            {"resources/read", bad_scope},
+            {"prompts/list", negative_public},
+            {"server/discover", empty_scope},
+        });
+
+    ExpectInvalidCacheHint(env.client, methods::kListTools, "cacheScope");
+    ExpectInvalidCacheHint(env.client, methods::kListResources, "ttlMs");
+    ExpectInvalidCacheHint(env.client, methods::kListResourceTemplates, "-1");
+    ExpectInvalidCacheHint(env.client, methods::kReadResource, "shared");
+    ExpectInvalidCacheHint(env.client, methods::kListPrompts, "-120");
+    ExpectInvalidCacheHint(env.client, methods::kDiscover, "got \"\"");
+
+    CloseCacheHintTestEnv(env);
+}
+
 TEST(McpServerTest, DiscoverRejectedWhenRequestDeclaresLegacyVersion) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
