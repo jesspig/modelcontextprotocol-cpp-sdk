@@ -463,6 +463,118 @@ TEST(McpServerTest, SendLoggingMessageEncodesLevelAsString) {
     client->Close();
 }
 
+namespace {
+
+struct ModernLoggingEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+    std::shared_ptr<std::atomic<int>> message_count;
+};
+
+ModernLoggingEnv MakeModernLoggingEnv() {
+    ModernLoggingEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    env.message_count = std::make_shared<std::atomic<int>>(0);
+    auto count = env.message_count;
+    env.client->SetNotificationHandler(notifications::kMessage,
+        [count](const JsonRpcNotification&) { count->fetch_add(1); });
+    return env;
+}
+
+JsonValue CallLogProbe(ModernLoggingEnv& env,
+                       std::optional<LoggingLevel> log_level)
+{
+    RequestMeta meta;
+    meta.log_level = log_level;
+    CallToolRequestParams params;
+    params.name = "log_probe";
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), meta,
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+bool WaitForMessageCount(const std::shared_ptr<std::atomic<int>>& count,
+                         int expected)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (count->load() >= expected) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return count->load() >= expected;
+}
+
+} // namespace
+
+TEST(McpServerTest, ModernLoggingRequiresRequestLogLevel) {
+    std::atomic<bool> handler_ran{false};
+    auto env = MakeModernLoggingEnv();
+    env.server->RegisterTool("log_probe",
+        ToolOptions{}.Description("logging probe"),
+        std::function<CallToolResult(const Ctx&)>(
+            [&handler_ran](const Ctx& ctx) {
+                ctx.Log(LoggingLevel::Info, "hidden");
+                handler_ran.store(true);
+                return CallToolResult{};
+            }));
+
+    auto resp = CallLogProbe(env, std::nullopt);
+    EXPECT_FALSE(resp.Contains("code"));
+    EXPECT_TRUE(handler_ran.load());
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(env.message_count->load(), 0);
+
+    env.server->Close();
+    env.client->Close();
+}
+
+TEST(McpServerTest, ModernLoggingHonorsRequestLogLevel) {
+    auto env = MakeModernLoggingEnv();
+    env.server->RegisterTool("log_probe",
+        ToolOptions{}.Description("logging probe"),
+        std::function<CallToolResult(const Ctx&)>(
+            [](const Ctx& ctx) {
+                ctx.Log(LoggingLevel::Info, "visible");
+                return CallToolResult{};
+            }));
+
+    auto debug_resp = CallLogProbe(env, LoggingLevel::Debug);
+    EXPECT_FALSE(debug_resp.Contains("code"));
+    EXPECT_TRUE(WaitForMessageCount(env.message_count, 1));
+
+    auto warning_resp = CallLogProbe(env, LoggingLevel::Warning);
+    EXPECT_FALSE(warning_resp.Contains("code"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(env.message_count->load(), 1);
+
+    env.server->Close();
+    env.client->Close();
+}
+
+TEST(McpServerTest, ModernSendLoggingMessageWithoutRequestIsSilent) {
+    auto env = MakeModernLoggingEnv();
+
+    env.server->SendLoggingMessage(LoggingLevel::Info, "broadcast");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(env.message_count->load(), 0);
+
+    env.server->Close();
+    env.client->Close();
+}
+
 TEST(McpServerTest, ListPromptsIncludesArguments) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;

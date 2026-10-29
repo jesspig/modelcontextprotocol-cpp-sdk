@@ -22,6 +22,7 @@ public:
     virtual MessageChannel& GetMessageChannel() = 0;
     virtual void SendMessageAsync(JsonRpcMessage message) = 0;
     virtual bool BufferRequestStreamNotification(JsonRpcMessage) { return false; }
+    virtual bool RequiresRequestScopedNotifications() const { return false; }
     virtual void Close() = 0;
     virtual bool IsStateless() const { return false; }
     virtual void Start() {}

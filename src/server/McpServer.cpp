@@ -938,6 +938,8 @@ void McpServer::SendListChangedNotification(std::string_view method) {
 }
 
 void McpServer::SendLoggingMessage(LoggingLevel level, std::string_view data) {
+    if (handler_->IsJuly2026OrLater())
+        return;
     std::optional<LoggingLevel> current_level;
     {
         std::lock_guard<std::mutex> lock(log_level_mutex_);
@@ -971,6 +973,8 @@ void McpServer::EmitLoggingMessage(LoggingLevel level, std::string_view data) {
         meta.protocol_version = handler_->NegotiatedProtocolVersion();
         notif.meta = SerializeRequestMeta(meta);
         if (transport_->BufferRequestStreamNotification(JsonRpcMessage{std::move(notif)}))
+            return;
+        if (transport_->RequiresRequestScopedNotifications())
             return;
     }
     handler_->SendNotification(notifications::kMessage, std::move(params));
@@ -1593,7 +1597,8 @@ void McpServer::WireTaskHandlers() {
                     };
                     RequestContext<CallToolRequestParams> resume_ctx(
                         *this, req, std::move(resume_params),
-                        std::move(resume_log), resume_flag);
+                        std::move(resume_log), resume_flag,
+                        handler_->IsJuly2026OrLater());
                     auto resume_promise = std::promise<CallToolResult>();
                     auto resume_future = resume_promise.get_future();
                     resume_tool->InvokeAsync(resume_ctx, std::move(resume_promise));
@@ -2223,7 +2228,8 @@ void McpServer::HandleCallTool(
         cancel_flag = std::make_shared<std::atomic<bool>>(false);
     }
     auto ctx = RequestContext<CallToolRequestParams>(
-        *this, req, std::move(params), std::move(log_fn), cancel_flag);
+        *this, req, std::move(params), std::move(log_fn), cancel_flag,
+        handler_->IsJuly2026OrLater());
 
     auto tool = it->second;
 
