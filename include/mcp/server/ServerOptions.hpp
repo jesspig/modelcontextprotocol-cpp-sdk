@@ -45,7 +45,6 @@ struct MCP_API ServerOptions {
     struct InputRequiredConfig {
         int max_rounds{10};
         std::chrono::seconds round_timeout{600};
-        bool legacy_shim{true};
     };
     std::optional<InputRequiredConfig> input_required_config;
 
@@ -87,8 +86,6 @@ struct MCP_API ServerOptions {
     bool enable_progressive_discovery{false};
     bool enable_file_input{false};
     bool enable_triggers_events{false};
-    bool enable_dpop{false};
-    bool enable_interceptor_alias{false};
 
     [[deprecated("set enable_tasks_extension=true explicitly")]] bool TasksImplicitlyEnabled() const {
         return enable_tasks_extension || task_store != nullptr;
