@@ -653,7 +653,9 @@ NegotiationResult McpClient::NegotiateProtocol() {
 
 void McpClient::Close() {
     if (handler_) handler_->Close();
+    std::lock_guard<std::mutex> lock(cache_auth_mutex_);
     response_cache_->ClearPrivate();
+    last_cache_auth_context_.clear();
 }
 
 void McpClient::WireClientHandlers() {
@@ -1101,7 +1103,9 @@ void McpClient::RecoverExpiredSession() {
     session_generation_.fetch_add(1);
 }
 
-void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
+void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result,
+    std::string_view auth_context)
+{
     auto* ttl = result.Find(detail::kCacheHint);
     if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
     if (!ttl) ttl = result.Find(detail::kTTLMs);
@@ -1114,8 +1118,21 @@ void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result) {
             ? detail::ResponseCache::Scope::Private
             : detail::ResponseCache::Scope::Public;
         response_cache_->Store(
-            key, entry_scope, result, std::chrono::milliseconds(ttl->GetInt()));
+            key, entry_scope, result,
+            std::chrono::milliseconds(ttl->GetInt()), auth_context);
     }
+}
+
+std::string McpClient::CurrentCacheAuthContext() {
+    std::string current = options_.cache_auth_context
+        ? options_.cache_auth_context()
+        : std::string();
+    std::lock_guard<std::mutex> lock(cache_auth_mutex_);
+    if (current != last_cache_auth_context_) {
+        response_cache_->ClearPrivate();
+        last_cache_auth_context_ = current;
+    }
+    return current;
 }
 
 std::optional<std::string> McpClient::GetStoredEtag(const std::string& key) {
@@ -1162,7 +1179,9 @@ ListToolsResult McpClient::ListTools(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListTools,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListToolsResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1172,7 +1191,7 @@ ListToolsResult McpClient::ListTools(
             return DeserializeListToolsResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListToolsResult(result);
 }
 
@@ -1304,7 +1323,9 @@ ListResourcesResult McpClient::ListResources(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListResources,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListResourcesResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1314,7 +1335,7 @@ ListResourcesResult McpClient::ListResources(
             return DeserializeListResourcesResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListResourcesResult(result);
 }
 
@@ -1340,7 +1361,9 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListResourceTemplates,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListResourceTemplatesResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1350,7 +1373,7 @@ ListResourceTemplatesResult McpClient::ListResourceTemplates(
             return DeserializeListResourceTemplatesResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListResourceTemplatesResult(result);
 }
 
@@ -1378,11 +1401,13 @@ ReadResourceResult McpClient::ReadResource(
 
     auto mode = options.cache_mode.value_or("use");
     auto key = CacheKey(methods::kReadResource, uri);
+    auto auth_context = CurrentCacheAuthContext();
     if (mode != "bypass" && mode != "refresh") {
         std::optional<std::chrono::milliseconds> max_age;
         if (options.max_age_ms)
             max_age = std::chrono::milliseconds(*options.max_age_ms);
-        if (auto cached = response_cache_->GetAny(key, max_age)) {
+        if (auto cached = response_cache_->GetAny(
+                key, max_age, auth_context)) {
             return DeserializeReadResourceResult(*cached);
         }
     }
@@ -1401,7 +1426,7 @@ ReadResourceResult McpClient::ReadResource(
             return DeserializeReadResourceResult(*cached);
     }
     StoreEtagBody(key, result_json);
-    if (mode != "bypass") CacheIfHinted(key, result_json);
+    if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeReadResourceResult(result_json);
 }
 
@@ -1429,7 +1454,9 @@ ListPromptsResult McpClient::ListPrompts(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListPrompts,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeListPromptsResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1439,7 +1466,7 @@ ListPromptsResult McpClient::ListPrompts(
             return DeserializeListPromptsResult(*cached);
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeListPromptsResult(result);
 }
 
@@ -1500,7 +1527,9 @@ SkillsListResult McpClient::ListSkills(
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListSkills,
         cursor ? std::string_view(*cursor) : std::string_view());
-    if (auto cached = response_cache_->GetAny(key)) {
+    auto auth_context = CurrentCacheAuthContext();
+    if (auto cached = response_cache_->GetAny(
+            key, std::nullopt, auth_context)) {
         return DeserializeSkillsListResult(*cached);
     }
     MaybeAttachEtag(key, meta);
@@ -1519,7 +1548,7 @@ SkillsListResult McpClient::ListSkills(
         }
     }
     StoreEtagBody(key, result);
-    CacheIfHinted(key, result);
+    CacheIfHinted(key, result, auth_context);
     return DeserializeSkillsListResult(result);
 }
 
@@ -1534,11 +1563,13 @@ SkillsGetResult McpClient::GetSkill(
 
     auto mode = options.cache_mode.value_or("use");
     auto key = CacheKey(methods::kGetSkill, uri);
+    auto auth_context = CurrentCacheAuthContext();
     if (mode != "bypass" && mode != "refresh") {
         std::optional<std::chrono::milliseconds> max_age;
         if (options.max_age_ms)
             max_age = std::chrono::milliseconds(*options.max_age_ms);
-        if (auto cached = response_cache_->GetAny(key, max_age)) {
+        if (auto cached = response_cache_->GetAny(
+                key, max_age, auth_context)) {
             return DeserializeSkillsGetResult(*cached);
         }
     }
@@ -1557,7 +1588,7 @@ SkillsGetResult McpClient::GetSkill(
             return DeserializeSkillsGetResult(*cached);
     }
     StoreEtagBody(key, result_json);
-    if (mode != "bypass") CacheIfHinted(key, result_json);
+    if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeSkillsGetResult(result_json);
 }
 
@@ -1578,11 +1609,13 @@ ReadDirectoryResult McpClient::ReadDirectory(
         context += *cursor;
     }
     auto key = CacheKey(methods::kReadDirectory, context);
+    auto auth_context = CurrentCacheAuthContext();
     if (mode != "bypass" && mode != "refresh") {
         std::optional<std::chrono::milliseconds> max_age;
         if (options.max_age_ms)
             max_age = std::chrono::milliseconds(*options.max_age_ms);
-        if (auto cached = response_cache_->GetAny(key, max_age)) {
+        if (auto cached = response_cache_->GetAny(
+                key, max_age, auth_context)) {
             return DeserializeReadDirectoryResult(*cached);
         }
     }
@@ -1602,7 +1635,7 @@ ReadDirectoryResult McpClient::ReadDirectory(
             return DeserializeReadDirectoryResult(*cached);
     }
     StoreEtagBody(key, result_json);
-    if (mode != "bypass") CacheIfHinted(key, result_json);
+    if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeReadDirectoryResult(result_json);
 }
 

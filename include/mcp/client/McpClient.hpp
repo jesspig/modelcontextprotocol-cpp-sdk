@@ -169,7 +169,9 @@ private:
 
     void RecoverExpiredSession();
 
-    void CacheIfHinted(std::string_view key, const JsonValue& result);
+    void CacheIfHinted(std::string_view key, const JsonValue& result,
+        std::string_view auth_context);
+    std::string CurrentCacheAuthContext();
 
     struct EtagEntry {
         std::string etag;
@@ -196,6 +198,8 @@ private:
     std::optional<std::function<void(const LoggingMessageNotificationParams&)>> logging_handler_;
 
     std::unique_ptr<detail::ResponseCache> response_cache_;
+    std::string last_cache_auth_context_;
+    std::mutex cache_auth_mutex_;
 
     std::mutex ack_mutex_;
     std::condition_variable ack_cv_;

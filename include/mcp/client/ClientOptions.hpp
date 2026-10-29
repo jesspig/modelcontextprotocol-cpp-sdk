@@ -75,6 +75,8 @@ struct MCP_API ClientOptions {
 
     bool enable_etag_cache{true};
 
+    std::function<std::string()> cache_auth_context;
+
     std::function<void()> on_transport_close;
     std::function<void(std::string_view)> on_transport_error;
 

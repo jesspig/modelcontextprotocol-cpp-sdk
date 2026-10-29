@@ -1582,6 +1582,72 @@ TEST(McpClientTest, CachePrivateEntryHitsInSameConnection) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, PrivateCachePartitionedByAuthContext) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<const char*> auth_context{"user-a"};
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, &auth_context](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            std::string text = std::string("content-") + auth_context.load();
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue(uri);
+            c["text"] = JsonValue(text);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            hint["cacheScope"] = JsonValue("private");
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.cache_auth_context = [&auth_context] {
+        return std::string(auth_context.load());
+    };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ReadResource("uri-a");
+    auto r2 = client->ReadResource("uri-a");
+    ASSERT_EQ(r1.contents.size(), 1u);
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(std::get<TextResourceContents>(r1.contents[0]).text,
+        "content-user-a");
+    EXPECT_EQ(std::get<TextResourceContents>(r2.contents[0]).text,
+        "content-user-a");
+    EXPECT_EQ(calls.load(), 1);
+
+    auth_context.store("user-b");
+    auto r3 = client->ReadResource("uri-a");
+    auto r4 = client->ReadResource("uri-a");
+    ASSERT_EQ(r3.contents.size(), 1u);
+    ASSERT_EQ(r4.contents.size(), 1u);
+    EXPECT_EQ(std::get<TextResourceContents>(r3.contents[0]).text,
+        "content-user-b");
+    EXPECT_EQ(std::get<TextResourceContents>(r4.contents[0]).text,
+        "content-user-b");
+    EXPECT_EQ(calls.load(), 2);
+
+    auth_context.store("user-a");
+    auto r5 = client->ReadResource("uri-a");
+    ASSERT_EQ(r5.contents.size(), 1u);
+    EXPECT_EQ(std::get<TextResourceContents>(r5.contents[0]).text,
+        "content-user-a");
+    EXPECT_EQ(calls.load(), 3);
+
+    client->Close();
+    server_handler->Close();
+}
+
 TEST(McpClientTest, CloseDropsPrivateCacheEntries) {
     auto pair_a = InMemoryTransport::CreatePair();
     auto server_a = std::make_shared<McpSessionHandler>(
