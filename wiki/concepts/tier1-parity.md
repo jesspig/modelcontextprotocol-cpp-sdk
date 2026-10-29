@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: Tier1 技术对标声明（2026-07-28）
-description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
+description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-13T11:18:04+08:00
+timestamp: 2026-10-29T22:11:23+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -23,10 +23,31 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 | 来源校验与资源护栏 | 对等 | `40134f4` |
 | 传输（stateless 单连接、持开 listen 流、变更推送、订阅广播寻址） | 对等 | [streamable-http](/transports/streamable-http.md)；`53fbce0` + `8d589ae` |
 | OAuth 客户端鉴权表面（CIMD 加固、audience 硬化） | 对等 | [oauth](/concepts/oauth.md)；`ba1f8c2` + `8ad053e` |
-| Apps 扩展与 Server Card | 对等 | `2f2fc8d`；开关见 [experimental-flags](/concepts/experimental-flags.md) |
+| Apps 扩展与 Server Card | Apps 对等；Server Card 仅服务端 | `2f2fc8d`；服务端可生成（`McpServer::GetServerCard()`）并经 `/server-card` 返回，客户端不消费，开关见 [experimental-flags](/concepts/experimental-flags.md) |
 | 单连接语义与 trace 配对可观测 | 对等 | `a581292`；[span-hooks](/concepts/span-hooks.md) |
 | 服务端现代任务用例形态 | 对等 | `b7a613e`（逐请求声明） |
 | `http-custom-headers` 18/18 | 对等（基线已删） | `baseline-2026-07-28.yaml` 删除 10 行注释 + 条目；CI Linux 报 stale 即为变绿证据 |
+
+## 2026 协议修复批次（T-01..T-13）
+
+本轮 `feature/mcp-2026-protocol-fixes` 修复双 era 行为，逐项落点如下（依据为源码与守护测试；conformance 实测留给 T-15/T-17，本页不预填结果）：
+
+| 领域 | 状态 | 落点 |
+|------|------|------|
+| 缓存提示默认与校验 | 对等 | modern 未配置时返回 `ttlMs=0`、`cacheScope="private"`；显式提示必须同时含两字段且取值合法（`ttlMs>=0`、scope 为 public/private），否则 `InvalidParams`；legacy 线格式不变（`74c143b`） |
+| logging 门控 | 对等 | modern 请求无 `logLevel` 时 `RequestContext::Log` 与两参 `SendLoggingMessage` 静默；HTTP 无响应流时丢弃日志通知，stdio/InMemory 保持点对点（`e1c41df`） |
+| serverInfo 回填 | 对等 | modern 结果 `_meta["io.modelcontextprotocol/serverInfo"]` 由会话层逐结果注入，保留调用方已有值；discover/initialize 统一走 `ResolveServerInfo`；legacy 不变（`eab0e18`） |
+| roots 变更通知门控 | 对等 | `notifications/roots/list_changed` 移入 2025-only 集合；modern 客户端发送抛 `ProtocolViolation`，legacy（>= 2025-06-18）保持可发（`6eea5c6`） |
+| completion 上下文 | 对等 | `CompleteRequestParams::context_arguments` 映射 `context.arguments`，序列化仅在非空时写入，反序列化校验对象与字符串值（`e026c08`） |
+| ResourceLink | 对等 | 补齐 `name`（必填）、`description`、`mimeType`、`size`（非负）、`icons`；序列化/反序列化校验 name/uri 非空与 size 非负（`35f7efc`） |
+| 客户端能力声明 | 对等 | `ClientOptions` 新增 `elicitation_handler`/`url_elicitation_handler`/`sampling_handler`/`roots_handler`，创建时安装；`DeriveClientCapabilities` 在协商前自动补声明 elicitation form/url、sampling、roots.listChanged，显式 `capabilities` 优先（`644efee`） |
+| MRTR 默认自动 | 对等 | `input_required_config` 默认构造（`auto_fulfill=true`、10 轮）；显式 `std::nullopt` 或缺少对应 handler 时返回未履行的 `input_required` 结果（`9ac4df2`） |
+| URL elicitation 三态 | 对等 | `UrlElicitationHandler` 返回 `ElicitResult`，action 限定 accept/decline/cancel，非法值抛 `HandlerError`；未配置 handler 默认 decline；legacy 保留 complete 通知，modern 走 MRTR（`0e30e48`） |
+| 订阅推送 | 对等 | 运行期注册工具/资源/模板/提示词时向匹配订阅推送 list_changed；握手未完成不推送，未订阅静默，手动推送保留（`18c659b`） |
+| 客户端控制面 | 对等 | 新增 `SendRequest`（缺省注入 client meta）、`SendNotification`、`CancelRequest`（`notifications/cancelled`）、`SetLoggingLevel`（仅 legacy，modern 抛 `ProtocolViolation`）（`1b582d9`） |
+| tools/list 顺序 | 对等 | 工具容器改为按名称有序的 `std::map`，普通列表与渐进分页输出一致顺序（`1c75c67`） |
+| private 缓存授权分区 | 对等 | private 键附授权上下文；`cache_auth_context` 变化与 `Close` 清空 private；public 跨上下文共享；`Invalidate` 跨上下文删同键（`16cfa93`） |
+| sampling | legacy partial | `SamplingHandler` 仍可用但已废弃（SEP-2577），仅覆盖基本 form/单内容采样，modern 不视为完整能力；MRTR 中仅在 handler 存在时回应 `sampling/createMessage`；完整实现不在本轮范围，不列为本轮 Tier1 收口项 |
 
 ## conformance 四 leg（本分支 `feature/gap-and-ci-green` 口径，主代理实测）
 
@@ -36,7 +57,7 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 - client modern：383 passed + 保留 10 条目（删 21 条目转绿：`metadata-default`、`basic-cimd`、`scope`×5、`token-endpoint`×3、`pre-registration`、`resource-mismatch`、`offline-access-scope`、`offline-access-not-supported`、`iss`×6 含 normalized、`metadata-issuer-mismatch`；保留 `metadata-var1/var2/var3`、`authorization-server-migration`（部分失败）、`client-credentials-jwt/basic`、`enterprise-managed-authorization`、`dpop`、`dpop-nonce`、`wif-jwt-bearer` 共 10 条）
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-ctest 口径 848 用例全绿（`51f35d0` 主代理实测），其后两次提交新增用例尚未复跑：静态 `TEST/TEST_F/TEST_P` 口径现为 **854**（848 + `1668e2e` +3：`OAuthTests` +1、`StreamableHttpTransportTests` +2 + `374a591` +3：`McpTypesTests`），断言 token **3631**（3606 + `1668e2e` +16 + `374a591` +9）；ctest 注册口径待主代理 `ctest -N` 复核，逐目标分布见 [/tests.md](/tests.md)。
+当前测试基线为静态 **950** 用例 / **4399** 断言、17 目标（Windows 注册 945，差 5 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)；本轮未复跑全量 `ctest`，不在此声明全绿。以上 conformance 四 leg 与 T11 数字保留 2026-10-13 历史实测口径，本轮结果由 T-15/T-17 统一记录。
 
 T11 口径留档：server legacy 67/67、server modern 194+1、client legacy 11+43、client modern 66+68（auth 全走基线时代）。
 

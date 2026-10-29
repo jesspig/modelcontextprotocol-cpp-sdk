@@ -52,7 +52,6 @@ server->Run();
 | `input_required_config` | `optional<InputRequiredConfig>` | MRTR/elicitation 行为的配置 |
 | `input_required_config.max_rounds` | `int` | 最大启发式收集轮次（默认 10） |
 | `input_required_config.round_timeout` | `chrono::seconds` | 每轮超时时间（默认 600s） |
-| `input_required_config.legacy_shim` | `bool` | 启用旧版兼容垫片（默认 true） |
 | `on_request` | `function` | 收到每个入站 JSON-RPC 请求时回调，包含方法名和完整请求体 |
 | `on_response` | `function` | 发送每个出站 JSON-RPC 响应时回调 |
 | `on_error` | `function` | 发送每个出站 JSON-RPC 错误时回调 |

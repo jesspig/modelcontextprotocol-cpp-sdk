@@ -52,7 +52,6 @@ server->Run();
 | `input_required_config` | `optional<InputRequiredConfig>` | Configuration for MRTR/elicitation behavior |
 | `input_required_config.max_rounds` | `int` | Maximum elicitation rounds (default 10) |
 | `input_required_config.round_timeout` | `chrono::seconds` | Per-round timeout (default 600s) |
-| `input_required_config.legacy_shim` | `bool` | Enable legacy compatibility shim (default true) |
 | `on_request` | `function` | Called on each incoming JSON-RPC request with method name + full request body |
 | `on_response` | `function` | Called on each outgoing JSON-RPC response |
 | `on_error` | `function` | Called on each outgoing JSON-RPC error response |

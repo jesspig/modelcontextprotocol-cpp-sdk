@@ -23,6 +23,7 @@
 - [一致性测试](#一致性测试)
 - [示例](#示例)
 - [相关项目](#相关项目)
+- [非标扩展](#非标扩展)
 - [不支持声明](#不支持声明)
 - [许可证](#许可证)
 
@@ -171,6 +172,8 @@ auto result = client->CallTool("echo",
     JsonValue::Object{{"text", "Hello, MCP!"}});
 ```
 
+handler 可在协商前通过 `ClientOptions` 提供：`elicitation_handler`、`url_elicitation_handler`、`sampling_handler`（遗留）、`roots_handler`（遗留）；`DeriveClientCapabilities` 会自动声明对应能力，只补显式 `capabilities` 未覆盖的部分。MRTR 默认自动驱动（`input_required_config`，`auto_fulfill=true`，10 轮），将 `input_required_config` 显式置为 `std::nullopt` 可改为返回未履行的 `input_required` 结果。`url_elicitation_handler` 返回 `ElicitResult`，action 必须为 `accept`、`decline` 或 `cancel`（未配置 handler 时默认 `decline`）；旧 void 回调由废弃的 `SetLegacyUrlElicitationHandler` 承接并固定为 `accept`。`ClientOptions::cache_auth_context` 返回授权上下文，private 缓存按上下文分区并在切换时清空。自定义方法可用 `SendRequest` / `SendNotification` / `CancelRequest`，`SetLoggingLevel` 仅在遗留会话发送 `logging/setLevel`（现代会话拒绝，改用逐请求 `logLevel`）。
+
 ## OAuth 支持
 
 客户端支持 MCP OAuth 授权流程：
@@ -265,18 +268,24 @@ build/debug/examples/EchoServer/EchoServer
 | 任务（SEP-2663） | 未实现——“remains planned”（[ROADMAP.md](https://github.com/modelcontextprotocol/ruby-sdk/blob/main/ROADMAP.md)，[#391](https://github.com/modelcontextprotocol/ruby-sdk/issues/391)） | `tasks/get\|update\|cancel` 双时代 + `FileTaskStore`（[tasks-extension](wiki/concepts/tasks-extension.md)） |
 | 技能（SEP-2640） | 未实现【假设：`methods.rb` 方法全集、`lib/mcp/`、`lib/mcp/client/`、`test/mcp/` 均无 skills 条目，CHANGELOG 全版本无 skills 记载】 | `skills/list\|get` + `resources/directory/read`，仅 2026 时代（[skills-extension](wiki/concepts/skills-extension.md)） |
 
+## 非标扩展
+
+以下能力是本 SDK 的扩展，不属于 2026 核心规范；均为可选开启，对端未实现时回退到基线路径。
+
+- **ETag 条件请求**——本 SDK 的非标扩展，与 2026 `ttlMs`/`cacheScope` 响应缓存相互独立。当 `ClientOptions::enable_etag_cache`（默认开启）与全局 `SetEtagCacheEnabled` 门同时开启时，客户端保存响应体并在请求 `_meta` 中发送 `ifNoneMatch`；服务端经 `ServerOptions::enable_etag_cache`（默认关闭）开启该门。未实现该扩展的对端会忽略它并返回完整响应，TTL 缓存不受影响。
+- **渐进式发现 / `SearchTools`**——默认关闭的非标实验扩展（`ServerOptions::enable_progressive_discovery` / `ClientOptions::enable_progressive_discovery`）。开启后服务端 `tools/list` 接受 `query`/`pageSize`，客户端提供 `SearchTools(query, page_size)`；它不属于 2026 核心规范，开关关闭时 `SearchTools` 退化为普通分页 `tools/list`。
+- **服务器卡片**——服务端可生成卡片（`McpServer::GetServerCard()`），在 `ServerOptions` / `StreamableHttpServerOptions` 配置 `enable_server_card` 后经 Streamable HTTP `GET /server-card` 暴露；客户端不消费服务器卡片，身份来源仍为握手中的 `serverInfo`。
+
 ## 不支持声明
 
 以下条目在本轮明确声明为不支持；当对端发送它们时，本 SDK 优雅降级（忽略未知字段或回退到基线路径），而不会中断会话。
 
 - **应用界面渲染**——服务器推送的 UI 组件不渲染，仅作不透明数据透传。
+- **完整 sampling**——sampling 仅为 legacy partial：已废弃的 `sampling_handler` 只覆盖基本 form 与单内容采样，modern 2026 时代不视为完整能力；完整 sampling 不在本轮范围，也不列为本轮 Tier1 收口项。
 - **EMA**——未实现 EMA 协商，对端回退到基线能力协商。
 - **DPoP 客户端逐请求证明**——服务端证明校验已实现（默认关，实验开关 `enable_dpop`，需 OpenSSL，见上文 OAuth 支持）；未配置上述两回调时不附证明，已配置时可驱动 DPoP 会话并单次 `use_dpop_nonce` 重试；开关关闭时纯 Bearer 路径行为不变（[dpop](wiki/concepts/dpop.md)）。
 - **jwt-bearer**——已支持 `private_key_jwt` 客户端认证（配置 `private_key_pem` 且授权服务器在 `token_endpoint_auth_methods_supported` 中声明 `private_key_jwt` 时，向令牌请求发送 ES256 客户端断言；需 OpenSSL），但不支持授权方 `jwt-bearer` 授权，公开客户端 PKCE/CIMD 流程仍为受支持路径。
-- **ETag**——不存储、不比对 `ETag` / `If-None-Match` 校验器，缓存响应仅按 TTL 治理。
-- **渐进式发现**——未实现增量能力发现，恒用完整 `server/discover`（现代）/ `initialize`（遗留）握手。
 - **文件上传**——未实现可续传文件上传原语，文件内容仅经现有工具/资源载荷流转。
-- **服务器卡片**——不呈现服务器卡片，握手中的 `serverInfo` 仍为身份来源。
 
 ### 本轮破坏性变更
 
