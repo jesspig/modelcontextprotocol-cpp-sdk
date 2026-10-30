@@ -19,29 +19,37 @@ jobs:
           - os: windows-2022
             build_type: debug
             openssl: auto
+            openssl_major: 3
           - os: windows-2022
             build_type: release
             openssl: auto
+            openssl_major: 3
           - os: ubuntu-24.04
             build_type: debug
             openssl: auto
+            openssl_major: 3
           - os: ubuntu-24.04
             build_type: release
             openssl: auto
+            openssl_major: 3
           - os: ubuntu-24.04
             build_type: debug
             compiler: gcc
             openssl: auto
+            openssl_major: 3
           - os: ubuntu-24.04
             build_type: release
             compiler: gcc
             openssl: auto
+            openssl_major: 3
           - os: macos-15
             build_type: debug
             openssl: auto
+            openssl_major: 4
           - os: macos-15
             build_type: release
             openssl: auto
+            openssl_major: 3
           - os: windows-2022
             build_type: debug
             openssl: off
@@ -80,19 +88,22 @@ jobs:
             sccache-${{ matrix.os }}-
 
       - name: Install OpenSSL (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.openssl != 'off'
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
           HOMEBREW_NO_INSTALL_CLEANUP: '1'
-        run: brew install openssl
+        run: |
+          formula="openssl@${{ matrix.openssl_major }}"
+          brew install "$formula"
+          echo "OPENSSL_PREFIX=$(brew --prefix "$formula")" >> "$GITHUB_ENV"
 
       - name: Configure (Linux)
         if: runner.os != 'Windows' && runner.os != 'macOS'
         run: |
           if [ "${{ matrix.compiler }}" = "gcc" ]; then
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DCMAKE_CXX_COMPILER=g++ -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DCMAKE_CXX_COMPILER=g++ -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'ON' }} -DMCP_OPENSSL_EXPECTED_MAJOR=${{ matrix.openssl_major }}
           else
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'ON' }} -DMCP_OPENSSL_EXPECTED_MAJOR=${{ matrix.openssl_major }}
           fi
 
       - name: Configure (Windows)
@@ -101,14 +112,28 @@ jobs:
         run: |
           $opensslDir = Get-ChildItem 'C:\Program Files' -Directory -Filter 'OpenSSL*' | Sort-Object Name -Descending | Select-Object -First 1
           if ($null -eq $opensslDir) {
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'ON' }} -DMCP_OPENSSL_EXPECTED_MAJOR=${{ matrix.openssl_major }}
           } else {
-            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON "-DOPENSSL_ROOT_DIR=$($opensslDir.FullName)" -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
+            cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON "-DOPENSSL_ROOT_DIR=$($opensslDir.FullName)" -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'ON' }} -DMCP_OPENSSL_EXPECTED_MAJOR=${{ matrix.openssl_major }}
           }
 
-      - name: Configure (macOS)
-        if: runner.os == 'macOS'
-        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" -DMCP_WITH_OPENSSL=${{ matrix.openssl == 'off' && 'OFF' || 'AUTO' }}
+      - name: Configure (macOS, OpenSSL on)
+        if: runner.os == 'macOS' && matrix.openssl != 'off'
+        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" -DMCP_WITH_OPENSSL=ON -DMCP_OPENSSL_EXPECTED_MAJOR=${{ matrix.openssl_major }}
+
+      - name: Configure (macOS, OpenSSL off)
+        if: runner.os == 'macOS' && matrix.openssl == 'off'
+        run: cmake --preset ${{ matrix.build_type }} -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=OFF
+
+      - name: Verify OpenSSL version gate
+        if: runner.os == 'Linux' && matrix.build_type == 'debug' && matrix.compiler != 'gcc'
+        run: |
+          cmake -DOPENSSL_VERSION=3.0.13 -P scripts/check-openssl-version.cmake
+          cmake -DOPENSSL_VERSION=4.0.3 -P scripts/check-openssl-version.cmake
+          cmake -DOPENSSL_VERSION=4.1.0 -P scripts/check-openssl-version.cmake
+          if cmake -DOPENSSL_VERSION=5.0.0 -P scripts/check-openssl-version.cmake; then
+            exit 1
+          fi
 
       - name: Build
         run: cmake --build --preset ${{ matrix.build_type }}
