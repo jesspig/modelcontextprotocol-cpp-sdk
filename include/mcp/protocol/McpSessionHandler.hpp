@@ -29,8 +29,6 @@ namespace mcp {
 class ITransport;
 class MessageChannel;
 
-inline constexpr std::chrono::milliseconds kDefaultRequestTimeout{60000};
-
 using RequestHandler = std::function<void(const JsonRpcRequest&, std::promise<JsonValue>)>;
 using NotificationHandler = std::function<void(const JsonRpcNotification&)>;
 using ResponseCallback = std::function<void(JsonValue)>;
@@ -71,6 +69,16 @@ public:
         const RequestMeta& meta,
         std::chrono::milliseconds timeout,
         OutcomeCallback on_outcome);
+
+    RequestId SendRequestWithOutcome(
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout,
+        OutcomeCallback on_outcome,
+        bool cancel_on_timeout = true);
+
+    void CancelRequest(const RequestId& id, std::string_view reason = {});
 
     void SendNotification(std::string_view method, JsonValue params = {});
     void SendMessage(JsonRpcMessage message);
@@ -143,6 +151,23 @@ private:
 
     static std::string GetRequestIdKey(const RequestId& rid);
     std::atomic<int64_t> next_request_id_{1};
+
+    struct RegisteredRequest {
+        RequestId id;
+        std::future<JsonValue> future;
+    };
+
+    RegisteredRequest RegisterRequest(
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta,
+        std::chrono::milliseconds timeout,
+        OutcomeCallback on_outcome,
+        bool cancel_on_timeout);
+
+    std::shared_ptr<PendingRequest> RemovePending(const std::string& id_key);
+    void CancelTransportRequest(const RequestId& id, std::string_view reason);
+    void SendCancelledNotification(const RequestId& id, std::string_view reason);
 
     void CheckTimeouts();
     void EraseProgressTokens(const std::string& request_id);
