@@ -1,4 +1,5 @@
 add_subdirectory(EchoServer)
 add_subdirectory(WeatherServer)
 add_subdirectory(SimpleClient)
+add_subdirectory(RequestCancellation)
 add_subdirectory(conformance/client)

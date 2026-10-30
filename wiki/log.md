@@ -1,5 +1,7 @@
 # 更新摘要
 
+- 2026-10-31 — 请求句柄与取消语义（T-04）：新增 `RequestHandle`/`CancelToken`/`IRequestCanceller`，`McpClient::SendRequest(RequestOptions)` 返回类型化句柄，`SendRequestRaw` 保留 raw JSON 错误语义；取消与超时统一从 pending 取出并投递 `RequestCancelled`，legacy/stdio 发 `notifications/cancelled`，modern Streamable HTTP 关请求 SSE 流，避免双重结算；新增 `examples/RequestCancellation`。详见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)
+
 - 2026-10-30 — 版本号更新至 0.3.9（release/0.3.9 发布准备）：`release/0.3.9` 自 `develop@01c52ec` 拉出，`kSdkVersion` `"0.3.8"` → `"0.3.9"`，同步 `docs/{zh,en}/client/overview.md` 默认客户端标识、`wiki/classes/mcp-client.md` 与 `wiki/concepts/experimental-flags.md` 版本引用；以 `git flow release finish 0.3.9` 合入 `master`、打 annotated tag `0.3.9` 并回合并 `develop`（未推送）。此前一次 finish 因版本号未更新已撤回（`master`/`develop` 重置到 `d79f9b1`/`01c52ec`，错误 tag 删除，备份 ref 保留）。详见 [/changelog/2026-10-30-log.md](/changelog/2026-10-30-log.md)
 
 - 2026-10-30 — OpenSSL 依赖稳定性治理：TLS 测试改 PEM 夹具消除 4.x const 编译错误；新增 OpenSSL 3.x/4.x 主版本校验与 `MCP_OPENSSL_EXPECTED_MAJOR`；CI 扩为 11 矩阵项（macOS `openssl@3`/`openssl@4`，auto 腿 `ON`）并新增周度 canary；文档与 `AGENTS.md` 同步。WSL + OpenSSL 3.5.5 下 `mcp-transport-tests` 20/20，版本脚本正反用例通过。详见 [/changelog/2026-10-30-log.md](/changelog/2026-10-30-log.md)
