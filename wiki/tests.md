@@ -1,9 +1,9 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 17 个测试目标（15 unit + integration/conformance），954 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，googletest v1.18.0 子模块；Windows 本机 ctest 注册 949——FileTokenCache 4 个 POSIX-only 与 TransportTests 1 个 TLS-only 条件用例不参与编译）；静态断言统计 4429；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
-tags: [test, googletest, ctest, conformance]
-timestamp: 2026-10-29T23:10:00+08:00
+description: 17 个测试目标（15 unit + integration/conformance），954 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，googletest v1.18.0 子模块；Windows 本机 ctest 注册 949——FileTokenCache 4 个 POSIX-only 与 TransportTests 1 个 TLS-only 条件用例不参与编译）；静态断言统计 4429；另有非 ctest 的 `mcp-compat-smoke` 兼容构建目标；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
+tags: [test, googletest, ctest, conformance, compat]
+timestamp: 2026-10-31T03:12:00+08:00
 resource: tests/CMakeLists.txt
 ---
 
@@ -37,6 +37,15 @@ resource: tests/CMakeLists.txt
 | **合计** | | **954** | **4429** |
 
 注：`FileTokenCacheTests` 4 个 POSIX-only 用例（`#ifndef _WIN32`）与 `TransportTests` 1 个 TLS-only 用例（`#ifdef MCP_HAVE_OPENSSL`）在 Windows 本机不参与编译——静态 954 与 Windows `ctest -N` 注册 949 之差即此 5 个。
+
+## 兼容 smoke（非 ctest）
+
+`mcp-compat-smoke` 是构建目标而非 ctest 测试，不改变上述 17 个测试目标与 954 个静态用例计数。实现位于 [tests/compat/](../tests/compat/)：
+
+- [previous_public_api.cpp](../tests/compat/previous_public_api.cpp) 的 baseline 翻译单元必须编译通过，覆盖 0.3.9 新写法、接口默认虚函数与主要公共类型。
+- 文件内每个 `MCP_COMPAT_PROBE_*` 探针由 [run_compat_smoke.cmake](../tests/compat/run_compat_smoke.cmake) 单独以编译器语法检查模式编译；[expected_breaks.txt](../tests/compat/expected_breaks.txt) 列出的已知破坏必须失败。
+- allowlist 外的探针编译失败、已知探针意外编译通过、allowlist 条目找不到对应探针，都会使目标失败。`FileRef` 严格反序列化与 `ResourceLink` 必填 `name` 由 `mcp-compat-runtime` 运行时检查。
+- 命令：`cmake --build --preset debug --target mcp-compat-smoke`。2026-10-31 实测 baseline 编译通过、12 个已知破坏全部按预期失败、运行时检查通过；移除 allowlist 中 `GET_CAPABILITIES_SIGNATURE` 的负向对照以退出码 1 失败，证明非 allowlist 失败会拦截。全量 `ctest --preset debug --output-on-failure` 949/949 通过（205.18s）。
 
 ## 测试注意点
 
