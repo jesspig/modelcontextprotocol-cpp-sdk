@@ -122,6 +122,7 @@ target_sources(mcp-core PRIVATE
     src/core/McpTypesParams.cpp
     src/core/Content.cpp
     src/core/Capabilities.cpp
+    src/core/CancelToken.cpp
     src/detail/AtomicJsonFile.cpp)
 target_include_directories(mcp-core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 mcp_setup_library(mcp-core)

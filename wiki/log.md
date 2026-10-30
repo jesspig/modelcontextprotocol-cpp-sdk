@@ -1,6 +1,8 @@
 # 更新摘要
 
 - 2026-10-31 — 0.3.9 迁移文档与 0.3.10 发布说明 + 上一版公共 API 兼容 smoke（T-01）：新增 `docs/{zh,en}/migration/0.3.9.md`、`0.3.10.md`，逐项覆盖 0.3.8 → 0.3.9 的六项已知破坏与补充项；README/README_zh 增加迁移链接小节；修正 docs/{zh,en}/server/overview.md 的 `GetCapabilities()` 返回类型。新增 `tests/compat/previous_public_api.cpp`、`expected_breaks.txt`、`run_compat_smoke.cmake` 与 `mcp-compat-smoke` 构建目标（非 ctest）：baseline 必须编译，12 个已知破坏必须失败，allowlist 外失败会拦截，`mcp-compat-runtime` 覆盖 `FileRef` 严格 int64 与 `ResourceLink` 必填 `name`。验证：`cmake --preset debug` 退出码 0；`cmake --build --preset debug --target mcp-compat-smoke` 退出码 0；负向对照退出码 1；全量 `ctest` 949/949 通过。详见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)
+- 2026-10-31 — 请求句柄与取消语义（T-04）：新增 `RequestHandle`/`CancelToken`/`IRequestCanceller`，`McpClient::SendRequest(RequestOptions)` 返回类型化句柄，`SendRequestRaw` 保留 raw JSON 错误语义；取消与超时统一从 pending 取出并投递 `RequestCancelled`，legacy/stdio 发 `notifications/cancelled`，modern Streamable HTTP 关请求 SSE 流，避免双重结算；新增 `examples/RequestCancellation`。详见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)
+
 
 - 2026-10-30 — 版本号更新至 0.3.9（release/0.3.9 发布准备）：`release/0.3.9` 自 `develop@01c52ec` 拉出，`kSdkVersion` `"0.3.8"` → `"0.3.9"`，同步 `docs/{zh,en}/client/overview.md` 默认客户端标识、`wiki/classes/mcp-client.md` 与 `wiki/concepts/experimental-flags.md` 版本引用；以 `git flow release finish 0.3.9` 合入 `master`、打 annotated tag `0.3.9` 并回合并 `develop`（未推送）。此前一次 finish 因版本号未更新已撤回（`master`/`develop` 重置到 `d79f9b1`/`01c52ec`，错误 tag 删除，备份 ref 保留）。详见 [/changelog/2026-10-30-log.md](/changelog/2026-10-30-log.md)
 
