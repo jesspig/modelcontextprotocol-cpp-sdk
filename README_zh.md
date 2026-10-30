@@ -20,6 +20,7 @@
 - [使用方式](#使用方式)
 - [OAuth 支持](#oauth-支持)
 - [协议版本](#协议版本)
+- [迁移指南](#迁移指南)
 - [一致性测试](#一致性测试)
 - [示例](#示例)
 - [相关项目](#相关项目)
@@ -203,6 +204,13 @@ auth.Authenticate();
 
 `WireCodec` 工厂通过简单的字符串比较（`version >= "2026-07-28"`）自动选择正确的编解码器。
 
+## 迁移指南
+
+- [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)——0.3.8 → 0.3.9 公共头文件破坏性变更，逐项给出旧写法、新写法与影响。
+- [0.3.10 发布说明](docs/zh/migration/0.3.10.md)——新增 API、行为修复与限制；0.3.9 的破坏项保持，不恢复已删除字段。
+
+`mcp-compat-smoke` 目标会编译上一版公共 API，并按 `tests/compat/expected_breaks.txt` 允许已知破坏。运行 `cmake --build --preset debug --target mcp-compat-smoke`。
+
 ## 一致性测试
 
 **113 个一致性测试**，覆盖两个时代的协议类型序列化：
@@ -289,7 +297,7 @@ build/debug/examples/EchoServer/EchoServer
 
 ### 本轮破坏性变更
 
-按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)；下一 patch 的变化见 [0.3.10 发布说明](docs/zh/migration/0.3.10.md)。
 
 - **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
 - **`_meta` 省略**——空的每请求 `_meta` 改为线上了省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。
