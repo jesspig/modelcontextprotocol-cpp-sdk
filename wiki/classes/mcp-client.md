@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、控制面 API、任务化工具调用（含 tasks 扩展声明守卫与 inputResponses）、技能三方法与缓存、404 会话自愈、progress 回调、MRTR 默认自动驱动、URL elicitation 三态、授权上下文缓存分区与翻页聚合。
 tags: [client, 门面, 协商, mrt, progress, tasks, skills]
-timestamp: 2026-10-29T22:02:08+08:00
+timestamp: 2026-10-30T23:55:50+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -46,7 +46,7 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:442](../../src/client/M
 - URL elicitation：`SetUrlElicitationHandler` 注册 url 模式处理器——收到 `mode=="url"` 的 `elicitation/create` 时调用；handler 返回 `ElicitResult`，action 必须为 `accept`/`decline`/`cancel`（其他值抛 `HandlerError`，未配置 handler 默认 `decline`）。legacy 时代在响应后发送 `notifications/elicitation/complete`（缺 `elicitationId` 回 `InvalidParams`），modern 时代不发 complete 而由 MRTR 完成往返；handler 异常原样回传服务端。旧 void 回调经 deprecated 的 `SetLegacyUrlElicitationHandler` 承接并固定 `accept`
 - 客户端控制面：`SendRequest(method, params, meta, timeout)` 返回 future（meta 为空时自动注入 client meta 与协商版本）；`SendNotification` 发送任意通知；`CancelRequest(id, reason)` 发送 `notifications/cancelled`；`SetLoggingLevel(level)` 仅 legacy 发 `logging/setLevel`，modern 抛 `ProtocolViolation`（改用逐请求 `logLevel`）
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）
-- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.8"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`enable_etag_cache true`、`input_required_config` 默认构造（`auto_fulfill=true`、10 轮）、handler 字段与 `cache_auth_context` 为空、`span_handler` 为空
+- `ClientOptions` 默认：`client_info {"mcp-cpp-client","0.3.9"}`、`initialization_timeout 60s`、`discover_probe_timeout 5s`、`max_total_timeout 0`（禁用）、`reinit_on_expired_session true`、`enable_etag_cache true`、`input_required_config` 默认构造（`auto_fulfill=true`、10 轮）、handler 字段与 `cache_auth_context` 为空、`span_handler` 为空
 - **传输可观测回调**：`ClientOptions::on_transport_close`（传输关闭）与 `on_transport_error(string_view message)`（传输错误）经 `TransportBase::SetOnClose/SetOnError` 挂接，客户端内部先记日志再回调用户处理器（用户回调异常被吞掉），客户端析构时摘除；传输不支持回调（非 `TransportBase` 派生）时记 Warning 跳过
 
 ## progress 接收
