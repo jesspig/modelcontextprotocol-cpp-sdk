@@ -2,9 +2,14 @@ if(DEFINED ENV{HTTP_PROXY})
     message(STATUS "[mcp] Using proxy from environment: $ENV{HTTP_PROXY}")
 endif()
 
+include(OpenSslVersion)
+
 set(MCP_WITH_OPENSSL "AUTO" CACHE STRING
     "OpenSSL integration: AUTO (use if found), ON (require), OFF (disable)")
 set_property(CACHE MCP_WITH_OPENSSL PROPERTY STRINGS AUTO ON OFF)
+
+set(MCP_OPENSSL_EXPECTED_MAJOR "" CACHE STRING
+    "Expected OpenSSL major version for CI verification")
 
 set(MCP_OPENSSL_ENABLED OFF)
 if(MCP_WITH_OPENSSL STREQUAL "OFF")
@@ -21,11 +26,15 @@ else()
     endif()
     if(MCP_WITH_OPENSSL STREQUAL "ON")
         find_package(OpenSSL REQUIRED)
+        mcp_validate_openssl_version("${OPENSSL_VERSION}")
+        mcp_assert_openssl_major("${OPENSSL_VERSION}" "${MCP_OPENSSL_EXPECTED_MAJOR}")
         set(MCP_OPENSSL_ENABLED ON)
         message(STATUS "[mcp] OpenSSL required: ${OPENSSL_VERSION}")
     else()
         find_package(OpenSSL QUIET)
         if(OpenSSL_FOUND)
+            mcp_validate_openssl_version("${OPENSSL_VERSION}")
+            mcp_assert_openssl_major("${OPENSSL_VERSION}" "${MCP_OPENSSL_EXPECTED_MAJOR}")
             set(MCP_OPENSSL_ENABLED ON)
             message(STATUS "[mcp] OpenSSL found: ${OPENSSL_VERSION}")
         else()
