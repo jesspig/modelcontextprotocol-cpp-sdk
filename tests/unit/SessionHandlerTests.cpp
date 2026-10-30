@@ -3,6 +3,7 @@
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
 
@@ -13,7 +14,9 @@
 #include <future>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <thread>
+#include <vector>
 
 using namespace mcp;
 
@@ -823,8 +826,7 @@ TEST(SessionHandlerTest, RejectsUnsupportedDeclaredProtocolVersion) {
     EXPECT_EQ(requested->GetString(), "2099-01-01");
 }
 
-TEST(SessionHandlerTest, RejectsRequestWithMalformedMetaField) {
-    HandlerPair hp;
+TEST(SessionHandlerTest, RejectsRequestWithMalformedMetaField) {    HandlerPair hp;
 
     bool handled = false;
     hp.server->SetRequestHandler(methods::kCallTool,
@@ -856,4 +858,249 @@ TEST(SessionHandlerTest, RejectsRequestWithMalformedMetaField) {
     EXPECT_EQ(static_cast<int32_t>(err.error.code),
               static_cast<int32_t>(McpErrorCode::InvalidParams));
     EXPECT_FALSE(handled);
+}
+
+TEST(SessionHandlerTest, LegacySessionRejectsServerDiscover) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+
+    bool handled = false;
+    hp.server->SetRequestHandler(methods::kDiscover,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    auto future = hp.client->SendRequest(methods::kDiscover,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+    EXPECT_FALSE(handled);
+}
+
+TEST(SessionHandlerTest, LegacySessionRejectsModernOnlySkillsMethod) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+
+    bool handled = false;
+    hp.server->SetRequestHandler(methods::kListSkills,
+        [&handled](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            handled = true;
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    auto future = hp.client->SendRequest(methods::kListSkills,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+    EXPECT_FALSE(handled);
+}
+
+TEST(SessionHandlerTest, ModernSessionRejectsLegacyOnlyNotification) {
+    HandlerPair hp;
+
+    std::promise<void> observed_promise;
+    auto observed_future = observed_promise.get_future();
+    hp.server->SetNotificationHandler(notifications::kInitialized,
+        [&observed_promise](const JsonRpcNotification&) {
+            observed_promise.set_value();
+        });
+
+    hp.client->SendNotification(notifications::kInitialized, {});
+
+    EXPECT_EQ(observed_future.wait_for(std::chrono::milliseconds(500)),
+              std::future_status::timeout);
+}
+
+TEST(SessionHandlerTest, ModernSessionAcceptsTaskStatusNotification) {
+    HandlerPair hp;
+
+    std::promise<void> observed_promise;
+    auto observed_future = observed_promise.get_future();
+    hp.server->SetNotificationHandler(notifications::kTaskStatus,
+        [&observed_promise](const JsonRpcNotification&) {
+            observed_promise.set_value();
+        });
+
+    hp.client->SendNotification(notifications::kTaskStatus, {});
+
+    EXPECT_EQ(observed_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+}
+
+TEST(SessionHandlerTest, OutcomeChannelSeparatesResultFromError) {
+    HandlerPair hp;
+
+    std::promise<RequestOutcome> outcome_promise;
+    auto outcome_future = outcome_promise.get_future();
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_exception(std::make_exception_ptr(
+                McpError(McpErrorCode::MethodNotFound, "boom")));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(2000),
+        [&outcome_promise](RequestOutcome outcome) {
+            outcome_promise.set_value(std::move(outcome));
+        });
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(outcome_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto outcome = outcome_future.get();
+    ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+    const auto& error = std::get<ErrorData>(outcome);
+    EXPECT_EQ(static_cast<int32_t>(error.code),
+              static_cast<int32_t>(McpErrorCode::MethodNotFound));
+    EXPECT_EQ(error.message, std::string("boom"));
+
+    auto legacy_result = future.get();
+    ASSERT_TRUE(legacy_result.Contains("code"));
+    EXPECT_EQ(legacy_result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::MethodNotFound));
+    EXPECT_EQ(legacy_result["message"].GetString(), std::string("boom"));
+}
+
+TEST(SessionHandlerTest, OutcomeChannelDeliversPlainResult) {
+    HandlerPair hp;
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue result(JsonValue::object_tag);
+            result["marker"] = JsonValue("ok");
+            p.set_value(std::move(result));
+        });
+
+    std::promise<RequestOutcome> outcome_promise;
+    auto outcome_future = outcome_promise.get_future();
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(2000),
+        [&outcome_promise](RequestOutcome outcome) {
+            outcome_promise.set_value(std::move(outcome));
+        });
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(outcome_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto outcome = outcome_future.get();
+    ASSERT_TRUE(std::holds_alternative<JsonValue>(outcome));
+    EXPECT_EQ(std::get<JsonValue>(outcome)["marker"], JsonValue("ok"));
+
+    auto legacy_result = future.get();
+    EXPECT_FALSE(legacy_result.Contains("code"));
+    EXPECT_EQ(legacy_result["marker"], JsonValue("ok"));
+}
+
+TEST(SessionHandlerTest, OutcomeChannelReportsTimeoutAsError) {
+    HandlerPair hp;
+
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        });
+
+    std::promise<RequestOutcome> outcome_promise;
+    auto outcome_future = outcome_promise.get_future();
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(300),
+        [&outcome_promise](RequestOutcome outcome) {
+            outcome_promise.set_value(std::move(outcome));
+        });
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_EQ(outcome_future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    auto outcome = outcome_future.get();
+    ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+    EXPECT_EQ(static_cast<int32_t>(std::get<ErrorData>(outcome).code),
+              static_cast<int32_t>(McpErrorCode::RequestTimeout));
+
+    auto legacy_result = future.get();
+    ASSERT_TRUE(legacy_result.Contains("code"));
+    EXPECT_EQ(legacy_result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestTimeout));
+}
+
+TEST(SessionHandlerTest, RejectionPathEmitsLog) {
+    HandlerPair hp;
+
+    struct Captured {
+        std::string method;
+        std::string request_id;
+        std::string message;
+    };
+    std::vector<Captured> records;
+    mcp::SetLogLevel(mcp::LogLevel::Warning);
+    mcp::SetLogHandler([&records](const mcp::LogRecord& r) {
+        Captured c;
+        c.message = std::string(r.message);
+        if (r.context != nullptr) {
+            c.method = r.context->method;
+            c.request_id = r.context->request_id;
+        }
+        records.push_back(std::move(c));
+    });
+
+    hp.server->SetRequestHandler(methods::kCreateMessage,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    RequestMeta meta = ModernMeta();
+    auto future = hp.client->SendRequest(methods::kCreateMessage,
+        JsonValue(JsonValue::object_tag), meta, std::chrono::milliseconds(2000));
+
+    auto status = future.wait_for(std::chrono::seconds(3));
+    mcp::SetLogHandler(nullptr);
+    ASSERT_EQ(status, std::future_status::ready);
+
+    bool found = false;
+    for (const auto& record : records) {
+        if (record.method != std::string(methods::kCreateMessage)) continue;
+        if (record.message.find("rejected") == std::string::npos) continue;
+        found = true;
+        EXPECT_FALSE(record.request_id.empty());
+        break;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(SessionHandlerTest, HandlerFailureDoesNotLeakExceptionText) {
+    HandlerPair hp;
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue>) {
+            throw std::runtime_error("secret-token-abc123");
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InternalError));
+    EXPECT_EQ(result["message"].GetString(), std::string("request handler failed"));
+    EXPECT_EQ(result["message"].GetString().find("secret-token-abc123"),
+              std::string::npos);
 }

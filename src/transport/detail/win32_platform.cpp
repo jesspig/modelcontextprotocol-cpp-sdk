@@ -1,14 +1,21 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
+#include <mcp/McpError.hpp>
+#include <mcp/ErrorCodes.hpp>
 #include <mcp/Log.hpp>
 #include <windows.h>
 #include <processthreadsapi.h>
 #include <stdexcept>
+#include <chrono>
+#include <exception>
 #include <string>
+#include <thread>
 #include <vector>
 #include <atomic>
 #include <condition_variable>
 #include <cwchar>
 #include <mutex>
+
+#undef CreateProcess
 
 namespace mcp { namespace detail {
 
@@ -104,8 +111,6 @@ StdioPipe CreateStdioPipe(SECURITY_ATTRIBUTES* sa, bool parent_reads) {
 
 class Win32Pipe : public PipeHandle {
     HANDLE handle_ = INVALID_HANDLE_VALUE;
-    HANDLE read_event_ = nullptr;
-    HANDLE write_event_ = nullptr;
     HANDLE cancel_event_ = nullptr;
     std::mutex io_mutex_;
     std::condition_variable io_done_cv_;
@@ -121,13 +126,8 @@ class Win32Pipe : public PipeHandle {
 public:
     Win32Pipe(HANDLE h, bool overlapped) : handle_(h ? h : INVALID_HANDLE_VALUE), overlapped_(overlapped) {
         if (handle_ != INVALID_HANDLE_VALUE) {
-            read_event_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
-            write_event_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
             cancel_event_ = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-            if (!read_event_ || !write_event_ || !cancel_event_) {
-                if (read_event_) { CloseHandle(read_event_); read_event_ = nullptr; }
-                if (write_event_) { CloseHandle(write_event_); write_event_ = nullptr; }
-                if (cancel_event_) { CloseHandle(cancel_event_); cancel_event_ = nullptr; }
+            if (!cancel_event_) {
                 overlapped_ = false;
             }
         } else {
@@ -151,6 +151,29 @@ public:
 };
 } // anonymous namespace
 
+bool WriteWholeMessage(PipeHandle& pipe, const char* data, size_t size) {
+    constexpr int kMaxIdleAttempts = 64;
+    constexpr std::chrono::milliseconds kIdleDelay(5);
+    size_t total = 0;
+    int idle_attempts = 0;
+    while (total < size) {
+        size_t written = 0;
+        try {
+            written = pipe.Write(data + total, size - total);
+        } catch (const std::exception&) {
+            return false;
+        }
+        if (written == 0) {
+            if (++idle_attempts > kMaxIdleAttempts) return false;
+            std::this_thread::sleep_for(kIdleDelay);
+            continue;
+        }
+        idle_attempts = 0;
+        total += written;
+    }
+    return true;
+}
+
 size_t Win32Pipe::Read(char* buffer, size_t size) {
     HANDLE h;
     {
@@ -164,41 +187,61 @@ size_t Win32Pipe::Read(char* buffer, size_t size) {
 
 size_t Win32Pipe::ReadOverlapped(HANDLE h, char* buffer, size_t size) {
     OVERLAPPED ov = {};
-    ov.hEvent = read_event_;
+    HANDLE event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (event == nullptr)
+        throw std::runtime_error("CreateEventA failed for pipe read");
+    ov.hEvent = event;
     DWORD io_error = ERROR_SUCCESS;
     bool pending = false;
     size_t result = 0;
+    HANDLE cancel_evt = nullptr;
     {
         std::lock_guard<std::mutex> lock(io_mutex_);
-        if (closed_.load() || eof_) return 0;
+        if (closed_.load() || eof_) {
+            CloseHandle(event);
+            return 0;
+        }
+        cancel_evt = cancel_event_;
         ++io_in_flight_;
-        ResetEvent(read_event_);
         if (!ReadFile(h, buffer, static_cast<DWORD>(size), nullptr, &ov)) {
             io_error = GetLastError();
-            if (io_error == ERROR_IO_PENDING) pending = true;
+            if (io_error == ERROR_IO_PENDING || io_error == ERROR_IO_INCOMPLETE) {
+                pending = true;
+                io_error = ERROR_SUCCESS;
+            }
         } else {
             result = static_cast<size_t>(ov.InternalHigh);
             if (result == 0) eof_ = true;
         }
     }
     if (pending) {
-        HANDLE waits[2] = { read_event_, cancel_event_ };
-        DWORD wait = WaitForMultipleObjects(2, waits, FALSE, kIoWaitTimeoutMs);
         DWORD got = 0;
+        HANDLE waits[2] = { event, cancel_evt };
+        DWORD wait = WaitForMultipleObjects(2, waits, FALSE, kIoWaitTimeoutMs);
         if (wait == WAIT_OBJECT_0) {
             if (GetOverlappedResult(h, &ov, &got, FALSE)) {
                 result = got;
                 if (got == 0) eof_ = true;
             } else {
-                io_error = GetLastError();
+                DWORD err = GetLastError();
+                if (err == ERROR_IO_INCOMPLETE) {
+                    CancelIoEx(h, &ov);
+                    GetOverlappedResult(h, &ov, &got, TRUE);
+                } else if (err != ERROR_OPERATION_ABORTED) {
+                    io_error = err;
+                }
             }
         } else {
             CancelIoEx(h, &ov);
+            SetLastError(ERROR_SUCCESS);
             if (GetOverlappedResult(h, &ov, &got, TRUE)) {
-                result = got;
-                if (got == 0) eof_ = true;
+                if (GetLastError() != ERROR_OPERATION_ABORTED) {
+                    result = got;
+                    if (got == 0) eof_ = true;
+                }
             } else {
-                io_error = GetLastError();
+                DWORD err = GetLastError();
+                if (err != ERROR_OPERATION_ABORTED) io_error = err;
             }
         }
     }
@@ -207,8 +250,15 @@ size_t Win32Pipe::ReadOverlapped(HANDLE h, char* buffer, size_t size) {
         --io_in_flight_;
         io_done_cv_.notify_all();
     }
+    CloseHandle(event);
     if (result == 0 && (io_error == ERROR_BROKEN_PIPE || io_error == ERROR_HANDLE_EOF))
         eof_ = true;
+    if (result == 0 && io_error != ERROR_SUCCESS &&
+        io_error != ERROR_BROKEN_PIPE && io_error != ERROR_HANDLE_EOF) {
+        eof_ = true;
+        throw McpError(McpErrorCode::ConnectionClosed,
+                       "pipe read failed: Windows error " + std::to_string(io_error));
+    }
     return result;
 }
 
@@ -222,8 +272,13 @@ size_t Win32Pipe::ReadSync(HANDLE h, char* buffer, size_t size) {
         if (ftype == FILE_TYPE_PIPE &&
             !PeekNamedPipe(h, nullptr, 0, nullptr, &available, nullptr)) {
             DWORD err = GetLastError();
-            if (err == ERROR_BROKEN_PIPE) eof_ = true;
-            return 0;
+            if (err == ERROR_BROKEN_PIPE) {
+                eof_ = true;
+                return 0;
+            }
+            eof_ = true;
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           "pipe read failed: Windows error " + std::to_string(err));
         }
     }
     if (ftype == FILE_TYPE_PIPE && available == 0) {
@@ -237,8 +292,13 @@ size_t Win32Pipe::ReadSync(HANDLE h, char* buffer, size_t size) {
         DWORD got = 0;
         if (!ReadFile(h, buffer, static_cast<DWORD>(size), &got, nullptr)) {
             DWORD err = GetLastError();
-            if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF) eof_ = true;
-            return 0;
+            if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF) {
+                eof_ = true;
+                return 0;
+            }
+            eof_ = true;
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           "pipe read failed: Windows error " + std::to_string(err));
         }
         if (got == 0) eof_ = true;
         return got;
@@ -260,34 +320,61 @@ size_t Win32Pipe::WriteOverlapped(HANDLE h, const char* data, size_t size) {
     size_t total = 0;
     while (total < size) {
         OVERLAPPED ov = {};
-        ov.hEvent = write_event_;
+        HANDLE event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        if (event == nullptr)
+            throw std::runtime_error("CreateEventA failed for pipe write");
+        ov.hEvent = event;
         DWORD written = 0;
         bool pending = false;
         bool failed = false;
+        DWORD io_error = ERROR_SUCCESS;
+        HANDLE cancel_evt = nullptr;
         {
             std::lock_guard<std::mutex> lock(io_mutex_);
-            if (closed_.load()) return total;
+            if (closed_.load()) {
+                CloseHandle(event);
+                return total;
+            }
+            cancel_evt = cancel_event_;
             ++io_in_flight_;
-            ResetEvent(write_event_);
             if (!WriteFile(h, data + total, static_cast<DWORD>(size - total), nullptr, &ov)) {
                 DWORD err = GetLastError();
-                if (err == ERROR_IO_PENDING) pending = true;
-                else failed = true;
+                if (err == ERROR_IO_PENDING || err == ERROR_IO_INCOMPLETE) pending = true;
+                else {
+                    failed = true;
+                    io_error = err;
+                }
             } else {
                 written = static_cast<DWORD>(ov.InternalHigh);
             }
         }
         if (pending) {
-            HANDLE waits[2] = { write_event_, cancel_event_ };
+            HANDLE waits[2] = { event, cancel_evt };
             DWORD wait = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
             DWORD got = 0;
             if (wait == WAIT_OBJECT_0) {
-                if (!GetOverlappedResult(h, &ov, &got, FALSE)) failed = true;
-                else written = got;
+                if (!GetOverlappedResult(h, &ov, &got, FALSE)) {
+                    DWORD err = GetLastError();
+                    if (err == ERROR_IO_INCOMPLETE) {
+                        if (GetOverlappedResult(h, &ov, &got, TRUE)) written = got;
+                        else {
+                            failed = true;
+                            io_error = GetLastError();
+                        }
+                    } else {
+                        failed = true;
+                        io_error = err;
+                    }
+                } else {
+                    written = got;
+                }
             } else {
                 CancelIoEx(h, &ov);
-                GetOverlappedResult(h, &ov, &got, TRUE);
-                written = got;
+                if (GetOverlappedResult(h, &ov, &got, TRUE)) written = got;
+                else {
+                    failed = true;
+                    io_error = GetLastError();
+                }
             }
         }
         {
@@ -295,7 +382,16 @@ size_t Win32Pipe::WriteOverlapped(HANDLE h, const char* data, size_t size) {
             --io_in_flight_;
             io_done_cv_.notify_all();
         }
-        if (failed || written == 0) return total;
+        CloseHandle(event);
+        if (failed) {
+            if (io_error != ERROR_OPERATION_ABORTED) {
+                eof_ = true;
+                throw McpError(McpErrorCode::ConnectionClosed,
+                               "pipe write failed: Windows error " + std::to_string(io_error));
+            }
+            return total;
+        }
+        if (written == 0) return total;
         total += written;
     }
     return total;
@@ -311,8 +407,12 @@ size_t Win32Pipe::WriteSync(HANDLE h, const char* data, size_t size) {
         DWORD written = 0;
         BOOL ok = WriteFile(h, data + total,
             static_cast<DWORD>(size - total), &written, nullptr);
-        if (!ok)
-            return total;
+        if (!ok) {
+            DWORD err = GetLastError();
+            eof_ = true;
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           "pipe write failed: Windows error " + std::to_string(err));
+        }
         if (written == 0)
             return total;
         total += written;
@@ -322,17 +422,13 @@ size_t Win32Pipe::WriteSync(HANDLE h, const char* data, size_t size) {
 
 void Win32Pipe::Close() {
     HANDLE h = INVALID_HANDLE_VALUE;
-    HANDLE read_evt = nullptr, write_evt = nullptr, cancel_evt = nullptr;
+    HANDLE cancel_evt = nullptr;
     {
         std::lock_guard<std::mutex> lock(io_mutex_);
         if (closed_.exchange(true)) return;
         if (cancel_event_) SetEvent(cancel_event_);
         h = handle_;
         handle_ = INVALID_HANDLE_VALUE;
-        read_evt = read_event_;
-        read_event_ = nullptr;
-        write_evt = write_event_;
-        write_event_ = nullptr;
         cancel_evt = cancel_event_;
         cancel_event_ = nullptr;
     }
@@ -342,8 +438,6 @@ void Win32Pipe::Close() {
         std::unique_lock<std::mutex> lock(io_mutex_);
         while (io_in_flight_ > 0) io_done_cv_.wait(lock);
     }
-    if (read_evt) CloseHandle(read_evt);
-    if (write_evt) CloseHandle(write_evt);
     if (cancel_evt) CloseHandle(cancel_evt);
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 }
@@ -488,6 +582,10 @@ std::unique_ptr<PipeHandle> OpenStandardOutput() {
             return std::make_unique<Win32Pipe>(dup, false);
     }
     return std::make_unique<Win32Pipe>(INVALID_HANDLE_VALUE, false);
+}
+
+std::unique_ptr<PipeHandle> CreatePipeFromHandle(HANDLE handle, bool overlapped) {
+    return std::make_unique<Win32Pipe>(handle, overlapped);
 }
 
 void SetThreadName(const char* name) {

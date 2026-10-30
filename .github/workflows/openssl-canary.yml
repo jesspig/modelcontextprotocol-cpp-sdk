@@ -1,0 +1,53 @@
+name: OpenSSL Canary
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openssl-canary
+  cancel-in-progress: true
+
+jobs:
+  canary-macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Install latest OpenSSL
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          brew install openssl
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl)" >> "$GITHUB_ENV"
+      - name: Configure
+        run: cmake -S . -B build/canary -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMCP_WERROR=ON -DMCP_BUILD_TESTS=ON -DMCP_WITH_OPENSSL=ON -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX"
+      - name: Build
+        run: cmake --build build/canary
+      - name: Test
+        run: ctest --test-dir build/canary --output-on-failure --timeout 120
+
+  canary-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Install OpenSSL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+      - name: Configure
+        run: cmake -S . -B build/canary -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMCP_WERROR=ON -DMCP_BUILD_TESTS=ON -DMCP_WITH_OPENSSL=ON
+      - name: Build
+        run: cmake --build build/canary
+      - name: Test
+        run: ctest --test-dir build/canary --output-on-failure --timeout 120

@@ -94,6 +94,7 @@ public:
     void Close() override;
     void SendMessageAsync(JsonRpcMessage message) override;
     bool BufferRequestStreamNotification(JsonRpcMessage message) override;
+    bool RequiresRequestScopedNotifications() const override { return true; }
     bool IsStateless() const override { return options_.stateless; }
 
     static bool ValidateMcpHeaders(

@@ -270,6 +270,9 @@ TEST_F(Phase2InMemoryElicitFixture, UrlElicitationRoundTrip) {
         client->SetUrlElicitationHandler(
             [captured_promise](const ElicitRequestParams& params) {
                 captured_promise->set_value(params);
+                ElicitResult result;
+                result.action = "accept";
+                return result;
             });
 
         auto result = client->CallTool("url_gate");
@@ -575,6 +578,9 @@ TEST_F(Phase2HttpElicitFixture, UrlElicitationOverHttp) {
         client->SetUrlElicitationHandler(
             [captured_promise](const ElicitRequestParams& params) {
                 captured_promise->set_value(params);
+                ElicitResult result;
+                result.action = "accept";
+                return result;
             });
 
         auto result = client->CallTool("url_gate");

@@ -209,10 +209,26 @@ EmbeddedResource DeserializeEmbeddedResource(const JsonValue& j) {
 }
 
 JsonValue SerializeResourceLink(const ResourceLink& v) {
+    if (v.name.empty())
+        throw McpError(McpErrorCode::InvalidParams,
+            "SerializeResourceLink: required field 'name' must not be empty");
+    if (v.uri.empty())
+        throw McpError(McpErrorCode::InvalidParams,
+            "SerializeResourceLink: required field 'uri' must not be empty");
+    if (v.size && *v.size < 0)
+        throw McpError(McpErrorCode::InvalidParams,
+            "SerializeResourceLink: field 'size' must be non-negative, got " +
+            std::to_string(*v.size));
     JsonValue obj(JsonValue::object_tag);
     obj[detail::kType] = JsonValue(v.type);
     obj[detail::kUri] = JsonValue(v.uri);
+    obj[detail::kName] = JsonValue(v.name);
     detail::SerializeOptional(obj, detail::kTitle, v.title);
+    detail::SerializeOptional(obj, detail::kDescription, v.description);
+    detail::SerializeOptional(obj, detail::kMimeType, v.mime_type);
+    detail::SerializeOptional(obj, detail::kSize, v.size);
+    detail::SerializeVector(obj, detail::kIcons, v.icons,
+        [](const Icon& icon) { return SerializeIcon(icon); });
     if (v.annotations) obj[detail::kAnnotations] = SerializeAnnotations(*v.annotations);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
     return obj;
@@ -221,8 +237,26 @@ JsonValue SerializeResourceLink(const ResourceLink& v) {
 ResourceLink DeserializeResourceLink(const JsonValue& j) {
     ResourceLink v;
     v.type = j[detail::kType].GetString();
-    v.uri = j[detail::kUri].GetString();
+    auto* name = j.Find(detail::kName);
+    if (!name || !name->IsString() || name->GetString().empty())
+        throw McpError(McpErrorCode::InvalidParams,
+            "DeserializeResourceLink: required field 'name' is missing or empty");
+    auto* uri = j.Find(detail::kUri);
+    if (!uri || !uri->IsString() || uri->GetString().empty())
+        throw McpError(McpErrorCode::InvalidParams,
+            "DeserializeResourceLink: required field 'uri' is missing or empty");
+    v.name = name->GetString();
+    v.uri = uri->GetString();
     detail::DeserializeOptional(j, detail::kTitle, v.title);
+    detail::DeserializeOptional(j, detail::kDescription, v.description);
+    detail::DeserializeOptional(j, detail::kMimeType, v.mime_type);
+    detail::DeserializeOptional(j, detail::kSize, v.size);
+    if (v.size && *v.size < 0)
+        throw McpError(McpErrorCode::InvalidParams,
+            "DeserializeResourceLink: field 'size' must be non-negative, got " +
+            std::to_string(*v.size));
+    v.icons = detail::DeserializeVector<Icon>(j, detail::kIcons,
+        [](const JsonValue& iv) { return DeserializeIcon(iv); });
     auto* ann = j.Find(detail::kAnnotations);
     if (ann) v.annotations = DeserializeAnnotations(*ann);
     detail::DeserializeOptional(j, detail::kMeta, v.meta);

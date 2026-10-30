@@ -125,6 +125,52 @@ TEST(McpTypesTest, CallToolResultWithError) {
     EXPECT_TRUE(r2.is_error);
 }
 
+TEST(McpTypesTest, CallToolResultInputRequiredRoundTrip) {
+    CallToolResult r;
+    r.content = {TextContent{"text", "need input"}};
+    r.result_type = ResultType::InputRequired;
+
+    InputRequest name_request;
+    name_request.method = "elicitation/create";
+    name_request.params = JsonValue::Parse(R"({"message":"Give me a name"})");
+    InputRequest roots_request;
+    roots_request.method = "roots/list";
+    roots_request.params = JsonValue(JsonValue::object_tag);
+    r.input_required = InputRequiredResult{};
+    r.input_required->input_requests["name"] = name_request;
+    r.input_required->input_requests["roots"] = roots_request;
+    r.input_required->request_state = "state-123";
+
+    auto r2 = DeserializeCallToolResult(SerializeCallToolResult(r));
+
+    ASSERT_TRUE(r2.input_required.has_value());
+    ASSERT_EQ(r2.input_required->input_requests.size(), size_t{2});
+    ASSERT_EQ(r2.input_required->input_requests.count("name"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("name").method, "elicitation/create");
+    EXPECT_EQ(r2.input_required->input_requests.at("name").params, name_request.params);
+    ASSERT_EQ(r2.input_required->input_requests.count("roots"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("roots").method, "roots/list");
+    EXPECT_TRUE(r2.input_required->input_requests.at("roots").params.Empty());
+    EXPECT_EQ(r2.input_required->request_state, "state-123");
+    EXPECT_EQ(r2.result_type, ResultType::InputRequired);
+}
+
+TEST(McpTypesTest, CallToolResultWithoutMrtrKeysHasNoInputRequired) {
+    CallToolResult r;
+    r.content = {TextContent{"text", "ok"}};
+    auto jv = SerializeCallToolResult(r);
+    EXPECT_FALSE(jv.Find("inputRequests"));
+    auto r2 = DeserializeCallToolResult(jv);
+    EXPECT_FALSE(r2.input_required.has_value());
+    EXPECT_EQ(r2.result_type, ResultType::Complete);
+
+    auto r3 = DeserializeCallToolResult(
+        JsonValue::Parse(R"({"content":[],"isError":false,"resultType":"input_required"})"));
+    ASSERT_TRUE(r3.input_required.has_value());
+    EXPECT_TRUE(r3.input_required->input_requests.empty());
+    EXPECT_FALSE(r3.input_required->request_state.has_value());
+}
+
 TEST(McpTypesTest, ListToolsResultRoundTrip) {
     ListToolsResult r;
     Tool t;
@@ -237,6 +283,32 @@ TEST(McpTypesTest, GetPromptResultRoundTrip) {
     EXPECT_TRUE(std::holds_alternative<TextContent>(r2.messages[0].content));
 }
 
+TEST(McpTypesTest, GetPromptResultInputRequiredRoundTrip) {
+    GetPromptResult r;
+    r.description = "daily report";
+    InputRequest elicit;
+    elicit.method = "elicitation/create";
+    elicit.params = JsonValue::Parse(R"({"message":"Which day?"})");
+    r.input_required = InputRequiredResult{};
+    r.input_required->input_requests["day"] = elicit;
+    r.input_required->request_state = "prompt-state";
+
+    auto r2 = DeserializeGetPromptResult(SerializeGetPromptResult(r));
+
+    ASSERT_TRUE(r2.input_required.has_value());
+    ASSERT_EQ(r2.input_required->input_requests.count("day"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("day").method, "elicitation/create");
+    EXPECT_EQ(r2.input_required->input_requests.at("day").params, elicit.params);
+    EXPECT_EQ(r2.input_required->request_state, "prompt-state");
+    EXPECT_EQ(r2.result_type, ResultType::InputRequired);
+    EXPECT_EQ(r2.description, "daily report");
+
+    r.input_required = std::nullopt;
+    auto r3 = DeserializeGetPromptResult(SerializeGetPromptResult(r));
+    EXPECT_FALSE(r3.input_required.has_value());
+    EXPECT_EQ(r3.result_type, ResultType::Complete);
+}
+
 TEST(McpTypesTest, TextResourceContentsRoundTrip) {
     TextResourceContents r;
     r.uri = "file:///doc.txt";
@@ -263,6 +335,36 @@ TEST(McpTypesTest, ReadResourceResultRoundTrip) {
     auto* rc = std::get_if<TextResourceContents>(&r2.contents[0]);
     ASSERT_NE(rc, nullptr);
     EXPECT_EQ(rc->text, "Hello");
+}
+
+TEST(McpTypesTest, ReadResourceResultInputRequiredRoundTrip) {
+    ReadResourceResult r;
+    TextResourceContents trc;
+    trc.uri = "file:///doc.txt";
+    trc.text = "Hello";
+    r.contents = {ResourceContents(trc)};
+
+    InputRequest roots;
+    roots.method = "roots/list";
+    roots.params = JsonValue(JsonValue::object_tag);
+    r.input_required = InputRequiredResult{};
+    r.input_required->input_requests["paths"] = roots;
+    r.input_required->request_state = "read-state";
+
+    auto jv = SerializeReadResourceResult(r);
+    auto r2 = DeserializeReadResourceResult(jv);
+
+    ASSERT_TRUE(r2.input_required.has_value());
+    ASSERT_EQ(r2.input_required->input_requests.count("paths"), size_t{1});
+    EXPECT_EQ(r2.input_required->input_requests.at("paths").method, "roots/list");
+    EXPECT_EQ(r2.input_required->request_state, "read-state");
+    EXPECT_EQ(r2.result_type, ResultType::InputRequired);
+    ASSERT_EQ(r2.contents.size(), 1);
+
+    r.input_required = std::nullopt;
+    auto r3 = DeserializeReadResourceResult(SerializeReadResourceResult(r));
+    EXPECT_FALSE(r3.input_required.has_value());
+    EXPECT_EQ(r3.result_type, ResultType::Complete);
 }
 
 TEST(McpTypesTest, LoggingLevelRoundTrip) {
@@ -317,6 +419,152 @@ TEST(McpTypesTest, EmbeddedResourceRoundTrip) {
     EXPECT_EQ(rc->text, "embedded");
 }
 
+TEST(McpTypesTest, ResourceLinkRoundTrip) {
+    ResourceLink link;
+    link.uri = "file:///docs/readme.md";
+    link.name = "readme.md";
+    link.title = "README";
+    link.description = "Project readme";
+    link.mime_type = "text/markdown";
+    link.size = int64_t{4096};
+    link.icons = {Icon{"https://example.com/readme.svg", "image/svg+xml",
+                       std::vector<std::string>{"any"}, "light"}};
+    link.annotations = Annotations{};
+    link.annotations->audience = std::vector<std::string>{"user"};
+    link.annotations->priority = 0.5;
+    link.annotations->last_modified = "2026-07-28T00:00:00Z";
+    JsonValue meta(JsonValue::object_tag);
+    meta["trace"] = JsonValue("abc");
+    link.meta = meta;
+
+    auto jv = SerializeResourceLink(link);
+    EXPECT_EQ(jv["type"].GetString(), "resource_link");
+    EXPECT_EQ(jv["uri"].GetString(), link.uri);
+    EXPECT_EQ(jv["name"].GetString(), link.name);
+    EXPECT_EQ(jv["title"].GetString(), link.title);
+    EXPECT_EQ(jv["description"].GetString(), link.description);
+    EXPECT_EQ(jv["mimeType"].GetString(), link.mime_type);
+    EXPECT_EQ(jv["size"].GetInt(), int64_t{4096});
+    ASSERT_TRUE(jv.Contains("icons"));
+    ASSERT_TRUE(jv["icons"].IsArray());
+    ASSERT_EQ(jv["icons"].Size(), size_t{1});
+    EXPECT_EQ(jv["icons"][size_t{0}]["src"].GetString(),
+        "https://example.com/readme.svg");
+    EXPECT_DOUBLE_EQ(jv["annotations"]["priority"].GetDouble(), 0.5);
+    EXPECT_EQ(jv["_meta"]["trace"].GetString(), "abc");
+
+    auto link2 = DeserializeResourceLink(jv);
+    EXPECT_EQ(link2.type, "resource_link");
+    EXPECT_EQ(link2.uri, link.uri);
+    EXPECT_EQ(link2.name, link.name);
+    ASSERT_TRUE(link2.title.has_value());
+    EXPECT_EQ(*link2.title, "README");
+    ASSERT_TRUE(link2.description.has_value());
+    EXPECT_EQ(*link2.description, "Project readme");
+    ASSERT_TRUE(link2.mime_type.has_value());
+    EXPECT_EQ(*link2.mime_type, "text/markdown");
+    ASSERT_TRUE(link2.size.has_value());
+    EXPECT_EQ(*link2.size, int64_t{4096});
+    ASSERT_EQ(link2.icons.size(), size_t{1});
+    EXPECT_EQ(link2.icons[0].src, "https://example.com/readme.svg");
+    ASSERT_TRUE(link2.icons[0].mime_type.has_value());
+    EXPECT_EQ(*link2.icons[0].mime_type, "image/svg+xml");
+    ASSERT_TRUE(link2.icons[0].sizes.has_value());
+    EXPECT_EQ(link2.icons[0].sizes->at(0), "any");
+    ASSERT_TRUE(link2.icons[0].theme.has_value());
+    EXPECT_EQ(*link2.icons[0].theme, "light");
+    ASSERT_TRUE(link2.annotations.has_value());
+    ASSERT_TRUE(link2.annotations->audience.has_value());
+    EXPECT_EQ(link2.annotations->audience->at(0), "user");
+    ASSERT_TRUE(link2.annotations->priority.has_value());
+    EXPECT_DOUBLE_EQ(*link2.annotations->priority, 0.5);
+    ASSERT_TRUE(link2.annotations->last_modified.has_value());
+    EXPECT_EQ(*link2.annotations->last_modified, "2026-07-28T00:00:00Z");
+    ASSERT_TRUE(link2.meta.has_value());
+    EXPECT_EQ((*link2.meta)["trace"].GetString(), "abc");
+}
+
+TEST(McpTypesTest, ResourceLinkEmptyIconsOmitted) {
+    ResourceLink link;
+    link.uri = "file:///docs/readme.md";
+    link.name = "readme.md";
+
+    auto jv = SerializeResourceLink(link);
+    EXPECT_FALSE(jv.Contains("icons"));
+    EXPECT_FALSE(jv.Contains("description"));
+    EXPECT_FALSE(jv.Contains("mimeType"));
+    EXPECT_FALSE(jv.Contains("size"));
+}
+
+TEST(McpTypesTest, ResourceLinkRejectsMissingNameOrUri) {
+    auto rejects_invalid_params = [](auto&& fn) {
+        try {
+            fn();
+        } catch (const McpError& e) {
+            return e.Code() == McpErrorCode::InvalidParams;
+        }
+        return false;
+    };
+
+    ResourceLink missing_name;
+    missing_name.uri = "file:///x.md";
+    EXPECT_TRUE(rejects_invalid_params([&] { (void)SerializeResourceLink(missing_name); }));
+
+    ResourceLink missing_uri;
+    missing_uri.name = "x.md";
+    EXPECT_TRUE(rejects_invalid_params([&] { (void)SerializeResourceLink(missing_uri); }));
+
+    ResourceLink negative_size;
+    negative_size.uri = "file:///x.md";
+    negative_size.name = "x.md";
+    negative_size.size = int64_t{-1};
+    EXPECT_TRUE(rejects_invalid_params([&] { (void)SerializeResourceLink(negative_size); }));
+
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","uri":"file:///x.md"})"));
+    }));
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","uri":"file:///x.md","name":""})"));
+    }));
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","name":"x.md"})"));
+    }));
+    EXPECT_TRUE(rejects_invalid_params([] {
+        (void)DeserializeResourceLink(JsonValue::Parse(
+            R"({"type":"resource_link","uri":"file:///x.md","name":"x.md","size":-3})"));
+    }));
+}
+
+TEST(McpTypesTest, ContentVariantResourceLinkRoundTrip) {
+    ResourceLink link;
+    link.uri = "file:///docs/spec.md";
+    link.name = "spec.md";
+    link.description = "Protocol spec";
+    link.mime_type = "text/markdown";
+    link.size = int64_t{128};
+    link.icons = {Icon{"https://example.com/spec.png", "image/png"}};
+
+    ContentVariant cv = link;
+    auto jv = SerializeContentVariant(cv);
+    EXPECT_EQ(jv["type"].GetString(), "resource_link");
+    EXPECT_EQ(jv["name"].GetString(), "spec.md");
+
+    auto cv2 = DeserializeContentVariant(jv);
+    ASSERT_TRUE(std::holds_alternative<ResourceLink>(cv2));
+    const auto& link2 = std::get<ResourceLink>(cv2);
+    EXPECT_EQ(link2.name, "spec.md");
+    EXPECT_EQ(link2.uri, "file:///docs/spec.md");
+    ASSERT_TRUE(link2.description.has_value());
+    EXPECT_EQ(*link2.description, "Protocol spec");
+    ASSERT_TRUE(link2.size.has_value());
+    EXPECT_EQ(*link2.size, int64_t{128});
+    ASSERT_EQ(link2.icons.size(), size_t{1});
+    EXPECT_EQ(link2.icons[0].src, "https://example.com/spec.png");
+}
+
 TEST(McpTypesTest, EmptyResultSerializes) {
     EmptyResult r;
     auto jv = SerializeEmptyResult(r);
@@ -354,6 +602,60 @@ TEST(McpTypesTest, CompleteRequestParamsFlatShapeCompat) {
     auto params = DeserializeCompleteRequestParams(jv);
     EXPECT_EQ(params.argument_name, "language");
     EXPECT_EQ(params.argument_value, "py");
+}
+
+TEST(McpTypesTest, CompleteRequestParamsContextRoundTrip) {
+    CompleteRequestParams params;
+    params.ref = JsonValue::Parse(
+        "{\"type\":\"ref/prompt\",\"name\":\"code_review\"}");
+    params.argument_name = "framework";
+    params.argument_value = "qt";
+    params.context_arguments = {
+        {"language", "cpp"},
+        {"framework", "qt"},
+        {"standard", "c++20"},
+    };
+
+    auto wire = SerializeCompleteRequestParams(params);
+    ASSERT_TRUE(wire.Contains("context"));
+    ASSERT_TRUE(wire["context"].IsObject());
+    ASSERT_TRUE(wire["context"].Contains("arguments"));
+    const auto& arguments = wire["context"]["arguments"];
+    ASSERT_TRUE(arguments.IsObject());
+    ASSERT_EQ(arguments.Size(), size_t{3});
+    EXPECT_EQ(arguments["language"], JsonValue("cpp"));
+    EXPECT_EQ(arguments["framework"], JsonValue("qt"));
+    EXPECT_EQ(arguments["standard"], JsonValue("c++20"));
+
+    auto decoded = DeserializeCompleteRequestParams(wire);
+    EXPECT_EQ(decoded.ref, params.ref);
+    EXPECT_EQ(decoded.argument_name, "framework");
+    EXPECT_EQ(decoded.argument_value, "qt");
+    EXPECT_EQ(decoded.context_arguments, params.context_arguments);
+}
+
+TEST(McpTypesTest, CompleteRequestParamsRejectsMalformedContext) {
+    auto rejects_invalid_params = [](const char* wire) {
+        try {
+            (void)DeserializeCompleteRequestParams(JsonValue::Parse(wire));
+        } catch (const McpError& e) {
+            return e.Code() == McpErrorCode::InvalidParams;
+        }
+        return false;
+    };
+
+    EXPECT_TRUE(rejects_invalid_params(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"},"
+        "\"context\":[]}"));
+    EXPECT_TRUE(rejects_invalid_params(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"},"
+        "\"context\":{\"arguments\":[]}}"));
+    EXPECT_TRUE(rejects_invalid_params(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"code_review\"},"
+        "\"argument\":{\"name\":\"language\",\"value\":\"py\"},"
+        "\"context\":{\"arguments\":{\"language\":1}}}"));
 }
 
 TEST(McpTypesTest, CompleteResultRoundTrip) {
@@ -1154,4 +1456,79 @@ TEST(McpTypesTest, CallToolResultStructuredContentArbitraryPassthrough) {
     auto rs2 = DeserializeCallToolResult(jvs);
     ASSERT_TRUE(rs2.structured_content.has_value());
     EXPECT_EQ(rs2.structured_content->GetString(), "plain");
+}
+
+TEST(McpTypesTest, InputRequestRoundTripWithDefaultParams) {
+    InputRequest req;
+    req.method = "elicitation/create";
+    auto jv = SerializeInputRequest(req);
+    ASSERT_TRUE(jv.Contains("params"));
+    EXPECT_TRUE(jv["params"].IsNull());
+
+    auto back = DeserializeInputRequest(jv);
+    EXPECT_EQ(back.method, req.method);
+    EXPECT_TRUE(back.params.IsObject());
+    EXPECT_TRUE(back.params.Empty());
+
+    auto explicit_null = DeserializeInputRequest(
+        JsonValue::Parse(R"({"method":"roots/list","params":null})"));
+    EXPECT_EQ(explicit_null.method, "roots/list");
+    EXPECT_TRUE(explicit_null.params.IsObject());
+    EXPECT_TRUE(explicit_null.params.Empty());
+
+    auto missing = DeserializeInputRequest(
+        JsonValue::Parse(R"({"method":"roots/list"})"));
+    EXPECT_TRUE(missing.params.IsObject());
+    EXPECT_TRUE(missing.params.Empty());
+
+    EXPECT_THROW(DeserializeInputRequest(
+        JsonValue::Parse(R"({"method":"roots/list","params":[1,2]})")), McpError);
+}
+
+TEST(McpTypesTest, FileRefOffsetNarrowingRejectsInvalidValues) {
+    auto integral = DeserializeFileRef(
+        JsonValue::Parse(R"({"uri":"file:///a.txt","offset":12.0})"));
+    EXPECT_EQ(integral.offset, int64_t{12});
+    EXPECT_EQ(integral.length, int64_t{0});
+
+    auto int_offset = DeserializeFileRef(
+        JsonValue::Parse(R"({"uri":"file:///a.txt","offset":7,"length":9})"));
+    EXPECT_EQ(int_offset.offset, int64_t{7});
+    EXPECT_EQ(int_offset.length, int64_t{9});
+
+    bool offset_overflow_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","offset":1e19})"));
+    } catch (const McpError& e) {
+        offset_overflow_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(offset_overflow_rejected);
+
+    bool offset_type_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","offset":"abc"})"));
+    } catch (const McpError& e) {
+        offset_type_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(offset_type_rejected);
+
+    bool length_overflow_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","length":1e19})"));
+    } catch (const McpError& e) {
+        length_overflow_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(length_overflow_rejected);
+
+    bool length_type_rejected = false;
+    try {
+        DeserializeFileRef(JsonValue::Parse(R"({"uri":"file:///a.txt","length":"abc"})"));
+    } catch (const McpError& e) {
+        length_type_rejected = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+    }
+    EXPECT_TRUE(length_type_rejected);
 }

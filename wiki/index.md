@@ -41,6 +41,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/concepts/storage.md](/concepts/storage.md) — 原子写入与失败语义
 - [/concepts/oauth.md](/concepts/oauth.md) — PKCE、RFC 9207、刷新/吊销、服务端 Bearer 资源服务器
 - [/concepts/dpop.md](/concepts/dpop.md) — DPoP 验签链、开关与 OpenSSL 可选依赖、逐请求 proof 缺口
+- [/concepts/openssl-compat.md](/concepts/openssl-compat.md) — OpenSSL 支持矩阵、CI 锁定与升级清单
 - [/concepts/logging.md](/concepts/logging.md) — 日志级别、全局钩子与可观测性
 - [/concepts/response-cache.md](/concepts/response-cache.md) — 客户端响应缓存与失效
 - [/concepts/uri-template.md](/concepts/uri-template.md) — RFC 6570 URI 模板匹配
@@ -53,9 +54,9 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 ## 工程（build & tests）
 
 - [/build.md](/build.md) — CMake 预设、Unity/LTO、系统依赖
-- [/tests.md](/tests.md) — 18 个测试目标、874 个 ctest 用例、3762 断言与守护测试（自研框架，静态口径）、官方 conformance suite（双 leg 矩阵）
+- [/tests.md](/tests.md) — 17 个测试目标、949 个 ctest 用例（静态 954）、4429 断言与守护测试（googletest）、官方 conformance suite（双 leg 矩阵）
 
 ## 维护
 
 - [/log.md](/log.md) — 更新摘要（最近 7 条）
-- [/changelog/2026-10-15-log.md](/changelog/2026-10-15-log.md) — 按天的详细更新日志
+- [/changelog/2026-10-29-log.md](/changelog/2026-10-29-log.md) — 按天的详细更新日志

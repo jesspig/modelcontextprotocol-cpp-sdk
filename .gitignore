@@ -19,6 +19,7 @@ CMakeFiles/
 cmake_install.cmake
 CTestTestfile.cmake
 *.cmake.in
+!cmake/mcpConfig.cmake.in
 
 # ── MSVC / Windows ──
 *.aps
@@ -58,3 +59,5 @@ Testing/
 # ── OS files ──
 Thumbs.db
 Desktop.ini
+
+.handoff/

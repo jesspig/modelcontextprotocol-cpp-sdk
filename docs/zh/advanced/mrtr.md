@@ -86,7 +86,9 @@ client->SetElicitationHandler(
     });
 ```
 
-客户端按每个输入请求的 `method` 分派：`elicitation/create` → `ElicitationHandler`，`sampling/createMessage` → `SamplingHandler`，`roots/list` → `RootsHandler`（`SamplingHandler`/`RootsHandler` 已废弃，新代码用 `ElicitationHandler`）。对应 handler 未注册或方法未知时抛 `McpError`（`MethodNotFound`）。
+客户端按每个输入请求的 `method` 分派：`elicitation/create` → `ElicitationHandler`，`sampling/createMessage` → `SamplingHandler`，`roots/list` → `RootsHandler`（`SamplingHandler`/`RootsHandler` 已废弃，新代码用 `ElicitationHandler`）。`elicitation/create` 的 form 模式、`sampling/createMessage` 与 `roots/list` 缺少对应 handler 时不补全，`input_required` 中间结果原样返回调用方（url elicitation 未配置 handler 时按 `decline` 处理）；未知 `method` 抛 `McpError`（`HandlerError`）。
+
+MRTR 默认自动驱动：`ClientOptions::input_required_config` 默认构造（`auto_fulfill=true`、最多 10 轮），handler 齐备时客户端收到 `input_required` 后自动补全并重试；显式将 `input_required_config` 置为 `std::nullopt`（或设 `auto_fulfill=false`）即关闭自动补全。
 
 `inputResponses` 的值是**裸结果**（elicitation 为 `{action, content}`，sampling 为 `{role, content, model, stopReason}`，roots 为 `{roots}`），不带 `resultType` / `meta` 信封。
 
@@ -134,8 +136,7 @@ if (IsInputRequiredResult(raw_result)) {
 ServerOptions opts;
 opts.input_required_config = ServerOptions::InputRequiredConfig{
     .max_rounds = 10,
-    .round_timeout = std::chrono::seconds(600),
-    .legacy_shim = true
+    .round_timeout = std::chrono::seconds(600)
 };
 opts.request_state_key = "server-secret";              // 自动签名 requestState
 opts.request_state_ttl = std::chrono::seconds(300);    // 状态有效期，0 = 不过期
@@ -157,7 +158,6 @@ opts.input_required_config = ClientOptions::InputRequiredConfig{
 |--------|--------|--------|-------------|
 | `max_rounds` | 是 | 是 | 最大 MRTR 轮数（默认：10） |
 | `round_timeout` | 是 | 是 | 每轮超时（默认：600 秒） |
-| `legacy_shim` | 是 | 否 | 占位字段，当前尚未生效 |
-| `auto_fulfill` | 否 | 是 | 如可能则自动填充，无需提示 |
+| `auto_fulfill` | 否 | 是 | 如可能则自动填充，无需提示（默认 `true`） |
 | `max_total_timeout` | 否 | 是 | 整个 MRTR 流程的硬性预算（默认 0 = 不设上限；`round_timeout` 作用于每轮） |
 | `request_state_key` / `request_state_ttl` | 是 | 否 | 服务端请求状态签名密钥与有效期 |

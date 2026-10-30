@@ -5,11 +5,18 @@
 #include <mcp/McpTypes.hpp>
 
 #include <gtest/gtest.h>
+#include <mcp/test/McpTimeout.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <future>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <variant>
 #include <vector>
 
 using namespace mcp;
@@ -45,6 +52,109 @@ TEST(McpClientTest, ClientOptionsDefaults) {
     EXPECT_EQ(opts.discover_probe_timeout.count(), 5);
 }
 
+TEST(McpClientTest, DeriveClientCapabilitiesNoHandlersReturnsNullopt) {
+    ClientOptions opts;
+    EXPECT_FALSE(DeriveClientCapabilities(opts).has_value());
+
+    opts.capabilities = ClientCapabilities{};
+    auto derived = DeriveClientCapabilities(opts);
+    ASSERT_TRUE(derived.has_value());
+    EXPECT_FALSE(derived->elicitation.has_value());
+    EXPECT_FALSE(derived->sampling.has_value());
+    EXPECT_FALSE(derived->roots.has_value());
+}
+
+TEST(McpClientTest, DeriveClientCapabilitiesDeclaresHandlers) {
+    ClientOptions form_opts;
+    form_opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto form_caps = DeriveClientCapabilities(form_opts);
+    ASSERT_TRUE(form_caps.has_value());
+    ASSERT_TRUE(form_caps->elicitation.has_value());
+    ASSERT_TRUE(form_caps->elicitation->form.has_value());
+    EXPECT_TRUE(form_caps->elicitation->form->IsObject());
+    EXPECT_TRUE(form_caps->elicitation->form->Empty());
+    EXPECT_FALSE(form_caps->elicitation->url.has_value());
+
+    ClientOptions url_opts;
+    url_opts.url_elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto url_caps = DeriveClientCapabilities(url_opts);
+    ASSERT_TRUE(url_caps.has_value());
+    ASSERT_TRUE(url_caps->elicitation.has_value());
+    ASSERT_TRUE(url_caps->elicitation->url.has_value());
+    EXPECT_TRUE(url_caps->elicitation->url->IsObject());
+    EXPECT_TRUE(url_caps->elicitation->url->Empty());
+    EXPECT_FALSE(url_caps->elicitation->form.has_value());
+
+    ClientOptions sampling_opts;
+    sampling_opts.sampling_handler = [](const CreateMessageRequestParams&) {
+        return CreateMessageResult{};
+    };
+    auto sampling_caps = DeriveClientCapabilities(sampling_opts);
+    ASSERT_TRUE(sampling_caps.has_value());
+    EXPECT_TRUE(sampling_caps->sampling.has_value());
+
+    ClientOptions roots_opts;
+    roots_opts.roots_handler = [](const ListRootsRequestParams&) {
+        return ListRootsResult{};
+    };
+    auto roots_caps = DeriveClientCapabilities(roots_opts);
+    ASSERT_TRUE(roots_caps.has_value());
+    ASSERT_TRUE(roots_caps->roots.has_value());
+    ASSERT_TRUE(roots_caps->roots->list_changed.has_value());
+    EXPECT_TRUE(*roots_caps->roots->list_changed);
+}
+
+TEST(McpClientTest, DeriveClientCapabilitiesMergesExplicitCapabilities) {
+    ClientOptions opts;
+    ClientCapabilities explicit_caps;
+    ElicitationCapability elicitation;
+    elicitation.form = JsonValue(JsonValue::Object{{"applyDefaults", JsonValue(true)}});
+    explicit_caps.elicitation = elicitation;
+    RootsCapability roots;
+    roots.list_changed = false;
+    explicit_caps.roots = roots;
+    explicit_caps.sampling = SamplingCapability{};
+    explicit_caps.experimental = JsonValue(JsonValue::Object{{"feature", JsonValue(true)}});
+    std::map<std::string, JsonValue> extensions;
+    extensions.emplace("io.test/ext", JsonValue(true));
+    explicit_caps.extensions = std::move(extensions);
+    opts.capabilities = explicit_caps;
+
+    opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    opts.url_elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    opts.sampling_handler = [](const CreateMessageRequestParams&) {
+        return CreateMessageResult{};
+    };
+    opts.roots_handler = [](const ListRootsRequestParams&) {
+        return ListRootsResult{};
+    };
+
+    auto caps = DeriveClientCapabilities(opts);
+    ASSERT_TRUE(caps.has_value());
+    ASSERT_TRUE(caps->elicitation.has_value());
+    ASSERT_TRUE(caps->elicitation->form.has_value());
+    EXPECT_TRUE((*caps->elicitation->form)["applyDefaults"].GetBool());
+    ASSERT_TRUE(caps->elicitation->url.has_value());
+    EXPECT_TRUE(caps->elicitation->url->IsObject());
+    EXPECT_TRUE(caps->elicitation->url->Empty());
+    EXPECT_TRUE(caps->sampling.has_value());
+    ASSERT_TRUE(caps->roots.has_value());
+    ASSERT_TRUE(caps->roots->list_changed.has_value());
+    EXPECT_FALSE(*caps->roots->list_changed);
+    ASSERT_TRUE(caps->experimental.has_value());
+    EXPECT_TRUE((*caps->experimental)["feature"].GetBool());
+    ASSERT_TRUE(caps->extensions.has_value());
+    EXPECT_EQ(caps->extensions->count("io.test/ext"), 1u);
+}
+
 TEST(McpClientTest, LegacyNegotiationUsesInitialize) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -59,6 +169,32 @@ TEST(McpClientTest, LegacyNegotiationUsesInitialize) {
     EXPECT_FALSE(client->IsModernProtocol());
     EXPECT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLegacyProtocolVersion));
     EXPECT_EQ(client->GetServerInfo().name, "test-server");
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, ClientOptionsElicitationHandlerDeclaredOnInitialize) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Legacy;
+    opts.initialization_timeout = std::chrono::seconds(5);
+    opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto caps = server->GetClientCapabilities();
+    ASSERT_NE(caps, nullptr);
+    ASSERT_TRUE(caps->elicitation.has_value());
+    ASSERT_TRUE(caps->elicitation->form.has_value());
+    EXPECT_TRUE(caps->elicitation->form->IsObject());
+    EXPECT_FALSE(caps->sampling.has_value());
+    EXPECT_FALSE(caps->roots.has_value());
+
     client->Close();
     server->Close();
 }
@@ -927,6 +1063,251 @@ TEST(McpClientTest, MrtrMaxRoundsDefaultTen) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, MrtrDefaultAutoFulfillsEmbeddedElicitation) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> round{0};
+    std::atomic<bool> saw_response{false};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&round, &saw_response](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (round.load() == 0) {
+                round.store(1);
+                InputRequiredResult ir;
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "What is your name?";
+                ir.input_requests["user_name"] =
+                    MakeInputRequestForElicitation(elicit_params);
+                ir.request_state = "st-default";
+                p.set_value(SerializeInputRequiredResult(ir));
+                return;
+            }
+            round.store(2);
+            auto* responses = req.params ? req.params->Find("inputResponses") : nullptr;
+            auto* entry = responses && responses->IsObject()
+                ? responses->Find("user_name") : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            auto* content = entry && entry->IsObject() ? entry->Find("content") : nullptr;
+            auto* name = content && content->IsObject() ? content->Find("name") : nullptr;
+            saw_response.store(action && action->IsString()
+                && action->GetString() == "accept"
+                && name && name->IsString() && name->GetString() == "Alice");
+            JsonValue result(JsonValue::object_tag);
+            result["structuredContent"] = JsonValue(JsonValue::object_tag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    std::atomic<int> handler_calls{0};
+    client->SetElicitationHandler([&handler_calls](const ElicitRequestParams&) {
+        handler_calls.fetch_add(1);
+        ElicitResult r;
+        r.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["name"] = JsonValue("Alice");
+        r.content = std::move(content);
+        return r;
+    });
+
+    auto result = client->CallTool("echo", JsonValue(JsonValue::object_tag));
+    EXPECT_EQ(handler_calls.load(), 1);
+    EXPECT_TRUE(saw_response.load());
+    EXPECT_EQ(round.load(), 2);
+    EXPECT_FALSE(result.input_required.has_value());
+    EXPECT_EQ(result.result_type, ResultType::Complete);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrUrlElicitationPropagatesHandlerAction) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> round{0};
+    std::atomic<bool> saw_decline{false};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&round, &saw_decline](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            if (round.load() == 0) {
+                round.store(1);
+                ElicitRequestParams params;
+                params.message = "Open the URL and approve access";
+                params.mode = "url";
+                params.url = "https://example.com/authorize";
+                InputRequiredResult ir;
+                ir.input_requests["consent"] =
+                    MakeInputRequestForElicitation(params);
+                p.set_value(SerializeInputRequiredResult(ir));
+                return;
+            }
+            round.store(2);
+            auto* responses = req.params ? req.params->Find("inputResponses") : nullptr;
+            auto* entry = responses && responses->IsObject()
+                ? responses->Find("consent") : nullptr;
+            auto* action = entry && entry->IsObject() ? entry->Find("action") : nullptr;
+            saw_decline.store(action && action->IsString() &&
+                action->GetString() == "decline");
+            JsonValue result(JsonValue::object_tag);
+            result["structuredContent"] = JsonValue(JsonValue::object_tag);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetUrlElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "decline";
+        return result;
+    });
+
+    auto result = client->CallTool("echo", JsonValue(JsonValue::object_tag));
+    EXPECT_TRUE(saw_decline.load());
+    EXPECT_EQ(round.load(), 2);
+    EXPECT_EQ(result.result_type, ResultType::Complete);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrUrlElicitationInvalidActionThrowsHandlerError) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> server_calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&server_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            server_calls.fetch_add(1);
+            ElicitRequestParams params;
+            params.message = "Open the URL and approve access";
+            params.mode = "url";
+            params.url = "https://example.com/authorize";
+            InputRequiredResult ir;
+            ir.input_requests["consent"] = MakeInputRequestForElicitation(params);
+            p.set_value(SerializeInputRequiredResult(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    const std::vector<std::string> actions{"maybe", ""};
+    std::atomic<size_t> handler_calls{0};
+    client->SetUrlElicitationHandler(
+        [&actions, &handler_calls](const ElicitRequestParams&) {
+            ElicitResult result;
+            result.action = actions[handler_calls.fetch_add(1) % actions.size()];
+            return result;
+        });
+
+    for (size_t i = 0; i < actions.size(); ++i) {
+        try {
+            client->CallTool("echo", JsonValue(JsonValue::object_tag));
+            FAIL();
+        } catch (const McpError& e) {
+            EXPECT_EQ(e.Code(), McpErrorCode::HandlerError);
+            EXPECT_NE(std::string(e.what()).find("invalid url elicitation action"),
+                std::string::npos);
+        }
+    }
+    EXPECT_EQ(server_calls.load(), 2);
+    EXPECT_EQ(handler_calls.load(), static_cast<size_t>(2));
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrDefaultWithoutHandlersReturnsInputRequired) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "What is your name?";
+            ir.input_requests["user_name"] =
+                MakeInputRequestForElicitation(elicit_params);
+            ir.request_state = "st-manual";
+            p.set_value(SerializeInputRequiredResult(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    CallToolResult result;
+    EXPECT_NO_THROW(result = client->CallTool(
+        "echo", JsonValue(JsonValue::object_tag)));
+    EXPECT_EQ(calls.load(), 1);
+    ASSERT_TRUE(result.input_required.has_value());
+    EXPECT_EQ(result.result_type, ResultType::InputRequired);
+    ASSERT_TRUE(result.input_required->request_state.has_value());
+    EXPECT_EQ(*result.input_required->request_state, "st-manual");
+    ASSERT_EQ(result.input_required->input_requests.size(), size_t{1});
+    EXPECT_EQ(result.input_required->input_requests.count("user_name"), size_t{1});
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, MrtrExplicitNulloptKeepsManualMode) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            InputRequiredResult ir;
+            ElicitRequestParams elicit_params;
+            elicit_params.message = "What is your name?";
+            ir.input_requests["user_name"] =
+                MakeInputRequestForElicitation(elicit_params);
+            p.set_value(SerializeInputRequiredResult(ir));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.input_required_config = std::nullopt;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    std::atomic<int> handler_calls{0};
+    client->SetElicitationHandler([&handler_calls](const ElicitRequestParams&) {
+        handler_calls.fetch_add(1);
+        return ElicitResult{};
+    });
+
+    CallToolResult result;
+    EXPECT_NO_THROW(result = client->CallTool(
+        "echo", JsonValue(JsonValue::object_tag)));
+    EXPECT_EQ(handler_calls.load(), 0);
+    EXPECT_EQ(calls.load(), 1);
+    ASSERT_TRUE(result.input_required.has_value());
+    EXPECT_EQ(result.result_type, ResultType::InputRequired);
+
+    client->Close();
+    server_handler->Close();
+}
+
 TEST(McpClientTest, ListToolsCachesAndInvalidatesOnListChanged) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
@@ -1201,6 +1582,72 @@ TEST(McpClientTest, CachePrivateEntryHitsInSameConnection) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, PrivateCachePartitionedByAuthContext) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<const char*> auth_context{"user-a"};
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, &auth_context](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            std::string text = std::string("content-") + auth_context.load();
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue(uri);
+            c["text"] = JsonValue(text);
+            arr.PushBack(std::move(c));
+            result["contents"] = JsonValue(std::move(arr));
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(60000));
+            hint["cacheScope"] = JsonValue("private");
+            result["cacheHint"] = std::move(hint);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.cache_auth_context = [&auth_context] {
+        return std::string(auth_context.load());
+    };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ReadResource("uri-a");
+    auto r2 = client->ReadResource("uri-a");
+    ASSERT_EQ(r1.contents.size(), 1u);
+    ASSERT_EQ(r2.contents.size(), 1u);
+    EXPECT_EQ(std::get<TextResourceContents>(r1.contents[0]).text,
+        "content-user-a");
+    EXPECT_EQ(std::get<TextResourceContents>(r2.contents[0]).text,
+        "content-user-a");
+    EXPECT_EQ(calls.load(), 1);
+
+    auth_context.store("user-b");
+    auto r3 = client->ReadResource("uri-a");
+    auto r4 = client->ReadResource("uri-a");
+    ASSERT_EQ(r3.contents.size(), 1u);
+    ASSERT_EQ(r4.contents.size(), 1u);
+    EXPECT_EQ(std::get<TextResourceContents>(r3.contents[0]).text,
+        "content-user-b");
+    EXPECT_EQ(std::get<TextResourceContents>(r4.contents[0]).text,
+        "content-user-b");
+    EXPECT_EQ(calls.load(), 2);
+
+    auth_context.store("user-a");
+    auto r5 = client->ReadResource("uri-a");
+    ASSERT_EQ(r5.contents.size(), 1u);
+    EXPECT_EQ(std::get<TextResourceContents>(r5.contents[0]).text,
+        "content-user-a");
+    EXPECT_EQ(calls.load(), 3);
+
+    client->Close();
+    server_handler->Close();
+}
+
 TEST(McpClientTest, CloseDropsPrivateCacheEntries) {
     auto pair_a = InMemoryTransport::CreatePair();
     auto server_a = std::make_shared<McpSessionHandler>(
@@ -1331,9 +1778,10 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
             result["serverInfo"] = SerializeImplementation(Implementation{"silent-server", "1.0"});
             p.set_value(std::move(result));
         });
+    auto held_response = std::make_shared<std::promise<JsonValue>>();
     server_handler->SetRequestHandler(methods::kSubscribe,
-        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            p.set_value(JsonValue(JsonValue::object_tag));
+        [held_response](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            *held_response = std::move(p);
         });
     server_handler->Start();
 
@@ -1351,10 +1799,58 @@ TEST(McpClientTest, SubscribeAsyncTimesOutWithoutAcknowledged) {
     server_handler->Close();
 }
 
-TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
+TEST(McpClientTest, SubscribeAsyncReturnsOnAcknowledgedWithoutResult) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
         std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto held_response = std::make_shared<std::promise<JsonValue>>();
+    std::weak_ptr<McpSessionHandler> weak_server = server_handler;
+    server_handler->SetRequestHandler(methods::kSubscribe,
+        [held_response, weak_server](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            *held_response = std::move(p);
+            std::string subscription_id;
+            if (req.meta) {
+                if (auto* v = req.meta->Find("io.modelcontextprotocol/subscriptionId");
+                    v && v->IsString()) {
+                    subscription_id = v->GetString();
+                }
+            }
+            JsonRpcNotification notif;
+            notif.method = std::string(notifications::kSubscriptionsAcknowledged);
+            notif.params = SerializeSubscriptionsAcknowledgedNotificationParams(
+                SubscriptionsAcknowledgedNotificationParams{});
+            JsonValue meta(JsonValue::object_tag);
+            meta["io.modelcontextprotocol/protocolVersion"] =
+                JsonValue(std::string(kLatestProtocolVersion));
+            meta["io.modelcontextprotocol/subscriptionId"] =
+                JsonValue(subscription_id);
+            notif.meta = std::move(meta);
+            if (auto server = weak_server.lock()) {
+                server->SendMessage(JsonRpcMessage{std::move(notif)});
+            }
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_TRUE(client->IsModernProtocol());
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_NO_THROW(client->SubscribeAsync(params));
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(3));
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
     std::promise<void> received;
     auto received_future = received.get_future();
     server_handler->SetNotificationHandler(notifications::kRootsListChanged,
@@ -1378,7 +1874,7 @@ TEST(McpClientTest, SendRootsListChangedAtOrAfterMinVersion) {
 
     auto pair2 = InMemoryTransport::CreatePair();
     auto server_handler2 = std::make_shared<McpSessionHandler>(
-        std::move(pair2.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+        std::move(pair2.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
     std::promise<void> received2;
     auto received2_future = received2.get_future();
     server_handler2->SetNotificationHandler(notifications::kRootsListChanged,
@@ -1439,6 +1935,41 @@ TEST(McpClientTest, SendRootsListChangedRejectedBelowMinVersion) {
                   std::string::npos);
     }
     EXPECT_TRUE(threw);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SendRootsListChangedRejectedForModernVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    std::promise<void> received;
+    auto received_future = received.get_future();
+    server_handler->SetNotificationHandler(notifications::kRootsListChanged,
+        [&received](const JsonRpcNotification&) {
+            received.set_value();
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLatestProtocolVersion));
+
+    bool threw = false;
+    try {
+        client->SendRootsListChanged();
+    } catch (const McpError& e) {
+        threw = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::ProtocolViolation);
+        EXPECT_NE(std::string(e.ErrorMessage()).find("2026-07-28"),
+                  std::string::npos);
+    }
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(received_future.wait_for(std::chrono::milliseconds(200)),
+              std::future_status::timeout);
 
     client->Close();
     server_handler->Close();
@@ -2049,10 +2580,13 @@ TEST(McpClientTest, UrlElicitationInvokesHandlerAndSendsComplete) {
         [&handler_called](const ElicitRequestParams& params) {
             handler_called.store(true);
             EXPECT_EQ(params.mode, "url");
-            ASSERT_TRUE(params.url.has_value());
+            EXPECT_TRUE(params.url.has_value());
             EXPECT_EQ(*params.url, "https://example.com/authorize");
-            ASSERT_TRUE(params.elicitation_id.has_value());
+            EXPECT_TRUE(params.elicitation_id.has_value());
             EXPECT_EQ(*params.elicitation_id, "elicit-1");
+            ElicitResult result;
+            result.action = "accept";
+            return result;
         });
 
     JsonValue elicit_params(JsonValue::object_tag);
@@ -2075,6 +2609,104 @@ TEST(McpClientTest, UrlElicitationInvokesHandlerAndSendsComplete) {
     auto* elicitation_id = complete_params.Find("elicitationId");
     ASSERT_NE(elicitation_id, nullptr);
     EXPECT_EQ(elicitation_id->GetString(), "elicit-1");
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, UrlElicitationHandlerDeclineReturnsDecline) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+
+    std::promise<JsonValue> complete_received;
+    auto complete_future = complete_received.get_future();
+    server_handler->SetNotificationHandler(notifications::kElicitationComplete,
+        [&complete_received](const JsonRpcNotification& notif) {
+            complete_received.set_value(
+                notif.params ? *notif.params : JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetUrlElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "decline";
+        return result;
+    });
+
+    JsonValue elicit_params(JsonValue::object_tag);
+    elicit_params["message"] = JsonValue("Open the URL and approve access");
+    elicit_params["mode"] = JsonValue("url");
+    elicit_params["url"] = JsonValue("https://example.com/authorize");
+    elicit_params["elicitationId"] = JsonValue("elicit-decline");
+    auto response = server_handler->SendRequest(
+        methods::kElicit, std::move(elicit_params), RequestMeta{},
+        std::chrono::seconds(5)).get();
+
+    auto* action = response.Find("action");
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->GetString(), "decline");
+
+    ASSERT_EQ(complete_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    JsonValue complete_params = complete_future.get();
+    auto* elicitation_id = complete_params.Find("elicitationId");
+    ASSERT_NE(elicitation_id, nullptr);
+    EXPECT_EQ(elicitation_id->GetString(), "elicit-decline");
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, UrlElicitationHandlerCancelReturnsCancel) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+
+    std::promise<JsonValue> complete_received;
+    auto complete_future = complete_received.get_future();
+    server_handler->SetNotificationHandler(notifications::kElicitationComplete,
+        [&complete_received](const JsonRpcNotification& notif) {
+            complete_received.set_value(
+                notif.params ? *notif.params : JsonValue(JsonValue::object_tag));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string("2025-11-25");
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    client->SetUrlElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "cancel";
+        return result;
+    });
+
+    JsonValue elicit_params(JsonValue::object_tag);
+    elicit_params["message"] = JsonValue("Open the URL and approve access");
+    elicit_params["mode"] = JsonValue("url");
+    elicit_params["url"] = JsonValue("https://example.com/authorize");
+    elicit_params["elicitationId"] = JsonValue("elicit-cancel");
+    auto response = server_handler->SendRequest(
+        methods::kElicit, std::move(elicit_params), RequestMeta{},
+        std::chrono::seconds(5)).get();
+
+    auto* action = response.Find("action");
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->GetString(), "cancel");
+
+    ASSERT_EQ(complete_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    JsonValue complete_params = complete_future.get();
+    auto* elicitation_id = complete_params.Find("elicitationId");
+    ASSERT_NE(elicitation_id, nullptr);
+    EXPECT_EQ(elicitation_id->GetString(), "elicit-cancel");
 
     client->Close();
     server_handler->Close();
@@ -2431,7 +3063,7 @@ TEST(McpClientTest, UndeclaredExtensionReceivesTaskThrows) {
 TEST(McpClientTest, ListSkillsRoundTrip) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     std::atomic<int> calls{0};
     server_handler->SetRequestHandler(methods::kListSkills,
         [&calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -2464,7 +3096,7 @@ TEST(McpClientTest, ListSkillsRoundTrip) {
 
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
-    opts.pin_protocol_version = std::string("2025-11-25");
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
@@ -2494,7 +3126,7 @@ TEST(McpClientTest, ListSkillsRoundTrip) {
 TEST(McpClientTest, SkillDirectFetchWithoutList) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     std::atomic<int> get_calls{0};
     std::atomic<int> dir_calls{0};
     std::atomic<int> res_calls{0};
@@ -2559,7 +3191,7 @@ TEST(McpClientTest, SkillDirectFetchWithoutList) {
 
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
-    opts.pin_protocol_version = std::string("2025-11-25");
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
@@ -2585,7 +3217,7 @@ TEST(McpClientTest, SkillDirectFetchWithoutList) {
 TEST(McpClientTest, TtlExpiryRefetch) {
     auto pair = InMemoryTransport::CreatePair();
     auto server_handler = std::make_shared<McpSessionHandler>(
-        std::move(pair.server), MakeWireCodec(std::string("2025-11-25")));
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
     std::atomic<int> calls{0};
     server_handler->SetRequestHandler(methods::kGetSkill,
         [&calls](const JsonRpcRequest& req, std::promise<JsonValue> p) {
@@ -2606,7 +3238,7 @@ TEST(McpClientTest, TtlExpiryRefetch) {
 
     ClientOptions opts;
     opts.connect_mode = ConnectMode::Pin;
-    opts.pin_protocol_version = std::string("2025-11-25");
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
     opts.enable_skills_extension = true;
     auto client = McpClient::Create(std::move(pair.client), opts);
 
@@ -3084,6 +3716,49 @@ TEST(McpClientTest, ModernDiscoverMetaUnaffected) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, ClientOptionsElicitationHandlerDeclaredInDiscoverMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    std::optional<JsonValue> captured_meta;
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server_handler->SetRequestHandler(methods::kDiscover,
+        [&captured_meta](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            captured_meta = req.meta;
+            JsonValue result(JsonValue::object_tag);
+            JsonValue supported(JsonValue::array_tag);
+            supported.PushBack(JsonValue(std::string(kLatestProtocolVersion)));
+            result["supportedVersions"] = std::move(supported);
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] =
+                SerializeImplementation(Implementation{"modern-server", "1.0"});
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Auto;
+    opts.discover_probe_timeout = std::chrono::seconds(5);
+    opts.elicitation_handler = [](const ElicitRequestParams&) {
+        return ElicitResult{};
+    };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    EXPECT_TRUE(client->IsModernProtocol());
+    ASSERT_TRUE(captured_meta.has_value());
+    ASSERT_TRUE(captured_meta->IsObject());
+    auto* cc = captured_meta->Find("io.modelcontextprotocol/clientCapabilities");
+    ASSERT_NE(cc, nullptr);
+    auto caps = DeserializeClientCapabilities(*cc);
+    ASSERT_TRUE(caps.elicitation.has_value());
+    ASSERT_TRUE(caps.elicitation->form.has_value());
+    EXPECT_TRUE(caps.elicitation->form->IsObject());
+    EXPECT_FALSE(caps.sampling.has_value());
+    EXPECT_FALSE(caps.roots.has_value());
+
+    client->Close();
+    server_handler->Close();
+}
+
 struct PingMetaRecorder : public ITransport {
     explicit PingMetaRecorder(std::shared_ptr<ITransport> inner)
         : inner_(std::move(inner)) {}
@@ -3465,4 +4140,415 @@ TEST(McpClientTest, EtagDisabledWritesNoEtag) {
     auto back = DeserializeCacheableResult(cj);
     ASSERT_TRUE(back.etag.has_value());
     EXPECT_EQ(*back.etag, "abc");
+}
+
+namespace {
+
+class ObservableTransport : public TransportBase {
+public:
+    void SendMessageAsync(JsonRpcMessage) override {}
+
+    void Close() override {
+        SetDisconnected();
+        channel_->Close();
+    }
+
+    void RaiseError(std::string_view message) { NotifyError(message); }
+
+    void RaiseClose() { SetDisconnected(); }
+};
+
+} // anonymous namespace
+
+TEST(McpClientTest, TransportErrorAndCloseAreObservable) {
+    auto transport = std::make_shared<ObservableTransport>();
+    std::atomic<int> errors{0};
+    std::atomic<int> closes{0};
+    std::string last_error;
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.on_transport_error = [&](std::string_view message) {
+        last_error = std::string(message);
+        errors.fetch_add(1);
+    };
+    opts.on_transport_close = [&]() { closes.fetch_add(1); };
+
+    auto client = McpClient::Create(transport, opts);
+    ASSERT_NE(client, nullptr);
+
+    transport->RaiseError("stdio write failed");
+    EXPECT_EQ(errors.load(), 1);
+    EXPECT_EQ(last_error, "stdio write failed");
+
+    transport->RaiseClose();
+    EXPECT_EQ(closes.load(), 1);
+
+    client->Close();
+}
+
+TEST(McpClientTest, ClientEtagOptionGatesConditionalRequests) {
+    SetEtagCacheEnabled(true);
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> calls{0};
+    std::atomic<bool> saw_conditional{false};
+    server_handler->SetRequestHandler(methods::kListTools,
+        [&calls, &saw_conditional](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            if (req.meta && req.meta->IsObject()) {
+                if (auto* v = req.meta->Find("ifNoneMatch"); v && v->IsString())
+                    saw_conditional.store(true);
+            }
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue t(JsonValue::object_tag);
+            t["name"] = JsonValue("tool-x");
+            t["inputSchema"] = JsonValue(JsonValue::object_tag);
+            arr.PushBack(std::move(t));
+            result["tools"] = JsonValue(std::move(arr));
+            result["etag"] = JsonValue("v1");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.enable_etag_cache = false;
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    auto r1 = client->ListTools();
+    ASSERT_EQ(r1.tools.size(), 1u);
+    auto r2 = client->ListTools();
+    ASSERT_EQ(r2.tools.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_FALSE(saw_conditional.load());
+
+    client->Close();
+    server_handler->Close();
+    SetEtagCacheEnabled(false);
+}
+
+namespace {
+
+class CustomMethodCodec : public WireCodec {
+public:
+    explicit CustomMethodCodec(std::string_view version)
+        : inner_(MakeWireCodec(version)) {}
+
+    bool HasRequestMethod(std::string_view method) const override {
+        return IsCustom(method) || inner_->HasRequestMethod(method);
+    }
+
+    bool HasNotificationMethod(std::string_view method) const override {
+        return IsCustom(method) || inner_->HasNotificationMethod(method);
+    }
+
+    WireValidation ValidateRequest(
+        std::string_view method, const JsonValue& raw) const override {
+        return IsCustom(method)
+            ? WireValidation::Ok
+            : inner_->ValidateRequest(method, raw);
+    }
+
+    WireValidation ValidateResponse(
+        std::string_view method, const JsonValue& raw) const override {
+        return inner_->ValidateResponse(method, raw);
+    }
+
+    WireValidation ValidateNotification(
+        std::string_view method, const JsonValue& raw) const override {
+        return IsCustom(method)
+            ? WireValidation::Ok
+            : inner_->ValidateNotification(method, raw);
+    }
+
+    void StampOutgoingRequest(
+        JsonValue& body, const RequestMeta& meta) const override {
+        inner_->StampOutgoingRequest(body, meta);
+    }
+
+    JsonValue EncodeResult(
+        std::string_view method, const JsonValue& result) const override {
+        return inner_->EncodeResult(method, result);
+    }
+
+    int32_t EncodeErrorCode(int32_t code) const override {
+        return inner_->EncodeErrorCode(code);
+    }
+
+    std::string_view Era() const override {
+        return inner_->Era();
+    }
+
+private:
+    static bool IsCustom(std::string_view method) {
+        return method == "test/custom" || method == "test/hang" ||
+               method == "test/notify";
+    }
+
+    std::unique_ptr<WireCodec> inner_;
+};
+
+RequestHandler LegacyInitializeHandler() {
+    return [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+        JsonValue result(JsonValue::object_tag);
+        result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+        result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+        result["serverInfo"] =
+            SerializeImplementation(Implementation{"control-server", "1.0"});
+        p.set_value(std::move(result));
+    };
+}
+
+std::shared_ptr<McpSessionHandler> MakeControlServer(
+    std::shared_ptr<ITransport> transport)
+{
+    auto handler = std::make_shared<McpSessionHandler>(
+        std::move(transport),
+        std::make_unique<CustomMethodCodec>(kLegacyProtocolVersion));
+    handler->SetRequestHandler(methods::kInitialize, LegacyInitializeHandler());
+    return handler;
+}
+
+std::unique_ptr<McpClient> MakeLegacyControlClient(
+    std::shared_ptr<ITransport> transport)
+{
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Legacy;
+    opts.initialization_timeout = std::chrono::seconds(5);
+    return McpClient::Create(std::move(transport), opts);
+}
+
+} // namespace
+
+TEST(McpClientTest, SendRequestRoundTrip) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+        std::atomic<bool> handled{false};
+        server_handler->SetRequestHandler("test/custom",
+            [&handled](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                handled.store(true);
+                JsonValue result(JsonValue::object_tag);
+                if (req.params && req.params->IsObject()) {
+                    if (auto* value = req.params->Find("value"))
+                        result["echo"] = *value;
+                }
+                p.set_value(std::move(result));
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        JsonValue params(JsonValue::object_tag);
+        params["value"] = JsonValue("round-trip");
+        auto future = client->SendRequest("test/custom", std::move(params));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+                  std::future_status::ready);
+        auto result = future.get();
+        EXPECT_TRUE(handled.load());
+        ASSERT_TRUE(result.IsObject());
+        ASSERT_NE(result.Find("echo"), nullptr);
+        EXPECT_EQ(result["echo"].GetString(), "round-trip");
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, SendNotificationReachesServer) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool received = false;
+        JsonValue captured;
+        server_handler->SetNotificationHandler("test/notify",
+            [&](const JsonRpcNotification& notif) {
+                std::lock_guard<std::mutex> lock(mutex);
+                received = true;
+                if (notif.params) captured = *notif.params;
+                cv.notify_all();
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        JsonValue params(JsonValue::object_tag);
+        params["payload"] = JsonValue(42);
+        client->SendNotification("test/notify", std::move(params));
+
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(2),
+                                [&received] { return received; }));
+        ASSERT_TRUE(captured.IsObject());
+        ASSERT_NE(captured.Find("payload"), nullptr);
+        EXPECT_EQ(captured["payload"].GetInt(), 42);
+        lock.unlock();
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, CancelRequestSendsNotification) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+
+        std::mutex pending_mutex;
+        std::condition_variable pending_cv;
+        std::optional<RequestId> pending_id;
+        std::shared_ptr<std::promise<JsonValue>> pending_promise;
+        server_handler->SetRequestHandler("test/hang",
+            [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                std::lock_guard<std::mutex> lock(pending_mutex);
+                pending_id = req.id;
+                pending_promise =
+                    std::make_shared<std::promise<JsonValue>>(std::move(p));
+                pending_cv.notify_all();
+            });
+
+        std::mutex cancel_mutex;
+        std::condition_variable cancel_cv;
+        std::vector<RequestId> cancel_ids;
+        std::vector<std::string> cancel_reasons;
+        server_handler->SetOnNotificationCallback(
+            [&](const JsonRpcNotification& notif) {
+                if (notif.method != notifications::kCancelled) return;
+                if (!notif.params || !notif.params->IsObject()) return;
+                auto* id = notif.params->Find("requestId");
+                auto* reason = notif.params->Find("reason");
+                std::lock_guard<std::mutex> lock(cancel_mutex);
+                if (id && id->IsInt()) {
+                    cancel_ids.push_back(RequestId{id->GetInt()});
+                } else if (id && id->IsString()) {
+                    cancel_ids.push_back(RequestId{id->GetString()});
+                }
+                cancel_reasons.push_back(
+                    reason && reason->IsString() ? reason->GetString()
+                                                 : std::string());
+                cancel_cv.notify_all();
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        auto future =
+            client->SendRequest("test/hang", JsonValue(JsonValue::object_tag));
+
+        RequestId captured;
+        {
+            std::unique_lock<std::mutex> lock(pending_mutex);
+            ASSERT_TRUE(pending_cv.wait_for(lock, std::chrono::seconds(2),
+                [&pending_id] { return pending_id.has_value(); }));
+            captured = *pending_id;
+        }
+        ASSERT_TRUE(std::holds_alternative<int64_t>(captured));
+
+        client->CancelRequest(captured, "user aborted");
+        {
+            std::unique_lock<std::mutex> lock(cancel_mutex);
+            ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
+                [&cancel_ids] { return !cancel_ids.empty(); }));
+            ASSERT_TRUE(std::holds_alternative<int64_t>(cancel_ids[0]));
+            EXPECT_EQ(std::get<int64_t>(cancel_ids[0]),
+                      std::get<int64_t>(captured));
+            EXPECT_EQ(cancel_reasons[0], "user aborted");
+        }
+
+        client->CancelRequest(
+            RequestId{std::string("string-request-id")}, "typed");
+        {
+            std::unique_lock<std::mutex> lock(cancel_mutex);
+            ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
+                [&cancel_ids] { return cancel_ids.size() == 2; }));
+            ASSERT_TRUE(std::holds_alternative<std::string>(cancel_ids[1]));
+            EXPECT_EQ(std::get<std::string>(cancel_ids[1]),
+                      "string-request-id");
+            EXPECT_EQ(cancel_reasons[1], "typed");
+        }
+
+        JsonValue error(JsonValue::object_tag);
+        error["code"] =
+            JsonValue(static_cast<int64_t>(McpErrorCode::RequestCancelled));
+        error["message"] = JsonValue("cancelled by test");
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            ASSERT_NE(pending_promise, nullptr);
+            pending_promise->set_value(std::move(error));
+        }
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+                  std::future_status::ready);
+        auto result = future.get();
+        ASSERT_TRUE(result.IsObject());
+        ASSERT_NE(result.Find("message"), nullptr);
+        EXPECT_EQ(result["message"].GetString(), "cancelled by test");
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, SetLoggingLevelLegacySendsRequest) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        ServerOptions sopts;
+        sopts.server_info = Implementation{"logging-server", "1.0"};
+        auto server = McpServer::Create(std::move(pair.server), sopts);
+
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::vector<LoggingMessageNotificationParams> messages;
+
+        ClientOptions opts;
+        opts.connect_mode = ConnectMode::Legacy;
+        opts.initialization_timeout = std::chrono::seconds(5);
+        auto client = McpClient::Create(std::move(pair.client), opts);
+        client->SetLoggingHandler(
+            [&](const LoggingMessageNotificationParams& message) {
+                std::lock_guard<std::mutex> lock(mutex);
+                messages.push_back(message);
+                cv.notify_all();
+            });
+
+        EXPECT_NO_THROW(client->SetLoggingLevel(LoggingLevel::Error));
+        server->SendLoggingMessage(LoggingLevel::Info, "below-threshold");
+        server->SendLoggingMessage(LoggingLevel::Critical, "at-threshold");
+
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(2),
+                                [&messages] { return !messages.empty(); }));
+        ASSERT_EQ(messages.size(), 1u);
+        EXPECT_EQ(messages[0].level, LoggingLevel::Critical);
+        ASSERT_TRUE(messages[0].data.IsString());
+        EXPECT_EQ(messages[0].data.GetString(), "at-threshold");
+        lock.unlock();
+
+        client->Close();
+        server->Close();
+    });
+}
+
+TEST(McpClientTest, SetLoggingLevelModernRejected) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        ClientOptions opts;
+        opts.connect_mode = ConnectMode::Pin;
+        opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+        auto client = McpClient::Create(std::move(pair.client), opts);
+
+        bool rejected = false;
+        try {
+            client->SetLoggingLevel(LoggingLevel::Info);
+        } catch (const McpError& e) {
+            rejected = true;
+            EXPECT_EQ(e.Code(), McpErrorCode::ProtocolViolation);
+        }
+        EXPECT_TRUE(rejected);
+
+        client->Close();
+    });
 }

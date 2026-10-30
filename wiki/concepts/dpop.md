@@ -3,7 +3,7 @@ type: Concept
 title: DPoP 证明绑定令牌
 description: DPoP（RFC 9449 / SEP-1932 草案）在本 SDK 的落点：dpop 原语的 JWS 签发与验签链（htm/htu/ath/nonce/iat 窗口 + jti 重放表）、Streamable HTTP 服务端 Bearer 链上的 DPoP 校验门、OAuthClientProvider 发送侧开关与 nonce 接口、传输层逐请求 proof 头注入口与 use_dpop_nonce 单次重试、OpenSSL 可选依赖缺失时的抛错降级语义。
 tags: [dpop, oauth, 安全, sep-1932, rfc9449, 传输, openssl]
-timestamp: 2026-10-18T13:48:17+08:00
+timestamp: 2026-10-29T22:11:23+08:00
 resource: src/ext/DPoP.cpp
 ---
 
@@ -15,9 +15,8 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 
 ## 开关与依赖
 
-- 服务端门：`StreamableHttpServerOptions::bearer_auth->enable_dpop`（默认 false，[StreamableHttpServerTransport.hpp:74](../../include/mcp/transport/StreamableHttpServerTransport.hpp)）——**唯一实际生效的门**，且须先配置 `bearer_auth`。
-- `ServerOptions::enable_dpop`（[ServerOptions.hpp:90](../../include/mcp/server/ServerOptions.hpp)）已声明但 `src/server` 无读取点，McpServer 不消费、也不透传给传输构造，置 `true` 无任何效果；有效门控见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)。
-- 客户端门：`OAuthClientOptions::enable_dpop`（默认 false，[OAuthClientProvider.hpp:34](../../include/mcp/client/auth/OAuthClientProvider.hpp)），provider 构造期拷贝取值；两端开关互不影响，需各自显式开启。
+- 服务端门：`StreamableHttpServerOptions::BearerAuthConfig::enable_dpop`（默认 false，[StreamableHttpServerTransport.hpp:74](../../include/mcp/transport/StreamableHttpServerTransport.hpp)）——**唯一实际生效的门**，且须先配置 `bearer_auth`；`ServerOptions` 已无 DPoP 字段，服务端开关只在传输配置上。
+- 客户端门：`OAuthClientOptions::enable_dpop`（默认 false，[OAuthClientProvider.hpp:38](../../include/mcp/client/auth/OAuthClientProvider.hpp)），provider 构造期拷贝取值；两端开关互不影响，需各自显式开启。
 - **OpenSSL 可选依赖**：本模块严格跟随编译宏 `MCP_HAVE_OPENSSL`——该宏未定义时整条密码学路径不可用，`GenerateKey`/`CreateProof`/`VerifyProof` 三个函数**一律抛** `McpError(InternalError, "DPoP requires OpenSSL EC support, which is not available in this build")`（[DPoP.cpp:475-495](../../src/ext/DPoP.cpp)）。`MCP_HAVE_OPENSSL` 由 CMake 开关 `MCP_WITH_OPENSSL`（取值 `AUTO`/`ON`/`OFF`，默认 `AUTO`）与 `find_package(OpenSSL)` 结果共同决定，并经单一 INTERFACE 目标 `mcp-openssl` 统一施加到 `mcp-transport`/`mcp-client`/`mcp-ext`（`mcp-ext` 即本模块所在目标）；构建系统不再用 `__has_include` 嗅探 ec/ecdsa/evp/obj_mac/rand 头来推断 OpenSSL 可用——头可见不等于宏已定义、更不等于已链接。
   - 服务端在 `AuthorizeRequest` 内用 `try/catch` 包住 `VerifyProof`，异常按「校验失败」处理回 401，不中断 HTTP 服务。
   - 客户端 `BuildDPoPProof` 无 catch，无 OpenSSL 构建下开启开关会把异常抛给调用方（授权流直接失败）。

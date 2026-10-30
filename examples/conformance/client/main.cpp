@@ -143,6 +143,8 @@ std::unique_ptr<McpClient> ConnectClient(
         ClientOptions::InputRequiredConfig mrtr;
         mrtr.auto_fulfill = true;
         options.input_required_config = mrtr;
+    } else {
+        options.input_required_config = std::nullopt;
     }
     auto client = McpClient::Create(transport, options);
     std::cout << "Successfully connected to MCP server (protocol "

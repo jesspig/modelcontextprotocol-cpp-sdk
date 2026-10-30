@@ -10,6 +10,40 @@
 
 namespace mcp::ext {
 
+namespace {
+
+std::string RedactedWebhookTarget(std::string_view webhook_url) {
+    auto scheme_end = webhook_url.find("://");
+    if (scheme_end == std::string_view::npos) return "<redacted-webhook>";
+    auto rest = webhook_url.substr(scheme_end + 3);
+    auto authority_end = rest.find_first_of("/?#");
+    std::string authority(rest.substr(0, authority_end));
+    auto at = authority.rfind('@');
+    if (at != std::string::npos) authority = authority.substr(at + 1);
+    if (authority.empty()) return "<redacted-webhook>";
+    return std::string(webhook_url.substr(0, scheme_end + 3)) + authority + "/***";
+}
+
+std::string StripWebhookSecrets(std::string text, std::string_view webhook_url) {
+    if (webhook_url.empty()) return text;
+    std::string redacted = RedactedWebhookTarget(webhook_url);
+    std::string out;
+    size_t pos = 0;
+    for (;;) {
+        auto found = text.find(webhook_url, pos);
+        if (found == std::string::npos) {
+            out.append(text, pos, std::string::npos);
+            break;
+        }
+        out.append(text, pos, found - pos);
+        out += redacted;
+        pos = found + webhook_url.size();
+    }
+    return out;
+}
+
+} // anonymous namespace
+
 void TriggerRegistry::Register(const std::string& id,
                                std::vector<std::string> types,
                                const std::string& webhook_url) {
@@ -93,7 +127,9 @@ void PostTriggerWebhook(const std::string& webhook_url,
             last_error = e.what();
         }
     }
-    MCP_LOG(Warning, "trigger webhook POST failed: " + webhook_url + ": " + last_error);
+    MCP_LOG(Warning, "trigger webhook POST failed: " +
+        RedactedWebhookTarget(webhook_url) + ": " +
+        StripWebhookSecrets(last_error, webhook_url));
 }
 
 } // namespace mcp::ext

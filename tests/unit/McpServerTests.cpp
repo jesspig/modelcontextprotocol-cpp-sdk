@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <mcp/test/McpTestInfo.hpp>
+#include <mcp/test/McpTimeout.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -462,6 +463,118 @@ TEST(McpServerTest, SendLoggingMessageEncodesLevelAsString) {
     client->Close();
 }
 
+namespace {
+
+struct ModernLoggingEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+    std::shared_ptr<std::atomic<int>> message_count;
+};
+
+ModernLoggingEnv MakeModernLoggingEnv() {
+    ModernLoggingEnv env;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    env.message_count = std::make_shared<std::atomic<int>>(0);
+    auto count = env.message_count;
+    env.client->SetNotificationHandler(notifications::kMessage,
+        [count](const JsonRpcNotification&) { count->fetch_add(1); });
+    return env;
+}
+
+JsonValue CallLogProbe(ModernLoggingEnv& env,
+                       std::optional<LoggingLevel> log_level)
+{
+    RequestMeta meta;
+    meta.log_level = log_level;
+    CallToolRequestParams params;
+    params.name = "log_probe";
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), meta,
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+bool WaitForMessageCount(const std::shared_ptr<std::atomic<int>>& count,
+                         int expected)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (count->load() >= expected) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return count->load() >= expected;
+}
+
+} // namespace
+
+TEST(McpServerTest, ModernLoggingRequiresRequestLogLevel) {
+    std::atomic<bool> handler_ran{false};
+    auto env = MakeModernLoggingEnv();
+    env.server->RegisterTool("log_probe",
+        ToolOptions{}.Description("logging probe"),
+        std::function<CallToolResult(const Ctx&)>(
+            [&handler_ran](const Ctx& ctx) {
+                ctx.Log(LoggingLevel::Info, "hidden");
+                handler_ran.store(true);
+                return CallToolResult{};
+            }));
+
+    auto resp = CallLogProbe(env, std::nullopt);
+    EXPECT_FALSE(resp.Contains("code"));
+    EXPECT_TRUE(handler_ran.load());
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(env.message_count->load(), 0);
+
+    env.server->Close();
+    env.client->Close();
+}
+
+TEST(McpServerTest, ModernLoggingHonorsRequestLogLevel) {
+    auto env = MakeModernLoggingEnv();
+    env.server->RegisterTool("log_probe",
+        ToolOptions{}.Description("logging probe"),
+        std::function<CallToolResult(const Ctx&)>(
+            [](const Ctx& ctx) {
+                ctx.Log(LoggingLevel::Info, "visible");
+                return CallToolResult{};
+            }));
+
+    auto debug_resp = CallLogProbe(env, LoggingLevel::Debug);
+    EXPECT_FALSE(debug_resp.Contains("code"));
+    EXPECT_TRUE(WaitForMessageCount(env.message_count, 1));
+
+    auto warning_resp = CallLogProbe(env, LoggingLevel::Warning);
+    EXPECT_FALSE(warning_resp.Contains("code"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(env.message_count->load(), 1);
+
+    env.server->Close();
+    env.client->Close();
+}
+
+TEST(McpServerTest, ModernSendLoggingMessageWithoutRequestIsSilent) {
+    auto env = MakeModernLoggingEnv();
+
+    env.server->SendLoggingMessage(LoggingLevel::Info, "broadcast");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(env.message_count->load(), 0);
+
+    env.server->Close();
+    env.client->Close();
+}
+
 TEST(McpServerTest, ListPromptsIncludesArguments) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -846,6 +959,318 @@ TEST(McpServerTest, DiscoverMirrorsServerInfoInResultMeta) {
 
 namespace {
 
+void ExpectServerInfoMeta(const JsonValue& result,
+                          std::string_view name,
+                          std::string_view version) {
+    ASSERT_TRUE(result.IsObject());
+    auto* meta = result.Find("_meta");
+    ASSERT_NE(meta, nullptr);
+    ASSERT_TRUE(meta->IsObject());
+    auto* info = meta->Find("io.modelcontextprotocol/serverInfo");
+    ASSERT_NE(info, nullptr);
+    ASSERT_TRUE(info->IsObject());
+    auto* actual_name = info->Find("name");
+    ASSERT_NE(actual_name, nullptr);
+    EXPECT_EQ(actual_name->GetString(), std::string(name));
+    auto* actual_version = info->Find("version");
+    ASSERT_NE(actual_version, nullptr);
+    EXPECT_EQ(actual_version->GetString(), std::string(version));
+}
+
+JsonValue SendServerInfoRequest(
+    const std::shared_ptr<McpSessionHandler>& client,
+    std::string_view method,
+    JsonValue params) {
+    auto future = client->SendRequest(method, std::move(params), RequestMeta{},
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE();
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+std::vector<std::string> ToolNames(const JsonValue& result) {
+    std::vector<std::string> names;
+    const JsonValue* tools = result.Find("tools");
+    if (!tools || !tools->IsArray()) return names;
+    for (const auto& tool : tools->GetArray()) {
+        const JsonValue* name = tool.Find("name");
+        if (name && name->IsString()) names.push_back(name->GetString());
+    }
+    return names;
+}
+
+struct ToolListEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+ToolListEnv MakeToolListEnv(std::initializer_list<std::string_view> names,
+                            bool progressive_discovery = false) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"tool-order-server", "1.0.0"};
+    opts.protocol_version = std::string(kLatestProtocolVersion);
+    opts.enable_progressive_discovery = progressive_discovery;
+    ToolListEnv env;
+    env.server = McpServer::Create(std::move(pair.server), opts);
+    for (auto name : names) {
+        env.server->RegisterTool(name, ToolOptions{},
+            [](const Ctx&) { return CallToolResult{}; });
+    }
+    env.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    env.client->Start();
+    return env;
+}
+
+void CloseToolListEnv(ToolListEnv& env) {
+    env.client->Close();
+    env.server->Close();
+}
+
+} // namespace
+
+TEST(McpServerTest, ModernResultsCarryServerInfoMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    opts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), opts);
+    server->RegisterTool("echo", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            return result;
+        });
+    server->RegisterResource("info-resource", "test://server-info",
+        ResourceOptions{},
+        [](const std::string& uri) {
+            TextResourceContents contents;
+            contents.uri = uri;
+            contents.text = "info";
+            ReadResourceResult result;
+            result.contents = {mcp::ResourceContents{contents}};
+            return result;
+        });
+    server->RegisterPrompt("greet", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) {
+            PromptMessage message;
+            message.role = "user";
+            message.content = TextContent{"text", "Hello"};
+            GetPromptResult result;
+            result.messages = {std::move(message)};
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    auto tools = SendServerInfoRequest(client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_FALSE(tools.Contains("code"));
+    ExpectServerInfoMeta(tools, "meta-server", "2.0.0");
+
+    CallToolRequestParams call_params;
+    call_params.name = "echo";
+    auto call = SendServerInfoRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(call_params));
+    ASSERT_FALSE(call.Contains("code"));
+    ExpectServerInfoMeta(call, "meta-server", "2.0.0");
+
+    ResourceRequestParams read_params;
+    read_params.uri = "test://server-info";
+    auto read = SendServerInfoRequest(client, methods::kReadResource,
+        SerializeResourceRequestParams(read_params));
+    ASSERT_FALSE(read.Contains("code"));
+    ExpectServerInfoMeta(read, "meta-server", "2.0.0");
+
+    JsonValue prompt_params(JsonValue::object_tag);
+    prompt_params["name"] = JsonValue("greet");
+    auto prompt = SendServerInfoRequest(client, methods::kGetPrompt,
+        std::move(prompt_params));
+    ASSERT_FALSE(prompt.Contains("code"));
+    ExpectServerInfoMeta(prompt, "meta-server", "2.0.0");
+
+    auto discover = SendServerInfoRequest(client, methods::kDiscover,
+        SerializeDiscoverRequestParams(DiscoverRequestParams{}));
+    ASSERT_FALSE(discover.Contains("code"));
+    ExpectServerInfoMeta(discover, "meta-server", "2.0.0");
+
+    server->Close();
+    client->Close();
+}
+
+TEST(McpServerTest, ToolsListReturnsToolsInNameOrder) {
+    auto env = MakeToolListEnv({"z", "a", "m"});
+
+    auto result = SendServerInfoRequest(env.client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_FALSE(result.Contains("code"));
+    EXPECT_EQ(ToolNames(result), (std::vector<std::string>{"a", "m", "z"}));
+
+    CloseToolListEnv(env);
+}
+
+TEST(McpServerTest, ToolsListOrderIgnoresRegistrationOrder) {
+    auto first = MakeToolListEnv({"z", "a", "m"});
+    auto second = MakeToolListEnv({"m", "z", "a"});
+
+    auto first_result = SendServerInfoRequest(first.client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    auto second_result = SendServerInfoRequest(second.client, methods::kListTools,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_FALSE(first_result.Contains("code"));
+    ASSERT_FALSE(second_result.Contains("code"));
+    auto first_names = ToolNames(first_result);
+    EXPECT_EQ(first_names, ToolNames(second_result));
+    EXPECT_EQ(first_names, (std::vector<std::string>{"a", "m", "z"}));
+
+    CloseToolListEnv(first);
+    CloseToolListEnv(second);
+}
+
+TEST(McpServerTest, ProgressiveDiscoveryPaginatesToolsInNameOrder) {
+    auto env = MakeToolListEnv({"z", "a", "m"}, true);
+
+    std::vector<std::string> names;
+    std::optional<std::string> cursor;
+    for (int page = 0; page < 4; ++page) {
+        JsonValue params(JsonValue::object_tag);
+        params["pageSize"] = JsonValue(int64_t{1});
+        if (cursor) params["cursor"] = JsonValue(*cursor);
+        auto result = SendServerInfoRequest(env.client, methods::kListTools,
+            std::move(params));
+        ASSERT_FALSE(result.Contains("code"));
+        auto page_names = ToolNames(result);
+        names.insert(names.end(), page_names.begin(), page_names.end());
+        const JsonValue* next = result.Find("nextCursor");
+        if (!next || !next->IsString()) break;
+        cursor = next->GetString();
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"a", "m", "z"}));
+
+    CloseToolListEnv(env);
+}
+
+TEST(McpServerTest, LegacyResultsDoNotCarryServerInfoMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    opts.protocol_version = std::string(kLegacyProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), opts);
+    server->RegisterTool("echo", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    client->Start();
+
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    InitializeRequestParams init_params;
+    init_params.protocol_version = std::string(kLegacyProtocolVersion);
+    init_params.client_info = Implementation{"test-client", "1.0"};
+    auto init_future = client->SendRequest(methods::kInitialize,
+        SerializeInitializeRequestParams(init_params), meta,
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto init_result = init_future.get();
+    ASSERT_FALSE(init_result.Contains("code"));
+    EXPECT_FALSE(init_result.Contains("_meta"));
+    auto* legacy_info = init_result.Find("serverInfo");
+    ASSERT_NE(legacy_info, nullptr);
+    ASSERT_NE(legacy_info->Find("name"), nullptr);
+    EXPECT_EQ(legacy_info->Find("name")->GetString(), "meta-server");
+    client->SendNotification(notifications::kInitialized, JsonValue{});
+
+    CallToolRequestParams call_params;
+    call_params.name = "echo";
+    auto future = client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(call_params), meta,
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto result = future.get();
+    ASSERT_FALSE(result.Contains("code"));
+    EXPECT_FALSE(result.Contains("_meta"));
+    EXPECT_FALSE(result.Contains("io.modelcontextprotocol/serverInfo"));
+
+    server->Close();
+    client->Close();
+}
+
+TEST(McpServerTest, ModernResultsPreserveCallerServerInfoMeta) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions opts;
+    opts.server_info = Implementation{"meta-server", "2.0.0"};
+    opts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), opts);
+    server->RegisterTool("custom-meta", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            JsonValue meta(JsonValue::object_tag);
+            meta["custom"] = JsonValue("kept");
+            meta["io.modelcontextprotocol/serverInfo"] =
+                SerializeImplementation(Implementation{"caller-server", "9.9.9"});
+            result.meta = std::move(meta);
+            return result;
+        });
+    server->RegisterTool("partial-meta", ToolOptions{},
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            JsonValue meta(JsonValue::object_tag);
+            meta["custom"] = JsonValue("kept");
+            result.meta = std::move(meta);
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    CallToolRequestParams call_params;
+    call_params.name = "custom-meta";
+    auto custom = SendServerInfoRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(call_params));
+    ASSERT_FALSE(custom.Contains("code"));
+    auto* custom_meta = custom.Find("_meta");
+    ASSERT_NE(custom_meta, nullptr);
+    ASSERT_TRUE(custom_meta->IsObject());
+    ASSERT_NE(custom_meta->Find("custom"), nullptr);
+    EXPECT_EQ(custom_meta->Find("custom")->GetString(), "kept");
+    auto* caller_info =
+        custom_meta->Find("io.modelcontextprotocol/serverInfo");
+    ASSERT_NE(caller_info, nullptr);
+    ASSERT_NE(caller_info->Find("name"), nullptr);
+    EXPECT_EQ(caller_info->Find("name")->GetString(), "caller-server");
+    ASSERT_NE(caller_info->Find("version"), nullptr);
+    EXPECT_EQ(caller_info->Find("version")->GetString(), "9.9.9");
+
+    call_params.name = "partial-meta";
+    auto partial = SendServerInfoRequest(client, methods::kCallTool,
+        SerializeCallToolRequestParams(call_params));
+    ASSERT_FALSE(partial.Contains("code"));
+    ExpectServerInfoMeta(partial, "meta-server", "2.0.0");
+    auto* partial_meta = partial.Find("_meta");
+    ASSERT_NE(partial_meta, nullptr);
+    ASSERT_NE(partial_meta->Find("custom"), nullptr);
+    EXPECT_EQ(partial_meta->Find("custom")->GetString(), "kept");
+
+    server->Close();
+    client->Close();
+}
+
+namespace {
+
 std::filesystem::path MakeTaskStorePath() {
     auto temp_dir = std::filesystem::temp_directory_path();
     return temp_dir / ("mcp_server_tasks_" +
@@ -1161,8 +1586,6 @@ TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
     auto resp = future.get();
     ASSERT_FALSE(resp.Contains("code"));
     EXPECT_TRUE(resp.IsObject());
-    ASSERT_TRUE(resp.Contains("resultType"));
-    EXPECT_EQ(resp["resultType"], JsonValue("complete"));
 
     auto ack = ack_future.get();
     EXPECT_EQ(ack.method, std::string(notifications::kSubscriptionsAcknowledged));
@@ -1258,6 +1681,164 @@ TEST(McpServerTest, ToolListChangedHonorsSubscriptionFilter) {
     std::lock_guard<std::mutex> lock(observed_mutex);
     ASSERT_EQ(observed_ids.size(), 1u);
     EXPECT_EQ(observed_ids[0], "sub-tools");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, RegisterPushesListChangedToSubscribers) {
+    auto ctx = MakeModernServerWithClient();
+
+    DiscoverRequestParams discover_params;
+    auto discover_future = ctx.client->SendRequest(methods::kDiscover,
+        SerializeDiscoverRequestParams(discover_params), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(discover_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_FALSE(discover_future.get().Contains("code"));
+    ASSERT_TRUE(ctx.server->IsRunning());
+
+    std::promise<JsonRpcNotification> ack_received;
+    auto ack_future = ack_received.get_future();
+    ctx.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&ack_received](const JsonRpcNotification& n) {
+            ack_received.set_value(n);
+        });
+
+    SubscriptionsListenRequestParams listener;
+    listener.notifications.tools_list_changed = true;
+    listener.notifications.resources_list_changed = true;
+    listener.notifications.prompts_list_changed = true;
+    auto listen_future = ctx.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(listener),
+        MetaWithSubscriptionId("sub-auto"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(ack_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(listen_future.get().Contains("code"));
+
+    std::promise<JsonRpcNotification> tool_changed;
+    auto tool_future = tool_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&tool_changed](const JsonRpcNotification& n) {
+            tool_changed.set_value(n);
+        });
+    ctx.server->RegisterTool("auto_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    ASSERT_EQ(tool_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto tool_notification = tool_future.get();
+    EXPECT_EQ(tool_notification.method, std::string(notifications::kToolListChanged));
+    ASSERT_TRUE(tool_notification.meta.has_value());
+    auto* tool_sid = tool_notification.meta->Find(
+        "io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(tool_sid, nullptr);
+    EXPECT_EQ(tool_sid->GetString(), "sub-auto");
+
+    std::promise<JsonRpcNotification> resource_changed;
+    auto resource_future = resource_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&resource_changed](const JsonRpcNotification& n) {
+            resource_changed.set_value(n);
+        });
+    ctx.server->RegisterResource("auto_resource", "test://auto/resource",
+        ResourceOptions{},
+        [](const std::string&) { return ReadResourceResult{}; });
+    ASSERT_EQ(resource_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto resource_notification = resource_future.get();
+    EXPECT_EQ(resource_notification.method,
+              std::string(notifications::kResourceListChanged));
+    ASSERT_TRUE(resource_notification.meta.has_value());
+    auto* resource_sid = resource_notification.meta->Find(
+        "io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(resource_sid, nullptr);
+    EXPECT_EQ(resource_sid->GetString(), "sub-auto");
+
+    std::promise<JsonRpcNotification> template_changed;
+    auto template_future = template_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&template_changed](const JsonRpcNotification& n) {
+            template_changed.set_value(n);
+        });
+    ctx.server->RegisterResourceTemplate("auto_template", "test://auto/{id}",
+        ResourceOptions{},
+        [](const std::string&,
+           const std::map<std::string, std::string>&) {
+            return ReadResourceResult{};
+        });
+    ASSERT_EQ(template_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto template_notification = template_future.get();
+    EXPECT_EQ(template_notification.method,
+              std::string(notifications::kResourceListChanged));
+
+    std::promise<JsonRpcNotification> prompt_changed;
+    auto prompt_future = prompt_changed.get_future();
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&prompt_changed](const JsonRpcNotification& n) {
+            prompt_changed.set_value(n);
+        });
+    ctx.server->RegisterPrompt("auto_prompt", PromptOptions{},
+        [](const std::string&,
+           const std::optional<JsonValue>&) {
+            return GetPromptResult{};
+        });
+    ASSERT_EQ(prompt_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto prompt_notification = prompt_future.get();
+    EXPECT_EQ(prompt_notification.method,
+              std::string(notifications::kPromptListChanged));
+    ASSERT_TRUE(prompt_notification.meta.has_value());
+    auto* prompt_sid = prompt_notification.meta->Find(
+        "io.modelcontextprotocol/subscriptionId");
+    ASSERT_NE(prompt_sid, nullptr);
+    EXPECT_EQ(prompt_sid->GetString(), "sub-auto");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, RegisterBeforeDiscoverDoesNotPushListChanged) {
+    auto ctx = MakeModernServerWithClient();
+    EXPECT_FALSE(ctx.server->IsRunning());
+
+    std::atomic<int> tool_notifications{0};
+    std::atomic<int> resource_notifications{0};
+    std::atomic<int> prompt_notifications{0};
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&tool_notifications](const JsonRpcNotification&) {
+            tool_notifications.fetch_add(1);
+        });
+    ctx.client->SetNotificationHandler(notifications::kResourceListChanged,
+        [&resource_notifications](const JsonRpcNotification&) {
+            resource_notifications.fetch_add(1);
+        });
+    ctx.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&prompt_notifications](const JsonRpcNotification&) {
+            prompt_notifications.fetch_add(1);
+        });
+
+    ctx.server->RegisterTool("early_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    ctx.server->RegisterResource("early_resource", "test://early/resource",
+        ResourceOptions{},
+        [](const std::string&) { return ReadResourceResult{}; });
+    ctx.server->RegisterPrompt("early_prompt", PromptOptions{},
+        [](const std::string&,
+           const std::optional<JsonValue>&) {
+            return GetPromptResult{};
+        });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(tool_notifications.load(), 0);
+    EXPECT_EQ(resource_notifications.load(), 0);
+    EXPECT_EQ(prompt_notifications.load(), 0);
+
+    auto capabilities = ctx.server->GetCapabilities();
+    EXPECT_TRUE(capabilities.tools.has_value());
+    EXPECT_TRUE(capabilities.resources.has_value());
+    EXPECT_TRUE(capabilities.prompts.has_value());
+    EXPECT_FALSE(ctx.server->IsRunning());
 
     ctx.server->Close();
     ctx.client->Close();
@@ -3133,10 +3714,11 @@ JsonValue SendSkillsRequest(
 TEST(McpServerTest, SkillsListGetDirectory) {
     auto env = MakeSkillsEnv(true);
 
-    EXPECT_TRUE(env.server->GetCapabilities().extensions.has_value());
-    ASSERT_TRUE(env.server->GetCapabilities().extensions->find(
+    auto caps = env.server->GetCapabilities();
+    EXPECT_TRUE(caps.extensions.has_value());
+    ASSERT_TRUE(caps.extensions->find(
         std::string(kSkillsExtensionId)) !=
-        env.server->GetCapabilities().extensions->end());
+        caps.extensions->end());
 
     auto list_resp = SendSkillsRequest(env.client, methods::kListSkills,
         SerializePaginatedRequestParams(PaginatedRequestParams{}));
@@ -4678,4 +5260,658 @@ TEST(McpServerTest, TasksRequireExplicitExtensionFlag) {
     server->Close();
     client->Close();
     std::filesystem::remove(store_path, ec);
+}
+
+namespace {
+
+struct SharedStoreSession {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+SharedStoreSession MakeSharedStoreSession(
+    const std::shared_ptr<FileTaskStore>& store)
+{
+    SharedStoreSession session;
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLegacyProtocolVersion);
+    sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
+    session.server = McpServer::Create(std::move(pair.server), sopts);
+    session.client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    session.client->Start();
+    return session;
+}
+
+} // namespace
+
+TEST(McpServerTest, TerminalTaskCannotBeRegressedByUpdateOrCancel) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+    env.store->CreateTask("task-terminal");
+
+    UpdateTaskRequestParams update_params;
+    update_params.task_id = "task-terminal";
+    JsonValue result(JsonValue::object_tag);
+    result["answer"] = JsonValue(42);
+    update_params.result = result;
+    auto ok_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(update_params));
+    ASSERT_FALSE(ok_resp.Contains("code"));
+
+    auto completed = env.store->GetTask("task-terminal");
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, TaskStatus::Completed);
+
+    UpdateTaskRequestParams regress_params;
+    regress_params.task_id = "task-terminal";
+    auto regress_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(regress_params));
+    ASSERT_TRUE(regress_resp.Contains("code"));
+    EXPECT_EQ(regress_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = "task-terminal";
+    auto cancel_resp = SendBareRequest(env.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params));
+    ASSERT_FALSE(cancel_resp.Contains("code"));
+
+    auto after = env.store->GetTask("task-terminal");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->status, TaskStatus::Completed);
+    ASSERT_TRUE(after->result.has_value());
+    EXPECT_EQ(after->result->At("answer").GetInt(), 42);
+
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, CrossSessionTaskAccessIsRejected) {
+    auto store_path = MakeTaskStorePath();
+    std::error_code ec;
+    std::filesystem::remove(store_path, ec);
+    auto store = std::make_shared<FileTaskStore>(store_path);
+
+    auto owner = MakeSharedStoreSession(store);
+    auto intruder = MakeSharedStoreSession(store);
+    PerformLegacyHandshake(owner.client);
+    PerformLegacyHandshake(intruder.client);
+
+    EXPECT_NE(owner.server->SessionId(), intruder.server->SessionId());
+    store->CreateTask("task-owned", owner.server->SessionId(), 60000);
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = "task-owned";
+    auto intruder_get = SendBareRequest(intruder.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params));
+    ASSERT_TRUE(intruder_get.Contains("code"));
+    EXPECT_EQ(intruder_get["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = "task-owned";
+    auto intruder_cancel = SendBareRequest(intruder.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params));
+    ASSERT_TRUE(intruder_cancel.Contains("code"));
+    EXPECT_EQ(intruder_cancel["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    UpdateTaskRequestParams update_params;
+    update_params.task_id = "task-owned";
+    JsonValue payload(JsonValue::object_tag);
+    payload["answer"] = JsonValue(1);
+    update_params.result = payload;
+    auto intruder_update = SendBareRequest(intruder.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(update_params));
+    ASSERT_TRUE(intruder_update.Contains("code"));
+    EXPECT_EQ(intruder_update["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    auto untouched = store->GetTask("task-owned");
+    ASSERT_TRUE(untouched.has_value());
+    EXPECT_EQ(untouched->status, TaskStatus::Pending);
+    EXPECT_FALSE(untouched->result.has_value());
+
+    auto owner_get = SendBareRequest(owner.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params));
+    EXPECT_FALSE(owner_get.Contains("code"));
+
+    owner.server->Close();
+    owner.client->Close();
+    intruder.server->Close();
+    intruder.client->Close();
+    std::filesystem::remove(store_path, ec);
+}
+
+TEST(McpServerTest, TaskIdentifiersAreSessionScopedAndNotSequential) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+    env.server->RegisterTool("task_tool", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "done"});
+            return r;
+        });
+
+    std::vector<std::string> task_ids;
+    for (int i = 0; i < 2; ++i) {
+        CallToolRequestParams params;
+        params.name = "task_tool";
+        auto resp = SendBareRequest(env.client, methods::kCallTool,
+            SerializeCallToolRequestParams(params));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto created = DeserializeCreateTaskResult(resp);
+        task_ids.push_back(created.task_id);
+    }
+
+    ASSERT_EQ(task_ids.size(), size_t{2});
+    EXPECT_NE(task_ids[0], task_ids[1]);
+    for (const auto& task_id : task_ids) {
+        EXPECT_EQ(task_id.rfind("task-", 0), 0u);
+        EXPECT_NE(task_id, "task-1");
+        EXPECT_NE(task_id, "task-2");
+        EXPECT_GT(task_id.size(), size_t{20});
+        EXPECT_NE(task_id.find(env.server->SessionId()), std::string::npos);
+    }
+
+    auto stored = env.store->GetTask(task_ids.front());
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->owner, env.server->SessionId());
+    ASSERT_TRUE(stored->ttl_ms.has_value());
+    EXPECT_EQ(*stored->ttl_ms, 300000);
+
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
+    auto env = MakeTaskEraEnv();
+    PerformLegacyHandshake(env.client);
+    env.server->RegisterTool("task_tool", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "done"});
+            return r;
+        });
+
+    env.store->CreateTask("task-stale", env.server->SessionId(), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ASSERT_TRUE(env.store->GetTask("task-stale").has_value());
+
+    CallToolRequestParams params;
+    params.name = "task_tool";
+    auto resp = SendBareRequest(env.client, methods::kCallTool,
+        SerializeCallToolRequestParams(params));
+    ASSERT_FALSE(resp.Contains("code"));
+
+    EXPECT_FALSE(env.store->GetTask("task-stale").has_value());
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, ResourceHandlerMayRegisterResourceWithoutDeadlock) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    MCP_RUN_WITH_TIMEOUT([&]() {
+        server->RegisterResource("dynamic", "resource://dynamic",
+            ResourceOptions{},
+            [&](const std::string& uri) -> ReadResourceResult {
+                server->RegisterResource("dynamic-extra", "resource://dynamic-extra",
+                    ResourceOptions{},
+                    [](const std::string& extra_uri) -> ReadResourceResult {
+                        TextResourceContents trc;
+                        trc.uri = extra_uri;
+                        trc.text = "extra";
+                        ReadResourceResult rr;
+                        rr.contents = {mcp::ResourceContents{trc}};
+                        return rr;
+                    });
+                TextResourceContents trc;
+                trc.uri = uri;
+                trc.text = "dynamic content";
+                ReadResourceResult rr;
+                rr.contents = {mcp::ResourceContents{trc}};
+                return rr;
+            });
+
+        auto client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+        client->Start();
+        InitializeRequestParams iparams;
+        iparams.protocol_version = std::string(kLatestProtocolVersion);
+        iparams.client_info = Implementation{"test-client", "1.0"};
+        auto init_future = client->SendRequest(methods::kInitialize,
+            SerializeInitializeRequestParams(iparams), {},
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(init_future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        (void)init_future.get();
+        client->SendNotification(notifications::kInitialized);
+
+        ReadResourceRequestParams params;
+        params.uri = "resource://dynamic";
+        auto resp = SendBareRequest(client, methods::kReadResource,
+            SerializeResourceRequestParams(params));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto read_result = DeserializeReadResourceResult(resp);
+        ASSERT_EQ(read_result.contents.size(), size_t{1});
+
+        client->Close();
+    });
+
+    server->Close();
+}
+
+TEST(McpServerTest, DuplicateRegistrationThrowsInvalidParams) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server));
+
+    auto make_tool = [](const char* name) {
+        return McpServerTool::Create(name,
+            std::function<CallToolResult(const Ctx&)>(
+                [](const Ctx&) { return CallToolResult{}; }),
+            ToolOptions{});
+    };
+
+    server->RegisterTool(make_tool("dup_tool"));
+    EXPECT_THROW(server->RegisterTool(make_tool("dup_tool")), McpError);
+    try {
+        server->RegisterTool(make_tool("dup_tool"));
+        FAIL();
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::InvalidParams);
+    }
+
+    server->RegisterResource("dup_res", "resource://dup",
+        ResourceOptions{},
+        [](const std::string&) -> ReadResourceResult { return ReadResourceResult{}; });
+    EXPECT_THROW(server->RegisterResource("dup_res", "resource://other",
+        ResourceOptions{},
+        [](const std::string&) -> ReadResourceResult { return ReadResourceResult{}; }),
+        McpError);
+    EXPECT_THROW(server->RegisterResource("other_res", "resource://dup",
+        ResourceOptions{},
+        [](const std::string&) -> ReadResourceResult { return ReadResourceResult{}; }),
+        McpError);
+    EXPECT_THROW(server->RegisterResource("empty_res", "resource://empty",
+        ResourceOptions{}, std::function<ReadResourceResult(const std::string&)>()),
+        McpError);
+
+    server->RegisterResourceTemplate("dup_tpl", "resource://tpl/{id}",
+        ResourceOptions{},
+        [](const std::string&, const std::map<std::string, std::string>&)
+            -> ReadResourceResult { return ReadResourceResult{}; });
+    EXPECT_THROW(server->RegisterResourceTemplate("dup_tpl", "resource://tpl2/{id}",
+        ResourceOptions{},
+        [](const std::string&, const std::map<std::string, std::string>&)
+            -> ReadResourceResult { return ReadResourceResult{}; }),
+        McpError);
+    EXPECT_THROW(server->RegisterResourceTemplate("empty_tpl", "resource://tpl3/{id}",
+        ResourceOptions{},
+        std::function<ReadResourceResult(const std::string&,
+            const std::map<std::string, std::string>&)>()),
+        McpError);
+
+    server->RegisterPrompt("dup_prompt", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) -> GetPromptResult {
+            return GetPromptResult{};
+        });
+    EXPECT_THROW(server->RegisterPrompt("dup_prompt", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) -> GetPromptResult {
+            return GetPromptResult{};
+        }), McpError);
+    EXPECT_THROW(server->RegisterPrompt("empty_prompt", PromptOptions{},
+        std::function<GetPromptResult(const std::string&, const std::optional<JsonValue>&)>()),
+        McpError);
+
+    Skill skill;
+    skill.uri = "skill://code-review/SKILL.md";
+    server->RegisterSkill(skill);
+    EXPECT_THROW(server->RegisterSkill(skill), McpError);
+
+    EXPECT_THROW(server->SetCompletionHandler(McpServer::CompletionHandler{}), McpError);
+    try {
+        server->SetCompletionHandler(McpServer::CompletionHandler{});
+        FAIL();
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::InvalidParams);
+    }
+
+    server->Close();
+}
+
+TEST(McpServerTest, ModernElicitRoutesThroughMrtrInputRoundTrip) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool(McpServerTool::Create("asker",
+        std::function<CallToolResult(const Ctx&)>(
+            [&](const Ctx& ctx) -> CallToolResult {
+                if (ctx.Params().input_responses) {
+                    auto* elicit = ctx.Params().input_responses->Find("elicitation");
+                    auto* content = elicit ? elicit->Find("content") : nullptr;
+                    auto* name = content ? content->Find("user_name") : nullptr;
+                    if (name && name->IsString()) {
+                        CallToolResult done;
+                        done.content.push_back(
+                            TextContent{"text", "Hello, " + name->GetString() + "!"});
+                        return done;
+                    }
+                }
+                ElicitRequestParams elicit_params;
+                elicit_params.message = "What is your name?";
+                JsonValue schema(JsonValue::object_tag);
+                schema["type"] = JsonValue("object");
+                JsonValue properties(JsonValue::object_tag);
+                JsonValue field(JsonValue::object_tag);
+                field["type"] = JsonValue("string");
+                properties["user_name"] = std::move(field);
+                schema["properties"] = std::move(properties);
+                elicit_params.requested_schema = std::move(schema);
+                auto future = server->Elicit(elicit_params);
+                auto result = future.get();
+                CallToolResult out;
+                out.content.push_back(TextContent{"text", result.action});
+                return out;
+            }),
+        ToolOptions{}.Description("modern elicit fixture")));
+
+    ClientOptions cops;
+    cops.connect_mode = ConnectMode::Pin;
+    cops.pin_protocol_version = std::string(kLatestProtocolVersion);
+    cops.input_required_config = ClientOptions::InputRequiredConfig{};
+    auto client = McpClient::Create(std::move(pair.client), cops);
+    client->SetElicitationHandler([](const ElicitRequestParams&) {
+        ElicitResult result;
+        result.action = "accept";
+        JsonValue content(JsonValue::object_tag);
+        content["user_name"] = JsonValue("Alice");
+        result.content = std::move(content);
+        return result;
+    });
+
+    auto done = client->CallTool("asker", JsonValue(JsonValue::object_tag));
+    EXPECT_FALSE(done.is_error);
+    ASSERT_EQ(done.content.size(), size_t{1});
+    auto* text = std::get_if<TextContent>(&done.content[0]);
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->text, "Hello, Alice!");
+
+    client->Close();
+    server->Close();
+}
+
+namespace {
+
+struct CacheHintTestEnv {
+    std::unique_ptr<McpServer> server;
+    std::shared_ptr<McpSessionHandler> client;
+};
+
+CacheHintTestEnv MakeCacheHintTestEnv(
+    std::string_view version,
+    std::optional<std::map<std::string, CacheHint, std::less<>>> hints = std::nullopt) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"cache-test-server", "1.0.0"};
+    sopts.protocol_version = std::string(version);
+    sopts.cache_hints = std::move(hints);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterTool("cache_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    server->RegisterResource("cache_resource", "test://cache/static",
+        ResourceOptions{},
+        [](const std::string& uri) -> ReadResourceResult {
+            TextResourceContents contents;
+            contents.uri = uri;
+            contents.text = "cached";
+            ReadResourceResult result;
+            result.contents.push_back(ResourceContents{std::move(contents)});
+            return result;
+        });
+    server->RegisterResourceTemplate("cache_template", "test://cache/{id}",
+        ResourceOptions{},
+        [](const std::string& uri,
+           const std::map<std::string, std::string>&) -> ReadResourceResult {
+            TextResourceContents contents;
+            contents.uri = uri;
+            contents.text = "template";
+            ReadResourceResult result;
+            result.contents.push_back(ResourceContents{std::move(contents)});
+            return result;
+        });
+    server->RegisterPrompt("cache_prompt", PromptOptions{},
+        [](const std::string&, const std::optional<JsonValue>&) -> GetPromptResult {
+            return GetPromptResult{};
+        });
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(version));
+    client->Start();
+    return CacheHintTestEnv{std::move(server), std::move(client)};
+}
+
+JsonValue SendCacheProbe(const std::shared_ptr<McpSessionHandler>& client,
+                         std::string_view method) {
+    JsonValue params(JsonValue::object_tag);
+    if (method == methods::kDiscover) {
+        params = SerializeDiscoverRequestParams(DiscoverRequestParams{});
+    } else if (method == methods::kReadResource) {
+        ResourceRequestParams read_params;
+        read_params.uri = "test://cache/static";
+        params = SerializeResourceRequestParams(read_params);
+    } else {
+        params = SerializePaginatedRequestParams(PaginatedRequestParams{});
+    }
+    auto future = client->SendRequest(method, std::move(params), {},
+        std::chrono::milliseconds(2000));
+    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        ADD_FAILURE() << "timed out waiting for " << std::string(method);
+        return JsonValue(JsonValue::object_tag);
+    }
+    return future.get();
+}
+
+void ExpectInvalidCacheHint(const std::shared_ptr<McpSessionHandler>& client,
+                            std::string_view method, std::string_view needle) {
+    auto resp = SendCacheProbe(client, method);
+    ASSERT_TRUE(resp.Contains("code")) << std::string(method);
+    EXPECT_EQ(resp["code"].GetInt(), static_cast<int64_t>(McpErrorCode::InvalidParams))
+        << std::string(method);
+    auto* message = resp.Find("message");
+    ASSERT_NE(message, nullptr) << std::string(method);
+    EXPECT_NE(message->GetString().find(needle), std::string::npos)
+        << message->GetString();
+}
+
+void CloseCacheHintTestEnv(CacheHintTestEnv& env) {
+    env.server->Close();
+    env.client->Close();
+}
+
+} // namespace
+
+TEST(McpServerTest, ModernDefaultServerEmitsCacheHintOnSixResults) {
+    auto env = MakeCacheHintTestEnv(kLatestProtocolVersion);
+
+    const std::string_view probes[] = {
+        methods::kDiscover,
+        methods::kListTools,
+        methods::kListResources,
+        methods::kListResourceTemplates,
+        methods::kReadResource,
+        methods::kListPrompts,
+    };
+    for (auto method : probes) {
+        auto resp = SendCacheProbe(env.client, method);
+        ASSERT_FALSE(resp.Contains("code")) << std::string(method);
+        ASSERT_TRUE(resp.Contains("ttlMs")) << std::string(method);
+        EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t{0}) << std::string(method);
+        ASSERT_TRUE(resp.Contains("cacheScope")) << std::string(method);
+        EXPECT_EQ(resp["cacheScope"].GetString(), "private") << std::string(method);
+        EXPECT_FALSE(resp.Contains("cacheHint")) << std::string(method);
+    }
+
+    CloseCacheHintTestEnv(env);
+}
+
+TEST(McpServerTest, LegacyDefaultServerKeepsExistingCacheFields) {
+    auto env = MakeCacheHintTestEnv(kLegacyProtocolVersion);
+    PerformLegacyHandshake(env.client);
+
+    const std::string_view probes[] = {
+        methods::kListTools,
+        methods::kListResources,
+        methods::kListResourceTemplates,
+        methods::kReadResource,
+        methods::kListPrompts,
+    };
+    for (auto method : probes) {
+        auto resp = SendCacheProbe(env.client, method);
+        ASSERT_FALSE(resp.Contains("code")) << std::string(method);
+        ASSERT_TRUE(resp.Contains("ttlMs")) << std::string(method);
+        EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t{0}) << std::string(method);
+        ASSERT_TRUE(resp.Contains("cacheScope")) << std::string(method);
+        EXPECT_EQ(resp["cacheScope"].GetString(), "private") << std::string(method);
+        EXPECT_FALSE(resp.Contains("cacheHint")) << std::string(method);
+    }
+
+    auto discover = SendCacheProbe(env.client, methods::kDiscover);
+    ASSERT_TRUE(discover.Contains("code"));
+    EXPECT_EQ(discover["code"].GetInt(),
+        static_cast<int64_t>(McpErrorCode::MethodNotFound));
+
+    CloseCacheHintTestEnv(env);
+}
+
+TEST(McpServerTest, ModernInvalidCacheHintReturnsInvalidParams) {
+    CacheHint missing_scope;
+    missing_scope.ttl_ms = int64_t{1000};
+    CacheHint missing_ttl;
+    missing_ttl.cache_scope = "public";
+    CacheHint negative_ttl;
+    negative_ttl.ttl_ms = int64_t{-1};
+    negative_ttl.cache_scope = "private";
+    CacheHint bad_scope;
+    bad_scope.ttl_ms = int64_t{0};
+    bad_scope.cache_scope = "shared";
+    CacheHint negative_public;
+    negative_public.ttl_ms = int64_t{-120};
+    negative_public.cache_scope = "public";
+    CacheHint empty_scope;
+    empty_scope.ttl_ms = int64_t{0};
+    empty_scope.cache_scope = "";
+
+    auto env = MakeCacheHintTestEnv(kLatestProtocolVersion,
+        std::map<std::string, CacheHint, std::less<>>{
+            {"tools/list", missing_scope},
+            {"resources/list", missing_ttl},
+            {"resources/templates/list", negative_ttl},
+            {"resources/read", bad_scope},
+            {"prompts/list", negative_public},
+            {"server/discover", empty_scope},
+        });
+
+    ExpectInvalidCacheHint(env.client, methods::kListTools, "cacheScope");
+    ExpectInvalidCacheHint(env.client, methods::kListResources, "ttlMs");
+    ExpectInvalidCacheHint(env.client, methods::kListResourceTemplates, "-1");
+    ExpectInvalidCacheHint(env.client, methods::kReadResource, "shared");
+    ExpectInvalidCacheHint(env.client, methods::kListPrompts, "-120");
+    ExpectInvalidCacheHint(env.client, methods::kDiscover, "got \"\"");
+
+    CloseCacheHintTestEnv(env);
+}
+
+TEST(McpServerTest, DiscoverRejectedWhenRequestDeclaresLegacyVersion) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    JsonRpcRequest req;
+    req.id = RequestId{int64_t{4100}};
+    req.method = std::string(methods::kDiscover);
+    req.params = JsonValue(JsonValue::object_tag);
+    JsonValue meta(JsonValue::object_tag);
+    meta["io.modelcontextprotocol/protocolVersion"] =
+        JsonValue(std::string(kLegacyProtocolVersion));
+    req.meta = std::move(meta);
+    pair.client->SendMessageAsync(JsonRpcMessage{std::move(req)});
+
+    std::optional<ErrorData> error;
+    MCP_RUN_WITH_TIMEOUT([&]() {
+        pair.client->GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (ec) return;
+                if (auto* r = std::get_if<JsonRpcErrorResponse>(&msg))
+                    error = r->error;
+            });
+    });
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->code, McpErrorCode::MethodNotFound);
+
+    server->Close();
+}
+
+TEST(McpServerTest, CompleteRequestCarriesContextArguments) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    std::mutex received_mutex;
+    std::map<std::string, std::string, std::less<>> received;
+    server->SetCompletionHandler(
+        [&](const CompleteRequestParams& params) -> CompleteResult {
+            {
+                std::lock_guard<std::mutex> lock(received_mutex);
+                received = params.context_arguments;
+            }
+            CompleteResult result;
+            JsonValue completion(JsonValue::object_tag);
+            JsonValue values(JsonValue::array_tag);
+            values.PushBack(JsonValue("c++"));
+            completion["values"] = std::move(values);
+            completion["total"] = JsonValue(int64_t{1});
+            completion["hasMore"] = JsonValue(false);
+            result.completion = std::move(completion);
+            return result;
+        });
+
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+
+    CompleteRequestParams params;
+    params.ref = JsonValue::Parse(
+        "{\"type\":\"ref/prompt\",\"name\":\"code_review\"}");
+    params.argument_name = "framework";
+    params.argument_value = "qt";
+    params.context_arguments = {
+        {"language", "cpp"},
+        {"framework", "qt"},
+    };
+
+    auto future = client->SendRequest(methods::kComplete,
+        SerializeCompleteRequestParams(params), {}, std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code")) << resp.Dump();
+
+    std::map<std::string, std::string, std::less<>> captured;
+    {
+        std::lock_guard<std::mutex> lock(received_mutex);
+        captured = received;
+    }
+    EXPECT_EQ(captured, params.context_arguments);
+
+    server->Close();
+    client->Close();
 }

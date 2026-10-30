@@ -1,4 +1,6 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
+#include <mcp/McpError.hpp>
+#include <mcp/ErrorCodes.hpp>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -10,6 +12,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <stdexcept>
+#include <exception>
+#include <string>
 #ifdef __APPLE__
 #include <crt_externs.h>
 #endif
@@ -57,10 +61,33 @@ public:
         struct pollfd pfd = { fd_, POLLIN, 0 };
         int rc;
         do { rc = ::poll(&pfd, 1, kPipeReadPollTimeoutMs); } while (rc < 0 && errno == EINTR);
-        if (rc <= 0 || !(pfd.revents & POLLIN)) return 0;
+        if (rc < 0) {
+            eof_ = true;
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           std::string("pipe poll failed: ") + std::strerror(errno));
+        }
+        if (rc == 0) return 0;
+        if ((pfd.revents & (POLLERR | POLLNVAL)) != 0) {
+            eof_ = true;
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           "pipe read failed: poll reported an unrecoverable condition");
+        }
+        if ((pfd.revents & (POLLIN | POLLHUP)) == 0) {
+            eof_ = true;
+            return 0;
+        }
         ssize_t n = ::read(fd_, buffer, size);
-        if (n == 0) eof_ = true;
-        return n > 0 ? static_cast<size_t>(n) : 0;
+        if (n < 0) {
+            if (errno == EINTR) return 0;
+            eof_ = true;
+            throw McpError(McpErrorCode::ConnectionClosed,
+                           std::string("pipe read failed: ") + std::strerror(errno));
+        }
+        if (n == 0) {
+            eof_ = true;
+            return 0;
+        }
+        return static_cast<size_t>(n);
     }
 
     bool IsEof() const override {
@@ -76,11 +103,20 @@ public:
             struct pollfd pfd = { fd_, POLLOUT, 0 };
             int rc;
             do { rc = ::poll(&pfd, 1, kPipeReadPollTimeoutMs); } while (rc < 0 && errno == EINTR);
-            if (rc <= 0 || !(pfd.revents & POLLOUT)) return total;
+            if (rc < 0) {
+                throw McpError(McpErrorCode::ConnectionClosed,
+                               std::string("pipe poll failed: ") + std::strerror(errno));
+            }
+            if ((pfd.revents & (POLLERR | POLLNVAL)) != 0) {
+                throw McpError(McpErrorCode::ConnectionClosed,
+                               "pipe write failed: poll reported an unrecoverable condition");
+            }
+            if (rc == 0 || !(pfd.revents & POLLOUT)) return total;
             ssize_t n = ::write(fd_, data + total, size - total);
             if (n < 0) {
                 if (errno == EINTR) continue;
-                return total;
+                throw McpError(McpErrorCode::ConnectionClosed,
+                               std::string("pipe write failed: ") + std::strerror(errno));
             }
             if (n == 0) return total;
             total += static_cast<size_t>(n);
@@ -145,6 +181,29 @@ bool PosixProcess::Terminate(int timeout_ms) {
 }
 
 } // anonymous namespace
+
+bool WriteWholeMessage(PipeHandle& pipe, const char* data, size_t size) {
+    constexpr int kMaxIdleAttempts = 64;
+    constexpr std::chrono::milliseconds kIdleDelay(5);
+    size_t total = 0;
+    int idle_attempts = 0;
+    while (total < size) {
+        size_t written = 0;
+        try {
+            written = pipe.Write(data + total, size - total);
+        } catch (const std::exception&) {
+            return false;
+        }
+        if (written == 0) {
+            if (++idle_attempts > kMaxIdleAttempts) return false;
+            std::this_thread::sleep_for(kIdleDelay);
+            continue;
+        }
+        idle_attempts = 0;
+        total += written;
+    }
+    return true;
+}
 
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     int stdout_pipefd[2];
@@ -269,6 +328,10 @@ std::unique_ptr<PipeHandle> OpenStandardOutput() {
     int fd = dup(STDOUT_FILENO);
     SetCloseOnExec(fd);
     return std::make_unique<PosixPipe>(fd >= 0 ? fd : -1);
+}
+
+std::unique_ptr<PipeHandle> CreatePipeFromFd(int fd) {
+    return std::make_unique<PosixPipe>(fd);
 }
 
 void SetThreadName(const char* name) {

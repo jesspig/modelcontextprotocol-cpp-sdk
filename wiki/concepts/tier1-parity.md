@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: Tier1 技术对标声明（2026-07-28）
-description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
+description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-13T11:18:04+08:00
+timestamp: 2026-10-29T23:10:00+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -23,22 +23,41 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 | 来源校验与资源护栏 | 对等 | `40134f4` |
 | 传输（stateless 单连接、持开 listen 流、变更推送、订阅广播寻址） | 对等 | [streamable-http](/transports/streamable-http.md)；`53fbce0` + `8d589ae` |
 | OAuth 客户端鉴权表面（CIMD 加固、audience 硬化） | 对等 | [oauth](/concepts/oauth.md)；`ba1f8c2` + `8ad053e` |
-| Apps 扩展与 Server Card | 对等 | `2f2fc8d`；开关见 [experimental-flags](/concepts/experimental-flags.md) |
+| Apps 扩展与 Server Card | Apps 对等；Server Card 仅服务端 | `2f2fc8d`；服务端可生成（`McpServer::GetServerCard()`）并经 `/server-card` 返回，客户端不消费，开关见 [experimental-flags](/concepts/experimental-flags.md) |
 | 单连接语义与 trace 配对可观测 | 对等 | `a581292`；[span-hooks](/concepts/span-hooks.md) |
 | 服务端现代任务用例形态 | 对等 | `b7a613e`（逐请求声明） |
-| `http-custom-headers` 18/18 | 对等（基线已删） | `baseline-2026-07-28.yaml` 删除 10 行注释 + 条目；CI Linux 报 stale 即为变绿证据 |
+| `http-custom-headers` 18/18 | 对等（modern 基线已删，legacy 条目保留待复跑） | `baseline-2026-07-28.yaml` 删除 10 行注释 + 条目；CI Linux 报 stale 即为变绿证据 |
 
-## conformance 四 leg（本分支 `feature/gap-and-ci-green` 口径，主代理实测）
+## 2026 协议修复批次（T-01..T-13）
 
-- server legacy：67/67 绿
-- server modern：194 passed + `server-stateless` 基线 1 条绿，仅剩 2 SHOULD WARNING（`ServerSendsPromptsListChangedOnSubscription`、`ServerSendsToolsListChangedOnSubscription`，均为 SHOULD 级 listen 推送缺口）
-- client legacy：179 passed + 4 条 auth 基线（删 10 条目转绿：`metadata-default`、`basic-cimd`、`scope-from-www-authenticate`、`scope-from-scopes-supported`、`scope-omitted-when-undefined`、`scope-retry-limit`、`token-endpoint-auth-basic/post/none`、`pre-registration`；保留 `metadata-var1/var2/var3` + `scope-step-up`；`http-custom-headers` 另留 1 条）
-- client modern：383 passed + 保留 10 条目（删 21 条目转绿：`metadata-default`、`basic-cimd`、`scope`×5、`token-endpoint`×3、`pre-registration`、`resource-mismatch`、`offline-access-scope`、`offline-access-not-supported`、`iss`×6 含 normalized、`metadata-issuer-mismatch`；保留 `metadata-var1/var2/var3`、`authorization-server-migration`（部分失败）、`client-credentials-jwt/basic`、`enterprise-managed-authorization`、`dpop`、`dpop-nonce`、`wif-jwt-bearer` 共 10 条）
+本轮 `feature/mcp-2026-protocol-fixes` 修复双 era 行为，逐项落点如下（依据为源码与守护测试；conformance 实测留给 T-15/T-17，本页不预填结果）：
+
+| 领域 | 状态 | 落点 |
+|------|------|------|
+| 缓存提示默认与校验 | 对等 | modern 未配置时返回 `ttlMs=0`、`cacheScope="private"`；显式提示必须同时含两字段且取值合法（`ttlMs>=0`、scope 为 public/private），否则 `InvalidParams`；legacy 线格式不变（`74c143b`） |
+| logging 门控 | 对等 | modern 请求无 `logLevel` 时 `RequestContext::Log` 与两参 `SendLoggingMessage` 静默；HTTP 无响应流时丢弃日志通知，stdio/InMemory 保持点对点（`e1c41df`） |
+| serverInfo 回填 | 对等 | modern 结果 `_meta["io.modelcontextprotocol/serverInfo"]` 由会话层逐结果注入，保留调用方已有值；discover/initialize 统一走 `ResolveServerInfo`；legacy 不变（`eab0e18`） |
+| roots 变更通知门控 | 对等 | `notifications/roots/list_changed` 移入 2025-only 集合；modern 客户端发送抛 `ProtocolViolation`，legacy（>= 2025-06-18）保持可发（`6eea5c6`） |
+| completion 上下文 | 对等 | `CompleteRequestParams::context_arguments` 映射 `context.arguments`，序列化仅在非空时写入，反序列化校验对象与字符串值（`e026c08`） |
+| ResourceLink | 对等 | 补齐 `name`（必填）、`description`、`mimeType`、`size`（非负）、`icons`；序列化/反序列化校验 name/uri 非空与 size 非负（`35f7efc`） |
+| 客户端能力声明 | 对等 | `ClientOptions` 新增 `elicitation_handler`/`url_elicitation_handler`/`sampling_handler`/`roots_handler`，创建时安装；`DeriveClientCapabilities` 在协商前自动补声明 elicitation form/url、sampling、roots.listChanged，显式 `capabilities` 优先（`644efee`） |
+| MRTR 默认自动 | 对等 | `input_required_config` 默认构造（`auto_fulfill=true`、10 轮）；显式 `std::nullopt` 或缺少对应 handler 时返回未履行的 `input_required` 结果（`9ac4df2`） |
+| URL elicitation 三态 | 对等 | `UrlElicitationHandler` 返回 `ElicitResult`，action 限定 accept/decline/cancel，非法值抛 `HandlerError`；未配置 handler 默认 decline；legacy 保留 complete 通知，modern 走 MRTR（`0e30e48`） |
+| 订阅推送 | 对等 | 运行期注册工具/资源/模板/提示词时向匹配订阅推送 list_changed；握手未完成不推送，未订阅静默，手动推送保留（`18c659b`） |
+| 客户端控制面 | 对等 | 新增 `SendRequest`（缺省注入 client meta）、`SendNotification`、`CancelRequest`（`notifications/cancelled`）、`SetLoggingLevel`（仅 legacy，modern 抛 `ProtocolViolation`）（`1b582d9`） |
+| tools/list 顺序 | 对等 | 工具容器改为按名称有序的 `std::map`，普通列表与渐进分页输出一致顺序（`1c75c67`） |
+| private 缓存授权分区 | 对等 | private 键附授权上下文；`cache_auth_context` 变化与 `Close` 清空 private；public 跨上下文共享；`Invalidate` 跨上下文删同键（`16cfa93`） |
+| sampling | legacy partial | `SamplingHandler` 仍可用但已废弃（SEP-2577），仅覆盖基本 form/单内容采样，modern 不视为完整能力；MRTR 中仅在 handler 存在时回应 `sampling/createMessage`；完整实现不在本轮范围，不列为本轮 Tier1 收口项 |
+
+## conformance 四 leg（2026-10-29 复跑实测）
+
+- server legacy：67 passed / 0 failed
+- server modern：197 passed / 0 failed / 0 warnings；`server-stateless` 场景 30/0/0 warnings（listen 成功响应不再追加空 result、客户端以 acknowledged 完成订阅），modern leg 基线条目已清空
+- client legacy：233 passed / 0 failed
+- client modern：450 passed / 9 failed；9 项均为本地构建无 OpenSSL 的 DPoP/ES256 环境限制（`auth/client-credentials-jwt`、`auth/dpop`、`auth/dpop-nonce`），CI runner 具备 OpenSSL 时预期通过，不新增基线
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-ctest 口径 848 用例全绿（`51f35d0` 主代理实测），其后两次提交新增用例尚未复跑：静态 `TEST/TEST_F/TEST_P` 口径现为 **854**（848 + `1668e2e` +3：`OAuthTests` +1、`StreamableHttpTransportTests` +2 + `374a591` +3：`McpTypesTests`），断言 token **3631**（3606 + `1668e2e` +16 + `374a591` +9）；ctest 注册口径待主代理 `ctest -N` 复核，逐目标分布见 [/tests.md](/tests.md)。
-
-T11 口径留档：server legacy 67/67、server modern 194+1、client legacy 11+43、client modern 66+68（auth 全走基线时代）。
+当前测试基线为静态 **954** 用例 / **4429** 断言、17 目标（Windows `ctest -N` 注册 949，差 5 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
 
 ## A-T2 auth 进展（fixture 真实流联调）
 
@@ -46,9 +65,9 @@ T11 口径留档：server legacy 67/67、server modern 194+1、client legacy 11+
 
 证据为 referee `stale`：转绿条目从两 per-leg 基线删除后复跑不再报缺条目（`baseline-2026-07-28.yaml` 删 21、`baseline-2025-11-25.yaml` 删 10；`84f931f/333130c`）。
 
-## B2 证伪（fixture 侧分流不可行，转 B3）
+## B2 证伪与 B3 收口（server-stateless 已转绿删除，server-sse-multiple-streams legacy 保留）
 
-B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。转 B3：基线保留 + 本结论记账，零代码改动。
+B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。B3 收口结果（2026-10-29 复跑）：`server-stateless` 以 30/0/0 warnings 转绿并删除（modern leg 基线清空）；`server-sse-multiple-streams` 仍因 legacy suite 内 skip 以 WARNING 记账，保留于 `baseline-2025-11-25.yaml` 保绿，零代码改动。
 
 ## CI 红根因与修复（三项）
 
@@ -63,8 +82,8 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 1. ~~token 响应无 `iss` 致 provider 流拿不到可用 token~~（**已修**）：原 `ValidateTokenIssuer` 要求 token 响应必须带 `iss`，而 MCP 规范与 RFC 9207 §2.4 只对**授权响应**的 `iss` 施加义务（后者明示「clients MAY accept 不带 iss，由本地策略决定」），属规范误引导致的过度收紧。改为「存在即校验」后，modern leg 假绿（fixture 退出码 1 但 referee 判绿）由 18 处降至 4 处，余 4 处为 `iss-*` 场景 fixture 主动拒绝错误 `iss` 的被测语义（referee 判绿）；`metadata-var1/2/3`、`authorization-server-migration` 四条随之转绿删除（referee stale 证据）
 2. ~~`ExchangeCodeForToken` 忽略 auth method/secret~~（**已修**）：`ApplyClientAuthentication` 覆盖 client_credentials、授权码交换、refresh_token 三个令牌请求
 3. ~~`Discover` 无 PRM 路径插入与 openid 回退~~（**已修**）：夹具侧补齐候选 URL 链（根路径优先 + openid 配置回退 + path-based 前置），provider 侧走 `OAuthMetadata::Discover`
-4. 无传输层 DPoP proof：**发送侧已补**（`apply_per_request_headers` / `observe_response_challenge` 两个注入点 + `ApplyDPoPProofHeader` / `ObserveDPoPNonce`，夹具 `DriveDPoPScenario` 已接线真实授权流）；`dpop`/`dpop-nonce` 已转绿删除——WSL Linux + OpenSSL 3.5.5 实测 `sep-1932-client-*` 五项全 SUCCESS（0 FAILURE / 0 WARNING）；服务端校验链与开关已具备，见 [dpop](/concepts/dpop.md)
-5. 私钥 jwt（**已实现且已转绿**）：`client-credentials-jwt` 已转绿删除——WSL Linux + OpenSSL 实测 `client-credentials-jwt-verified` SUCCESS（35 checks / 0 FAILURE）。期间修正一处真实缺陷——`CreateClientAssertion` 的 `aud` 原取 metadata `token_endpoint`，而 RFC 7523 §3 第 3 条规定 `aud` 的确切字符串由 AS 与颁发方带外约定（token endpoint 仅为 MAY），官方 referee 以 issuer identifier 为约定值，已改为优先 `issuer`；`wif-jwt-bearer` 本 leg 0 failed 但 referee 未标 stale，暂留兜底
+4. 无传输层 DPoP proof：**发送侧已补**（`apply_per_request_headers` / `observe_response_challenge` 两个注入点 + `ApplyDPoPProofHeader` / `ObserveDPoPNonce`，夹具 `DriveDPoPScenario` 已接线真实授权流）；`dpop`/`dpop-nonce` 已转绿删除——WSL Linux + OpenSSL 3.5.5 实测 `sep-1932-client-*` 五项全 SUCCESS（0 FAILURE / 0 WARNING）；服务端校验链与开关已具备，见 [dpop](/concepts/dpop.md)；本地无 OpenSSL 构建的 modern leg 仍报 9 failed（`client-credentials-jwt`/`dpop`/`dpop-nonce`），属同一环境限制，不新增基线
+5. 私钥 jwt（**已实现且已转绿**）：`client-credentials-jwt` 已转绿删除——WSL Linux + OpenSSL 实测 `client-credentials-jwt-verified` SUCCESS（35 checks / 0 FAILURE）。期间修正一处真实缺陷——`CreateClientAssertion` 的 `aud` 原取 metadata `token_endpoint`，而 RFC 7523 §3 第 3 条规定 `aud` 的确切字符串由 AS 与颁发方带外约定（token endpoint 仅为 MAY），官方 referee 以 issuer identifier 为约定值，已改为优先 `issuer`；`wif-jwt-bearer` 于 2026-10-29 实测 passed 后删除
 6. StepUp 无 403 链路：`scope-step-up` 两 leg 均已转绿（modern 24 passed、legacy 20 passed），403 →提权链路可用
 
 ## 非标超集声明
@@ -73,7 +92,7 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 
 ## 遗留记账（未静默丢弃）
 
-1. auth 基线现状（2026-10-13 实测收口）：modern 保留 3 条、legacy 仅留 `http-custom-headers`；两 leg 的 `did_not_complete` 假绿已清零（modern 4 处 `iss-*` 为主动拒绝的被测语义，referee 判绿）。保留条目均为**referee 未标 stale**——`client-credentials-basic`/`enterprise-managed-authorization`/`wif-jwt-bearer` 本 leg 0 failed 但 referee 未标 stale（其「通过」判定口径与摘要 passed 计数不一致），删除会失去兜底故暂留，待 stale 报出后删。完整逐条归因见 [baseline-2026-07-28.yaml](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/blob/develop/tests/conformance/baseline-2026-07-28.yaml) 的 client 段注释
+1. auth 基线现状（2026-10-29 复跑收口）：modern 0 条、legacy 仅留 `http-custom-headers`（本 leg 未运行，保留待复跑）；`client-credentials-basic`/`enterprise-managed-authorization`/`wif-jwt-bearer` 实测 passed 后已删除；两 leg 的 `did_not_complete` 假绿已清零（modern 4 处 `iss-*` 为主动拒绝的被测语义，referee 判绿）。client modern 450/9 的 9 项失败均为本地无 OpenSSL 的 DPoP/ES256 环境限制，不新增基线。完整逐条归因见 [baseline-2026-07-28.yaml](../../tests/conformance/baseline-2026-07-28.yaml) 与 [baseline.yaml](../../tests/conformance/baseline.yaml) 的头部注释
 2. ~~`maxToolInputElements` 未实现~~（已实现：`ServerOptions::max_tool_input_elements` 门在 `tools/call` 入参侧计数，超限回 `is_error` 工具结果而非协议错误——`ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements`，[McpServer.cpp:1993-1998](../../src/server/McpServer.cpp)；`optional` 未设即不限，上限语义见 [experimental-flags](/concepts/experimental-flags.md) 与 `README.md` 「Default upper limits」条）
 3. ~~`ttlMs`/`cacheScope` 客户端消费未验证~~（已实现且有用例：客户端 `McpClient::CacheIfHinted`（[McpClient.cpp:967-982](../../src/client/McpClient.cpp)）兼容两种线格式——2026 时代结果顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，`ttlMs > 0` 才入缓存，`cacheScope` 仅 `"private"` 落 Private 分区、其余按 Public，结果类型另落 `ttl_ms`/`cache_scope` 字段；守护用例见 [response-cache](/concepts/response-cache.md) 与 `tests/unit/McpClientTests.cpp` 的分页/skills/TTL 到期用例）
 4. ~~`enable_listen_stream` 默认 true~~（本分支 `1668e2e` 已改：字段为 `optional<bool>`，未设置时取 `!stateless`——stateful 默认开、stateless 默认关，显式置 `true` 仍可强制开，`ShouldListenStream` 判定见 [StreamableHttpClientTransport.cpp:148-149](../../src/http/StreamableHttpClientTransport.cpp)，`StatelessClientSkipsListenStreamByDefault` / `StatelessClientForcedListenStreamSendsGet` 两用例锁定；口径见 [streamable-http](/transports/streamable-http.md)）

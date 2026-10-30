@@ -34,6 +34,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -1398,4 +1399,106 @@ TEST(StreamableHttpTest, SseEventCapTruncatesResponse) {
 
     handler->Close();
     transport->Close();
+}
+
+TEST(HttpServerTest, SseRegistrationPrecedesFirstFrameWrite) {
+    auto port = PickFreePort(kTestBasePort + 2300);
+    const std::string first_frame =
+        "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/first\"}\n\n";
+    const std::string second_frame =
+        "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/second\"}\n\n";
+    std::string body(": ");
+    body.append(16 * 1024 * 1024, 'x');
+    body += "\n\n";
+    body += first_frame;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/sse", [body](const MCP_Request&, MCP_Response& resp) {
+        resp.is_sse = true;
+        resp.headers["content-type"] = "text/event-stream";
+        resp.body = body;
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+#ifdef _WIN32
+    WSADATA wsa;
+    ASSERT_EQ(WSAStartup(MAKEWORD(2, 2), &wsa), 0);
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_NE(sock, INVALID_SOCKET);
+    DWORD recv_timeout_ms = 10000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&recv_timeout_ms), sizeof(recv_timeout_ms));
+#else
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(sock, 0);
+    timeval recv_timeout{};
+    recv_timeout.tv_sec = 10;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
+#endif
+    int recv_buffer_bytes = 65536;
+#ifdef _WIN32
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+               reinterpret_cast<const char*>(&recv_buffer_bytes), sizeof(recv_buffer_bytes));
+#else
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_bytes, sizeof(recv_buffer_bytes));
+#endif
+
+    struct sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    ASSERT_EQ(connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)), 0);
+
+    const std::string request =
+        "GET /sse HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n";
+    ASSERT_GT(send(sock, request.c_str(), static_cast<int>(request.size()), 0), 0);
+
+    std::string received;
+    char chunk[16384];
+    auto receive_until = [&](const std::string& marker,
+                             std::chrono::steady_clock::time_point deadline) {
+        std::size_t scanned = 0;
+        for (;;) {
+            if (received.find(marker, scanned) != std::string::npos)
+                return true;
+            scanned = received.size() >= marker.size()
+                          ? received.size() - marker.size()
+                          : 0;
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+            int n = recv(sock, chunk, sizeof(chunk), 0);
+            if (n <= 0)
+                return false;
+            received.append(chunk, static_cast<std::size_t>(n));
+        }
+    };
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    ASSERT_TRUE(receive_until("\r\n\r\n", deadline));
+    ASSERT_TRUE(WaitForCondition([&] { return server.SseClientCount() == 1; }, 5000));
+
+    auto broadcast_start = std::chrono::steady_clock::now();
+    server.BroadcastSse(second_frame);
+    auto broadcast_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - broadcast_start).count();
+    EXPECT_LT(broadcast_ms, 1000);
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    bool second_seen = receive_until(second_frame, deadline);
+
+#ifdef _WIN32
+    closesocket(sock);
+    WSACleanup();
+#else
+    close(sock);
+#endif
+
+    ASSERT_TRUE(second_seen);
+    auto first_pos = received.find(first_frame);
+    auto second_pos = received.find(second_frame);
+    ASSERT_NE(first_pos, std::string::npos);
+    ASSERT_NE(second_pos, std::string::npos);
+    EXPECT_LT(first_pos, second_pos);
+    server.Stop();
 }

@@ -16,6 +16,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <atomic>
 #include <mutex>
@@ -103,9 +104,11 @@ public:
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
     std::string GetNegotiatedProtocolVersion() const;
-    const ServerCapabilities& GetCapabilities() const;
+    ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
+    bool IsRunning() const;
+    const std::string& SessionId() const { return session_id_; }
 
     McpSessionHandler& GetSessionHandler() { return *handler_; }
 
@@ -128,6 +131,7 @@ private:
 
     JsonValue BuildToolsJson();
     std::vector<std::string> EffectiveSupportedVersions() const;
+    Implementation ResolveServerInfo() const;
     CacheHint ResolveCacheHint(std::string_view method) const;
     void EmitLoggingMessage(LoggingLevel level, std::string_view data);
     void HandleListTools(
@@ -162,6 +166,9 @@ private:
         const SubscriptionFilter& honored, std::string_view subscription_id);
     void AbandonPendingUrlElicitation(
         const std::string& elicitation_id, std::exception_ptr error);
+    std::string MakeTaskId() const;
+    void SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store);
+    bool IsTaskOwnedBySession(const TaskState& task) const;
 
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
@@ -169,7 +176,7 @@ private:
     ServerCapabilities capabilities_;
 
     mutable std::shared_mutex registry_mutex_;
-    std::unordered_map<std::string, std::shared_ptr<McpServerTool>> tools_;
+    std::map<std::string, std::shared_ptr<McpServerTool>, std::less<>> tools_;
     std::optional<JsonValue> cached_tools_json_;
     struct ResourceEntry {
         std::string name;
@@ -202,6 +209,7 @@ private:
     mutable std::mutex client_info_mutex_;
 
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;
+    mutable std::mutex completion_handler_mutex_;
 
     std::mutex pending_async_mutex_;
     std::vector<std::shared_future<void>> pending_async_futures_;
@@ -221,9 +229,9 @@ private:
 
     std::atomic<uint64_t> next_subscription_id_{1};
 
-    std::atomic<uint64_t> next_task_id_{1};
-
     std::atomic<uint64_t> next_elicitation_id_{1};
+
+    std::string session_id_;
 
     struct PendingUrlElicitation {
         std::promise<ElicitResult> promise;
