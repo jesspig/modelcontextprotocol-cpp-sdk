@@ -1,0 +1,22 @@
+# Known 0.3.8 -> 0.3.9 compile breaks.
+# Each entry names a probe macro in previous_public_api.cpp. The probe must
+# fail to compile; a probe that starts compiling is a stale allowlist entry.
+# Any probe not listed here must compile, and the baseline translation unit
+# must always compile.
+
+RESOURCE_LINK_AGGREGATE
+CLIENT_OPTIONS_APPS_EXTENSION
+CLIENT_OPTIONS_AGGREGATE
+SERVER_OPTIONS_LEGACY_SHIM
+SERVER_OPTIONS_ENABLE_DPOP
+SERVER_OPTIONS_INTERCEPTOR_ALIAS
+CLIENT_OPTIONS_URL_HANDLER_VOID
+SET_URL_HANDLER_VOID
+GET_CAPABILITIES_SIGNATURE
+COMPLETE_REQUEST_PARAMS_AGGREGATE
+TASK_STATE_AGGREGATE
+PENDING_REQUEST_AGGREGATE
+
+# Runtime-only changes are checked by the mcp-compat-runtime executable, not by
+# a compile probe: FileRef rejects fractional/out-of-range/non-numeric values
+# with DeserializeFailed, and ResourceLink requires a non-empty name.

@@ -9,3 +9,4 @@ add_subdirectory(bench)
 
 add_subdirectory(integration)
 add_subdirectory(conformance)
+add_subdirectory(compat)
