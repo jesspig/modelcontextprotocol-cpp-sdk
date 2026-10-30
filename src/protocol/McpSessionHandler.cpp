@@ -397,7 +397,7 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
             InvokeSpan(span_handler_, event, SpanPhase::End);
         }
         span_open = false;
-        SendErrorResponse(req.id, code, message, std::move(data));
+        SendErrorResponse(req.id, code, message, std::move(data), req.session_id);
     };
 
     std::shared_ptr<WireCodec> codec;
@@ -568,6 +568,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         JsonRpcResponse resp;
         resp.id = item.req.id;
         resp.result = codec->EncodeResult(item.req.method, result);
+        resp.session_id = item.req.session_id;
         if (server_info_ && IsJuly2026OrLater()) {
             InjectServerInfoMeta(resp.result, *server_info_);
         }
@@ -580,6 +581,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
         err_resp.error.message = e.what();
+        err_resp.session_id = item.req.session_id;
         if (e.Data()) err_resp.error.data = *e.Data();
         finish_span(true);
         SendMessage(JsonRpcMessage{std::move(err_resp)});
@@ -590,6 +592,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
         err_resp.error.message = "internal error";
+        err_resp.session_id = item.req.session_id;
         LogContext ctx;
         ctx.method = item.req.method;
         ctx.request_id = RequestIdToText(item.req.id);
@@ -603,6 +606,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
         err_resp.error.message = "internal error";
+        err_resp.session_id = item.req.session_id;
         LogContext ctx;
         ctx.method = item.req.method;
         ctx.request_id = RequestIdToText(item.req.id);
@@ -984,7 +988,7 @@ void McpSessionHandler::NotifySubscribers(
     }
 }
 
-void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data) {
+void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data, std::string_view session_id) {
     std::shared_ptr<WireCodec> codec;
     {
         std::shared_lock<std::shared_mutex> lock(codec_mutex_);
@@ -995,6 +999,7 @@ void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code
     err_resp.error.code = static_cast<McpErrorCode>(
         codec->EncodeErrorCode(static_cast<int32_t>(code)));
     err_resp.error.message = std::string(message);
+    err_resp.session_id = std::string(session_id);
     if (data) err_resp.error.data = std::move(*data);
     SendMessage(JsonRpcMessage{std::move(err_resp)});
 }

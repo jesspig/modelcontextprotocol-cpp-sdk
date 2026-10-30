@@ -1616,7 +1616,7 @@ void McpServer::WireTaskHandlers() {
                     RequestContext<CallToolRequestParams> resume_ctx(
                         *this, req, std::move(resume_params),
                         std::move(resume_log), resume_flag,
-                        handler_->IsJuly2026OrLater());
+                        handler_->IsJuly2026OrLater(), req.session_id);
                     auto resume_promise = std::promise<CallToolResult>();
                     auto resume_future = resume_promise.get_future();
                     resume_tool->InvokeAsync(resume_ctx, std::move(resume_promise));
@@ -2247,7 +2247,7 @@ void McpServer::HandleCallTool(
     }
     auto ctx = RequestContext<CallToolRequestParams>(
         *this, req, std::move(params), std::move(log_fn), cancel_flag,
-        handler_->IsJuly2026OrLater());
+        handler_->IsJuly2026OrLater(), req.session_id);
 
     auto tool = it->second;
 

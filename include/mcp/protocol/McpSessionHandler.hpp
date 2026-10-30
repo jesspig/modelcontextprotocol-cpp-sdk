@@ -92,7 +92,7 @@ public:
         JsonValue params,
         std::optional<std::string> resource_uri = std::nullopt);
 
-    void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data = std::nullopt);
+    void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data = std::nullopt, std::string_view session_id = {});
 
     void HandleCancelled(const JsonRpcNotification& notif);
 
