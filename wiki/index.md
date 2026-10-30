@@ -41,6 +41,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/concepts/storage.md](/concepts/storage.md) — 原子写入与失败语义
 - [/concepts/oauth.md](/concepts/oauth.md) — PKCE、RFC 9207、刷新/吊销、服务端 Bearer 资源服务器
 - [/concepts/dpop.md](/concepts/dpop.md) — DPoP 验签链、开关与 OpenSSL 可选依赖、逐请求 proof 缺口
+- [/concepts/openssl-compat.md](/concepts/openssl-compat.md) — OpenSSL 支持矩阵、CI 锁定与升级清单
 - [/concepts/logging.md](/concepts/logging.md) — 日志级别、全局钩子与可观测性
 - [/concepts/response-cache.md](/concepts/response-cache.md) — 客户端响应缓存与失效
 - [/concepts/uri-template.md](/concepts/uri-template.md) — RFC 6570 URI 模板匹配
