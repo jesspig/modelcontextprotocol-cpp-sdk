@@ -34,8 +34,10 @@
 #ifdef MCP_HAVE_OPENSSL
 #include <openssl/asn1.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
+#include "TlsTestCertificate.hpp"
 #include <transport/detail/net/TlsSocket.hpp>
 #endif
 
@@ -710,38 +712,22 @@ TEST(TransportTest, StdioClientDisconnectsAndReportsWriteFailure) {
 
 namespace {
 
-EVP_PKEY* GenerateTestPrivateKey() {
-    EVP_PKEY* key = nullptr;
-    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
-    if (ctx == nullptr) return nullptr;
-    bool ok = EVP_PKEY_keygen_init(ctx) > 0 &&
-              EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) > 0 &&
-              EVP_PKEY_keygen(ctx, &key) > 0;
-    EVP_PKEY_CTX_free(ctx);
-    if (!ok) {
-        if (key != nullptr) EVP_PKEY_free(key);
-        return nullptr;
-    }
-    return key;
+X509* LoadTestCertificate() {
+    BIO* bio = BIO_new_mem_buf(kTestCertificatePem.data(),
+        static_cast<int>(kTestCertificatePem.size()));
+    if (bio == nullptr) return nullptr;
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return cert;
 }
 
-X509* GenerateTestCertificate(EVP_PKEY* key) {
-    X509* cert = X509_new();
-    if (cert == nullptr) return nullptr;
-    X509_set_version(cert, 2);
-    ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
-    X509_gmtime_adj(X509_getm_notBefore(cert), -3600);
-    X509_gmtime_adj(X509_getm_notAfter(cert), 3600);
-    X509_set_pubkey(cert, key);
-    X509_NAME* name = X509_get_subject_name(cert);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-        reinterpret_cast<const unsigned char*>("localhost"), -1, -1, 0);
-    X509_set_issuer_name(cert, name);
-    if (X509_sign(cert, key, EVP_sha256()) == 0) {
-        X509_free(cert);
-        return nullptr;
-    }
-    return cert;
+EVP_PKEY* LoadTestPrivateKey() {
+    BIO* bio = BIO_new_mem_buf(kTestPrivateKeyPem.data(),
+        static_cast<int>(kTestPrivateKeyPem.size()));
+    if (bio == nullptr) return nullptr;
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return key;
 }
 
 struct TlsStubServer {
@@ -753,9 +739,9 @@ struct TlsStubServer {
 
 void TlsStubServe(TlsStubServer* state, const std::string& payload) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
-    EVP_PKEY* key = GenerateTestPrivateKey();
-    X509* cert = key != nullptr ? GenerateTestCertificate(key) : nullptr;
-    if (ctx == nullptr || cert == nullptr) {
+    EVP_PKEY* key = LoadTestPrivateKey();
+    X509* cert = LoadTestCertificate();
+    if (ctx == nullptr || key == nullptr || cert == nullptr) {
         if (cert != nullptr) X509_free(cert);
         if (key != nullptr) EVP_PKEY_free(key);
         if (ctx != nullptr) SSL_CTX_free(ctx);
