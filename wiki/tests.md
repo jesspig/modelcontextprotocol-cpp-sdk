@@ -70,6 +70,8 @@ resource: tests/CMakeLists.txt
 
 前瞻六开关批次（748 → 769，+21：`mcp-server-tests` +8（文件输入 5 + 触发器 3）、`mcp-client-tests` +7（搜索 3 + ETag 4）、`mcp-streamable-http-tests` +3（DPoP 服务端）、`mcp-oauth-tests` +3（DPoP 客户端）；断言 3145 → 3287，+142；全量 `ctest --preset debug` 769/769 全绿；其后 769 → 874（+105，后续批次，同样并入既有目标，目标数仍 18，分布见上表）；详见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)）。
 
+- TLS 测试证书使用 [TlsTestCertificate.hpp](../tests/unit/TlsTestCertificate.hpp) 的静态 PEM 夹具（CN=localhost，100 年有效期，测试专用、非敏感）；`TlsStubServe` 通过 `PEM_read_bio_X509`/`PEM_read_bio_PrivateKey` 加载，不再运行时调用 X509 生成 API。重新生成可用 `openssl req -x509 -newkey rsa:2048 -sha256 -days 36500 -nodes -keyout key.pem -out cert.pem -subj "/CN=localhost"`，再按 raw string 格式回填；测试目标仍为 `mcp-transport-tests`，注册数与断言数不变。
+
 ## googletest 承载与保留件
 
 - **框架**：googletest v1.18.0（git submodule `third_party/googletest`，`EXCLUDE_FROM_ALL`；`BUILD_GMOCK OFF`/`INSTALL_GTEST OFF`/`gtest_force_shared_crt ON`）；17 个测试目标链接 `mcp-test-support`（[tests/support/](../tests/support/)，保留件 INTERFACE 库）+ `GTest::gtest_main`；断言、夹具、`SCOPED_TRACE`、`GTEST_SKIP`、`SetUpTestSuite`、`AddGlobalTestEnvironment`、`RecordProperty` 等全部由 googletest 原生承载

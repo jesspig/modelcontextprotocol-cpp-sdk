@@ -42,7 +42,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets you build ser
 |----------------|----------------|------------------------------|
 | CMake          | 3.28           | Generator: Ninja recommended |
 | C++ Compiler   | C++17          | MSVC, Clang, GCC             |
-| OpenSSL        | (optional)     | Controlled by the `MCP_WITH_OPENSSL` switch (`AUTO`/`ON`/`OFF`, default `AUTO`). Required for TLS (WebSocket, SSE HTTPS); OAuth PKCE works without it (built-in SHA-256 fallback). Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
+| OpenSSL        | (optional)     | Controlled by the `MCP_WITH_OPENSSL` switch (`AUTO`/`ON`/`OFF`, default `AUTO`). Required for TLS (WebSocket, SSE HTTPS); OAuth PKCE works without it (built-in SHA-256 fallback). Supports 3.x/4.x. Install: `vcpkg install openssl` / `apt install libssl-dev` / `brew install openssl` |
 
 Supported platforms: **Windows** (MSVC, clang-cl), **Linux** (GCC, Clang), **macOS** (Clang).
 
