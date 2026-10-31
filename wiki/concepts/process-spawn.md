@@ -3,7 +3,7 @@ type: Concept
 title: 子进程 Spawn API
 description: 公共子进程管理接口：无 shell 参数传递、环境继承与覆盖、工作目录、stdout/stderr 重定向、Wait/ExitCode/Terminate、Windows Job Object 树终止与 POSIX 进程组/回收。
 tags: [process, spawn, 子进程, job-object, posix-spawn, 进程组]
-timestamp: 2026-10-31T03:49:04+08:00
+timestamp: 2026-10-31T14:15:09+08:00
 resource: include/mcp/process/Process.hpp
 ---
 
@@ -54,7 +54,9 @@ resource: include/mcp/process/Process.hpp
 
 ## 复用与 stdio 的关系
 
-Windows 的 UTF-8 转换、命令线引号与环境块构造已抽到 [WindowsProcessSupport.hpp](../../src/process/detail/WindowsProcessSupport.hpp)/[.cpp](../../src/process/detail/WindowsProcessSupport.cpp)，由 `PlatformIO` 的 `CreateProcess` 与公共 `Spawn` 共用；[win32_platform.cpp](../../src/transport/detail/win32_platform.cpp) 行为不变（环境覆盖从“追加重复键”改为“过滤后覆盖”，更符合 Windows 语义）。`StdioClientTransport` 仍走 `ProcessStartInfo`/`CreateProcess` 管道路径，未接入本 API。
+Windows 的 UTF-8 转换、命令线引号、环境块、重定向文件与 Job Object 辅助已抽到 [WindowsProcessSupport.hpp](../../src/process/detail/WindowsProcessSupport.hpp)/[.cpp](../../src/process/detail/WindowsProcessSupport.cpp)；POSIX 的重定向文件、进程组信号与 `waitpid` 回收辅助位于 [PosixProcessSupport.hpp](../../src/process/detail/PosixProcessSupport.hpp)/[.cpp](../../src/process/detail/PosixProcessSupport.cpp)。公共 `Spawn` 与 `PlatformIO::CreateProcess` 共用这些平台辅助，不重复实现。
+
+`StdioClientTransport` 保留 stdin/stdout 管道路径（公共 API 不暴露管道），并通过 `stderr_path` / `on_stderr` 支持 stderr 文件或回调、通过 `shutdown_timeout` 控制关闭宽限、通过 `terminate_process_tree` 启用 Windows Job Object 或 POSIX 进程组树终止，`Pid()` 返回子进程 PID；默认保持原有继承父 stderr、2s 关闭宽限与仅终止根进程的行为。
 
 ## 验证
 

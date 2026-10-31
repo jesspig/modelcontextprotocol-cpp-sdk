@@ -12,6 +12,7 @@ struct ProcessHandle {
     virtual ~ProcessHandle() = default;
     virtual bool IsRunning() = 0;
     virtual bool Terminate(int timeout_ms) = 0;
+    virtual int64_t Pid() const = 0;
 };
 
 struct PipeHandle {
@@ -28,12 +29,16 @@ struct ProcessStartInfo {
     std::string working_directory;
     bool inherit_environment = true;
     std::vector<std::pair<std::string, std::string>> environment_variables;
+    std::string stderr_path;
+    bool capture_stderr = false;
+    bool terminate_process_tree = false;
 };
 
 struct CreatedProcess {
     std::unique_ptr<ProcessHandle> process;
     std::unique_ptr<PipeHandle> stdin_pipe;
     std::unique_ptr<PipeHandle> stdout_pipe;
+    std::unique_ptr<PipeHandle> stderr_pipe;
 };
 
 CreatedProcess CreateProcess(const ProcessStartInfo& info);

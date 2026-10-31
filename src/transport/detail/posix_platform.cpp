@@ -1,6 +1,7 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
+#include <process/detail/PosixProcessSupport.hpp>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -136,36 +137,48 @@ public:
 
 class PosixProcess : public ProcessHandle {
     pid_t pid_ = -1;
+    bool tree_ = false;
 public:
-    explicit PosixProcess(pid_t pid) : pid_(pid) {}
+    PosixProcess(pid_t pid, bool tree) : pid_(pid), tree_(tree) {}
     ~PosixProcess() override;
 
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
+    int64_t Pid() const override { return static_cast<int64_t>(pid_); }
+
+private:
+    void Signal(int signal_number);
 };
 
 PosixProcess::~PosixProcess() {
-    if (pid_ > 0) {
-        kill(pid_, SIGKILL);
-        waitpid(pid_, nullptr, WNOHANG);
-    }
+    if (pid_ <= 0) return;
+    Signal(SIGKILL);
+    try { process::detail::ReapPosixProcess(pid_, true); } catch (...) {}
+}
+
+void PosixProcess::Signal(int signal_number) {
+    if (tree_) process::detail::SignalPosixProcessGroup(pid_, signal_number);
+    else if (pid_ > 0) kill(pid_, signal_number);
 }
 
 bool PosixProcess::IsRunning() {
     if (pid_ <= 0) return false;
-    int status = 0;
-    pid_t result = waitpid(pid_, &status, WNOHANG);
-    if (result == 0) return true;
-    if (result == pid_) {
+    process::detail::PosixProcessExit exit;
+    try {
+        exit = process::detail::ReapPosixProcess(pid_, false);
+    } catch (const std::runtime_error&) {
+        return false;
+    }
+    if (exit.exited) {
         pid_ = -1;
         return false;
     }
-    return false;
+    return true;
 }
 
 bool PosixProcess::Terminate(int timeout_ms) {
     if (pid_ <= 0) return true;
-    kill(pid_, SIGTERM);
+    Signal(SIGTERM);
 
     int elapsed = 0;
     while (elapsed < timeout_ms) {
@@ -174,8 +187,8 @@ bool PosixProcess::Terminate(int timeout_ms) {
         elapsed += 10;
     }
 
-    kill(pid_, SIGKILL);
-    waitpid(pid_, nullptr, 0);
+    Signal(SIGKILL);
+    try { process::detail::ReapPosixProcess(pid_, true); } catch (...) {}
     pid_ = -1;
     return true;
 }
@@ -221,6 +234,33 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     }
     SetCloseOnExec(stdin_pipefd[0]);
     SetCloseOnExec(stdin_pipefd[1]);
+
+    int stderr_pipefd[2] = { -1, -1 };
+    if (info.capture_stderr) {
+        if (pipe(stderr_pipefd) < 0) {
+            close(stdout_pipefd[0]);
+            close(stdout_pipefd[1]);
+            close(stdin_pipefd[0]);
+            close(stdin_pipefd[1]);
+            throw std::runtime_error("pipe creation failed for stderr");
+        }
+        SetCloseOnExec(stderr_pipefd[0]);
+        SetCloseOnExec(stderr_pipefd[1]);
+    }
+
+    int stderr_descriptor = -1;
+    try {
+        if (!info.capture_stderr && !info.stderr_path.empty())
+            stderr_descriptor = process::detail::OpenPosixRedirectFile(info.stderr_path);
+    } catch (...) {
+        close(stdout_pipefd[0]);
+        close(stdout_pipefd[1]);
+        close(stdin_pipefd[0]);
+        close(stdin_pipefd[1]);
+        if (stderr_pipefd[0] >= 0) close(stderr_pipefd[0]);
+        if (stderr_pipefd[1] >= 0) close(stderr_pipefd[1]);
+        throw;
+    }
 
     std::vector<std::string> args;
     args.push_back(info.command);
@@ -282,6 +322,9 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         close(stdout_pipefd[1]);
         close(stdin_pipefd[0]);
         close(stdin_pipefd[1]);
+        if (stderr_pipefd[0] >= 0) close(stderr_pipefd[0]);
+        if (stderr_pipefd[1] >= 0) close(stderr_pipefd[1]);
+        if (stderr_descriptor >= 0) close(stderr_descriptor);
         throw std::runtime_error("fork failed");
     }
 
@@ -294,6 +337,17 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
         close(stdin_pipefd[0]);
         close(stdout_pipefd[1]);
+
+        if (info.capture_stderr) {
+            close(stderr_pipefd[0]);
+            dup2(stderr_pipefd[1], STDERR_FILENO);
+            close(stderr_pipefd[1]);
+        } else if (stderr_descriptor >= 0) {
+            dup2(stderr_descriptor, STDERR_FILENO);
+            close(stderr_descriptor);
+        }
+
+        if (info.terminate_process_tree) setpgid(0, 0);
 
         if (!info.working_directory.empty()) {
             if (chdir(info.working_directory.c_str()) != 0)
@@ -310,11 +364,15 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
     close(stdin_pipefd[0]);
     close(stdout_pipefd[1]);
+    if (info.capture_stderr) close(stderr_pipefd[1]);
+    if (stderr_descriptor >= 0) close(stderr_descriptor);
 
     CreatedProcess result;
-    result.process = std::make_unique<PosixProcess>(pid);
+    result.process = std::make_unique<PosixProcess>(pid, info.terminate_process_tree);
     result.stdin_pipe = std::make_unique<PosixPipe>(stdin_pipefd[1]);
     result.stdout_pipe = std::make_unique<PosixPipe>(stdout_pipefd[0]);
+    if (info.capture_stderr)
+        result.stderr_pipe = std::make_unique<PosixPipe>(stderr_pipefd[0]);
     return result;
 }
 

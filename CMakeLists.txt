@@ -150,7 +150,8 @@ else()
     target_sources(mcp-transport PRIVATE
         src/transport/detail/posix_platform.cpp
         src/transport/detail/net/TcpSocketPosix.cpp
-        src/process/ProcessPosix.cpp)
+        src/process/ProcessPosix.cpp
+        src/process/detail/PosixProcessSupport.cpp)
 endif()
 target_link_libraries(mcp-transport PUBLIC mcp-core)
 if(WIN32)

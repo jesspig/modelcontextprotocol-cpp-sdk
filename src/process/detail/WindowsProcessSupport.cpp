@@ -91,4 +91,43 @@ std::wstring BuildWindowsEnvironmentBlock(const std::map<std::string, std::strin
     return block;
 }
 
+HANDLE OpenWindowsRedirectFile(const std::string& path) {
+    SECURITY_ATTRIBUTES attributes = {};
+    attributes.nLength = sizeof(attributes);
+    attributes.bInheritHandle = TRUE;
+    attributes.lpSecurityDescriptor = nullptr;
+    HANDLE handle = CreateFileW(Utf8ToWide(path).c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        throw std::runtime_error("failed to open process output file '" + path +
+            "': Windows error " + std::to_string(GetLastError()));
+    return handle;
+}
+
+HANDLE CreateWindowsJobObject(bool kill_on_close, bool breakaway_ok) {
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job == nullptr) return nullptr;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+    if (kill_on_close)
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (breakaway_ok)
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+            &limits, sizeof(limits))) {
+        CloseHandle(job);
+        return nullptr;
+    }
+    return job;
+}
+
+bool AssignWindowsProcessToJob(HANDLE job, HANDLE process) {
+    return AssignProcessToJobObject(job, process) != FALSE;
+}
+
+void TerminateWindowsJobOrProcess(HANDLE job, HANDLE process) {
+    if (job != nullptr && TerminateJobObject(job, 1)) return;
+    TerminateProcess(process, 1);
+}
+
 }}} // namespace mcp::process::detail

@@ -1,5 +1,6 @@
 #include <mcp/process/Process.hpp>
 #include <mcp/McpError.hpp>
+#include <process/detail/PosixProcessSupport.hpp>
 
 #include <fcntl.h>
 #include <signal.h>
@@ -108,28 +109,23 @@ void AppendEnvironment(const SpawnOptions& options, std::vector<std::string>& en
 }
 
 int OpenRedirectFile(const std::string& path) {
-    int flags = O_WRONLY | O_CREAT | O_TRUNC;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-    int descriptor = ::open(path.c_str(), flags, 0644);
-    if (descriptor < 0)
-        throw McpError(McpErrorCode::InternalError,
-                       "failed to open spawn output file '" + path + "': " + std::strerror(errno));
-    return descriptor;
+    try {
+        return process::detail::OpenPosixRedirectFile(path);
+    } catch (const std::runtime_error& error) {
+        throw McpError(McpErrorCode::InternalError, error.what());
+    }
 }
 
 void CloseDescriptor(int descriptor) {
-    if (descriptor >= 0) ::close(descriptor);
+    process::detail::ClosePosixDescriptor(descriptor);
 }
 
 void SignalProcessGroup(pid_t pid, int signal) {
-    if (kill(-pid, signal) == 0) return;
-    if (errno == ESRCH) kill(pid, signal);
+    process::detail::SignalPosixProcessGroup(pid, signal);
 }
 
 bool ProcessGroupAlive(pid_t pid) {
-    return kill(-pid, 0) == 0 || errno == EPERM;
+    return process::detail::PosixProcessGroupAlive(pid);
 }
 
 class PosixSpawnedProcess : public SpawnedProcess {
@@ -145,14 +141,12 @@ public:
         }
         if (detached_) {
             std::thread([pid] {
-                int status = 0;
-                while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+                try { process::detail::ReapPosixProcess(pid, true); } catch (...) {}
             }).detach();
             return;
         }
-        kill(-pid, SIGKILL);
-        int status = 0;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        SignalProcessGroup(pid, SIGKILL);
+        try { process::detail::ReapPosixProcess(pid, true); } catch (...) {}
     }
 
     int64_t Pid() const override { return static_cast<int64_t>(pid_); }
@@ -215,22 +209,15 @@ public:
 
 private:
     void TryReapLocked() const {
-        int status = 0;
-        pid_t result = waitpid(pid_, &status, WNOHANG);
-        if (result == pid_) {
-            exited_ = true;
-            if (WIFEXITED(status)) exit_code_ = WEXITSTATUS(status);
-            else if (WIFSIGNALED(status)) exit_code_ = 128 + WTERMSIG(status);
-            return;
+        process::detail::PosixProcessExit exit;
+        try {
+            exit = process::detail::ReapPosixProcess(pid_, false);
+        } catch (const std::runtime_error& error) {
+            throw McpError(McpErrorCode::InternalError, error.what());
         }
-        if (result == 0) return;
-        if (errno == EINTR) return;
-        if (errno == ECHILD) {
-            exited_ = true;
-            return;
-        }
-        throw McpError(McpErrorCode::InternalError,
-                       std::string("waitpid failed for spawned process: ") + std::strerror(errno));
+        if (!exit.exited) return;
+        exited_ = true;
+        exit_code_ = exit.code;
     }
 
     mutable std::mutex mutex_;
