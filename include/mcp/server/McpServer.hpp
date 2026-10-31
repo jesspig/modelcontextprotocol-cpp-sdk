@@ -75,10 +75,12 @@ public:
     void RegisterSkill(Skill skill);
     void SetSkillsDirectoryRead(bool enabled);
 
-    std::future<ElicitResult> Elicit(const ElicitRequestParams& params);
+    std::future<ElicitResult> Elicit(const ElicitRequestParams& params,
+        std::string_view session_id = {});
     std::future<ElicitResult> ElicitUrl(const std::string& url,
         const std::string& message,
-        std::chrono::seconds timeout = std::chrono::seconds(600));
+        std::chrono::seconds timeout = std::chrono::seconds(600),
+        std::string_view session_id = {});
 
 
     using CompletionHandler = std::function<CompleteResult(const CompleteRequestParams&)>;
@@ -183,6 +185,7 @@ private:
         std::string_view session_id) const;
     bool IsSessionInitialized(std::string_view session_id) const;
     void MarkSessionInitialized(std::string_view session_id);
+    std::string EffectiveSessionId(std::string_view session_id) const;
 
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;

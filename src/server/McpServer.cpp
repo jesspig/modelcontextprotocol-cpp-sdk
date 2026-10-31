@@ -1057,6 +1057,16 @@ void McpServer::MarkSessionInitialized(std::string_view session_id) {
     client_sessions_[std::string(session_id)].initialized = true;
 }
 
+std::string McpServer::EffectiveSessionId(std::string_view session_id) const {
+    if (!session_id.empty()) return std::string(session_id);
+    std::lock_guard<std::mutex> lock(client_info_mutex_);
+    if (client_capabilities_) return std::string();
+    if (client_sessions_.size() != 1) return std::string();
+    auto it = client_sessions_.begin();
+    if (it->first.empty()) return std::string();
+    return it->first;
+}
+
 void McpServer::SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store) {
     if (!store) return;
     std::vector<std::string> expired;
@@ -1125,8 +1135,10 @@ void McpServer::EmitTriggerEvent(const std::string& type, JsonValue data) {
     }
 }
 
-std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
-    const std::string version = handler_->NegotiatedProtocolVersion();
+std::future<ElicitResult> McpServer::Elicit(
+    const ElicitRequestParams& params, std::string_view session_id) {
+    const std::string session = EffectiveSessionId(session_id);
+    const std::string version = handler_->NegotiatedProtocolVersion(session);
     if (IsModernProtocolVersion(version)) {
         InputRequest request;
         request.method = std::string(methods::kElicit);
@@ -1137,7 +1149,7 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
     }
 
     const bool url_mode = params.mode == "url";
-    const auto caps = GetClientCapabilities();
+    const auto caps = GetClientCapabilities(session);
     const ElicitationCapability* elicitation =
         (caps && caps->elicitation) ? &*caps->elicitation : nullptr;
     const bool declared = elicitation != nullptr &&
@@ -1181,8 +1193,10 @@ std::future<ElicitResult> McpServer::Elicit(const ElicitRequestParams& params) {
 std::future<ElicitResult> McpServer::ElicitUrl(
     const std::string& url,
     const std::string& message,
-    std::chrono::seconds timeout) {
-    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion())) {
+    std::chrono::seconds timeout,
+    std::string_view session_id) {
+    const std::string session = EffectiveSessionId(session_id);
+    if (IsModernProtocolVersion(handler_->NegotiatedProtocolVersion(session))) {
         (void)timeout;
         ElicitRequestParams params;
         params.message = message;
@@ -1191,7 +1205,7 @@ std::future<ElicitResult> McpServer::ElicitUrl(
         InputRequest request;
         request.method = std::string(methods::kElicit);
         request.params = SerializeElicitRequestParams(
-            params, handler_->NegotiatedProtocolVersion());
+            params, handler_->NegotiatedProtocolVersion(session));
         InputRequests requests;
         requests[std::string(kUrlElicitationInputKey)] = std::move(request);
         throw ElicitationInputRequired(std::move(requests));
@@ -1206,7 +1220,7 @@ std::future<ElicitResult> McpServer::ElicitUrl(
     params.elicitation_id = elicitation_id;
 
     RequestMeta meta;
-    auto vers = handler_->NegotiatedProtocolVersion();
+    auto vers = handler_->NegotiatedProtocolVersion(session);
     meta.protocol_version = vers.empty()
         ? std::string(kLatestProtocolVersion) : std::string(vers);
 
@@ -3336,7 +3350,7 @@ ext::ServerCard McpServer::GetServerCard() const {
 
 bool McpServer::IsMrtrSupported() const {
     if (is_stateless_) return false;
-    auto caps = GetClientCapabilities();
+    auto caps = GetClientCapabilities(EffectiveSessionId({}));
     return caps && caps->elicitation.has_value();
 }
 
