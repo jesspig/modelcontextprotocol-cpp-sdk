@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-10-15T13:14:29+08:00
+timestamp: 2026-10-31T18:13:54+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -56,7 +56,7 @@ resource: src/server/McpServer.cpp
 - `SendLoggingMessage` 的 wire `level` 为**官方字符串**（`SerializeLoggingLevel`，如 `"debug"`/`"error"`）——原数字枚举直写为真 bug，已修正（官方 conformance 捕获）
 - `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全；构造多参 `cancellation_flag` 供任务化执行传入协作取消标志
 - 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`，modern 经 `NotifySubscribers` 按订阅路由、legacy 广播），`SendTaskStatus` 公开方法发送 `tasks/status`（同样按协商时代二选一路），任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`
-- `ElicitUrl(url, message, timeout=600s)`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`
+- `ElicitUrl(url, message, timeout=600s, session_id={})`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`；会话解析见 [/classes/mcp-server.md](../classes/mcp-server.md)
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - `resources/read` 两轮遍历（[McpServer.cpp:1228](../../src/server/McpServer.cpp)）：第一轮**静态资源优先**（跳过 `is_template`，`uri_pattern == uri` 精确匹配调 `handler(uri)`）；未命中再逐模板 `detail::UriTemplate::Parse` + `Match`，命中调 `template_handler(uri, variables)`（变量名→pct-decoded 值，[McpServer.hpp:171](../../include/mcp/server/McpServer.hpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`。命中分支同样回填 `resources/read` 的 cache hint
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
