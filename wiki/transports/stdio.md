@@ -3,7 +3,7 @@ type: Transport
 title: Stdio 传输
 description: 服务端（stdin/stdout 管道）+ 客户端（子进程）双向传输，'\n' 分隔的 JSON-RPC 行。
 tags: [transport, stdio, 管道, 子进程]
-timestamp: 2026-09-15T15:49:10+08:00
+timestamp: 2026-10-31T03:49:04+08:00
 resource: src/transport/StdioServerTransport.cpp
 ---
 
@@ -23,7 +23,7 @@ resource: src/transport/StdioServerTransport.cpp
 ## 客户端（工厂）
 
 - 选项：`command / arguments / name / working_directory / inherit_environment_variables(true) / environment_variables`
-- `Connect()`：选项转 `ProcessStartInfo` → `CreateProcess` → 构造匿名命名空间会话传输 → 启动即 `SetConnected()`
+- `Connect()`：选项转 `ProcessStartInfo` → `CreateProcess` → 构造匿名命名空间会话传输 → 启动即 `SetConnected()`；`CreateProcess` 与公共 `Spawn` 共用 Windows 命令线/环境块辅助函数，但本传输仍走管道路径，行为未变（见 [/concepts/process-spawn.md](../concepts/process-spawn.md)）
 - `Close()`：`running_.exchange(false)` 非真则提前返回（客户端保留该行为）→ 关 stdin 管道 → `process_->Terminate(2000)` → 关 stdout 管道 → join → 关通道
 - 读循环同样有 8MB 缓冲超限防护（清空 + `NotifyError` + break）；EOF 后不置 `running_`（既有行为）
 - `Name()` 空时返回 `"stdio"`
@@ -43,6 +43,7 @@ resource: src/transport/StdioServerTransport.cpp
 ## 相关页面
 
 - [/modules/transport.md](../modules/transport.md) — 所属库
+- [/concepts/process-spawn.md](../concepts/process-spawn.md) — 公共子进程 Spawn 与平台进程语义
 - [/concepts/concurrency.md](../concepts/concurrency.md) — 线程与 Close 语义
 - [/classes/message-channel.md](../classes/message-channel.md) — 消息载体
 - [/examples/EchoServer](../../examples/EchoServer) — 使用示例（stdio 服务端）
