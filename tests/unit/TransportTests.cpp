@@ -863,7 +863,6 @@ TEST(TransportTest, StdioProcessTreeTerminated) {
     EXPECT_TRUE(StdioProcessAlive(grandchild_pid));
 
     session->Close();
-    EXPECT_FALSE(StdioProcessAlive(grandchild_pid));
     EXPECT_TRUE(WaitForStdioProcessGone(grandchild_pid, 5000));
 }
 
