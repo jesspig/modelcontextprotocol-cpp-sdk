@@ -2,6 +2,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/Log.hpp>
+#include <process/detail/WindowsProcessSupport.hpp>
 #include <windows.h>
 #include <processthreadsapi.h>
 #include <stdexcept>
@@ -12,7 +13,7 @@
 #include <vector>
 #include <atomic>
 #include <condition_variable>
-#include <cwchar>
+#include <map>
 #include <mutex>
 
 #undef CreateProcess
@@ -23,49 +24,9 @@ namespace {
 
 constexpr DWORD kIoWaitTimeoutMs = 100;
 
-std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return std::wstring();
-    int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
-        static_cast<int>(s.size()), nullptr, 0);
-    if (len == 0)
-        throw std::runtime_error("invalid UTF-8 in process string: Windows error " +
-            std::to_string(GetLastError()));
-    std::wstring out(static_cast<std::size_t>(len), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
-        static_cast<int>(s.size()), out.data(), len);
-    return out;
-}
-
-std::string QuoteArg(const std::string& arg) {
-    if (!arg.empty() && arg.find_first_of(" \t\"") == std::string::npos) return arg;
-    std::string out = "\"";
-    std::size_t backslashes = 0;
-    for (char ch : arg) {
-        if (ch == '\\') {
-            ++backslashes;
-        } else if (ch == '"') {
-            out.append(backslashes * 2 + 1, '\\');
-            out += '"';
-            backslashes = 0;
-        } else {
-            out.append(backslashes, '\\');
-            backslashes = 0;
-            out += ch;
-        }
-    }
-    out.append(backslashes * 2, '\\');
-    out += '"';
-    return out;
-}
-
-std::string ArgvToCommandLine(const std::string& command, const std::vector<std::string>& args) {
-    std::string line = QuoteArg(command);
-    for (const auto& arg : args) {
-        line += ' ';
-        line += QuoteArg(arg);
-    }
-    return line;
-}
+using process::detail::BuildWindowsCommandLine;
+using process::detail::BuildWindowsEnvironmentBlock;
+using process::detail::Utf8ToWide;
 
 constexpr DWORD kPipeBufferSize = 65536;
 
@@ -467,7 +428,7 @@ bool Win32Process::Terminate(int timeout_ms) {
 }
 
 CreatedProcess CreateProcess(const ProcessStartInfo& info) {
-    std::string cmd_line = ArgvToCommandLine(info.command, info.arguments);
+    std::string cmd_line = BuildWindowsCommandLine(info.command, info.arguments);
 
     SECURITY_ATTRIBUTES sa = {};
     sa.nLength = sizeof(sa);
@@ -499,22 +460,10 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     void* env_block = nullptr;
     std::wstring env_block_str;
     if (!info.environment_variables.empty() || !info.inherit_environment) {
-        if (info.inherit_environment) {
-            LPWCH cur_env = GetEnvironmentStringsW();
-            if (cur_env) {
-                for (LPWCH item = cur_env; *item != L'\0'; item += wcslen(item) + 1)
-                    env_block_str.append(item, wcslen(item) + 1);
-                FreeEnvironmentStringsW(cur_env);
-            }
-        }
-        for (const auto& [key, val] : info.environment_variables) {
-            env_block_str += Utf8ToWide(key) + L"=" + Utf8ToWide(val) + L'\0';
-        }
-        size_t tail_zeros = 0;
-        while (tail_zeros < 2 && env_block_str.size() > tail_zeros &&
-               env_block_str[env_block_str.size() - tail_zeros - 1] == L'\0')
-            ++tail_zeros;
-        env_block_str.append(2 - tail_zeros, L'\0');
+        std::map<std::string, std::string> overrides;
+        for (const auto& [key, val] : info.environment_variables)
+            overrides[key] = val;
+        env_block_str = BuildWindowsEnvironmentBlock(overrides, info.inherit_environment);
         env_block = static_cast<void*>(env_block_str.data());
     }
 
