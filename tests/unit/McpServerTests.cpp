@@ -5945,15 +5945,50 @@ JsonRpcMessage CallProbeTool(ITransport& client, int64_t id,
 }
 
 JsonRpcMessage InitializeRaw(ITransport& client, int64_t id,
-                             std::string session_id) {
+                             std::string session_id,
+                             std::string protocol_version =
+                                 std::string(kLegacyProtocolVersion),
+                             ClientCapabilities capabilities = {}) {
     JsonRpcRequest req;
     req.id = id;
     req.method = methods::kInitialize;
     req.session_id = std::move(session_id);
     InitializeRequestParams params;
-    params.protocol_version = std::string(kLegacyProtocolVersion);
+    params.protocol_version = std::move(protocol_version);
     params.client_info = Implementation{"test-client", "1.0"};
+    params.capabilities = std::move(capabilities);
     req.params = SerializeInitializeRequestParams(params);
+    client.SendMessageAsync(std::move(req));
+    return ReceiveUntilResponse(client.GetMessageChannel());
+}
+
+JsonRpcMessage DiscoverRaw(ITransport& client, int64_t id,
+                           std::string session_id,
+                           ClientCapabilities capabilities = {}) {
+    JsonRpcRequest req;
+    req.id = id;
+    req.method = methods::kDiscover;
+    req.session_id = std::move(session_id);
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLatestProtocolVersion);
+    meta.client_capabilities = std::move(capabilities);
+    req.meta = SerializeRequestMeta(meta);
+    client.SendMessageAsync(std::move(req));
+    return ReceiveUntilResponse(client.GetMessageChannel());
+}
+
+JsonRpcMessage ListToolsRaw(ITransport& client, int64_t id,
+                            std::string session_id,
+                            std::string protocol_version = {}) {
+    JsonRpcRequest req;
+    req.id = id;
+    req.method = methods::kListTools;
+    req.session_id = std::move(session_id);
+    if (!protocol_version.empty()) {
+        RequestMeta meta;
+        meta.protocol_version = std::move(protocol_version);
+        req.meta = SerializeRequestMeta(meta);
+    }
     client.SendMessageAsync(std::move(req));
     return ReceiveUntilResponse(client.GetMessageChannel());
 }
@@ -5987,6 +6022,9 @@ TEST(McpServerTest, ToolContextExposesRequestSessionId) {
     NotifyInitialized(*pair.client, "sess-alpha");
     auto first = CallProbeTool(*pair.client, 1, "sess-alpha");
     auto second = CallProbeTool(*pair.client, 2, "sess-alpha");
+    auto init_beta = InitializeRaw(*pair.client, 4, "sess-beta");
+    ASSERT_TRUE(IsResponse(init_beta)) << SerializeMessage(init_beta);
+    NotifyInitialized(*pair.client, "sess-beta");
     auto third = CallProbeTool(*pair.client, 3, "sess-beta");
     ASSERT_TRUE(IsResponse(first)) << SerializeMessage(first);
     ASSERT_TRUE(IsResponse(second)) << SerializeMessage(second);
@@ -6024,6 +6062,54 @@ TEST(McpServerTest, ToolContextSessionIdEmptyWithoutRequestSession) {
     ASSERT_TRUE(IsResponse(response)) << SerializeMessage(response);
     EXPECT_TRUE(AsResponse(response)->session_id.empty());
     EXPECT_TRUE(seen_session.empty());
+
+    server->Close();
+}
+
+TEST(McpServerTest, ProtocolStateIsolatedPerSession) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterTool("probe", ToolOptions{}.Description("probe"),
+        [](const Ctx&) { return CallToolResult{}; });
+
+    ClientCapabilities caps_a;
+    caps_a.sampling = SamplingCapability{};
+    auto init_a = InitializeRaw(*pair.client, 1, "sess-a",
+                                std::string(kLegacyProtocolVersion), caps_a);
+    ASSERT_TRUE(IsResponse(init_a)) << SerializeMessage(init_a);
+    const auto& init_a_result = AsResponse(init_a)->result;
+    auto* version_a = init_a_result.Find("protocolVersion");
+    ASSERT_NE(version_a, nullptr);
+    EXPECT_EQ(version_a->GetString(), kLegacyProtocolVersion);
+
+    auto blocked = ListToolsRaw(*pair.client, 2, "sess-a");
+    ASSERT_TRUE(IsError(blocked)) << SerializeMessage(blocked);
+    EXPECT_EQ(AsError(blocked)->error.code,
+              McpErrorCode::InvalidRequest);
+
+    NotifyInitialized(*pair.client, "sess-a");
+    auto tools_a = ListToolsRaw(*pair.client, 3, "sess-a");
+    ASSERT_TRUE(IsResponse(tools_a)) << SerializeMessage(tools_a);
+    EXPECT_EQ(AsResponse(tools_a)->session_id, "sess-a");
+
+    auto discover_b = DiscoverRaw(*pair.client, 4, "sess-b");
+    ASSERT_TRUE(IsResponse(discover_b)) << SerializeMessage(discover_b);
+    auto tools_b = ListToolsRaw(*pair.client, 5, "sess-b",
+                                std::string(kLatestProtocolVersion));
+    ASSERT_TRUE(IsResponse(tools_b)) << SerializeMessage(tools_b);
+    EXPECT_EQ(AsResponse(tools_b)->session_id, "sess-b");
+
+    EXPECT_EQ(server->GetNegotiatedProtocolVersion("sess-a"),
+              kLegacyProtocolVersion);
+    EXPECT_EQ(server->GetNegotiatedProtocolVersion("sess-b"),
+              kLatestProtocolVersion);
+
+    auto caps_a_stored = server->GetClientCapabilities("sess-a");
+    ASSERT_NE(caps_a_stored, nullptr);
+    EXPECT_TRUE(caps_a_stored->sampling.has_value());
+    auto caps_b_stored = server->GetClientCapabilities("sess-b");
+    EXPECT_TRUE(!caps_b_stored || !caps_b_stored->sampling.has_value());
 
     server->Close();
 }

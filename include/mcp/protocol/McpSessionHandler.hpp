@@ -18,6 +18,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <thread>
@@ -73,6 +74,8 @@ public:
         OutcomeCallback on_outcome);
 
     void SendNotification(std::string_view method, JsonValue params = {});
+    void SendNotification(std::string_view method, JsonValue params,
+                          std::string_view session_id);
     void SendMessage(JsonRpcMessage message);
 
     void SetRequestHandler(std::string_view method, RequestHandler handler);
@@ -80,23 +83,29 @@ public:
 
     static std::optional<std::string> RequiredClientCapability(std::string_view method);
     void SetClientCapabilities(ClientCapabilities caps);
+    void SetClientCapabilities(std::string_view session_id, ClientCapabilities caps);
+    std::optional<ClientCapabilities> GetClientCapabilities(
+        std::string_view session_id) const;
     void SetServerInfo(const Implementation& info);
 
     IncomingRequestMeta ExtractIncomingMeta(const JsonRpcRequest& req);
 
-    void AddSubscription(Subscription sub);
-    void AddSubscriptionEntry(SubscriptionEntry entry);
-    void RemoveSubscription(std::string_view id);
+    void AddSubscription(Subscription sub, std::string_view session_id = {});
+    void AddSubscriptionEntry(SubscriptionEntry entry,
+                              std::string_view session_id = {});
+    void RemoveSubscription(std::string_view id, std::string_view session_id = {});
     void NotifySubscribers(
         std::string_view notification_type,
         JsonValue params,
-        std::optional<std::string> resource_uri = std::nullopt);
+        std::optional<std::string> resource_uri = std::nullopt,
+        std::string_view session_id = {});
 
     void SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data = std::nullopt, std::string_view session_id = {});
 
     void HandleCancelled(const JsonRpcNotification& notif);
 
-    std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(const RequestId& id) const;
+    std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(
+        const RequestId& id, std::string_view session_id = {}) const;
 
     void ResetTimeoutByProgressToken(const std::string& pt_key);
 
@@ -112,11 +121,17 @@ public:
     void SetRequestStateVerifier(std::function<bool(std::string_view)> verifier);
 
     void SetNegotiatedProtocolVersion(std::string_view version);
+    void SetNegotiatedProtocolVersion(std::string_view session_id,
+                                      std::string_view version);
 
     std::string NegotiatedProtocolVersion() const;
+    std::string NegotiatedProtocolVersion(std::string_view session_id) const;
     void SetSupportedProtocolVersions(std::vector<std::string> versions);
     bool IsJuly2026OrLater() const {
         return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion());
+    }
+    bool IsJuly2026OrLater(std::string_view session_id) const {
+        return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion(session_id));
     }
     ITransport& GetTransport() { return *transport_; }
 
@@ -142,6 +157,10 @@ private:
     void ResponseWorkerLoop();
 
     static std::string GetRequestIdKey(const RequestId& rid);
+    static std::string SessionRequestKey(std::string_view session_id,
+                                         const std::string& request_id);
+    std::shared_ptr<WireCodec> CodecFor(std::string_view session_id) const;
+    std::string VersionFor(std::string_view session_id) const;
     std::atomic<int64_t> next_request_id_{1};
 
     void CheckTimeouts();
@@ -153,6 +172,12 @@ private:
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<WireCodec> codec_;
     mutable std::shared_mutex codec_mutex_;
+    struct SessionState {
+        std::shared_ptr<const std::string> negotiated_version;
+        std::shared_ptr<WireCodec> codec;
+        std::optional<ClientCapabilities> client_capabilities;
+    };
+    std::unordered_map<std::string, SessionState> session_states_;
     std::atomic<bool> running_{false};
     std::atomic<bool> closed_{false};
     std::shared_ptr<const std::string> negotiated_version_;
@@ -182,7 +207,8 @@ private:
     std::mutex response_queue_mutex_;
     std::condition_variable response_cv_;
 
-    std::unordered_map<std::string, SubscriptionEntry> subscriptions_;
+    std::unordered_map<std::string,
+        std::unordered_map<std::string, SubscriptionEntry>> subscriptions_;
     std::mutex subscriptions_mutex_;
 
     std::shared_ptr<FilterPipeline> incoming_filters_;
