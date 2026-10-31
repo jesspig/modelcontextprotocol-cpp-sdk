@@ -102,8 +102,13 @@ public:
     void EmitTriggerEvent(const std::string& type, JsonValue data = {});
 
     std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
+    std::shared_ptr<const ClientCapabilities> GetClientCapabilities(
+        std::string_view session_id) const;
     std::shared_ptr<const Implementation> GetClientInfo() const;
+    std::shared_ptr<const Implementation> GetClientInfo(
+        std::string_view session_id) const;
     std::string GetNegotiatedProtocolVersion() const;
+    std::string GetNegotiatedProtocolVersion(std::string_view session_id) const;
     ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
     bool IsMrtrSupported() const;
@@ -132,7 +137,8 @@ private:
     JsonValue BuildToolsJson();
     std::vector<std::string> EffectiveSupportedVersions() const;
     Implementation ResolveServerInfo() const;
-    CacheHint ResolveCacheHint(std::string_view method) const;
+    CacheHint ResolveCacheHint(std::string_view method,
+                               std::string_view session_id = {}) const;
     void EmitLoggingMessage(LoggingLevel level, std::string_view data);
     void HandleListTools(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
@@ -163,12 +169,20 @@ private:
     void HandleSubscriptionsListen(
         const JsonRpcRequest& req, std::promise<JsonValue> promise);
     void SendSubscriptionsAcknowledged(
-        const SubscriptionFilter& honored, std::string_view subscription_id);
+        const SubscriptionFilter& honored, std::string_view subscription_id,
+        std::string_view session_id);
     void AbandonPendingUrlElicitation(
         const std::string& elicitation_id, std::exception_ptr error);
-    std::string MakeTaskId() const;
+    std::string MakeTaskId(std::string_view owner) const;
     void SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store);
-    bool IsTaskOwnedBySession(const TaskState& task) const;
+    bool IsTaskOwnedBySession(const TaskState& task, std::string_view owner) const;
+    std::string TaskOwnerFor(const JsonRpcRequest& req) const;
+    std::shared_ptr<const ClientCapabilities> ClientCapabilitiesFor(
+        std::string_view session_id) const;
+    std::shared_ptr<const Implementation> ClientInfoFor(
+        std::string_view session_id) const;
+    bool IsSessionInitialized(std::string_view session_id) const;
+    void MarkSessionInitialized(std::string_view session_id);
 
     std::shared_ptr<ITransport> transport_;
     std::shared_ptr<McpSessionHandler> handler_;
@@ -206,6 +220,12 @@ private:
 
     std::shared_ptr<const ClientCapabilities> client_capabilities_;
     std::shared_ptr<const Implementation> client_info_;
+    struct ClientSessionState {
+        std::shared_ptr<const ClientCapabilities> capabilities;
+        std::shared_ptr<const Implementation> client_info;
+        bool initialized{false};
+    };
+    std::unordered_map<std::string, ClientSessionState> client_sessions_;
     mutable std::mutex client_info_mutex_;
 
     std::function<CompleteResult(const CompleteRequestParams&)> completion_handler_;

@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
@@ -124,9 +125,19 @@ private:
     bool ValidateParamHeaders(const HttpRequest& req, const JsonRpcRequest& request,
                               std::string& error_out);
 
-    bool EnsureSession(const HttpRequest& req, HttpResponse& resp);
-    std::string ActiveSessionId() const;
-    void AdoptSession(const std::string& session_id);
+    bool ResolveSession(const HttpRequest& req, bool is_initialize,
+                        const std::string& protocol_version,
+                        std::string& session_id, HttpResponse& resp);
+    bool TouchSession(const std::string& session_id, bool is_initialize,
+                      const std::string& protocol_version);
+    std::string SessionProtocolVersion(const std::string& session_id) const;
+    bool HasSession(const std::string& session_id);
+    void EraseSession(const std::string& session_id);
+    static std::string PendingKey(std::string_view session_id,
+                                  const std::string& request_id);
+    static std::string EncodeSseStreamTag(std::string_view session_id);
+    static bool TagMatchesSession(const std::string& tag,
+                                  std::string_view session_id);
 
     static std::string RequestIdToString(const RequestId& id);
 
@@ -142,7 +153,8 @@ private:
         std::vector<std::string> resource_uris;
     };
     static ListenFilter ParseListenFilter(const JsonRpcRequest& req);
-    static std::string EncodeListenTag(const ListenFilter& filter);
+    static std::string EncodeListenTag(const ListenFilter& filter,
+                                       std::string_view session_id);
     static bool IsListenFilteredNotification(const std::string& method);
     static bool ListenTagAccepts(const std::string& tag,
                                  const std::string& method,
@@ -153,9 +165,18 @@ private:
     std::shared_ptr<EventStore> event_store_;
     std::shared_ptr<SessionStore> session_store_;
     mutable std::mutex session_state_mutex_;
+    struct SessionState {
+        std::string protocol_version;
+        int64_t last_seen_ms{0};
+    };
+    std::unordered_map<std::string, SessionState> sessions_;
 
     std::atomic<size_t> stateless_inflight_{0};
-    std::unordered_map<std::string, std::shared_ptr<std::promise<JsonRpcMessage>>> pending_responses_;
+    struct PendingResponse {
+        RequestId request_id;
+        std::shared_ptr<std::promise<JsonRpcMessage>> promise;
+    };
+    std::unordered_map<std::string, PendingResponse> pending_responses_;
     std::mutex pending_mutex_;
     std::unordered_map<std::string, std::vector<std::string>> request_stream_frames_;
     std::unordered_map<std::string, std::string> progress_token_routes_;

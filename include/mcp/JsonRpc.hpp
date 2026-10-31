@@ -26,6 +26,7 @@ struct JsonRpcRequest {
     std::string method;
     std::optional<JsonValue> params;
     std::optional<JsonValue> meta;
+    std::string session_id;
 };
 
 struct JsonRpcNotification {
@@ -33,18 +34,21 @@ struct JsonRpcNotification {
     std::string method;
     std::optional<JsonValue> params;
     std::optional<JsonValue> meta;
+    std::string session_id;
 };
 
 struct JsonRpcResponse {
     std::string jsonrpc = "2.0";
     RequestId id;
     JsonValue result;
+    std::string session_id;
 };
 
 struct JsonRpcErrorResponse {
     std::string jsonrpc = "2.0";
     std::optional<RequestId> id;
     ErrorData error;
+    std::string session_id;
 };
 
 using JsonRpcMessage = std::variant<

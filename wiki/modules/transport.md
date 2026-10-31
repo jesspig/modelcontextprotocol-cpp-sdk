@@ -3,7 +3,7 @@ type: Module
 title: mcp-transport 传输库
 description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
 tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-09-20T17:13:14+08:00
+timestamp: 2026-10-31T03:24:04+08:00
 resource: include/mcp/Transport.hpp
 ---
 
@@ -17,7 +17,7 @@ resource: include/mcp/Transport.hpp
 - `TransportBase`：三态状态机 `Initial → Connected → Disconnected`（[Transport.hpp](../../include/mcp/Transport.hpp)）
   - `SetConnected` 仅允许 `Initial→Connected`（CAS），已 Disconnected 后调用被忽略并记 Warning
   - `SetDisconnected` 幂等：仅首次触发 `NotifyClose()`
-  - `SessionId()` 仅 `StreamableHttpServerTransport` 设置，其余为空串
+  - `SessionId()` 仅 `StreamableHttpClientTransport` 暴露当前客户端会话 id；服务端 `StreamableHttpServerTransport` 不再持有单一会话 id（多会话路由，返回空串），请求所属会话 id 经消息的 `session_id` 字段进入 `RequestContext::SessionId()`，其余传输为空串
 - `IClientTransport` 工厂：`Name()` + `Connect()`（每次返回新会话传输）
 
 ## 传输实现
