@@ -33,6 +33,15 @@ add_executable(mcp-transport-tests TransportTests.cpp MessageChannelTests.cpp)
 target_link_libraries(mcp-transport-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-transport-tests)
 
+add_executable(mcp-process-test-helper ProcessTestHelper.cpp)
+target_link_libraries(mcp-process-test-helper PRIVATE mcp-transport)
+
+add_executable(mcp-process-tests ProcessTests.cpp)
+target_link_libraries(mcp-process-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
+target_compile_definitions(mcp-process-tests PRIVATE
+    MCP_PROCESS_TEST_HELPER_PATH="${CMAKE_CURRENT_BINARY_DIR}/mcp-process-test-helper${CMAKE_EXECUTABLE_SUFFIX}")
+mcp_discover_tests(mcp-process-tests)
+
 add_executable(mcp-net-tests
     NetStackTests.cpp
     WebSocketClientTests.cpp)
