@@ -6113,3 +6113,89 @@ TEST(McpServerTest, ProtocolStateIsolatedPerSession) {
 
     server->Close();
 }
+
+TEST(McpServerTest, LegacyElicitResolvesCapabilitiesForSingleStatefulSession) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLegacyProtocolVersion);
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+
+    server->RegisterTool("ask-implicit", ToolOptions{}.Description("ask"),
+        [](const Ctx& ctx) -> CallToolResult {
+            ElicitRequestParams params;
+            params.message = "confirm?";
+            auto result = ctx.Server().Elicit(params).get();
+            CallToolResult out;
+            out.content.push_back(
+                TextContent{"text", std::string(ctx.SessionId()) + ":" + result.action});
+            return out;
+        });
+    server->RegisterTool("ask-explicit", ToolOptions{}.Description("ask"),
+        [](const Ctx& ctx) -> CallToolResult {
+            ElicitRequestParams params;
+            params.message = "confirm?";
+            auto result = ctx.Server().Elicit(params, ctx.SessionId()).get();
+            CallToolResult out;
+            out.content.push_back(
+                TextContent{"text", std::string(ctx.SessionId()) + ":" + result.action});
+            return out;
+        });
+
+    ClientCapabilities caps;
+    caps.elicitation = ElicitationCapability{};
+    auto init = InitializeRaw(*pair.client, 1, "sess-e",
+                              std::string(kLegacyProtocolVersion), caps);
+    ASSERT_TRUE(IsResponse(init)) << SerializeMessage(init);
+    NotifyInitialized(*pair.client, "sess-e");
+
+    auto& channel = pair.client->GetMessageChannel();
+    auto call = [&](int64_t id, const std::string& tool_name) -> JsonRpcMessage {
+        JsonRpcRequest req;
+        req.id = id;
+        req.method = methods::kCallTool;
+        req.session_id = "sess-e";
+        CallToolRequestParams params;
+        params.name = tool_name;
+        req.params = SerializeCallToolRequestParams(params);
+        pair.client->SendMessageAsync(JsonRpcMessage(std::move(req)));
+        for (;;) {
+            std::error_code ec;
+            JsonRpcMessage msg;
+            channel.AsyncReceive([&](std::error_code recv_ec, JsonRpcMessage received) {
+                ec = recv_ec;
+                msg = std::move(received);
+            });
+            if (ec) return {};
+            if (auto* request = AsRequest(msg)) {
+                EXPECT_EQ(request->method, std::string(methods::kElicit));
+                JsonRpcResponse resp;
+                resp.id = request->id;
+                resp.session_id = request->session_id;
+                resp.result = JsonValue(JsonValue::object_tag);
+                resp.result["action"] = JsonValue("accept");
+                pair.client->SendMessageAsync(JsonRpcMessage(std::move(resp)));
+                continue;
+            }
+            if (IsResponse(msg) || IsError(msg)) return msg;
+        }
+    };
+
+    auto implicit_result = call(2, "ask-implicit");
+    ASSERT_TRUE(IsResponse(implicit_result)) << SerializeMessage(implicit_result);
+    auto implicit_tool = DeserializeCallToolResult(AsResponse(implicit_result)->result);
+    ASSERT_EQ(implicit_tool.content.size(), std::size_t{1});
+    auto* implicit_text = std::get_if<TextContent>(&implicit_tool.content[0]);
+    ASSERT_NE(implicit_text, nullptr);
+    EXPECT_EQ(implicit_text->text, "sess-e:accept");
+
+    auto explicit_result = call(3, "ask-explicit");
+    ASSERT_TRUE(IsResponse(explicit_result)) << SerializeMessage(explicit_result);
+    auto explicit_tool = DeserializeCallToolResult(AsResponse(explicit_result)->result);
+    ASSERT_EQ(explicit_tool.content.size(), std::size_t{1});
+    auto* explicit_text = std::get_if<TextContent>(&explicit_tool.content[0]);
+    ASSERT_NE(explicit_text, nullptr);
+    EXPECT_EQ(explicit_text->text, "sess-e:accept");
+
+    server->Close();
+}

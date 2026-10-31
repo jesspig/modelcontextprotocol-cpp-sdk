@@ -108,7 +108,7 @@ CallToolResult Elicitation(const ToolContext& ctx)
     schema["required"] = std::move(required);
     params.requested_schema = std::move(schema);
     try {
-        auto result = ctx.Server().Elicit(params).get();
+        auto result = ctx.Server().Elicit(params, ctx.SessionId()).get();
         return MakeTextResult(ElicitationSuccessText(result, "User response:"));
     } catch (const std::exception& e) {
         return MakeTextResult(std::string("Elicitation not supported or error: ") + e.what());
@@ -158,7 +158,7 @@ CallToolResult ElicitationSep1034Defaults(const ToolContext& ctx)
 
     params.requested_schema = std::move(schema);
     try {
-        auto result = ctx.Server().Elicit(params).get();
+        auto result = ctx.Server().Elicit(params, ctx.SessionId()).get();
         return MakeTextResult(ElicitationSuccessText(result, "Elicitation completed:"));
     } catch (const std::exception& e) {
         return MakeTextResult(std::string("Elicitation not supported or error: ") + e.what());
@@ -250,7 +250,7 @@ CallToolResult ElicitationSep1330Enums(const ToolContext& ctx)
 
     params.requested_schema = std::move(schema);
     try {
-        auto result = ctx.Server().Elicit(params).get();
+        auto result = ctx.Server().Elicit(params, ctx.SessionId()).get();
         return MakeTextResult(ElicitationSuccessText(result, "Elicitation completed:"));
     } catch (const std::exception& e) {
         return MakeTextResult(std::string("Elicitation not supported or error: ") + e.what());

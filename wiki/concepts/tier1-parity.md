@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-31T03:49:04+08:00
+timestamp: 2026-10-31T18:13:54+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -65,9 +65,9 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 
 证据为 referee `stale`：转绿条目从两 per-leg 基线删除后复跑不再报缺条目（`baseline-2026-07-28.yaml` 删 21、`baseline-2025-11-25.yaml` 删 10；`84f931f/333130c`）。
 
-## B2 证伪与 B3 收口（server-stateless 已转绿删除，server-sse-multiple-streams legacy 保留）
+## B2 证伪与 B3 收口（server-stateless 已转绿删除，server-sse-multiple-streams 亦于 2026-10-31 转绿删除）
 
-B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。B3 收口结果（2026-10-29 复跑）：`server-stateless` 以 30/0/0 warnings 转绿并删除（modern leg 基线清空）；`server-sse-multiple-streams` 仍因 legacy suite 内 skip 以 WARNING 记账，保留于 `baseline-2025-11-25.yaml` 保绿，零代码改动。
+B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。B3 收口结果（2026-10-29 复跑）：`server-stateless` 以 30/0/0 warnings 转绿并删除（modern leg 基线清空）；`server-sse-multiple-streams` 当时仍因 legacy suite 内 skip 以 WARNING 记账，保留于 `baseline-2025-11-25.yaml` 保绿，零代码改动。2026-10-31 更新：stateful HTTP 按会话 SSE 多流路由落地后，该场景在 legacy 实测 2/2 通过，条目转为 stale（referee 以 exit 1 强制删条目），已从 `baseline-2025-11-25.yaml` 删除；`baseline.yaml` 仅作未知版本回退，条目保留作历史记录。
 
 ## CI 红根因与修复（三项）
 
