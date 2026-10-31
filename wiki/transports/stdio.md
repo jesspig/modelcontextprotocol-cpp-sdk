@@ -3,7 +3,7 @@ type: Transport
 title: Stdio 传输
 description: 服务端（stdin/stdout 管道）+ 客户端（子进程）双向传输，'\n' 分隔的 JSON-RPC 行。
 tags: [transport, stdio, 管道, 子进程]
-timestamp: 2026-10-31T03:49:04+08:00
+timestamp: 2026-10-31T14:15:09+08:00
 resource: src/transport/StdioServerTransport.cpp
 ---
 
@@ -22,9 +22,12 @@ resource: src/transport/StdioServerTransport.cpp
 
 ## 客户端（工厂）
 
-- 选项：`command / arguments / name / working_directory / inherit_environment_variables(true) / environment_variables`
-- `Connect()`：选项转 `ProcessStartInfo` → `CreateProcess` → 构造匿名命名空间会话传输 → 启动即 `SetConnected()`；`CreateProcess` 与公共 `Spawn` 共用 Windows 命令线/环境块辅助函数，但本传输仍走管道路径，行为未变（见 [/concepts/process-spawn.md](../concepts/process-spawn.md)）
-- `Close()`：`running_.exchange(false)` 非真则提前返回（客户端保留该行为）→ 关 stdin 管道 → `process_->Terminate(2000)` → 关 stdout 管道 → join → 关通道
+- 选项：`command / arguments / name / working_directory / inherit_environment_variables(true) / environment_variables / stderr_path / on_stderr / shutdown_timeout(2000ms) / terminate_process_tree(false) / max_frame_bytes`
+- stderr：`stderr_path` 重定向到文件；`on_stderr` 回调（UTF-8 字节块，专用线程持续排空，回调异常只记日志不穿透）；两者互斥，同时设置抛 `McpError(InvalidParams)`；都未设置时继承父进程 stderr
+- `terminate_process_tree`：Windows 为子进程建 kill-on-close Job Object（创建失败时告警并退化为直接 `TerminateProcess`），POSIX 在 `fork` 后 `setpgid(0,0)` 并以进程组收发信号；默认关闭，不影响父进程组
+- `Pid()`：`Connect()` 成功后返回子进程 PID，未启动返回 `nullopt`；退出后仍保留最后 PID
+- `Connect()`：选项转 `ProcessStartInfo` → `CreateProcess` → 构造匿名命名空间会话传输 → 启动读线程与 stderr 线程 → `SetConnected()`；stdio 管道语义不变，与公共 `Spawn` 共用 Windows 命令线/环境块/重定向文件/Job 辅助与 POSIX 重定向文件/进程组信号/回收辅助（见 [/concepts/process-spawn.md](../concepts/process-spawn.md)）
+- `Close()`：`running_.exchange(false)` 非真则提前返回（客户端保留该行为）→ 关 stdin 管道 → `process_->Terminate(shutdown_timeout)` → 关 stdout/stderr 管道 → join 读线程与 stderr 线程 → 关通道
 - 读循环同样有 8MB 缓冲超限防护（清空 + `NotifyError` + break）；EOF 后不置 `running_`（既有行为）
 - `Name()` 空时返回 `"stdio"`
 
