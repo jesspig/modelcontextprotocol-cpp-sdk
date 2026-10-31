@@ -4,18 +4,12 @@
 # 未知版本回退 tests/conformance/baseline.yaml。完整归因见 baseline.yaml，本文件只收
 # legacy leg 实际运行的场景条目（server 1 + client 1）。
 
-# （server 键：仅 server-sse-multiple-streams 一条。legacy suite 内它以 WARNING
-# 形式 skip（0/0，无 session 时 referee 记 WARNING 不记失败），无条目则 legacy
-# 报 unexpected 退出 1；条目为 legacy 保绿所必需。完整跨 leg 说明见 baseline.yaml。）
+# （server 键：2026-10-31 起清空。server-sse-multiple-streams 原以「无 session 时
+# referee 记 WARNING 需条目保绿」保留；stateful HTTP 按会话 SSE 多流路由落地后，
+# 该场景在 legacy 实测 2/2 通过，条目变 stale 反致退出码 1，故删除。完整跨 leg
+# 说明见 baseline.yaml。）
 
-server:
-    # --- server-sse-multiple-streams（跨 leg 保留，见上）---
-    # 旧“传输层多流能力缺口”归因为推断错误。实测有 session 时 3 并发
-    # POST 全 200 全 SSE（legacy 单跑 2/2，modern 2/2）。
-    # suite 内保持 skip：fixture 若发 session 会激活 lifecycle DELETE，
-    # 而单通道传输的 DELETE 关闭共享 channel 毒化后续全场景（生产缺口），
-    # 故 stateful fixture 显式不设 session_store。
-    - server-sse-multiple-streams
+server: []
 
 client:
     # --- http-custom-headers（Windows 本地失败，Linux 待复核）---
