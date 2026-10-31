@@ -24,18 +24,11 @@ void ValidateOptions(const SpawnOptions& options) {
 }
 
 HANDLE OpenRedirectFile(const std::string& path) {
-    SECURITY_ATTRIBUTES attributes = {};
-    attributes.nLength = sizeof(attributes);
-    attributes.bInheritHandle = TRUE;
-    attributes.lpSecurityDescriptor = nullptr;
-    HANDLE handle = CreateFileW(process::detail::Utf8ToWide(path).c_str(), GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
-        throw McpError(McpErrorCode::InternalError,
-                       "failed to open spawn output file '" + path + "': Windows error " +
-                           std::to_string(GetLastError()));
-    return handle;
+    try {
+        return process::detail::OpenWindowsRedirectFile(path);
+    } catch (const std::runtime_error& error) {
+        throw McpError(McpErrorCode::InternalError, error.what());
+    }
 }
 
 HANDLE AcquireStandardHandle(DWORD which, bool& owned) {
@@ -60,8 +53,7 @@ public:
         if (!detached_) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!exited_ && process_ != nullptr) {
-                if (job_ != nullptr) TerminateJobObject(job_, 1);
-                else TerminateProcess(process_, 1);
+                process::detail::TerminateWindowsJobOrProcess(job_, process_);
                 WaitForSingleObject(process_, INFINITE);
                 DWORD code = 0;
                 exited_ = true;
@@ -132,11 +124,7 @@ public:
             }
         }
         if (!IsRunning()) return true;
-        if (job_ != nullptr) {
-            if (!TerminateJobObject(job_, 1) && IsRunning()) TerminateProcess(process_, 1);
-        } else {
-            TerminateProcess(process_, 1);
-        }
+        process::detail::TerminateWindowsJobOrProcess(job_, process_);
         Wait(-1);
         return true;
     }
@@ -240,25 +228,15 @@ std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options) {
                        "CreateProcessW failed for '" + options.command + "': Windows error " +
                            std::to_string(create_error));
 
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    HANDLE job = process::detail::CreateWindowsJobObject(!options.detached, true);
     if (job == nullptr) {
-        MCP_LOG(Warning, "CreateJobObjectW failed for spawned process: Windows error " +
+        MCP_LOG(Warning, "failed to create job object for spawned process: Windows error " +
             std::to_string(GetLastError()));
-    } else {
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-        if (!options.detached)
-            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
-                                     &limits, sizeof(limits)))
-            MCP_LOG(Warning, "SetInformationJobObject failed for spawned process: Windows error " +
-                std::to_string(GetLastError()));
-        if (!AssignProcessToJobObject(job, process_info.hProcess)) {
-            MCP_LOG(Warning, "AssignProcessToJobObject failed for spawned process: Windows error " +
-                std::to_string(GetLastError()));
-            CloseHandle(job);
-            job = nullptr;
-        }
+    } else if (!process::detail::AssignWindowsProcessToJob(job, process_info.hProcess)) {
+        MCP_LOG(Warning, "AssignProcessToJobObject failed for spawned process: Windows error " +
+            std::to_string(GetLastError()));
+        CloseHandle(job);
+        job = nullptr;
     }
 
     if (ResumeThread(process_info.hThread) == static_cast<DWORD>(-1)) {

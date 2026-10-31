@@ -29,8 +29,13 @@ add_executable(mcp-oauth-tests OAuthTests.cpp)
 target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-oauth-tests)
 
+add_executable(mcp-stdio-test-helper StdioTestHelper.cpp)
+target_link_libraries(mcp-stdio-test-helper PRIVATE mcp-transport)
+
 add_executable(mcp-transport-tests TransportTests.cpp MessageChannelTests.cpp)
 target_link_libraries(mcp-transport-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
+target_compile_definitions(mcp-transport-tests PRIVATE
+    MCP_STDIO_TEST_HELPER_PATH="${CMAKE_CURRENT_BINARY_DIR}/mcp-stdio-test-helper${CMAKE_EXECUTABLE_SUFFIX}")
 mcp_discover_tests(mcp-transport-tests)
 
 add_executable(mcp-process-test-helper ProcessTestHelper.cpp)

@@ -16,6 +16,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -707,6 +709,220 @@ TEST(TransportTest, StdioClientDisconnectsAndReportsWriteFailure) {
     EXPECT_FALSE(error.empty());
     EXPECT_EQ(static_cast<int>(base->GetState()), static_cast<int>(TransportState::Disconnected));
 }
+
+namespace {
+
+std::filesystem::path StdioHelperPath() {
+    static const std::filesystem::path path = MCP_STDIO_TEST_HELPER_PATH;
+    return path;
+}
+
+std::string PathToUtf8(const std::filesystem::path& path) {
+    auto encoded = path.u8string();
+    return std::string(encoded.begin(), encoded.end());
+}
+
+std::filesystem::path MakeStdioTempPath(const std::string& name) {
+    static std::atomic<unsigned long long> counter{0};
+    auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto path = std::filesystem::temp_directory_path() /
+        ("mcp_stdio_test_" + std::to_string(stamp) + "_" +
+         std::to_string(counter.fetch_add(1)) + "_" + name);
+    std::filesystem::remove(path);
+    return path;
+}
+
+struct StdioTempFile {
+    std::filesystem::path path = MakeStdioTempPath("artifact");
+    ~StdioTempFile() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
+
+std::string ReadStdioFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(input)),
+                        std::istreambuf_iterator<char>());
+    return content;
+}
+
+std::string WaitForStdioFile(const std::filesystem::path& path,
+                             const std::string& needle, int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeout_ms);
+    std::string content;
+    while (std::chrono::steady_clock::now() < deadline) {
+        content = ReadStdioFile(path);
+        if (content.find(needle) != std::string::npos) return content;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return ReadStdioFile(path);
+}
+
+bool StdioProcessAlive(int64_t pid) {
+#ifdef _WIN32
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                                 FALSE, static_cast<DWORD>(pid));
+    if (process == nullptr) return false;
+    DWORD result = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    return result == WAIT_TIMEOUT;
+#else
+    return kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM;
+#endif
+}
+
+bool WaitForStdioProcessGone(int64_t pid, int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!StdioProcessAlive(pid)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return !StdioProcessAlive(pid);
+}
+
+StdioClientTransportOptions StdioHelperOptions(
+    const std::vector<std::string>& arguments) {
+    StdioClientTransportOptions options;
+    options.command = PathToUtf8(StdioHelperPath());
+    options.arguments = arguments;
+    return options;
+}
+
+} // namespace
+
+TEST(TransportTest, StdioStderrCaptured) {
+    StdioTempFile stderr_file;
+    auto options = StdioHelperOptions({"--stderr-line", "stdio-stderr-line"});
+    options.stderr_path = PathToUtf8(stderr_file.path);
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+
+    const std::string content = WaitForStdioFile(
+        stderr_file.path, "stdio-stderr-line", 5000);
+    EXPECT_NE(content.find("stdio-stderr-line"), std::string::npos) << content;
+    session->Close();
+}
+
+TEST(TransportTest, StdioStderrCallbackReceivesOutput) {
+    std::mutex mutex;
+    std::string captured;
+    auto options = StdioHelperOptions({"--stderr-line", "stdio-callback-line"});
+    options.on_stderr = [&mutex, &captured](std::string_view chunk) {
+        std::lock_guard<std::mutex> lock(mutex);
+        captured.append(chunk);
+    };
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(5);
+    bool received = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            received = captured.find("stdio-callback-line") != std::string::npos;
+        }
+        if (received) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(received);
+    session->Close();
+}
+
+TEST(TransportTest, StdioPidAvailable) {
+    auto options = StdioHelperOptions({"--sleep", "3000"});
+    StdioClientTransport transport(options);
+    EXPECT_FALSE(transport.Pid().has_value());
+
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    ASSERT_TRUE(transport.Pid().has_value());
+    EXPECT_GT(*transport.Pid(), 0);
+    session->Close();
+}
+
+TEST(TransportTest, StdioProcessTreeTerminated) {
+    StdioTempFile pid_file;
+    auto options = StdioHelperOptions(
+        {"--spawn-grandchild", PathToUtf8(pid_file.path), "30000"});
+    options.terminate_process_tree = true;
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    ASSERT_TRUE(transport.Pid().has_value());
+
+    const std::string pid_text = WaitForStdioFile(pid_file.path, "\n", 10000);
+    ASSERT_FALSE(pid_text.empty()) << "grandchild pid was not reported";
+    const int64_t grandchild_pid = std::stoll(pid_text);
+    ASSERT_GT(grandchild_pid, 0);
+    EXPECT_TRUE(StdioProcessAlive(grandchild_pid));
+
+    session->Close();
+    EXPECT_FALSE(StdioProcessAlive(grandchild_pid));
+    EXPECT_TRUE(WaitForStdioProcessGone(grandchild_pid, 5000));
+}
+
+TEST(TransportTest, StdioConcurrentConnects) {
+    constexpr int kConnectThreads = 4;
+    std::atomic<int> failures{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kConnectThreads);
+    for (int index = 0; index < kConnectThreads; ++index) {
+        threads.emplace_back([&failures]() {
+            auto options = StdioHelperOptions({"--sleep", "3000"});
+            try {
+                StdioClientTransport transport(options);
+                auto session = transport.Connect();
+                if (!transport.Pid().has_value()) ++failures;
+                session->Close();
+            } catch (...) {
+                ++failures;
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+    EXPECT_EQ(failures.load(), 0);
+}
+
+#ifndef _WIN32
+TEST(TransportTest, StdioShutdownTimeoutHonored) {
+    auto options = StdioHelperOptions({"--ignore-sigterm", "30000"});
+    options.shutdown_timeout = std::chrono::milliseconds(300);
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    ASSERT_TRUE(transport.Pid().has_value());
+    const int64_t pid = *transport.Pid();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const auto start = std::chrono::steady_clock::now();
+    session->Close();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    EXPECT_LT(elapsed, 1500);
+    EXPECT_TRUE(WaitForStdioProcessGone(pid, 5000));
+}
+
+TEST(TransportTest, StdioProcessReapedWithoutZombie) {
+    auto options = StdioHelperOptions({"--sleep", "30000"});
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    ASSERT_TRUE(transport.Pid().has_value());
+    const pid_t pid = static_cast<pid_t>(*transport.Pid());
+
+    session->Close();
+    int status = 0;
+    errno = 0;
+    EXPECT_EQ(waitpid(pid, &status, WNOHANG), -1);
+    EXPECT_EQ(errno, ECHILD);
+}
+#endif
 
 #ifdef MCP_HAVE_OPENSSL
 

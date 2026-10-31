@@ -104,11 +104,15 @@ public:
 
 class Win32Process : public ProcessHandle {
     PROCESS_INFORMATION pi_{};
+    HANDLE job_ = nullptr;
+    int64_t pid_ = 0;
 public:
-    Win32Process(PROCESS_INFORMATION pi) : pi_(pi) {}
+    Win32Process(PROCESS_INFORMATION pi, HANDLE job, int64_t pid)
+        : pi_(pi), job_(job), pid_(pid) {}
     ~Win32Process() override;
     bool IsRunning() override;
     bool Terminate(int timeout_ms) override;
+    int64_t Pid() const override { return pid_; }
 };
 } // anonymous namespace
 
@@ -404,6 +408,10 @@ void Win32Pipe::Close() {
 }
 
 Win32Process::~Win32Process() {
+    if (job_ != nullptr) {
+        CloseHandle(job_);
+        job_ = nullptr;
+    }
     if (pi_.hProcess) {
         CloseHandle(pi_.hProcess);
         pi_.hProcess = nullptr;
@@ -415,6 +423,7 @@ Win32Process::~Win32Process() {
 }
 
 bool Win32Process::IsRunning() {
+    if (pi_.hProcess == nullptr) return false;
     DWORD exit_code = 0;
     if (!GetExitCodeProcess(pi_.hProcess, &exit_code))
         return false;
@@ -422,8 +431,9 @@ bool Win32Process::IsRunning() {
 }
 
 bool Win32Process::Terminate(int timeout_ms) {
-    if (!TerminateProcess(pi_.hProcess, 1))
-        return false;
+    if (pi_.hProcess == nullptr) return true;
+    if (job_ != nullptr) process::detail::TerminateWindowsJobOrProcess(job_, pi_.hProcess);
+    else if (!TerminateProcess(pi_.hProcess, 1)) return false;
     return WaitForSingleObject(pi_.hProcess, timeout_ms) == WAIT_OBJECT_0;
 }
 
@@ -450,9 +460,30 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     if (!SetHandleInformation(stdin_pipe.parent, HANDLE_FLAG_INHERIT, 0))
         MCP_LOG(Warning, "SetHandleInformation failed for stdin write pipe");
 
+    StdioPipe stderr_pipe;
+    HANDLE stderr_file = INVALID_HANDLE_VALUE;
+    try {
+        if (info.capture_stderr) {
+            stderr_pipe = CreateStdioPipe(&sa, true);
+            if (!SetHandleInformation(stderr_pipe.parent, HANDLE_FLAG_INHERIT, 0))
+                MCP_LOG(Warning, "SetHandleInformation failed for stderr read pipe");
+        } else if (!info.stderr_path.empty()) {
+            stderr_file = process::detail::OpenWindowsRedirectFile(info.stderr_path);
+        }
+    } catch (...) {
+        CloseHandle(stdin_pipe.parent);
+        CloseHandle(stdin_pipe.child);
+        CloseHandle(stdout_pipe.parent);
+        CloseHandle(stdout_pipe.child);
+        throw;
+    }
+
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
-    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    si.hStdError = info.capture_stderr
+        ? stderr_pipe.child
+        : (stderr_file != INVALID_HANDLE_VALUE ? stderr_file
+                                               : GetStdHandle(STD_ERROR_HANDLE));
     si.hStdOutput = stdout_pipe.child;
     si.hStdInput = stdin_pipe.child;
     si.dwFlags |= STARTF_USESTDHANDLES;
@@ -476,24 +507,71 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     if (!info.working_directory.empty()) work_dir = Utf8ToWide(info.working_directory);
     LPCWSTR work_dir_ptr = work_dir.empty() ? nullptr : work_dir.c_str();
 
+    DWORD flags = CREATE_NO_WINDOW;
+    if (info.terminate_process_tree) flags |= CREATE_SUSPENDED;
+
     BOOL success = CreateProcessW(
         nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW, env_block, work_dir_ptr, &si, &pi);
+        flags, env_block, work_dir_ptr, &si, &pi);
+    DWORD create_error = success ? ERROR_SUCCESS : GetLastError();
 
     CloseHandle(stdin_pipe.child);
     CloseHandle(stdout_pipe.child);
+    if (info.capture_stderr) CloseHandle(stderr_pipe.child);
+    if (stderr_file != INVALID_HANDLE_VALUE) {
+        CloseHandle(stderr_file);
+        stderr_file = INVALID_HANDLE_VALUE;
+    }
 
     if (!success) {
         CloseHandle(stdout_pipe.parent);
         CloseHandle(stdin_pipe.parent);
+        if (info.capture_stderr) CloseHandle(stderr_pipe.parent);
         throw std::runtime_error("CreateProcess failed for '" + info.command +
-            "': Windows error " + std::to_string(GetLastError()));
+            "': Windows error " + std::to_string(create_error));
+    }
+
+    HANDLE job = nullptr;
+    if (info.terminate_process_tree) {
+        job = process::detail::CreateWindowsJobObject(true, false);
+        if (job == nullptr) {
+            MCP_LOG(Warning, "job object unavailable for stdio process; "
+                "falling back to direct process termination: Windows error " +
+                std::to_string(GetLastError()));
+        } else if (!process::detail::AssignWindowsProcessToJob(job, pi.hProcess)) {
+            MCP_LOG(Warning, "AssignProcessToJobObject failed for stdio process; "
+                "falling back to direct process termination: Windows error " +
+                std::to_string(GetLastError()));
+            CloseHandle(job);
+            job = nullptr;
+        }
+        if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+            DWORD resume_error = GetLastError();
+            if (job != nullptr) {
+                process::detail::TerminateWindowsJobOrProcess(job, pi.hProcess);
+                WaitForSingleObject(pi.hProcess, INFINITE);
+                CloseHandle(job);
+            } else {
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, INFINITE);
+            }
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            CloseHandle(stdin_pipe.parent);
+            CloseHandle(stdout_pipe.parent);
+            if (info.capture_stderr) CloseHandle(stderr_pipe.parent);
+            throw std::runtime_error("ResumeThread failed for stdio process: Windows error " +
+                std::to_string(resume_error));
+        }
     }
 
     CreatedProcess result;
-    result.process = std::make_unique<Win32Process>(pi);
+    result.process = std::make_unique<Win32Process>(
+        pi, job, static_cast<int64_t>(pi.dwProcessId));
     result.stdin_pipe = std::make_unique<Win32Pipe>(stdin_pipe.parent, true);
     result.stdout_pipe = std::make_unique<Win32Pipe>(stdout_pipe.parent, true);
+    if (info.capture_stderr)
+        result.stderr_pipe = std::make_unique<Win32Pipe>(stderr_pipe.parent, true);
     return result;
 }
 
