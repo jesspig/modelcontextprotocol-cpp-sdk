@@ -3,7 +3,7 @@ type: Transport
 title: Stdio 传输
 description: 服务端（stdin/stdout 管道）+ 客户端（子进程）双向传输，'\n' 分隔的 JSON-RPC 行。
 tags: [transport, stdio, 管道, 子进程]
-timestamp: 2026-10-31T14:15:09+08:00
+timestamp: 2026-10-31T20:00:06+08:00
 resource: src/transport/StdioServerTransport.cpp
 ---
 
@@ -28,6 +28,7 @@ resource: src/transport/StdioServerTransport.cpp
 - `Pid()`：`Connect()` 成功后返回子进程 PID，未启动返回 `nullopt`；退出后仍保留最后 PID
 - `Connect()`：选项转 `ProcessStartInfo` → `CreateProcess` → 构造匿名命名空间会话传输 → 启动读线程与 stderr 线程 → `SetConnected()`；stdio 管道语义不变，与公共 `Spawn` 共用 Windows 命令线/环境块/重定向文件/Job 辅助与 POSIX 重定向文件/进程组信号/回收辅助（见 [/concepts/process-spawn.md](../concepts/process-spawn.md)）
 - `Close()`：`running_.exchange(false)` 非真则提前返回（客户端保留该行为）→ 关 stdin 管道 → `process_->Terminate(shutdown_timeout)` → 关 stdout/stderr 管道 → join 读线程与 stderr 线程 → 关通道
+- **POSIX 关闭宽限按真实时钟**：`PosixProcess::Terminate` 先 `SIGTERM`，以 `steady_clock` 算出 `shutdown_timeout` 截止点、每 10ms 一次 `waitpid(WNOHANG)` 轮询，到点才升级 `SIGKILL` 并阻塞回收（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）。此前按「迭代次数 × 10ms」估算经过时间，而 macOS 上 10ms 级 `sleep_for` 实测可达标称 5 倍，300ms 宽限被放大到 ~1.7s；公共 `Spawn` 侧 `SpawnedProcess::Wait` 本就用 deadline 判定，无此缺陷
 - 读循环同样有 8MB 缓冲超限防护（清空 + `NotifyError` + break）；EOF 后不置 `running_`（既有行为）
 - `Name()` 空时返回 `"stdio"`
 

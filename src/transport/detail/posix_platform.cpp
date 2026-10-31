@@ -180,11 +180,11 @@ bool PosixProcess::Terminate(int timeout_ms) {
     if (pid_ <= 0) return true;
     Signal(SIGTERM);
 
-    int elapsed = 0;
-    while (elapsed < timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
         if (!IsRunning()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        elapsed += 10;
     }
 
     Signal(SIGKILL);
