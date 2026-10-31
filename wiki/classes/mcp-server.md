@@ -3,7 +3,7 @@ type: Class
 title: McpServer
 description: MCP 服务端门面：注册与分发、能力推导、progress 推送、requestState 签发、任务后台执行（含双时代分流与 inputResponses 推进）、技能注册与目录读取、URL elicitation 与回调四层接线。
 tags: [server, 门面, 注册, 回调, progress, tasks, skills, elicitation]
-timestamp: 2026-10-27T04:48:00+08:00
+timestamp: 2026-10-31T03:24:04+08:00
 resource: include/mcp/server/McpServer.hpp
 ---
 
@@ -56,6 +56,7 @@ resource: include/mcp/server/McpServer.hpp
 - `ServerOptions` 新增旋钮：`supported_protocol_versions`（窄化 discover/initialize/`_meta` 门控三处，见 [/concepts/version-negotiation.md](../concepts/version-negotiation.md)）、`subscriptions_enabled`（默认 true，关闭则 `subscriptions/listen` 不可用）、`max_tool_input_elements`（工具参数元素数上限，超限回 `is_error` 工具结果）
 - **六开关门控位置**：etag 构造期同步（`SetEtagCacheEnabled(options_.enable_etag_cache)`，[McpServer.cpp:510](../../src/server/McpServer.cpp)）、触发器发射门（`EmitTriggerEvent` 开头，关直接 return，[McpServer.cpp:832](../../src/server/McpServer.cpp)）、渐进发现（`HandleListTools` 开头，关走缓存快照路径，[McpServer.cpp:1690](../../src/server/McpServer.cpp)）、文件输入（`HandleCallTool` 参数解析段，关跳过 file 引用消解，[McpServer.cpp:1824](../../src/server/McpServer.cpp)）、apps `ui://` 读门（`HandleReadResource` 内 `HasAppsUriScheme` 分支，关报 `HandlerError "apps extension is disabled"`，[McpServer.cpp:2432](../../src/server/McpServer.cpp)）、server-card 获取门（`GetServerCard` 开头，关报 `HandlerError "server card is disabled"`，[McpServer.cpp:2917](../../src/server/McpServer.cpp)）；注意 apps/server-card 关态为 `HandlerError` 而非 `MethodNotFound`
 - `GetClientCapabilities()/GetClientInfo()` 返回 `shared_ptr<const T>`；`GetNegotiatedProtocolVersion()` 返回 `std::string`（转发自 handler）；`GetCapabilities()` **按值返回** `ServerCapabilities`（锁内拷贝，调用方不得在锁外持引用访问可变成员）；`SessionId()` 返回构造期生成的安全随机会话标识（8 字节 hex，任务 owner 锚定用）
+- **请求会话 ID**：`RequestContext::SessionId()` 返回当前请求的 MCP 会话 ID（`std::string_view`，内部持 `std::string` 拷贝，异步 handler 安全）；`HandleCallTool` 与 MRTR resume 两处从 `req.session_id` 传入。stdio 与 stateless HTTP 为空串，stateful HTTP 为请求头 `mcp-session-id` 对应的会话；与实例级 `McpServer::SessionId()`（任务 owner 锚定）无关，不得混用
 - **锁外回调**：`resources/read`、`prompts/get`、`completion/complete` 的用户 handler 改为锁内快照、`std::async` 锁外执行（future 入 `pending_async_futures_`，`Close()` 统一 wait）——handler 内可安全再入注册 API，不再持 `registry_mutex_` 执行用户代码；`resources/read` 未命中任何资源/模板时回 `InvalidParams "resource not found: <uri>"`（data 带 uri）
 
 ## URI 模板已知限制

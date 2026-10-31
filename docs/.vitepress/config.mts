@@ -32,6 +32,10 @@ const en = {
       { text: 'MRTR', link: '/en/advanced/mrtr' },
       { text: 'Logging', link: '/en/advanced/logging' },
     ]},
+    { text: 'Migration', items: [
+      { text: '0.3.9 Migration Guide', link: '/en/migration/0.3.9' },
+      { text: '0.3.10 Release Notes', link: '/en/migration/0.3.10' },
+    ]},
     { text: 'Examples', items: [
       { text: 'Echo Server', link: '/en/examples/echo-server' },
       { text: 'Weather Server', link: '/en/examples/weather-server' },
@@ -70,6 +74,10 @@ const zh = {
       { text: '协议版本', link: '/zh/advanced/protocol-versions' },
       { text: 'MRTR 多轮往返', link: '/zh/advanced/mrtr' },
       { text: '日志', link: '/zh/advanced/logging' },
+    ]},
+    { text: '迁移', items: [
+      { text: '0.3.9 迁移指南', link: '/zh/migration/0.3.9' },
+      { text: '0.3.10 发布说明', link: '/zh/migration/0.3.10' },
     ]},
     { text: '示例', items: [
       { text: 'Echo 服务端', link: '/zh/examples/echo-server' },

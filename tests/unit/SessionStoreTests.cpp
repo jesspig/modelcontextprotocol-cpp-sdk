@@ -1,5 +1,6 @@
 #include <mcp/http/SessionStore.hpp>
 #include <mcp/http/EventStore.hpp>
+#include <mcp/Methods.hpp>
 #include <mcp/transport/StreamableHttpServerTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -7,7 +8,10 @@
 #include <transport/detail/net/HttpClient.hpp>
 #include "TestServerUtil.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -378,5 +382,356 @@ TEST(SessionStoreTest, MetadataEndpointAnonymous) {
     auto mcp_resp = TryRequest(http, mcp_req);
     EXPECT_EQ(mcp_resp.status_code, 401);
 
+    server.Close();
+}
+
+namespace {
+
+struct SessionSseReader {
+    mcp::detail::net::HttpClient client;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::string received;
+    std::atomic<bool> endpoint_seen{false};
+    std::atomic<bool> message_seen{false};
+    std::thread thread;
+
+    void Start(uint16_t port, const std::string& session_id) {
+        thread = std::thread([this, port, session_id] {
+            mcp::detail::net::HttpRequestSpec req;
+            req.method = "GET";
+            req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+            req.headers["Accept"] = "text/event-stream";
+            req.headers["mcp-session-id"] = session_id;
+            try {
+                client.Request(req, [this](std::string_view chunk) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    received.append(chunk.data(), chunk.size());
+                    if (received.find("event: endpoint") != std::string::npos)
+                        endpoint_seen.store(true);
+                    if (received.find("notifications/message") != std::string::npos)
+                        message_seen.store(true);
+                    cv.notify_all();
+                });
+            } catch (...) {
+            }
+        });
+    }
+
+    bool WaitFor(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex);
+        return cv.wait_for(lock, timeout, [&flag] { return flag.load(); });
+    }
+
+    void Stop() {
+        client.Close();
+        if (thread.joinable()) thread.join();
+    }
+
+    ~SessionSseReader() { Stop(); }
+};
+
+JsonRpcMessage TakeChannelMessage(MessageChannel& channel) {
+    JsonRpcMessage msg;
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage received) {
+        if (!ec) msg = std::move(received);
+    });
+    return msg;
+}
+
+void ReplyWithSessionResult(StreamableHttpServerTransport& server,
+                            const JsonRpcRequest& request,
+                            const std::string& result_json) {
+    JsonRpcResponse response;
+    response.id = request.id;
+    response.session_id = request.session_id;
+    response.result = JsonValue::Parse(result_json);
+    server.SendMessageAsync(JsonRpcMessage(std::move(response)));
+}
+
+mcp::detail::net::HttpRequestSpec SessionRequest(
+    uint16_t port, const std::string& body,
+    const std::optional<std::string>& session_id = std::nullopt) {
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "POST";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.body = body;
+    req.headers["content-type"] = "application/json";
+    if (session_id) req.headers["mcp-session-id"] = *session_id;
+    req.timeout = kHttpTimeout;
+    return req;
+}
+
+std::string InitializeSession(StreamableHttpServerTransport& server,
+                              mcp::detail::net::HttpClient& http,
+                              uint16_t port, int id) {
+    auto req = SessionRequest(port,
+        R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+        R"(,"method":"initialize","params":{)"
+        R"("protocolVersion":"2025-06-18","capabilities":{},)"
+        R"("clientInfo":{"name":"test","version":"0"}}})");
+    HttpThread call;
+    call.Run(http, req);
+    if (!WaitForChannelMessage(server.GetMessageChannel(),
+                               std::chrono::milliseconds(5000))) {
+        ADD_FAILURE() << "initialize was not forwarded";
+        return {};
+    }
+    auto msg = TakeChannelMessage(server.GetMessageChannel());
+    auto* inbound = AsRequest(msg);
+    if (!inbound) {
+        ADD_FAILURE() << "initialize did not produce a request";
+        return {};
+    }
+    std::string session_id = inbound->session_id;
+    ReplyWithSessionResult(server, *inbound,
+        R"({"protocolVersion":"2025-06-18","capabilities":{},)"
+        R"("serverInfo":{"name":"test-server","version":"0"}})");
+    call.Wait();
+    if (!call.response) {
+        ADD_FAILURE() << "initialize response missing";
+        return {};
+    }
+    EXPECT_EQ(call.response->status_code, 200);
+    auto header = call.response->headers.find("mcp-session-id");
+    if (header == call.response->headers.end()) {
+        ADD_FAILURE() << "initialize response missing mcp-session-id";
+        return {};
+    }
+    EXPECT_FALSE(header->second.empty());
+    EXPECT_EQ(header->second, session_id);
+    return header->second;
+}
+
+} // namespace
+
+TEST(SessionStoreTest, InitializeCreatesDistinctStableSessions) {
+    auto port = PickFreePort(kTestBasePort + 1870);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient http;
+    auto session_a = InitializeSession(server, http, port, 1);
+    auto session_b = InitializeSession(server, http, port, 2);
+    ASSERT_FALSE(session_a.empty());
+    ASSERT_FALSE(session_b.empty());
+    EXPECT_NE(session_a, session_b);
+
+    auto call_list = [&](const std::string& session_id, int id,
+                         const char* result_json) -> bool {
+        auto req = SessionRequest(port,
+            R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+            R"(,"method":"tools/list"})", session_id);
+        HttpThread call;
+        call.Run(http, req);
+        if (!WaitForChannelMessage(server.GetMessageChannel(),
+                                   std::chrono::milliseconds(5000))) {
+            ADD_FAILURE() << "tools/list was not forwarded";
+            call.Wait();
+            return false;
+        }
+        auto msg = TakeChannelMessage(server.GetMessageChannel());
+        auto* inbound = AsRequest(msg);
+        if (!inbound) {
+            ADD_FAILURE();
+            call.Wait();
+            return false;
+        }
+        EXPECT_EQ(inbound->session_id, session_id);
+        ReplyWithSessionResult(server, *inbound, result_json);
+        call.Wait();
+        if (!call.response) return false;
+        EXPECT_EQ(call.response->status_code, 200);
+        return true;
+    };
+
+    EXPECT_TRUE(call_list(session_a, 3, R"({"tools":[]})"));
+    EXPECT_TRUE(call_list(session_a, 4, R"({"tools":[]})"));
+    EXPECT_TRUE(call_list(session_b, 5, R"({"tools":[]})"));
+
+    mcp::detail::net::HttpRequestSpec remove;
+    remove.method = "DELETE";
+    remove.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    remove.headers["mcp-session-id"] = session_a;
+    remove.timeout = kHttpTimeout;
+    auto removed = TryRequest(http, remove);
+    ASSERT_EQ(removed.status_code, 200);
+
+    auto gone = TryRequest(http, SessionRequest(port,
+        R"({"jsonrpc":"2.0","id":6,"method":"tools/list"})", session_a));
+    EXPECT_EQ(gone.status_code, 404);
+
+    auto unknown_delete = TryRequest(http, [&] {
+        auto req = remove;
+        req.headers["mcp-session-id"] = "sess-does-not-exist";
+        return req;
+    }());
+    EXPECT_EQ(unknown_delete.status_code, 404);
+
+    EXPECT_TRUE(call_list(session_b, 7, R"({"tools":[]})"));
+
+    server.Close();
+}
+
+TEST(SessionStoreTest, ConcurrentSessionsIsolatePendingResponses) {
+    auto port = PickFreePort(kTestBasePort + 1880);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient http;
+    auto session_a = InitializeSession(server, http, port, 1);
+    auto session_b = InitializeSession(server, http, port, 2);
+    ASSERT_FALSE(session_a.empty());
+    ASSERT_FALSE(session_b.empty());
+    ASSERT_NE(session_a, session_b);
+
+    const std::string body =
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"probe"}})";
+    mcp::detail::net::HttpClient http_a;
+    mcp::detail::net::HttpClient http_b;
+    auto req_a = SessionRequest(port, body, session_a);
+    auto req_b = SessionRequest(port, body, session_b);
+    req_a.timeout = std::chrono::seconds(5);
+    req_b.timeout = std::chrono::seconds(5);
+    HttpThread call_a;
+    HttpThread call_b;
+    call_a.Run(http_a, req_a);
+    call_b.Run(http_b, req_b);
+
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_TRUE(WaitForChannelMessage(server.GetMessageChannel(),
+                                          std::chrono::milliseconds(5000)));
+        auto msg = TakeChannelMessage(server.GetMessageChannel());
+        auto* inbound = AsRequest(msg);
+        ASSERT_TRUE(inbound);
+        ASSERT_TRUE(inbound->session_id == session_a ||
+                    inbound->session_id == session_b);
+        ReplyWithSessionResult(server, *inbound,
+            "{\"session\":\"" + inbound->session_id + "\"}");
+    }
+
+    call_a.Wait();
+    call_b.Wait();
+    ASSERT_TRUE(call_a.response.has_value());
+    ASSERT_TRUE(call_b.response.has_value());
+    EXPECT_EQ(call_a.response->status_code, 200);
+    EXPECT_EQ(call_b.response->status_code, 200);
+    EXPECT_NE(call_a.response->body.find("\"session\":\"" + session_a + "\""),
+              std::string::npos);
+    EXPECT_NE(call_b.response->body.find("\"session\":\"" + session_b + "\""),
+              std::string::npos);
+
+    server.Close();
+}
+
+TEST(SessionStoreTest, StatelessRequestsCarryEmptySessionId) {
+    auto port = PickFreePort(kTestBasePort + 1890);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = true;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient http;
+    auto req = SessionRequest(port,
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
+    HttpThread call;
+    call.Run(http, req);
+    ASSERT_TRUE(WaitForChannelMessage(server.GetMessageChannel(),
+                                      std::chrono::milliseconds(5000)));
+    auto msg = TakeChannelMessage(server.GetMessageChannel());
+    auto* inbound = AsRequest(msg);
+    ASSERT_TRUE(inbound);
+    EXPECT_TRUE(inbound->session_id.empty());
+    ReplyWithSessionResult(server, *inbound, R"({"tools":[]})");
+    call.Wait();
+    ASSERT_TRUE(call.response.has_value());
+    EXPECT_EQ(call.response->status_code, 200);
+    EXPECT_EQ(call.response->headers.find("mcp-session-id"),
+              call.response->headers.end());
+
+    server.Close();
+}
+
+TEST(SessionStoreTest, ExpiredSessionIsRejectedWith404) {
+    auto store = std::make_shared<InMemorySessionStore>();
+    auto now = SessionTestNowMs();
+    SessionRecord record;
+    record.protocol_version = "2025-06-18";
+    record.created_at_ms = now - 31LL * 60 * 1000;
+    record.last_seen_ms = now - 31LL * 60 * 1000;
+    ASSERT_TRUE(store->TrySave("sess-expired", record));
+
+    auto port = PickFreePort(kTestBasePort + 1900);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    opts.session_store = store;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient http;
+    auto gone = TryRequest(http, SessionRequest(port,
+        R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})", "sess-expired"));
+    EXPECT_EQ(gone.status_code, 404);
+    EXPECT_TRUE(server.GetMessageChannel().Empty());
+
+    server.Close();
+}
+
+TEST(SessionStoreTest, SseAndEventStoreIsolatedPerSession) {
+    auto events = std::make_shared<EventStore>();
+    auto port = PickFreePort(kTestBasePort + 1910);
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    opts.enable_legacy_sse = true;
+    opts.sse_keep_alive_ms = 0;
+    opts.event_store = events;
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient http;
+    auto session_a = InitializeSession(server, http, port, 1);
+    auto session_b = InitializeSession(server, http, port, 2);
+    ASSERT_FALSE(session_a.empty());
+    ASSERT_FALSE(session_b.empty());
+
+    SessionSseReader reader_a;
+    SessionSseReader reader_b;
+    reader_a.Start(port, session_a);
+    reader_b.Start(port, session_b);
+    ASSERT_TRUE(reader_a.WaitFor(reader_a.endpoint_seen, std::chrono::seconds(5)));
+    ASSERT_TRUE(reader_b.WaitFor(reader_b.endpoint_seen, std::chrono::seconds(5)));
+
+    JsonRpcNotification notification;
+    notification.method = notifications::kMessage;
+    notification.session_id = session_a;
+    JsonValue params(JsonValue::object_tag);
+    params["level"] = JsonValue("info");
+    params["data"] = JsonValue("session-a-only");
+    notification.params = std::move(params);
+    server.SendMessageAsync(JsonRpcMessage(std::move(notification)));
+
+    EXPECT_TRUE(reader_a.WaitFor(reader_a.message_seen, std::chrono::seconds(5)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_FALSE(reader_b.message_seen.load());
+
+    EXPECT_FALSE(events->GetEventsSince(session_a, 0).empty());
+    EXPECT_TRUE(events->GetEventsSince(session_b, 0).empty());
+
+    reader_a.Stop();
+    reader_b.Stop();
     server.Close();
 }

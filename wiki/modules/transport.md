@@ -1,15 +1,15 @@
 ---
 type: Module
 title: mcp-transport 传输库
-description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现与 PlatformIO。
-tags: [transport, 状态机, 管道, 线程]
-timestamp: 2026-09-20T17:13:14+08:00
+description: 传输抽象层：ITransport/TransportBase 三态状态机、IClientTransport 连接工厂、各传输实现、PlatformIO 与公共子进程 Spawn API。
+tags: [transport, 状态机, 管道, 线程, 子进程]
+timestamp: 2026-10-31T14:34:43+08:00
 resource: include/mcp/Transport.hpp
 ---
 
 # mcp-transport 传输库
 
-依赖 `mcp-core`，网络 I/O 用自研栈（[detail/net/](../../src/transport/detail/net/)：TcpSocket/TlsSocket/HttpClient/WebSocketClient/Sha1）。显式关闭 Unity 构建（匿名命名空间实现类符号冲突）。
+依赖 `mcp-core`，网络 I/O 用自研栈（[detail/net/](../../src/transport/detail/net/)：TcpSocket/TlsSocket/HttpClient/WebSocketClient/Sha1）。显式关闭 Unity 构建（匿名命名空间实现类符号冲突）。公共子进程管理 API `mcp::Spawn` 的实现也编入本库，见 [/concepts/process-spawn.md](../concepts/process-spawn.md)。
 
 ## 抽象
 
@@ -17,7 +17,7 @@ resource: include/mcp/Transport.hpp
 - `TransportBase`：三态状态机 `Initial → Connected → Disconnected`（[Transport.hpp](../../include/mcp/Transport.hpp)）
   - `SetConnected` 仅允许 `Initial→Connected`（CAS），已 Disconnected 后调用被忽略并记 Warning
   - `SetDisconnected` 幂等：仅首次触发 `NotifyClose()`
-  - `SessionId()` 仅 `StreamableHttpServerTransport` 设置，其余为空串
+  - `SessionId()` 仅 `StreamableHttpClientTransport` 暴露当前客户端会话 id；服务端 `StreamableHttpServerTransport` 不再持有单一会话 id（多会话路由，返回空串），请求所属会话 id 经消息的 `session_id` 字段进入 `RequestContext::SessionId()`，其余传输为空串
 - `IClientTransport` 工厂：`Name()` + `Connect()`（每次返回新会话传输）
 
 ## 传输实现
@@ -38,9 +38,13 @@ resource: include/mcp/Transport.hpp
 关键语义（[posix_platform.cpp](../../src/transport/detail/posix_platform.cpp)）：
 
 - `PipeHandle::Read` 返回 0 **不一定是 EOF**——POSIX 实现 poll 轮询（100ms 超时）无数据即返回 0，必须用 `IsEof()` 区分
-- POSIX 子进程：**argv/envp 构造与 PATH 搜索（`access` X_OK，仅自定义环境分支）全部在 `fork()` 之前完成**（fork 后仅 `chdir`/`dup2`/`execve` 等 async-signal-safe 调用），stderr 继承父进程；管道 fd 与标准流 dup 均设 `FD_CLOEXEC`（`SetCloseOnExec`）；析构 SIGKILL + WNOHANG reap
-- Win32：`ArgvToCommandLine` 引号转义、`CREATE_NO_WINDOW`、stderr = 父进程标准错误；stdio 管道用 `CreateNamedPipeW` + `CreateFileW`（父端 `FILE_FLAG_OVERLAPPED`，64KB 缓冲 `kPipeBufferSize`），`WriteSync` 锁外化——`WriteFile` 不在 `io_mutex_` 内（满管道阻塞不再拖住 `Close()`）
+- POSIX 子进程：**argv/envp 构造与 PATH 搜索（`access` X_OK，仅自定义环境分支）全部在 `fork()` 之前完成**（fork 后仅 `chdir`/`dup2`/`setpgid`/`execve` 等 async-signal-safe 调用）；stderr 默认继承，`stderr_path`/`capture_stderr` 时经父进程打开的 fd 或管道重定向；`terminate_process_tree` 时子进程 `setpgid(0,0)` 并将信号发往进程组；管道 fd 与标准流 dup 均设 `FD_CLOEXEC`（`SetCloseOnExec`）；回收逻辑与公共 `Spawn` 共用 [PosixProcessSupport.cpp](../../src/process/detail/PosixProcessSupport.cpp)（阻塞 `waitpid` 回收，不留僵尸）
+- Win32：`BuildWindowsCommandLine` 引号转义（与公共 `Spawn` 共用 [WindowsProcessSupport.cpp](../../src/process/detail/WindowsProcessSupport.cpp)）、`CREATE_NO_WINDOW`、stderr 默认继承父进程或重定向到文件/管道；stdio 管道用 `CreateNamedPipeW` + `CreateFileW`（父端 `FILE_FLAG_OVERLAPPED`，64KB 缓冲 `kPipeBufferSize`），`WriteSync` 锁外化——`WriteFile` 不在 `io_mutex_` 内（满管道阻塞不再拖住 `Close()`）；环境块由共享 `BuildWindowsEnvironmentBlock` 构造，继承项按名称过滤后覆盖；`terminate_process_tree` 时 `CREATE_SUSPENDED` + 共享 Job 辅助（`KILL_ON_JOB_CLOSE`）绑定后恢复线程
 - 线程命名：POSIX 限 16 字节；macOS 用单参 `pthread_setname_np`；Win32 动态加载 `SetThreadDescription`
+
+## 公共子进程管理（process/）
+
+[Process.hpp](../../include/mcp/process/Process.hpp) 提供 `SpawnOptions` / `SpawnedProcess` / `Spawn`：参数不经 shell、环境继承与覆盖、工作目录、stdout/stderr 文件重定向、`Wait`/`ExitCode`/`Terminate`、Windows Job Object 树终止与 POSIX `posix_spawn` + 进程组回收。平台实现位于 [ProcessWin32.cpp](../../src/process/ProcessWin32.cpp) / [ProcessPosix.cpp](../../src/process/ProcessPosix.cpp)，完整语义见 [/concepts/process-spawn.md](../concepts/process-spawn.md)。`StdioClientTransport` 保留 stdin/stdout 管道路径，与公共 API 共用命令线/环境块/重定向/Job/进程组/回收辅助；stderr、`Pid()`、`shutdown_timeout` 与 `terminate_process_tree` 已接入（见 [/transports/stdio.md](../transports/stdio.md)）。
 
 ## 网络栈加固（detail/net）
 
@@ -58,6 +62,7 @@ resource: include/mcp/Transport.hpp
 ## 相关页面
 
 - [/transports/stdio.md](../transports/stdio.md) 等 5 个传输页
+- [/concepts/process-spawn.md](../concepts/process-spawn.md) — 公共子进程 Spawn API 与平台语义
 - [/classes/message-channel.md](../classes/message-channel.md) — 通道实现
 - [/concepts/concurrency.md](../concepts/concurrency.md) — 线程与生命周期
 - [/concepts/mcp-param-headers.md](../concepts/mcp-param-headers.md) — Streamable HTTP 参数头

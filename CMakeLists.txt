@@ -122,6 +122,7 @@ target_sources(mcp-core PRIVATE
     src/core/McpTypesParams.cpp
     src/core/Content.cpp
     src/core/Capabilities.cpp
+    src/core/CancelToken.cpp
     src/detail/AtomicJsonFile.cpp)
 target_include_directories(mcp-core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 mcp_setup_library(mcp-core)
@@ -142,11 +143,15 @@ target_sources(mcp-transport PRIVATE
 if(WIN32)
     target_sources(mcp-transport PRIVATE
         src/transport/detail/win32_platform.cpp
-        src/transport/detail/net/TcpSocketWin32.cpp)
+        src/transport/detail/net/TcpSocketWin32.cpp
+        src/process/ProcessWin32.cpp
+        src/process/detail/WindowsProcessSupport.cpp)
 else()
     target_sources(mcp-transport PRIVATE
         src/transport/detail/posix_platform.cpp
-        src/transport/detail/net/TcpSocketPosix.cpp)
+        src/transport/detail/net/TcpSocketPosix.cpp
+        src/process/ProcessPosix.cpp
+        src/process/detail/PosixProcessSupport.cpp)
 endif()
 target_link_libraries(mcp-transport PUBLIC mcp-core)
 if(WIN32)
@@ -252,7 +257,8 @@ if(MCP_BUILD_TESTS)
         mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
         mcp-event-store-tests mcp-streamable-http-tests mcp-websocket-tests
-        mcp-integration-tests mcp-conformance-tests mcp-uri-template-tests)
+        mcp-integration-tests mcp-conformance-tests mcp-uri-template-tests
+        mcp-process-tests)
         mcp_enable_werror(${_t})
     endforeach()
 endif()
