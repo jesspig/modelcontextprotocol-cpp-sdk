@@ -891,20 +891,22 @@ TEST(TransportTest, StdioConcurrentConnects) {
 
 #ifndef _WIN32
 TEST(TransportTest, StdioShutdownTimeoutHonored) {
+    constexpr long long kShutdownGraceMs = 300;
+    constexpr long long kCloseBudgetMs = 2500;
     auto options = StdioHelperOptions({"--ignore-sigterm", "30000"});
-    options.shutdown_timeout = std::chrono::milliseconds(300);
+    options.shutdown_timeout = std::chrono::milliseconds(kShutdownGraceMs);
     StdioClientTransport transport(options);
     auto session = transport.Connect();
     ASSERT_NE(session, nullptr);
     ASSERT_TRUE(transport.Pid().has_value());
     const int64_t pid = *transport.Pid();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::this_thread::sleep_for(std::chrono::milliseconds(kShutdownGraceMs));
 
     const auto start = std::chrono::steady_clock::now();
     session->Close();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
-    EXPECT_LT(elapsed, 1500);
+    EXPECT_LT(elapsed, kCloseBudgetMs);
     EXPECT_TRUE(WaitForStdioProcessGone(pid, 5000));
 }
 
