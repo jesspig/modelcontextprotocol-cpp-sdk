@@ -122,6 +122,15 @@ const declaredNamespaces = new Set(
   headerUnits.flatMap((unit) => [...unit.text.matchAll(/\bnamespace\s+([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]))
 )
 
+// 文档片段里自造的演示类型不是 SDK 符号，单独归类而不是算未命中
+const snippetUnits = walk(path.join(docsDir, 'snippets'), (file) => path.extname(file) === '.cpp')
+  .map(loadUnit)
+const snippetLocalTypes = new Set(
+  snippetUnits.flatMap((unit) => [
+    ...unit.text.matchAll(/\b(?:enum\s+class|enum|struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g),
+  ].map((m) => m[1]))
+)
+
 const isTypeName = (value) => value[0] >= 'A' && value[0] <= 'Z'
 
 // (?!\*) 跳过 methods::k* 之类通配写法；非大写字母开头的限定名只有确实是 namespace 时才检查，
@@ -164,6 +173,10 @@ function findIn(units, ref) {
 }
 
 function resolve(ref) {
+  const scopeName = ref.split('::')[0]
+  if (snippetLocalTypes.has(scopeName)) {
+    return { status: 'LOCAL', detail: `${scopeName} 是文档片段内自定义的演示类型，非 SDK 符号` }
+  }
   const publicHit = findIn(corpus, ref)
   if (publicHit.evidence) {
     return { status: 'HIT', evidence: publicHit.evidence }
@@ -202,6 +215,7 @@ const results = [...references.keys()]
 const hits = results.filter((item) => item.status === 'HIT')
 const misses = results.filter((item) => item.status === 'MISS')
 const exempted = results.filter((item) => item.status === 'EXEMPT')
+const locals = results.filter((item) => item.status === 'LOCAL')
 
 console.log(
   `check-api-symbols: 扫描 ${docFiles.length} 个文档/片段文件，` +
@@ -233,7 +247,7 @@ for (const hit of hits) {
 }
 
 console.log(
-  `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}`
+  `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}`
 )
 
 if (misses.length > 0) {
