@@ -91,6 +91,8 @@ const en = {
     { text: 'Examples', items: [
       { text: 'Echo Server', link: '/en/examples/echo-server' },
       { text: 'Weather Server', link: '/en/examples/weather-server' },
+      { text: 'Simple Client', link: '/en/examples/simple-client' },
+      { text: 'Request Cancellation', link: '/en/examples/request-cancellation' },
     ]},
   ],
 }
@@ -177,6 +179,8 @@ const zh = {
     { text: '示例', items: [
       { text: 'Echo 服务端', link: '/zh/examples/echo-server' },
       { text: '天气服务端', link: '/zh/examples/weather-server' },
+      { text: 'Simple 客户端', link: '/zh/examples/simple-client' },
+      { text: '请求取消示例', link: '/zh/examples/request-cancellation' },
     ]},
   ],
 }
