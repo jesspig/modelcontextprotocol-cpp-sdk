@@ -83,7 +83,7 @@ cmake --build build/p2d --target mcp-doc-snippet-run-long-tasks
 
 期望输出（本机实测）：configure 阶段打印 `[mcp-docs] syntax-checking <N> snippet(s) with '/Zs'`，构建阶段打印
 
-```
+```text
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-run-long-tasks.dir\__\__\docs\snippets\run-long-tasks.cpp.obj
 ```
 

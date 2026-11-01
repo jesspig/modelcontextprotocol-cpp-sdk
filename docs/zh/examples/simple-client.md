@@ -123,7 +123,7 @@ build/debug/examples/SimpleClient/SimpleClient
 
 实测输出（Windows，clang-cl，返回码 0）：
 
-```
+```text
 Server: EchoServer v1.0.0
 Protocol: 2026-07-28
 Available tools:

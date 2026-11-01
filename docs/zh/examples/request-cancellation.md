@@ -97,7 +97,7 @@ build/debug/examples/RequestCancellation/RequestCancellation
 
 实测输出（Windows，clang-cl，返回码 0）：
 
-```
+```text
 timeout handle id: 2
 error: request timed out (code -32001)
 cancel handle id: 3

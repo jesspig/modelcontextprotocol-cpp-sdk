@@ -348,6 +348,33 @@ for (const file of docFiles) {
   })
 }
 howtoFenceProblems.sort()
+
+// 围栏必须带语言标注：裸 ``` 在 VitePress 里渲染成无标签代码块，输出块应写 ```text
+const bareFenceProblems = []
+for (const file of docFiles) {
+  if (!file.endsWith('.md')) {
+    continue
+  }
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  let inFence = false
+  lines.forEach((line, index) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (!marker) {
+      return
+    }
+    if (!inFence) {
+      inFence = true
+      if (marker[2].trim() === '') {
+        bareFenceProblems.push(
+          `${relative(file)}:${index + 1} 开围栏缺少语言标注，输出块请写 \`\`\`text`
+        )
+      }
+    } else {
+      inFence = false
+    }
+  })
+}
+bareFenceProblems.sort()
 for (const [key, occurrences] of usedRegions) {
   if (!declaredRegions.has(key)) {
     const where = occurrences.map((item) => `${item.file}:${item.line}`).join(', ')
@@ -367,6 +394,9 @@ console.log(
     `完整性问题 ${regionProblems.length} 处，标记书写问题 ${markerProblems.length} 处，` +
     `任务手册手写代码块 ${howtoFenceProblems.length} 处`
 )
+console.log(
+  `围栏标注：缺语言标注的开围栏 ${bareFenceProblems.length} 处`
+)
 for (const problem of regionProblems) {
   console.log(`  REGION ${problem}`)
 }
@@ -375,6 +405,9 @@ for (const problem of markerProblems) {
 }
 for (const problem of howtoFenceProblems) {
   console.log(`  FENCE ${problem}`)
+}
+for (const problem of bareFenceProblems) {
+  console.log(`  LANG ${problem}`)
 }
 
 console.log(
@@ -385,7 +418,8 @@ if (
   misses.length > 0 ||
   regionProblems.length > 0 ||
   markerProblems.length > 0 ||
-  howtoFenceProblems.length > 0
+  howtoFenceProblems.length > 0 ||
+  bareFenceProblems.length > 0
 ) {
   process.exit(1)
 }

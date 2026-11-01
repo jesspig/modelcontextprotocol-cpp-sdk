@@ -80,7 +80,7 @@ cmake --build build/p2d --target mcp-doc-snippet-send-log-notifications
 
 期望输出：configure 阶段打印 `[mcp-docs] syntax-checking <N> snippet(s) with '/Zs'`，构建阶段打印
 
-```
+```text
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-send-log-notifications.dir\__\__\docs\snippets\send-log-notifications.cpp.obj
 ```
 

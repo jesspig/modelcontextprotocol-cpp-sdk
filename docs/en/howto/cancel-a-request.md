@@ -94,7 +94,7 @@ cmake --build build/p3f --target mcp-doc-snippet-cancel-a-request
 
 Expected: configure prints `[mcp-docs] syntax-checking 13 snippet(s) with '/Zs'`, and the build prints
 
-```
+```text
 [1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-cancel-a-request.dir\__\__\docs\snippets\cancel-a-request.cpp.obj
 ```
 
@@ -109,7 +109,7 @@ build/p3f/examples/RequestCancellation/RequestCancellation.exe
 
 Measured output — four lines, return code 0:
 
-```
+```text
 timeout handle id: 2
 error: request timed out (code -32001)
 cancel handle id: 3

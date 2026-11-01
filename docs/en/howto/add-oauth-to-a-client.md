@@ -98,7 +98,7 @@ cmake --build build/p3a --target mcp-doc-snippet-add-oauth-to-a-client
 
 Expected: configure prints `[mcp-docs] syntax-checking 15 snippet(s) with '/Zs'`, and the build prints
 
-```
+```text
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-add-oauth-to-a-client.dir\__\__\docs\snippets\add-oauth-to-a-client.cpp.obj
 ```
 

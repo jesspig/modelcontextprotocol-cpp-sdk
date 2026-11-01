@@ -124,7 +124,7 @@ build/debug/examples/EchoServer/EchoServer
 
 实测输出（Windows，clang-cl）：
 
-```
+```text
 EchoServer starting on stdio...
 ```
 

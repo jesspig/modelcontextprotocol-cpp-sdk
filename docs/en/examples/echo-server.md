@@ -124,7 +124,7 @@ build/debug/examples/EchoServer/EchoServer
 
 Measured output (Windows, clang-cl):
 
-```
+```text
 EchoServer starting on stdio...
 ```
 
