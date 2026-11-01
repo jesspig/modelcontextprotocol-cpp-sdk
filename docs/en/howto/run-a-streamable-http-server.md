@@ -33,7 +33,7 @@ Three fields matter: `stateless = false`, a `session_store` implementation, and 
 
 1. The client `POST`s `initialize` to `/mcp` without a session header.
 2. The server mints a session id and returns it in the `mcp-session-id` response header.
-3. Every following request (including `GET` and `DELETE`) must carry that header; missing, unknown or expired always returns 404 (`:541-543`, `:783-786`, `:868`).
+3. Every following request must carry that header. An **unknown or expired header value** returns 404 with the in-band code `SessionExpired` (`-32009`, `:783-790`); **omitting the header entirely** on a non-`initialize` request is not treated as an unknown session — it falls through to the empty-session path and returns 400 for the missing handshake context (`:795-798`, measured).
 4. When a session is closed, its still-pending requests are settled with the JSON-RPC error `SessionExpired` (`-32009`, `:947-952`) instead of hanging forever.
 5. `DELETE` closes only that session, dropping its pending requests and replay records without touching other sessions on the same port.
 
@@ -69,7 +69,18 @@ cmake -S . -B build/docs-snippets -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/docs-snippets --target mcp-doc-snippet-run-a-streamable-http-server
 ```
 
-Then handshake once: start the process, send `initialize` to `http://localhost:3001/mcp` and expect a `mcp-session-id` response header; follow with a request without that header and expect 404. Finally connect a host in stateful mode and confirm the tool list contains `ping`.
+Then handshake once (all status codes below are measured):
+
+```bash
+curl.exe -i -X POST http://127.0.0.1:3001/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+- Expect `200` with `mcp-session-id: sess-<32 hex>` and `mcp-protocol-version: 2025-11-25` response headers, and `content-type: text/event-stream`.
+- With that header, `notifications/initialized` returns `202` and `tools/list` returns `200`, showing the `ping` tool registered above.
+- Replace the session value with a nonexistent one → `404`; drop the header → `400`.
 
 ## Era differences
 
@@ -79,8 +90,8 @@ Stateful runs the `initialize` handshake, so negotiation can only land in the le
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| 404 `Not Found` | Session header missing, unknown or expired | Client re-sends `initialize` to obtain a new session |
-| Error code `-32009` (`session closed`) | The session was closed and its pending requests were settled | Re-run `initialize`; inject your own `SessionStore` to change the idle policy |
+| 404 `Not Found` with in-band `-32009` (`Session expired`) | Session header value is unknown or expired (idle past `kSessionIdleTimeoutMs`, or the session was `DELETE`d/closed) | Client re-runs `initialize` for a fresh session |
+| 400 | A non-`initialize` request carried no `mcp-session-id`, so it hit the empty-session path without handshake context | Send the session header; make sure `initialize` ran first |
 | `InvalidParams` with `unsupported protocol version` (`-32022`) | Declared version not in the support table | Narrow `ServerOptions::supported_protocol_versions` only after confirming peer capability |
 | Startup fails on the port | Default 3001 already taken | Change `http_options.port` |
 | Client never receives progress or logs | Stateless mode without `listen_hold_open` | Enable the switch, or switch to stateful with subscriptions |

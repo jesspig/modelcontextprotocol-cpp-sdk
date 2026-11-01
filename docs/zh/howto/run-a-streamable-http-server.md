@@ -33,7 +33,7 @@
 
 1. 客户端 `POST /mcp` 发 `initialize`，不带会话头。
 2. 服务端生成会话 id，在响应头回 `mcp-session-id`。
-3. 之后每个请求（含 `GET`/`DELETE`）都要带上这个头；缺失、未知或已过期一律回 404（`:541-543`、`:783-786`、`:868`）。
+3. 之后每个请求都要带上这个头。**会话头值未知或已过期**回 404，响应体里的码是 `SessionExpired`（`-32009`，`:783-790`）；**完全不带头**的非 `initialize` 请求不会被当成未知会话，而是按空会话处理并因缺少握手上下文回 400（`:795-798`，实测）。
 4. 会话被关闭时，它名下仍在等待的挂起请求会以 JSON-RPC 错误 `SessionExpired`（`-32009`，`:947-952`）结算，不会永远吊着。
 5. `DELETE` 只关闭该会话，清掉它的挂起请求与事件回放记录，不影响同端口其他会话。
 
@@ -69,7 +69,18 @@ cmake -S . -B build/docs-snippets -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/docs-snippets --target mcp-doc-snippet-run-a-streamable-http-server
 ```
 
-再握手一次：起进程后向 `http://localhost:3001/mcp` 发 `initialize`，期望响应头带 `mcp-session-id`；接着发一个不带该头的请求，期望 404。有状态模式下再用宿主连一次，确认工具列表能列出 `ping`。
+再握手一次（以下状态码为本页实测）：
+
+```bash
+curl.exe -i -X POST http://127.0.0.1:3001/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+- 期望 `200`，响应头含 `mcp-session-id: sess-<32 位 hex>` 与 `mcp-protocol-version: 2025-11-25`，`content-type` 为 `text/event-stream`。
+- 用该会话头再发 `notifications/initialized` → `202`；发 `tools/list` → `200`，能看到本页示例注册的 `ping`。
+- 把会话头换成一个不存在的值 → `404`；去掉会话头 → `400`。
 
 ## 时代差异
 
@@ -79,8 +90,8 @@ cmake --build build/docs-snippets --target mcp-doc-snippet-run-a-streamable-http
 
 | 现象 | 成因 | 处置 |
 |---|---|---|
-| 404 `Not Found` | 会话头缺失、未知或已过期 | 客户端重发 `initialize` 取新会话 |
-| 错误码 `-32009`（`session closed`） | 会话已关闭，其挂起请求被结算 | 客户端重新 `initialize`；必要时注入自己的 `SessionStore` 调整闲置策略 |
+| 404 `Not Found`，带内码 `-32009`（`Session expired`） | 会话头值是未知或已过期（闲置超 `kSessionIdleTimeoutMs`、或会话已 `DELETE`/关闭） | 客户端重发 `initialize` 取新会话 |
+| 400 | 非 `initialize` 请求没带 `mcp-session-id`，被当作空会话却没有握手上下文 | 补上会话头；确认先发 `initialize` |
 | `InvalidParams`，消息为 `unsupported protocol version`（`-32022`） | 声明的版本不在支持表内 | 用 `ServerOptions::supported_protocol_versions` 窄化前先确认对端能力 |
 | 端口占用导致启动失败 | 默认 3001 已被占 | 改 `http_options.port` |
 | 客户端收不到进度或日志 | 无状态且没开 `listen_hold_open` | 开该开关，或改有状态 + 订阅 |
