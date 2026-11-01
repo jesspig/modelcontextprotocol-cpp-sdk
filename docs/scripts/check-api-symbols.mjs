@@ -291,11 +291,78 @@ for (const hit of hits) {
   console.log(`  HIT ${hit.ref} -> ${hit.evidence}`)
 }
 
+// 片段 region 双向完整性：页面引用的 region 必须存在，存在的 region 必须被引用，
+// 且标记必须顶格——VitePress 只识别行首的 `// region`，缩进会让标记本身被渲染进代码块
+const snippetDir = path.join(docsDir, 'snippets')
+const usedRegions = new Map()
+for (const file of docFiles) {
+  if (!file.endsWith('.md')) {
+    continue
+  }
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    const match = /<<< +@\/snippets\/([A-Za-z0-9._-]+\.cpp)#([A-Za-z0-9_-]+)/.exec(line)
+    if (!match) {
+      return
+    }
+    const key = `${match[1]}#${match[2]}`
+    if (!usedRegions.has(key)) {
+      usedRegions.set(key, [])
+    }
+    usedRegions.get(key).push({ file: relative(file), line: index + 1 })
+  })
+}
+
+const declaredRegions = new Set()
+const markerProblems = []
+for (const file of walk(snippetDir, (candidate) => candidate.endsWith('.cpp'))) {
+  const base = path.basename(file)
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    const marker = /^(\s*)\/\/\s+(region|endregion)(\s+\S+)?\s*$/.exec(line)
+    if (!marker) {
+      return
+    }
+    if (marker[1].length > 0) {
+      markerProblems.push(`${relative(file)}:${index + 1} region 标记必须顶格书写：${line.trim()}`)
+    }
+    if (marker[2] === 'region' && marker[3]) {
+      declaredRegions.add(`${base}#${marker[3].trim()}`)
+    }
+  })
+}
+
+const regionProblems = []
+for (const [key, occurrences] of usedRegions) {
+  if (!declaredRegions.has(key)) {
+    const where = occurrences.map((item) => `${item.file}:${item.line}`).join(', ')
+    regionProblems.push(`${key} 被页面引用，但片段里没有该 region（引用处 ${where}）`)
+  }
+}
+for (const key of declaredRegions) {
+  if (!usedRegions.has(key)) {
+    regionProblems.push(`${key} 已定义但没有任何页面引用（死代码）`)
+  }
+}
+regionProblems.sort()
+markerProblems.sort()
+
+console.log(
+  `\n片段 region：定义 ${declaredRegions.size} 个，被引用 ${usedRegions.size} 处，` +
+    `完整性问题 ${regionProblems.length} 处，标记书写问题 ${markerProblems.length} 处`
+)
+for (const problem of regionProblems) {
+  console.log(`  REGION ${problem}`)
+}
+for (const problem of markerProblems) {
+  console.log(`  MARKER ${problem}`)
+}
+
 console.log(
   `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}`
 )
 
-if (misses.length > 0) {
+if (misses.length > 0 || regionProblems.length > 0 || markerProblems.length > 0) {
   process.exit(1)
 }
 process.exit(0)

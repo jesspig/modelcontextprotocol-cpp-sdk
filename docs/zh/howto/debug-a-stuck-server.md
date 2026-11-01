@@ -10,7 +10,11 @@
 | 空闲一段时间后连接被判死 | 读循环把「无数据」当 EOF | 成因二 |
 | 立刻回错误帧，错误码像 `-32021`/`-32601` | 能力没声明或时代不匹配 | 成因三 |
 
-区分「连接死了」和「请求没结」：前者 `ClientOptions::on_transport_close` / `on_transport_error` 会响，后者不会。传输层回调见 [/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)。
+区分「连接死了」和「请求没结」：前者 `ClientOptions::on_transport_close` / `on_transport_error` 会响，后者不会。传自己的探活请求更直接——带超时与进度回调发一次，看它是「有进度无结果」还是「什么都没有」：
+
+<<< @/snippets/debug-a-stuck-server.cpp#client-probe
+
+传输层回调见 [/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)。
 
 ## 打开内部日志
 
@@ -74,6 +78,12 @@ CONFORMANCE_SPEC_VERSION=2026-07-28 ./scripts/run-conformance.sh server
 ```
 
 脚本要点（`scripts/run-conformance.sh`）：`MODE` 取 `server` 或 `client`；`PORT` 默认 3010，**端口已被占用会直接退出**（先杀残留进程或换端口）；`CONFORMANCE_SPEC_VERSION` 决定用哪份基线（`tests/conformance/baseline-2026-07-28.yaml` / `baseline-2025-11-25.yaml` / 默认 `baseline.yaml`）；`2026-07-28` 这一路会以 `--stateless` 启动服务端；裁判本身经 `npx -y @modelcontextprotocol/conformance@0.2.0-alpha.12` 拉取，需要网络。基线里的条目是「已知不达标」清单，**新增 unexpected failures 才是回归信号**。
+
+## 完整代码
+
+进程内两端：扣住 promise 不结算的「卡住服务端」+ 一次带超时并发完就主动取消的探活调用，最后打印仍未兑现的 promise 数量：
+
+<<< @/snippets/debug-a-stuck-server.cpp#full
 
 ## 验证
 

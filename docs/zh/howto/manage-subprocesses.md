@@ -80,7 +80,11 @@ stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者
 
 <<< @/snippets/manage-subprocesses.cpp#watchdog
 
-`Pid()` 只在 `Connect()` 之后有值（`std::optional<int64_t>`）。它只回答「有没有起过进程」，**不等于进程还活着**——要判活请自己发 `Ping()`（legacy 时代可用；modern 时代已废弃，见 [/zh/howto/handle-server-initiated-requests](/zh/howto/handle-server-initiated-requests)）或观察传输错误回调 `ClientOptions::on_transport_error`。空闲误判的坑在上一节，`on_transport_close` 与 `on_transport_error` 的语义见 [/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)。
+`Pid()` 只在 `Connect()` 之后有值（`std::optional<int64_t>`）。它是从传输对象上取的，所以会话建立与 PID 读取的先后顺序不能颠倒：
+
+<<< @/snippets/manage-subprocesses.cpp#connect-and-pid
+
+它只回答「有没有起过进程」，**不等于进程还活着**——要判活请自己发 `Ping()`（legacy 时代可用；modern 时代已废弃，见 [/zh/howto/handle-server-initiated-requests](/zh/howto/handle-server-initiated-requests)）或观察传输错误回调 `ClientOptions::on_transport_error`。空闲误判的坑在上一节，`on_transport_close` 与 `on_transport_error` 的语义见 [/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)。
 
 ## 完整代码
 

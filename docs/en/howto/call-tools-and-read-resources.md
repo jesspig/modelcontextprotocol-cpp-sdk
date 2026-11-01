@@ -82,6 +82,12 @@ Each era has its own entry point. Legacy: `SubscribeResource(uri)` sends `resour
 
 Once an update arrives, the built-in handler invalidates the cache entry for exactly that URI (`src/client/McpClient.cpp:757-766`) and `*_list_changed` clears the whole table (`:751-756`) — provided you did not replace those handlers with your own `SetNotificationHandler()`, because that table holds one slot per method (`src/protocol/McpSessionHandler.cpp:1193-1196`).
 
+## Progress callback
+
+To see movement before a slow call returns, attach a handler to `RequestOptions::on_progress`; when you do not pass a `progressToken` explicitly the client allocates one, and the callback is detached when the request finishes.
+
+<<< @/snippets/call-tools-and-read-resources.cpp#progress
+
 ## Complete code
 
 The compilable file is `docs/snippets/call-tools-and-read-resources.cpp`, with regions `list-tools`, `read-content`, `required-arguments`, `call-tool`, `progress`, `list-resources`, `read-resource`, `cache-modes` and `subscribe-updates`. The `progress` region demonstrates `RequestOptions::on_progress`: a non-empty callback registers a progress token and detaches it when the call returns, and each progress frame re-extends that request's timeout (`src/client/McpClient.cpp:937-973`, `1323-1329`).

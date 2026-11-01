@@ -63,6 +63,12 @@ On the server, `input_required_config` has exactly one point of use: it supplies
 
 <<< @/snippets/collect-user-input.cpp#end-to-end
 
+## Turning the three outcomes into a result
+
+The three outcomes do not need three return shapes: `ReportDecision` folds `action` plus the optional `content` into one ordinary text result — only accept carries content, decline and cancel carry a sentence, and none of the three is a protocol error. Reserve `is_error` for real failures such as the timeout and `McpError`:
+
+<<< @/snippets/collect-user-input.cpp#outcome
+
 ## Complete code
 
 Server identity and options, registration of both tools, the two client handlers and one end-to-end call are all given region by region in the five steps above; the compilable file is `docs/snippets/collect-user-input.cpp`, with regions `form-schema`, `read-back`, `outcome`, `form-tool-handler`, `url-tool-handler`, `server-options`, `server-registration`, `client-handlers`, `end-to-end`.

@@ -10,7 +10,11 @@ The request went out and sank without a trace. This page splits "no response" in
 | The connection is declared dead after an idle stretch | the read loop treats "no data" as EOF | cause two |
 | An error frame comes back at once, coded `-32021`/`-32601` | capability not declared or era mismatch | cause three |
 
-Tell "connection died" from "request never settled": the former fires `ClientOptions::on_transport_close` / `on_transport_error`, the latter does not. Transport callbacks are covered in [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server).
+Tell "connection died" from "request never settled": the former fires `ClientOptions::on_transport_close` / `on_transport_error`, the latter does not. Probing is even more direct — send one request with a timeout and a progress callback and see whether you get "progress but no result" or "nothing at all":
+
+<<< @/snippets/debug-a-stuck-server.cpp#client-probe
+
+Transport callbacks are covered in [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server).
 
 ## Turn on internal logging
 
@@ -74,6 +78,12 @@ CONFORMANCE_SPEC_VERSION=2026-07-28 ./scripts/run-conformance.sh server
 ```
 
 Notes on `scripts/run-conformance.sh`: `MODE` is `server` or `client`; `PORT` defaults to 3010 and the script **exits immediately if the port is taken** (kill the leftover or pick another port); `CONFORMANCE_SPEC_VERSION` selects the baseline (`tests/conformance/baseline-2026-07-28.yaml` / `baseline-2025-11-25.yaml` / the default `baseline.yaml`); the `2026-07-28` run starts the server with `--stateless`; the referee itself is fetched via `npx -y @modelcontextprotocol/conformance@0.2.0-alpha.12`, which needs network access. Entries inside a baseline are "known not to pass yet" — **newly appearing unexpected failures are the regression signal**.
+
+## Complete code
+
+Both ends in one process: a server that withholds its promises, plus a probe call that carries a timeout and is cancelled as soon as it is sent, printing how many promises are still parked:
+
+<<< @/snippets/debug-a-stuck-server.cpp#full
 
 ## Verification
 

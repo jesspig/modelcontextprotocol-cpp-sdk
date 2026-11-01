@@ -82,6 +82,12 @@
 
 更新到达后，内置处理器会把 `resources/updated` 里那个 URI 的缓存条目失效（`src/client/McpClient.cpp:757-766`），`*_list_changed` 则清全表（`:751-756`）。前提是你没有用同名 `SetNotificationHandler()` 顶掉它们——那张表每个方法只有一个槽位（`src/protocol/McpSessionHandler.cpp:1193-1196`）。
 
+## 进度回调
+
+慢调用想在返回前看到动静，就在 `RequestOptions::on_progress` 上挂回调；不显式给 `progressToken` 时客户端会自动分配一个，回调在请求结束时摘除。
+
+<<< @/snippets/call-tools-and-read-resources.cpp#progress
+
 ## 完整代码
 
 可编译的完整文件是 `docs/snippets/call-tools-and-read-resources.cpp`，区域名依次为 `list-tools`、`read-content`、`required-arguments`、`call-tool`、`progress`、`list-resources`、`read-resource`、`cache-modes`、`subscribe-updates`；`progress` 区域演示 `RequestOptions::on_progress`（非空即自动登记进度 token 并在返回时摘除，同时续期该请求的超时，`src/client/McpClient.cpp:937-973`、`1323-1329`）。

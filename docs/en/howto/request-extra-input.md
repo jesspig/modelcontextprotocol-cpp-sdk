@@ -19,6 +19,10 @@ When a tool discovers mid-flight that it still needs input, do not block the ser
 | Stateless deployment | MRTR only | `McpServer::IsMrtrSupported()` returns `false` when stateless (`src/server/McpServer.cpp:3351-3355`), and the modern direct call already becomes MRTR anyway |
 | Waiting on the user may take long | MRTR | No server thread parks; the deadline is the client's `round_timeout`/`max_rounds` |
 
+The form's `requestedSchema` is plain JSON Schema; this snippet builds it with a single-field helper (the helper and the request assembly below are separate regions):
+
+<<< @/snippets/request-extra-input.cpp#form-schema
+
 ## Step 2: Build the `input_required` result
 
 <<< @/snippets/request-extra-input.cpp#input-request

@@ -19,6 +19,10 @@
 | stateless 部署 | 只能 MRTR | `McpServer::IsMrtrSupported()` 在 stateless 下返回 `false`（`src/server/McpServer.cpp:3351-3355`），而现代时代的直发本来就走 MRTR |
 | 需要长时间等用户 | MRTR | 服务端不挂线程等待，时限由客户端 `round_timeout`/`max_rounds` 控制 |
 
+表单的 `requestedSchema` 是普通 JSON Schema，本片段用一个单字段构造器拼出来（构造器与下面的请求装配分属两段）：
+
+<<< @/snippets/request-extra-input.cpp#form-schema
+
 ## 第 2 步：构造 `input_required` 结果
 
 <<< @/snippets/request-extra-input.cpp#input-request

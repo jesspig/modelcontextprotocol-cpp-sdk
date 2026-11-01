@@ -63,6 +63,12 @@ handler 的骨架是「先回读、再发问」：现代时代 `Elicit` 不直�
 
 <<< @/snippets/collect-user-input.cpp#end-to-end
 
+## 把三态写成结果
+
+三态不必各写一份返回值：`ReportDecision` 把 `action` 与可选 `content` 统一压成一条正常文本结果——只有接受带内容，拒绝与取消只有一句话，三者都不是协议错误。`is_error` 留给超时与异常这类真失败：
+
+<<< @/snippets/collect-user-input.cpp#outcome
+
 ## 完整代码
 
 服务端标识与选项、两个工具的注册、客户端两个 handler、一次端到端调用，全部在上面五个步骤里按区域给出；可编译的完整文件是 `docs/snippets/collect-user-input.cpp`，各区域名依次为 `form-schema`、`read-back`、`outcome`、`form-tool-handler`、`url-tool-handler`、`server-options`、`server-registration`、`client-handlers`、`end-to-end`。

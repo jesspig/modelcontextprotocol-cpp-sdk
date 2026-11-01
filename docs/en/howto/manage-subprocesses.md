@@ -80,7 +80,11 @@ With `terminate_process_tree = true`:
 
 <<< @/snippets/manage-subprocesses.cpp#watchdog
 
-`Pid()` only has a value after `Connect()` (`std::optional<int64_t>`). It answers "was a process ever started", **not** "is it still alive" — for liveness use a protocol-level `Ping()` (available in the legacy era; deprecated in the modern one, see [/en/howto/handle-server-initiated-requests](/en/howto/handle-server-initiated-requests)) or watch `ClientOptions::on_transport_error`. The idle-misjudgement trap is in the section above; `on_transport_close` and `on_transport_error` semantics are in [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server).
+`Pid()` only has a value after `Connect()` (`std::optional<int64_t>`) — it is read from the transport object, so the order of "establish the session, then read the PID" cannot be swapped:
+
+<<< @/snippets/manage-subprocesses.cpp#connect-and-pid
+
+It answers "was a process ever started", **not** "is it still alive" — for liveness use a protocol-level `Ping()` (available in the legacy era; deprecated in the modern one, see [/en/howto/handle-server-initiated-requests](/en/howto/handle-server-initiated-requests)) or watch `ClientOptions::on_transport_error`. The idle-misjudgement trap is in the section above; `on_transport_close` and `on_transport_error` semantics are in [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server).
 
 ## Complete code
 

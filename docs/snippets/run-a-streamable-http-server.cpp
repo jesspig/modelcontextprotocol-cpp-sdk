@@ -13,8 +13,8 @@
 
 using namespace mcp;
 
+// region stateful
 void stateful_server() {
-    // region stateful
     StreamableHttpServerOptions http_options;
     http_options.port = 3001;
     http_options.endpoint = "/mcp";
@@ -39,15 +39,15 @@ void stateful_server() {
         });
 
     server->Run();
-    // endregion
 }
+// endregion
 
+// region stateless
 void stateless_server_options() {
-    // region stateless
     StreamableHttpServerOptions http_options;
     http_options.stateless = true;
     http_options.listen_hold_open = true;
     http_options.enable_legacy_sse = true;
     http_options.event_store = std::make_shared<EventStore>();
-    // endregion
 }
+// endregion
