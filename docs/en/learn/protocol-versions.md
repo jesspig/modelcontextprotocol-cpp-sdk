@@ -106,7 +106,7 @@ Sampling follows the same rule: the legacy era allows a direct server request, t
 
 ## Error Code Remapping
 
-Three transport-internal error codes are remapped to internal error (`-32603`) on the way out in the modern era, with a warning logged: request timeout (`-32001`), connection refused (`-32003`) and TLS handshake failed (`-32004`). The point is to stop disguising internal faults as protocol errors. Four genuine protocol codes pass through unchanged: header mismatch (`-32020`), missing required client capability (`-32021`), unsupported protocol version (`-32022`) and URL elicitation required (`-32042`), each building its own normative data payload. The legacy era performs no remapping.
+Three transport-internal error codes are remapped to internal error (`-32603`) on the way out in the modern era, with a warning logged: request timeout (`-32001`), connection refused (`-32003`) and TLS handshake failed (`-32004`). The point is to stop disguising internal faults as protocol errors. Four genuine protocol codes pass through unchanged: header mismatch (`-32020`), missing required client capability (`-32021`), unsupported protocol version (`-32022`) and URL elicitation required (`-32042`). The unsupported-version case attaches a `data.supported` array so the client can perform a corrective retry; `-32042` is currently only registered in the pass-through whitelist and has no throw site inside the SDK. The legacy era performs no remapping.
 
 ## The Three Client Connect Modes
 
