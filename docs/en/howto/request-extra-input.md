@@ -1,6 +1,6 @@
 # Request Extra Input Across Rounds (MRTR)
 
-When a tool discovers mid-flight that it still needs input, do not block the server and do not send `elicitation/create` directly: return an `input_required` result and let the client answer, then re-run the same handler with `inputResponses`. This page covers building the result, minting and verifying `requestState`, reading answers back, and how this differs from [/en/howto/collect-user-input](/en/howto/collect-user-input); field tables live in [/en/reference/types](/en/reference/types) and the mechanism in [/en/advanced/mrtr](/en/advanced/mrtr).
+When a tool discovers mid-flight that it still needs input, do not block the server and do not send `elicitation/create` directly: return an `input_required` result and let the client answer, then re-run the same handler with `inputResponses`. This page covers building the result, minting and verifying `requestState`, reading answers back, and how this differs from [/en/howto/collect-user-input](/en/howto/collect-user-input); field tables live in [/en/reference/types](/en/reference/types) and era differences in [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
 ## Prerequisites
 

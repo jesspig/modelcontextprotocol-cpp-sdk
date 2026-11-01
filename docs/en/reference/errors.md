@@ -149,7 +149,7 @@ Tool calls suspended as a task **keep the code**: `McpError` → failure payload
 | Long task stream drops mid-flight | -32000 | Read hit the end or the peer closed | Distinguish timeout from EOF with `IsEof()`, see [Transports reference](/en/reference/transports) |
 | No result after a cancellation | -32800 | Peer `notifications/cancelled` or local `Cancel` | Check `data.reason`; `src/protocol/McpSessionHandler.cpp:1100` |
 | List pagination never finishes | -32005 | Peer `nextCursor` does not converge (>64 pages) | `src/client/McpClient.cpp:169`、`:1392` |
-| Connecting to a TLS endpoint always fails | -32004 | OpenSSL not compiled in (`TLS support not compiled in`) | Check `MCP_HAVE_OPENSSL`, see [Installation](/en/guide/installation) |
+| Connecting to a TLS endpoint always fails | -32004 | OpenSSL not compiled in (`TLS support not compiled in`) | Check `MCP_HAVE_OPENSSL`, see [Installation](/en/start/installation) |
 | MRTR fails after several rounds | -32007 or -32603 | Handler returned an illegal action / `max_rounds` exceeded | `src/client/McpClient.cpp:290`、`:1133` |
 
 ## Source files behind this page

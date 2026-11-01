@@ -1,6 +1,6 @@
 # 多轮往返补参（MRTR）
 
-工具跑到一半发现还缺输入时，不阻塞服务端、也不直发 `elicitation/create`，而是回一个 `input_required` 结果，让客户端答完再带着 `inputResponses` 重跑同一个 handler。本页给出结果构造、`requestState` 签发与校验、续轮读回，以及它和 [/zh/howto/collect-user-input](/zh/howto/collect-user-input) 的分工；字段表见 [/zh/reference/types](/zh/reference/types)，原理见 [/zh/advanced/mrtr](/zh/advanced/mrtr)。
+工具跑到一半发现还缺输入时，不阻塞服务端、也不直发 `elicitation/create`，而是回一个 `input_required` 结果，让客户端答完再带着 `inputResponses` 重跑同一个 handler。本页给出结果构造、`requestState` 签发与校验、续轮读回，以及它和 [/zh/howto/collect-user-input](/zh/howto/collect-user-input) 的分工；字段表见 [/zh/reference/types](/zh/reference/types)，双时代差异见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
 
 ## 前置条件
 

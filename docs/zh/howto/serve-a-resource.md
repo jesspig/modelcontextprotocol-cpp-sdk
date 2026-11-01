@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-- 已能让一个服务端实例跑起来，见 [服务端总览](/zh/server/overview)。
+- 已能让一个服务端实例跑起来，见 [快速上手](/zh/start/quickstart)。
 - 手上有一个 `std::shared_ptr<ITransport>`；想做进程内自测，`InMemoryTransport::CreatePair()` 会给出成对的 `.client` 与 `.server`。
 - 签名与字段表只在参考层维护，本篇不重复：注册入口与注册期校验见 [服务端门面参考](/zh/reference/server)，`ResourceOptions`、`ReadResourceResult`、`ResourceLink` 见 [类型层参考](/zh/reference/types)。
 

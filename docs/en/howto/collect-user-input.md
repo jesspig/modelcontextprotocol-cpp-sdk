@@ -1,6 +1,6 @@
 # Collect Input From the User
 
-Asking the user for structured input (`form`) or sending them to an off-site page (`url`) during one tool call needs only `McpServer::Elicit` and `McpServer::ElicitUrl`; the hard part is session addressing and the fact that the two protocol eras behave differently. Signatures and field tables live in [/en/reference/server](/en/reference/server) and [/en/reference/types](/en/reference/types), the mechanism in [/en/learn/protocol-versions](/en/learn/protocol-versions) and [/en/advanced/mrtr](/en/advanced/mrtr).
+Asking the user for structured input (`form`) or sending them to an off-site page (`url`) during one tool call needs only `McpServer::Elicit` and `McpServer::ElicitUrl`; the hard part is session addressing and the fact that the two protocol eras behave differently. Signatures and field tables live in [/en/reference/server](/en/reference/server) and [/en/reference/types](/en/reference/types), the mechanism in [/en/learn/protocol-versions](/en/learn/protocol-versions) and [/en/howto/request-extra-input](/en/howto/request-extra-input).
 
 ## Prerequisites
 

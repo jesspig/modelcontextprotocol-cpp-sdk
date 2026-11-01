@@ -1,6 +1,6 @@
 # 向用户收集输入
 
-服务端在一次工具调用里向用户要结构化输入（`form`）或把人支到站外页面完成确认（`url`），只需 `McpServer::Elicit` 与 `McpServer::ElicitUrl` 两个入口；真正的难点是会话定位与两个协议时代的不同行为。签名与字段表在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，机制原理见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions) 与 [/zh/advanced/mrtr](/zh/advanced/mrtr)。
+服务端在一次工具调用里向用户要结构化输入（`form`）或把人支到站外页面完成确认（`url`），只需 `McpServer::Elicit` 与 `McpServer::ElicitUrl` 两个入口；真正的难点是会话定位与两个协议时代的不同行为。签名与字段表在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，机制原理见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions) 与 [/zh/howto/request-extra-input](/zh/howto/request-extra-input)。
 
 ## 前置条件
 

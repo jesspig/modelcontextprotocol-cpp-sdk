@@ -4,7 +4,7 @@ A resource is read-only data a client fetches by URI — closest in shape to a R
 
 ## Prerequisites
 
-- You can already bring up a server instance: see [Server Overview](/en/server/overview).
+- You can already bring up a server instance: see [Quick Start](/en/start/quickstart).
 - You have a `std::shared_ptr<ITransport>`. For an in-process round trip, `InMemoryTransport::CreatePair()` hands back a matched `.client` and `.server`.
 - Signatures and field tables live only in the reference layer and are not repeated here: registration entry points and registration-time validation in [Server Facade Reference](/en/reference/server), `ResourceOptions`, `ReadResourceResult` and `ResourceLink` in [Type Reference](/en/reference/types).
 
