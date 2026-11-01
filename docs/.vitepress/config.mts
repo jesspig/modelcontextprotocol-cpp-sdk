@@ -43,6 +43,7 @@ const en = {
       { text: 'Connect to a server', link: '/en/howto/connect-to-a-server' },
       { text: 'Call tools and read resources', link: '/en/howto/call-tools-and-read-resources' },
       { text: 'Cancel a request', link: '/en/howto/cancel-a-request' },
+      { text: 'Handle server-initiated requests', link: '/en/howto/handle-server-initiated-requests' },
     ]},
     { text: 'Learn', items: [
       { text: 'What is MCP?', link: '/en/learn/what-is-mcp' },
@@ -123,6 +124,7 @@ const zh = {
       { text: '连接服务端', link: '/zh/howto/connect-to-a-server' },
       { text: '调用工具与读取资源', link: '/zh/howto/call-tools-and-read-resources' },
       { text: '取消请求与超时', link: '/zh/howto/cancel-a-request' },
+      { text: '承接服务端发起的请求', link: '/zh/howto/handle-server-initiated-requests' },
     ]},
     { text: '核心概念', items: [
       { text: '什么是 MCP？', link: '/zh/learn/what-is-mcp' },
