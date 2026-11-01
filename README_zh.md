@@ -204,6 +204,20 @@ auth.Authenticate();
 
 `WireCodec` 工厂通过简单的字符串比较（`version >= "2026-07-28"`）自动选择正确的编解码器。
 
+## 在线文档
+
+在线手册发布在 <https://jesspig.github.io/modelcontextprotocol-cpp-sdk/>，源文件在 `docs/zh`（英文镜像在 `docs/en`），分三层——概念、任务式手册、API 参考：
+
+- [快速上手](docs/zh/start/quickstart.md)——五分钟跑通服务端与客户端，附实测输出。
+- [安装与集成](docs/zh/start/installation.md)——依赖、构建选项、CMake 集成与可选 OpenSSL。
+- [协议版本](docs/zh/learn/protocol-versions.md)——双时代方法与通知矩阵的唯一权威页。
+- [注册一个工具](docs/zh/howto/register-a-tool.md)——描述、输入 schema、行为注解与结构化输出。
+- [连接服务端](docs/zh/howto/connect-to-a-server.md)——传输、连接模式与关闭时机。
+- [处理错误](docs/zh/howto/handle-errors.md)——三条失败通道与错误码重映射。
+- [API 参考](docs/zh/reference/index.md)——只放表格：签名、默认值、抛出与对应源文件。
+
+全部 C++ 示例来自 [`docs/snippets`](docs/snippets)，由 CI 的 `mcp-docs-snippets` 目标编译，API 改名或改签名会让文档构建直接失败，而不是让手册悄悄腐烂。
+
 ## 迁移指南
 
 - [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)——0.3.8 → 0.3.9 公共头文件破坏性变更，逐项给出旧写法、新写法与影响。
