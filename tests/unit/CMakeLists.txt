@@ -27,7 +27,7 @@ mcp_discover_tests(mcp-client-tests)
 
 add_executable(mcp-oauth-tests OAuthTests.cpp)
 target_link_libraries(mcp-oauth-tests PRIVATE mcp-client mcp-http mcp-test-support GTest::gtest_main)
-mcp_discover_tests(mcp-oauth-tests)
+mcp_discover_tests(mcp-oauth-tests RESOURCE_LOCK mcp_bind_ports)
 
 add_executable(mcp-stdio-test-helper StdioTestHelper.cpp)
 target_link_libraries(mcp-stdio-test-helper PRIVATE mcp-transport)
@@ -36,7 +36,7 @@ add_executable(mcp-transport-tests TransportTests.cpp MessageChannelTests.cpp)
 target_link_libraries(mcp-transport-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
 target_compile_definitions(mcp-transport-tests PRIVATE
     MCP_STDIO_TEST_HELPER_PATH="${CMAKE_CURRENT_BINARY_DIR}/mcp-stdio-test-helper${CMAKE_EXECUTABLE_SUFFIX}")
-mcp_discover_tests(mcp-transport-tests)
+mcp_discover_tests(mcp-transport-tests RESOURCE_LOCK mcp_bind_ports)
 
 add_executable(mcp-process-test-helper ProcessTestHelper.cpp)
 target_link_libraries(mcp-process-test-helper PRIVATE mcp-transport)
@@ -51,11 +51,11 @@ add_executable(mcp-net-tests
     NetStackTests.cpp
     WebSocketClientTests.cpp)
 target_link_libraries(mcp-net-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
-mcp_discover_tests(mcp-net-tests)
+mcp_discover_tests(mcp-net-tests RESOURCE_LOCK mcp_bind_ports)
 
 add_executable(mcp-http-tests HttpServerTests.cpp)
 target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol mcp-test-support GTest::gtest_main)
-mcp_discover_tests(mcp-http-tests)
+mcp_discover_tests(mcp-http-tests RESOURCE_LOCK mcp_bind_ports)
 
 add_executable(mcp-message-filter-tests MessageFilterTests.cpp)
 target_link_libraries(mcp-message-filter-tests PRIVATE mcp-protocol mcp-test-support GTest::gtest_main)
@@ -75,7 +75,7 @@ mcp_discover_tests(mcp-event-store-tests)
 
 add_executable(mcp-streamable-http-tests StreamableHttpTransportTests.cpp SessionStoreTests.cpp)
 target_link_libraries(mcp-streamable-http-tests PRIVATE mcp-http mcp-test-support GTest::gtest_main)
-mcp_discover_tests(mcp-streamable-http-tests)
+mcp_discover_tests(mcp-streamable-http-tests RESOURCE_LOCK mcp_bind_ports)
 
 add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
 target_link_libraries(mcp-websocket-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
