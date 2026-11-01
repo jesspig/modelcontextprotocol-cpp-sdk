@@ -158,8 +158,52 @@ for (const file of docFiles) {
   })
 }
 
+// 点号形式（Options.field）也计入：左侧必须是公共头里真的声明过的类型名，
+// 并排除路径与文件名（`McpClient.cpp` 这类）造成的假阳性
+const typeNames = new Set(
+  headerUnits.flatMap((unit) => [
+    ...unit.text.matchAll(/\b(?:struct|class|enum class)\s+(?:MCP_API\s+)?([A-Z][A-Za-z0-9_]*)/g),
+  ].map((m) => m[1]))
+)
+const fileExtensions = new Set([
+  'cpp', 'cxx', 'cc', 'h', 'hpp', 'hh', 'md', 'txt', 'rst', 'yaml', 'yml', 'json',
+  'js', 'mjs', 'ts', 'tsx', 'mts', 'sh', 'bash', 'ps1', 'cmake', 'in', 'txt', 'log',
+  'png', 'svg', 'jpg', 'html', 'css', 'lock', 'gitignore', 'editorconfig',
+])
+const dottedPattern = /(^|[^/\w.])([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?![\w./])/g
+
+for (const file of docFiles) {
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    for (const match of line.matchAll(dottedPattern)) {
+      const [, , scope, member] = match
+      if (!typeNames.has(scope) || fileExtensions.has(member.toLowerCase())) {
+        continue
+      }
+      const ref = `${scope}.${member}`
+      if (references.has(`${scope}::${member}`)) {
+        continue
+      }
+      if (!references.has(ref)) {
+        references.set(ref, [])
+      }
+      references.get(ref).push({ file: relative(file), line: index + 1 })
+    }
+  })
+}
+
+function splitRef(ref) {
+  const separator = ref.indexOf('::') >= 0 ? '::' : '.'
+  const index = ref.indexOf(separator)
+  return [ref.slice(0, index), ref.slice(index + separator.length)]
+}
+
+function canonicalRef(ref) {
+  return ref.replace(/\./, '::')
+}
+
 function findIn(units, ref) {
-  const [scope, member] = ref.split('::')
+  const [scope, member] = splitRef(ref)
   const scopePattern = tokenPattern(scope)
   const memberPattern = tokenPattern(member)
   const scopeFiles = units.filter((unit) => scopePattern.test(unit.text))
@@ -173,7 +217,7 @@ function findIn(units, ref) {
 }
 
 function resolve(ref) {
-  const scopeName = ref.split('::')[0]
+  const scopeName = splitRef(ref)[0]
   if (snippetLocalTypes.has(scopeName)) {
     return { status: 'LOCAL', detail: `${scopeName} 是文档片段内自定义的演示类型，非 SDK 符号` }
   }
@@ -181,7 +225,7 @@ function resolve(ref) {
   if (publicHit.evidence) {
     return { status: 'HIT', evidence: publicHit.evidence }
   }
-  const [scope, member] = ref.split('::')
+  const [scope, member] = splitRef(ref)
   const internalHit = findIn(internalCorpus, ref)
   if (internalHit.evidence) {
     return {
@@ -206,10 +250,11 @@ function resolve(ref) {
 const exemptReasons = new Map(
   exemptRefs.map((entry) => [entry.ref, entry.reason])
 )
+const isExempt = (ref) => exemptReasons.has(ref) || exemptReasons.has(canonicalRef(ref))
 const results = [...references.keys()]
   .sort()
-  .map((ref) => ({ ref, occurrences: references.get(ref), ...(exemptReasons.has(ref)
-    ? { status: 'EXEMPT', detail: exemptReasons.get(ref) }
+  .map((ref) => ({ ref, occurrences: references.get(ref), ...(isExempt(ref)
+    ? { status: 'EXEMPT', detail: exemptReasons.get(ref) ?? exemptReasons.get(canonicalRef(ref)) }
     : resolve(ref)) }))
 
 const hits = results.filter((item) => item.status === 'HIT')
@@ -219,7 +264,7 @@ const locals = results.filter((item) => item.status === 'LOCAL')
 
 console.log(
   `check-api-symbols: 扫描 ${docFiles.length} 个文档/片段文件，` +
-    `提取 ${results.length} 个唯一 Scope::member 引用，` +
+    `提取 ${results.length} 个唯一 Scope::member / Options.field 引用，` +
     `公共头文件 ${corpus.length} 个（内部头 ${internalCorpus.length} 个不计入命中）`
 )
 

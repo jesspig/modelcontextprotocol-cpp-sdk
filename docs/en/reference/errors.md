@@ -118,10 +118,10 @@ The typed wrapper restores only `code` and `message`; **`data` is dropped** (`sr
 
 | What the handler throws | Outcome visible to the peer | Code preserved | Evidence |
 |---|---|---|---|
-| `McpError` (sync, non-task path) | `CallToolResult.isError = true` with `content[0].text = e.ErrorMessage()` | **dropped** (together with `data`) | `src/server/McpServer.cpp:2633-2636` |
-| Any other `std::exception` | Also `isError = true`, text generalized to `Error executing tool <name>`; the original text goes to the `Error` log only | dropped | `:2637-2643`, `:549-551` |
+| `McpError` (sync, non-task path) | `CallToolResult.is_error = true` (wire field `isError`) with `content[0].text = e.ErrorMessage()` | **dropped** (together with `data`) | `src/server/McpServer.cpp:2633-2636` |
+| Any other `std::exception` | Also `is_error = true`, text generalized to `Error executing tool <name>`; the original text goes to the `Error` log only | dropped | `:2637-2643`, `:549-551` |
 | `...` unknown exception | Same as above | dropped | `:2644-2650` |
-| Arguments violating `inputSchema` | `isError = true`, text `invalid arguments: <reason>` | no code at all | `:2617-2623`, `:553` |
+| Arguments violating `inputSchema` | `is_error = true`, text `invalid arguments: <reason>` | no code at all | `:2617-2623`, `:553` |
 | Result violating `outputSchema` | JSON-RPC error `InvalidParams` | preserved | `:2675-2679` |
 
 ::: danger

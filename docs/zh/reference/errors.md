@@ -118,10 +118,10 @@ typed 包装在还原时只取 `code` 与 `message`，**`data` 被丢弃**（`sr
 
 | handler 抛出 | 对外结果 | 码是否保留 | 证据 |
 |---|---|---|---|
-| `McpError`（同步/非任务路径） | `CallToolResult.isError = true`，`content[0].text = e.ErrorMessage()` | **丢弃**（含 `data`） | `src/server/McpServer.cpp:2633-2636` |
-| 其它 `std::exception` | 同样 `isError = true`，文本泛化为 `Error executing tool <name>`，原文只进 `Error` 日志 | 丢弃 | `:2637-2643`、`:549-551` |
+| `McpError`（同步/非任务路径） | `CallToolResult.is_error = true`（线上字段名 `isError`），`content[0].text = e.ErrorMessage()` | **丢弃**（含 `data`） | `src/server/McpServer.cpp:2633-2636` |
+| 其它 `std::exception` | 同样 `is_error = true`，文本泛化为 `Error executing tool <name>`，原文只进 `Error` 日志 | 丢弃 | `:2637-2643`、`:549-551` |
 | `...` 未知异常 | 同上 | 丢弃 | `:2644-2650` |
-| 参数不合 `inputSchema` | `isError = true`，文本 `invalid arguments: <原因>` | 无码 | `:2617-2623`、`:553` |
+| 参数不合 `inputSchema` | `is_error = true`，文本 `invalid arguments: <原因>` | 无码 | `:2617-2623`、`:553` |
 | 结果不合 `outputSchema` | JSON-RPC 错误 `InvalidParams` | 保留 | `:2675-2679` |
 
 ::: danger
