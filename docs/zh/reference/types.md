@@ -129,8 +129,8 @@
 | `Prompt` | `struct { name; optional<title/description>; optional<vector<PromptArgument>> arguments; optional<vector<Icon>> icons; optional<JsonValue> meta; }` | 必填 `name` | 提示词描述 | `McpTypes.hpp:91-98` |
 | `PromptArgument` | `struct { name; optional<description>; optional<bool> required; }` | 必填 `name` | 参数声明 | `McpTypes.hpp:85-89` |
 | `PromptMessage` | `struct { std::string role; ContentVariant content; }` | — | `prompts/get` 返回条目 | `McpTypes.hpp:100-103` |
-| `ResourceOptions` | `struct { optional<name/description/title/mime_type>; vector<Icon> icons; }` + `Description`/`Title`/`MimeType` | `nullopt` / `{}` | 3 个 setter，其余成员赋值 | `McpTypes.hpp:543-553` |
-| `PromptOptions` | `struct { optional<name/description/title>; vector<Icon> icons; optional<vector<PromptArgument>> arguments; }` + `Description`/`Title`/`Arguments` | `nullopt` / `{}` | 3 个 setter，其余成员赋值 | `McpTypes.hpp:555-565` |
+| `ResourceOptions` | `struct { optional<name/description/title/mime_type>; vector<Icon> icons; }` + `Description`/`Title`/`MimeType` | `nullopt` / `{}` | 3 个 setter，其余成员赋值；`name` 未被消费，实际名取 `RegisterResource` 的 `name` 实参（`McpServer.cpp:795`） | `McpTypes.hpp:543-553` |
+| `PromptOptions` | `struct { optional<name/description/title>; vector<Icon> icons; optional<vector<PromptArgument>> arguments; }` + `Description`/`Title`/`Arguments` | `nullopt` / `{}` | 3 个 setter，其余成员赋值；`name` 未被消费，实际名取 `RegisterPrompt` 的 `name` 实参（`McpServer.cpp:885`） | `McpTypes.hpp:555-565` |
 | `SkillResource` | `struct { std::string uri; std::string digest; int64_t size{0}; }` | `size = 0` | 技能内文件摘要 | `McpTypes.hpp:481-485` |
 | `SkillResources` | `std::variant<std::vector<SkillResource>, std::string>` | — | 列表或目录引用二选一 | `McpTypes.hpp:487` |
 | `Skill` | `struct { std::string uri; JsonValue frontmatter; SkillResources resources; optional<JsonValue> meta; }` | 必填 `uri`/`frontmatter`/`resources` | 技能声明（`skills/*`） | `McpTypes.hpp:489-494` |
