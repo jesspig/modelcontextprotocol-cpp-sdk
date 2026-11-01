@@ -69,7 +69,7 @@ cmake -S . -B build/docs-snippets -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/docs-snippets --target mcp-doc-snippet-run-a-streamable-http-server
 ```
 
-再握手一次（以下状态码为本页实测）：
+再握手一次（下列状态码与响应头为实测：用走同一套 `StreamableHttpServerTransport` 代码路径的 `examples/conformance/server`，`--port` 自选后按同样顺序请求）：
 
 ```bash
 curl.exe -i -X POST http://127.0.0.1:3001/mcp \

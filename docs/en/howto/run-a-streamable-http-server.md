@@ -69,7 +69,7 @@ cmake -S . -B build/docs-snippets -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/docs-snippets --target mcp-doc-snippet-run-a-streamable-http-server
 ```
 
-Then handshake once (all status codes below are measured):
+Then handshake once (the status codes and headers below are measured — against `examples/conformance/server`, which runs the same `StreamableHttpServerTransport` code path, started with an arbitrary `--port` and driven in the same order):
 
 ```bash
 curl.exe -i -X POST http://127.0.0.1:3001/mcp \
