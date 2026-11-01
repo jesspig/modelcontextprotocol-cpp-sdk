@@ -2,6 +2,7 @@
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
+#include <mcp/transport/IRequestCanceller.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Methods.hpp>
@@ -328,6 +329,9 @@ void McpSessionHandler::CheckTimeouts() {
             ctx.method = pending->method;
             ctx.request_id = pending->request_id;
             MCP_LOG_CTX(Warning, ctx, "pending request timed out");
+            if (pending->cancel_on_timeout) {
+                CancelTransportRequest(pending->id, "timeout");
+            }
             DeliverOutcome(pending,
                 RequestOutcome{ErrorData{
                     McpErrorCode::RequestTimeout, "request timed out"}},
@@ -397,16 +401,12 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
             InvokeSpan(span_handler_, event, SpanPhase::End);
         }
         span_open = false;
-        SendErrorResponse(req.id, code, message, std::move(data));
+        SendErrorResponse(req.id, code, message, std::move(data), req.session_id);
     };
 
-    std::shared_ptr<WireCodec> codec;
-    bool negotiated = false;
-    {
-        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
-        codec = codec_;
-        negotiated = negotiated_version_ && !negotiated_version_->empty();
-    }
+    std::shared_ptr<WireCodec> codec = CodecFor(req.session_id);
+    const std::string negotiated_version = VersionFor(req.session_id);
+    const bool negotiated = !negotiated_version.empty();
     auto view = MakeWireRequestView(req);
     auto validation = codec->ValidateRequest(req.method, view);
     const bool handshake_entry = !negotiated &&
@@ -476,7 +476,8 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
         }
     }
 
-    const std::string cancel_key = GetRequestIdKey(req.id);
+    const std::string cancel_key = SessionRequestKey(
+        req.session_id, GetRequestIdKey(req.id));
     {
         std::lock_guard<std::mutex> lock(incoming_cancel_mutex_);
         incoming_cancel_flags_[cancel_key] = std::make_shared<std::atomic<bool>>(false);
@@ -520,7 +521,8 @@ void McpSessionHandler::OnRequest(const JsonRpcRequest& req) {
 std::optional<ErrorData> McpSessionHandler::VerifyCapability(const JsonRpcRequest& req, const std::string& required) {
     auto meta = ExtractIncomingMeta(req);
     if (meta.client_capabilities && HasCapability(*meta.client_capabilities, required)) return std::nullopt;
-    if (client_capabilities_ && HasCapability(*client_capabilities_, required)) return std::nullopt;
+    auto session_caps = GetClientCapabilities(req.session_id);
+    if (session_caps && HasCapability(*session_caps, required)) return std::nullopt;
 
     JsonValue data(JsonValue::object_tag);
     JsonValue capability(JsonValue::object_tag);
@@ -537,7 +539,8 @@ std::optional<ErrorData> McpSessionHandler::VerifyCapability(const JsonRpcReques
 void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future) {
     PendingResponse item;
     item.req = req;
-    item.cancel_key = GetRequestIdKey(req.id);
+    item.cancel_key = SessionRequestKey(req.session_id,
+                                        GetRequestIdKey(req.id));
     item.future = std::move(future);
     {
         std::lock_guard<std::mutex> lock(response_queue_mutex_);
@@ -550,11 +553,7 @@ void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<J
 void McpSessionHandler::DeliverResponse(PendingResponse item) {
     if (closed_.load()) return;
     EraseIncomingCancellationFlag(item.cancel_key);
-    std::shared_ptr<WireCodec> codec;
-    {
-        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
-        codec = codec_;
-    }
+    std::shared_ptr<WireCodec> codec = CodecFor(item.req.session_id);
     const auto finish_span = [this, &item](bool failed) {
         if (!span_handler_) return;
         auto event = MakeServerRequestEvent(item.req, SpanPhase::End, failed);
@@ -568,7 +567,8 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         JsonRpcResponse resp;
         resp.id = item.req.id;
         resp.result = codec->EncodeResult(item.req.method, result);
-        if (server_info_ && IsJuly2026OrLater()) {
+        resp.session_id = item.req.session_id;
+        if (server_info_ && IsJuly2026OrLater(item.req.session_id)) {
             InjectServerInfoMeta(resp.result, *server_info_);
         }
         finish_span(false);
@@ -580,6 +580,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(e.Code())));
         err_resp.error.message = e.what();
+        err_resp.session_id = item.req.session_id;
         if (e.Data()) err_resp.error.data = *e.Data();
         finish_span(true);
         SendMessage(JsonRpcMessage{std::move(err_resp)});
@@ -590,6 +591,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
         err_resp.error.message = "internal error";
+        err_resp.session_id = item.req.session_id;
         LogContext ctx;
         ctx.method = item.req.method;
         ctx.request_id = RequestIdToText(item.req.id);
@@ -603,6 +605,7 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
         err_resp.error.code = static_cast<McpErrorCode>(
             codec->EncodeErrorCode(static_cast<int32_t>(McpErrorCode::InternalError)));
         err_resp.error.message = "internal error";
+        err_resp.session_id = item.req.session_id;
         LogContext ctx;
         ctx.method = item.req.method;
         ctx.request_id = RequestIdToText(item.req.id);
@@ -660,23 +663,37 @@ std::string McpSessionHandler::GetRequestIdKey(const RequestId& rid) {
     return std::get<std::string>(rid);
 }
 
+std::string McpSessionHandler::SessionRequestKey(
+    std::string_view session_id, const std::string& request_id) {
+    return std::to_string(session_id.size()) + ":" +
+           std::string(session_id) + request_id;
+}
+
+std::shared_ptr<WireCodec> McpSessionHandler::CodecFor(
+    std::string_view session_id) const {
+    std::shared_lock<std::shared_mutex> lock(codec_mutex_);
+    if (session_id.empty()) return codec_;
+    auto it = session_states_.find(std::string(session_id));
+    if (it == session_states_.end() || !it->second.codec) return codec_;
+    return it->second.codec;
+}
+
+std::string McpSessionHandler::VersionFor(std::string_view session_id) const {
+    std::shared_lock<std::shared_mutex> lock(codec_mutex_);
+    if (session_id.empty())
+        return negotiated_version_ ? *negotiated_version_ : std::string();
+    auto it = session_states_.find(std::string(session_id));
+    if (it == session_states_.end() || !it->second.negotiated_version)
+        return negotiated_version_ ? *negotiated_version_ : std::string();
+    return *it->second.negotiated_version;
+}
+
 void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
     if (on_response_cb_) {
         InvokeSafely([&] { on_response_cb_(resp); }, "on-response");
     }
 
-    auto id = GetRequestIdKey(resp.id);
-    std::shared_ptr<PendingRequest> pending;
-    {
-        std::lock_guard<std::mutex> lock(pending_mutex_);
-        auto it = pending_.find(id);
-        if (it != pending_.end()) {
-            pending = std::move(it->second);
-            EraseProgressTokens(id);
-            absolute_deadlines_.erase(id);
-            pending_.erase(it);
-        }
-    }
+    auto pending = RemovePending(GetRequestIdKey(resp.id));
     if (pending) {
         DeliverOutcome(pending, RequestOutcome{resp.result}, "response-callback");
     }
@@ -688,29 +705,14 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
     }
 
     if (!err.id) return;
-    auto id = GetRequestIdKey(*err.id);
-    std::shared_ptr<PendingRequest> pending;
-    {
-        std::lock_guard<std::mutex> lock(pending_mutex_);
-        auto it = pending_.find(id);
-        if (it != pending_.end()) {
-            pending = std::move(it->second);
-            EraseProgressTokens(id);
-            absolute_deadlines_.erase(id);
-            pending_.erase(it);
-        }
-    }
+    auto pending = RemovePending(GetRequestIdKey(*err.id));
     if (pending) {
         DeliverOutcome(pending, RequestOutcome{err.error}, "error-callback");
     }
 }
 
 void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
-    std::shared_ptr<WireCodec> codec;
-    {
-        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
-        codec = codec_;
-    }
+    auto codec = CodecFor(notif.session_id);
     auto view = MakeWireNotificationView(notif);
     auto validation = codec->ValidateNotification(notif.method, view);
     if (validation != WireValidation::Ok) {
@@ -747,7 +749,7 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     const RequestMeta& meta,
     std::chrono::milliseconds timeout)
 {
-    return SendRequest(method, std::move(params), meta, timeout, nullptr);
+    return RegisterRequest(method, std::move(params), meta, timeout, nullptr, true).future;
 }
 
 std::future<JsonValue> McpSessionHandler::SendRequest(
@@ -756,6 +758,31 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     const RequestMeta& meta,
     std::chrono::milliseconds timeout,
     OutcomeCallback on_outcome)
+{
+    return RegisterRequest(
+        method, std::move(params), meta, timeout, std::move(on_outcome), true).future;
+}
+
+RequestId McpSessionHandler::SendRequestWithOutcome(
+    std::string_view method,
+    JsonValue params,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout,
+    OutcomeCallback on_outcome,
+    bool cancel_on_timeout)
+{
+    return RegisterRequest(
+        method, std::move(params), meta, timeout, std::move(on_outcome),
+        cancel_on_timeout).id;
+}
+
+McpSessionHandler::RegisteredRequest McpSessionHandler::RegisterRequest(
+    std::string_view method,
+    JsonValue params,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout,
+    OutcomeCallback on_outcome,
+    bool cancel_on_timeout)
 {
     auto promise = std::make_shared<std::promise<JsonValue>>();
     auto future = promise->get_future();
@@ -799,6 +826,8 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
     pending->progress_token = meta.progress_token;
     pending->method = std::string(method);
     pending->request_id = std::to_string(id);
+    pending->id = RequestId{id};
+    pending->cancel_on_timeout = cancel_on_timeout;
 
     const std::string id_key = std::to_string(id);
     std::optional<std::string> pt_key;
@@ -832,24 +861,42 @@ std::future<JsonValue> McpSessionHandler::SendRequest(
             RequestOutcome{ErrorData{
                 McpErrorCode::ConnectionClosed, "connection closed"}},
             "closed-callback");
-        return future;
+        return RegisteredRequest{RequestId{id}, std::move(future)};
     }
 
     SendMessage(JsonRpcMessage{std::move(req)});
-    return future;
+    return RegisteredRequest{RequestId{id}, std::move(future)};
+}
+
+std::shared_ptr<PendingRequest> McpSessionHandler::RemovePending(
+    const std::string& id_key)
+{
+    std::shared_ptr<PendingRequest> pending;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        auto it = pending_.find(id_key);
+        if (it == pending_.end()) return pending;
+        pending = std::move(it->second);
+        EraseProgressTokens(id_key);
+        absolute_deadlines_.erase(id_key);
+        pending_.erase(it);
+    }
+    return pending;
 }
 
 void McpSessionHandler::SendNotification(std::string_view method, JsonValue params) {
+    SendNotification(method, std::move(params), {});
+}
+
+void McpSessionHandler::SendNotification(std::string_view method, JsonValue params,
+                                         std::string_view session_id) {
     JsonRpcNotification notif;
     notif.method = std::string(method);
-    std::shared_ptr<const std::string> version;
-    {
-        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
-        version = negotiated_version_;
-    }
-    if (version && IsModernProtocolVersion(*version)) {
+    notif.session_id = std::string(session_id);
+    const std::string version = VersionFor(session_id);
+    if (!version.empty() && IsModernProtocolVersion(version)) {
         RequestMeta meta;
-        meta.protocol_version = *version;
+        meta.protocol_version = version;
         notif.meta = SerializeRequestMeta(meta);
     }
     if (!params.IsNull() && !params.Empty()) {
@@ -906,28 +953,34 @@ IncomingRequestMeta McpSessionHandler::ExtractIncomingMeta(const JsonRpcRequest&
     return meta;
 }
 
-void McpSessionHandler::AddSubscription(Subscription sub) {
+void McpSessionHandler::AddSubscription(Subscription sub, std::string_view session_id) {
     SubscriptionEntry entry;
     entry.id = std::move(sub.id);
     entry.filter = std::move(sub.granted);
     entry.created_at = std::chrono::steady_clock::now();
-    AddSubscriptionEntry(std::move(entry));
+    AddSubscriptionEntry(std::move(entry), session_id);
 }
 
-void McpSessionHandler::AddSubscriptionEntry(SubscriptionEntry entry) {
+void McpSessionHandler::AddSubscriptionEntry(SubscriptionEntry entry,
+                                             std::string_view session_id) {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-    subscriptions_[entry.id] = std::move(entry);
+    subscriptions_[std::string(session_id)][entry.id] = std::move(entry);
 }
 
-void McpSessionHandler::RemoveSubscription(std::string_view id) {
+void McpSessionHandler::RemoveSubscription(std::string_view id,
+                                           std::string_view session_id) {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-    subscriptions_.erase(std::string(id));
+    auto it = subscriptions_.find(std::string(session_id));
+    if (it == subscriptions_.end()) return;
+    it->second.erase(std::string(id));
+    if (it->second.empty()) subscriptions_.erase(it);
 }
 
 void McpSessionHandler::NotifySubscribers(
     std::string_view notification_type,
     JsonValue params,
-    std::optional<std::string> resource_uri)
+    std::optional<std::string> resource_uri,
+    std::string_view session_id)
 {
     std::vector<JsonRpcMessage> outgoing;
     {
@@ -939,43 +992,57 @@ void McpSessionHandler::NotifySubscribers(
         skeleton.params = std::move(params);
         skeleton.meta = JsonValue(JsonValue::object_tag);
 
-        for (const auto& [id, entry] : subscriptions_) {
-            bool should_notify = false;
+        const auto append_for_bucket =
+            [&](const std::string& bucket_session,
+                const std::unordered_map<std::string, SubscriptionEntry>& bucket) {
+                for (const auto& [id, entry] : bucket) {
+                    bool should_notify = false;
 
-            if (notification_type == notifications::kToolListChanged) {
-                should_notify = entry.filter.tools_list_changed.value_or(false);
-            } else if (notification_type == notifications::kPromptListChanged) {
-                should_notify = entry.filter.prompts_list_changed.value_or(false);
-            } else if (notification_type == notifications::kResourceListChanged) {
-                should_notify = entry.filter.resources_list_changed.value_or(false);
-            } else if (notification_type == notifications::kResourceUpdated) {
-                if (resource_uri && !entry.filter.resource_subscriptions.empty()) {
-                    for (const auto& uri : entry.filter.resource_subscriptions) {
-                        if (uri == *resource_uri) {
-                            should_notify = true;
-                            break;
+                    if (notification_type == notifications::kToolListChanged) {
+                        should_notify = entry.filter.tools_list_changed.value_or(false);
+                    } else if (notification_type == notifications::kPromptListChanged) {
+                        should_notify = entry.filter.prompts_list_changed.value_or(false);
+                    } else if (notification_type == notifications::kResourceListChanged) {
+                        should_notify = entry.filter.resources_list_changed.value_or(false);
+                    } else if (notification_type == notifications::kResourceUpdated) {
+                        if (resource_uri && !entry.filter.resource_subscriptions.empty()) {
+                            for (const auto& uri : entry.filter.resource_subscriptions) {
+                                if (uri == *resource_uri) {
+                                    should_notify = true;
+                                    break;
+                                }
+                            }
                         }
+                    } else if (notification_type == notifications::kTaskStatus ||
+                               notification_type == notifications::kTaskWorking ||
+                               notification_type == notifications::kTaskCompleted ||
+                               notification_type == notifications::kTaskFailed ||
+                               notification_type == notifications::kTaskCancelled ||
+                               notification_type == notifications::kTaskInputRequired) {
+                        should_notify = true;
+                    } else if (notification_type == notifications::kTriggersEvent) {
+                        should_notify = true;
                     }
+
+                    if (!should_notify) continue;
+
+                    JsonRpcNotification notif = skeleton;
+                    notif.session_id = bucket_session;
+                    std::string_view sub_id =
+                        entry.session_id.empty() ? id : entry.session_id;
+                    (*notif.meta)[detail::kMetaSubscriptionIdKey] =
+                        JsonValue(std::string(sub_id));
+                    outgoing.emplace_back(std::move(notif));
                 }
-            } else if (notification_type == notifications::kTaskStatus ||
-                       notification_type == notifications::kTaskWorking ||
-                       notification_type == notifications::kTaskCompleted ||
-                       notification_type == notifications::kTaskFailed ||
-                       notification_type == notifications::kTaskCancelled ||
-                       notification_type == notifications::kTaskInputRequired) {
-                should_notify = true;
-            } else if (notification_type == notifications::kTriggersEvent) {
-                should_notify = true;
-            }
+            };
 
-            if (!should_notify) continue;
-
-            JsonRpcNotification notif = skeleton;
-            std::string_view sub_id =
-                entry.session_id.empty() ? id : entry.session_id;
-            (*notif.meta)[detail::kMetaSubscriptionIdKey] =
-                JsonValue(std::string(sub_id));
-            outgoing.emplace_back(std::move(notif));
+        if (!session_id.empty()) {
+            auto it = subscriptions_.find(std::string(session_id));
+            if (it != subscriptions_.end())
+                append_for_bucket(it->first, it->second);
+        } else {
+            for (const auto& [bucket_session, bucket] : subscriptions_)
+                append_for_bucket(bucket_session, bucket);
         }
     }
 
@@ -984,17 +1051,14 @@ void McpSessionHandler::NotifySubscribers(
     }
 }
 
-void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data) {
-    std::shared_ptr<WireCodec> codec;
-    {
-        std::shared_lock<std::shared_mutex> lock(codec_mutex_);
-        codec = codec_;
-    }
+void McpSessionHandler::SendErrorResponse(const RequestId& id, McpErrorCode code, std::string_view message, std::optional<JsonValue> data, std::string_view session_id) {
+    auto codec = CodecFor(session_id);
     JsonRpcErrorResponse err_resp;
     err_resp.id = id;
     err_resp.error.code = static_cast<McpErrorCode>(
         codec->EncodeErrorCode(static_cast<int32_t>(code)));
     err_resp.error.message = std::string(message);
+    err_resp.session_id = std::string(session_id);
     if (data) err_resp.error.data = std::move(*data);
     SendMessage(JsonRpcMessage{std::move(err_resp)});
 }
@@ -1020,26 +1084,18 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     }
 
     std::shared_ptr<std::atomic<bool>> incoming_flag;
+    const std::string session_key =
+        SessionRequestKey(notif.session_id, target_id_key);
     {
         std::lock_guard<std::mutex> lock(incoming_cancel_mutex_);
-        auto it = incoming_cancel_flags_.find(target_id_key);
+        auto it = incoming_cancel_flags_.find(session_key);
         if (it != incoming_cancel_flags_.end()) incoming_flag = it->second;
     }
     if (incoming_flag) {
         incoming_flag->store(true);
     }
 
-    std::shared_ptr<PendingRequest> pending;
-    {
-        std::lock_guard<std::mutex> lock(pending_mutex_);
-        auto it = pending_.find(target_id_key);
-        if (it != pending_.end()) {
-            pending = std::move(it->second);
-            EraseProgressTokens(target_id_key);
-            absolute_deadlines_.erase(target_id_key);
-            pending_.erase(it);
-        }
-    }
+    auto pending = RemovePending(target_id_key);
     if (pending) {
         ErrorData error{McpErrorCode::RequestCancelled, "request cancelled"};
         if (!reason.empty()) {
@@ -1062,6 +1118,51 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     }
 }
 
+void McpSessionHandler::CancelRequest(const RequestId& id, std::string_view reason) {
+    const std::string id_key = GetRequestIdKey(id);
+    auto pending = RemovePending(id_key);
+    if (!pending) return;
+
+    CancelTransportRequest(id, reason);
+
+    ErrorData error{McpErrorCode::RequestCancelled, "request cancelled"};
+    if (!reason.empty()) {
+        JsonValue d(JsonValue::object_tag);
+        d[detail::kReason] = JsonValue(std::string(reason));
+        error.data = std::move(d);
+    }
+    LogContext ctx;
+    ctx.method = pending->method;
+    ctx.request_id = id_key;
+    MCP_LOG_CTX(Warning, ctx, "request cancelled by client");
+    DeliverOutcome(pending, RequestOutcome{error}, "client-cancel-callback");
+}
+
+void McpSessionHandler::CancelTransportRequest(
+    const RequestId& id, std::string_view reason)
+{
+    if (IsModernProtocolVersion(NegotiatedProtocolVersion())) {
+        if (auto* canceller = dynamic_cast<IRequestCanceller*>(transport_.get())) {
+            canceller->CancelRequest(id, reason);
+            return;
+        }
+    }
+    SendCancelledNotification(id, reason);
+}
+
+void McpSessionHandler::SendCancelledNotification(
+    const RequestId& id, std::string_view reason)
+{
+    JsonValue params(JsonValue::object_tag);
+    std::visit([&params](const auto& value) {
+        params[detail::kRequestId] = JsonValue(value);
+    }, id);
+    if (!reason.empty()) {
+        params[detail::kReason] = JsonValue(std::string(reason));
+    }
+    SendNotification(notifications::kCancelled, std::move(params));
+}
+
 void McpSessionHandler::EraseProgressTokens(const std::string& request_id) {
     for (auto it = progress_token_map_.begin(); it != progress_token_map_.end(); ) {
         if (it->second == request_id) it = progress_token_map_.erase(it);
@@ -1075,9 +1176,9 @@ void McpSessionHandler::EraseIncomingCancellationFlag(const std::string& request
 }
 
 std::shared_ptr<std::atomic<bool>> McpSessionHandler::GetIncomingCancellationFlag(
-    const RequestId& id) const
+    const RequestId& id, std::string_view session_id) const
 {
-    const std::string key = GetRequestIdKey(id);
+    const std::string key = SessionRequestKey(session_id, GetRequestIdKey(id));
     std::lock_guard<std::mutex> lock(incoming_cancel_mutex_);
     auto it = incoming_cancel_flags_.find(key);
     if (it == incoming_cancel_flags_.end()) return nullptr;
@@ -1125,7 +1226,28 @@ std::optional<std::string> McpSessionHandler::RequiredClientCapability(std::stri
 }
 
 void McpSessionHandler::SetClientCapabilities(ClientCapabilities caps) {
+    std::unique_lock<std::shared_mutex> lock(codec_mutex_);
     client_capabilities_ = std::move(caps);
+}
+
+void McpSessionHandler::SetClientCapabilities(std::string_view session_id,
+                                              ClientCapabilities caps) {
+    if (session_id.empty()) {
+        SetClientCapabilities(std::move(caps));
+        return;
+    }
+    std::unique_lock<std::shared_mutex> lock(codec_mutex_);
+    session_states_[std::string(session_id)].client_capabilities =
+        std::move(caps);
+}
+
+std::optional<ClientCapabilities> McpSessionHandler::GetClientCapabilities(
+    std::string_view session_id) const {
+    std::shared_lock<std::shared_mutex> lock(codec_mutex_);
+    if (session_id.empty()) return client_capabilities_;
+    auto it = session_states_.find(std::string(session_id));
+    if (it == session_states_.end()) return std::nullopt;
+    return it->second.client_capabilities;
 }
 
 void McpSessionHandler::SetServerInfo(const Implementation& info) {
@@ -1133,10 +1255,22 @@ void McpSessionHandler::SetServerInfo(const Implementation& info) {
 }
 
 void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view version) {
+    SetNegotiatedProtocolVersion({}, version);
+}
+
+void McpSessionHandler::SetNegotiatedProtocolVersion(std::string_view session_id,
+                                                     std::string_view version) {
     auto new_codec = MakeWireCodec(version);
+    auto version_holder = std::make_shared<const std::string>(version);
     std::unique_lock<std::shared_mutex> lock(codec_mutex_);
-    negotiated_version_ = std::make_shared<const std::string>(version);
-    codec_ = std::move(new_codec);
+    if (session_id.empty()) {
+        negotiated_version_ = std::move(version_holder);
+        codec_ = std::move(new_codec);
+        return;
+    }
+    auto& state = session_states_[std::string(session_id)];
+    state.negotiated_version = std::move(version_holder);
+    state.codec = std::move(new_codec);
 }
 
 void McpSessionHandler::SetSupportedProtocolVersions(std::vector<std::string> versions) {
@@ -1172,6 +1306,11 @@ std::string McpSessionHandler::NegotiatedProtocolVersion() const {
         version = negotiated_version_;
     }
     return version ? *version : std::string();
+}
+
+std::string McpSessionHandler::NegotiatedProtocolVersion(
+    std::string_view session_id) const {
+    return VersionFor(session_id);
 }
 
 } // namespace mcp

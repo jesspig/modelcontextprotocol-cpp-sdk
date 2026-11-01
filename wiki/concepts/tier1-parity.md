@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-29T23:10:00+08:00
+timestamp: 2026-10-31T18:13:54+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -57,7 +57,7 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 - client modern：450 passed / 9 failed；9 项均为本地构建无 OpenSSL 的 DPoP/ES256 环境限制（`auth/client-credentials-jwt`、`auth/dpop`、`auth/dpop-nonce`），CI runner 具备 OpenSSL 时预期通过，不新增基线
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-当前测试基线为静态 **954** 用例 / **4429** 断言、17 目标（Windows `ctest -N` 注册 949，差 5 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
+当前测试基线为静态 **968** 用例 / **4486** 断言、18 目标（Windows `ctest -N` 注册 960，差 8 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
 
 ## A-T2 auth 进展（fixture 真实流联调）
 
@@ -65,9 +65,9 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 
 证据为 referee `stale`：转绿条目从两 per-leg 基线删除后复跑不再报缺条目（`baseline-2026-07-28.yaml` 删 21、`baseline-2025-11-25.yaml` 删 10；`84f931f/333130c`）。
 
-## B2 证伪与 B3 收口（server-stateless 已转绿删除，server-sse-multiple-streams legacy 保留）
+## B2 证伪与 B3 收口（server-stateless 已转绿删除，server-sse-multiple-streams 亦于 2026-10-31 转绿删除）
 
-B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。B3 收口结果（2026-10-29 复跑）：`server-stateless` 以 30/0/0 warnings 转绿并删除（modern leg 基线清空）；`server-sse-multiple-streams` 仍因 legacy suite 内 skip 以 WARNING 记账，保留于 `baseline-2025-11-25.yaml` 保绿，零代码改动。
+B2（fixture 侧按 listen 拓扑分流以消 `server-stateless`/`server-sse-multiple-streams` 基线）已证伪：listen 拓扑由 referee 控制，fixture 侧无法决定分流。B3 收口结果（2026-10-29 复跑）：`server-stateless` 以 30/0/0 warnings 转绿并删除（modern leg 基线清空）；`server-sse-multiple-streams` 当时仍因 legacy suite 内 skip 以 WARNING 记账，保留于 `baseline-2025-11-25.yaml` 保绿，零代码改动。2026-10-31 更新：stateful HTTP 按会话 SSE 多流路由落地后，该场景在 legacy 实测 2/2 通过，条目转为 stale（referee 以 exit 1 强制删条目），已从 `baseline-2025-11-25.yaml` 删除；`baseline.yaml` 仅作未知版本回退，条目保留作历史记录。
 
 ## CI 红根因与修复（三项）
 

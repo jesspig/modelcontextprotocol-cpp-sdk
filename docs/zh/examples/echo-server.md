@@ -2,7 +2,7 @@
 
 一个极简的 MCP 服务器，演示工具、资源和提示词。
 
-源代码：[`examples/EchoServer/`](https://github.com/modelcontextprotocol/cpp-sdk/tree/main/examples/EchoServer)
+源代码：[`examples/EchoServer/`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/tree/master/examples/EchoServer)
 
 ## 特性
 

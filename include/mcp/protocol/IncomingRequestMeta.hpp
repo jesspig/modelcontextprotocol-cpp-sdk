@@ -36,6 +36,8 @@ struct PendingRequest {
     std::optional<ProgressToken> progress_token;
     std::string method;
     std::string request_id;
+    RequestId id;
+    bool cancel_on_timeout{true};
 };
 
 struct Subscription {

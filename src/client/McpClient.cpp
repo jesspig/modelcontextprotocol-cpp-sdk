@@ -317,6 +317,44 @@ namespace {
     private:
         std::function<void()> cleanup_;
     };
+
+    class CancelSubscription {
+    public:
+        void Attach(const CancelToken& token,
+                    std::function<void(std::string_view)> handler) {
+            token_ = token;
+            const std::size_t handler_id = token_.AddCancelHandler(std::move(handler));
+            bool remove_now = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (completed_) {
+                    remove_now = handler_id != 0;
+                } else if (handler_id != 0) {
+                    handler_id_ = handler_id;
+                }
+            }
+            if (remove_now) token_.RemoveCancelHandler(handler_id);
+        }
+
+        void Complete() {
+            std::optional<std::size_t> handler_id;
+            CancelToken token;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                completed_ = true;
+                handler_id = handler_id_;
+                handler_id_.reset();
+                token = token_;
+            }
+            if (handler_id) token.RemoveCancelHandler(*handler_id);
+        }
+
+    private:
+        std::mutex mutex_;
+        CancelToken token_;
+        std::optional<std::size_t> handler_id_;
+        bool completed_{false};
+    };
 }
 
 std::optional<ClientCapabilities> DeriveClientCapabilities(
@@ -1803,7 +1841,56 @@ static bool HasExplicitRequestMeta(const RequestMeta& meta) {
            meta.protocol_version != std::string(kLatestProtocolVersion);
 }
 
+RequestHandle McpClient::SendRequest(
+    std::string_view method,
+    JsonValue params,
+    const RequestOptions& options)
+{
+    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    if (options.meta) meta.extensions = options.meta;
+    auto progress_key = AttachProgressCallback(options, meta);
+
+    auto promise = std::make_shared<std::promise<RequestOutcome>>();
+    auto future = promise->get_future();
+    auto cancellation = std::make_shared<CancelSubscription>();
+
+    const RequestId request_id = handler_->SendRequestWithOutcome(
+        method, std::move(params), meta, options.timeout,
+        [this, promise, progress_key, cancellation](RequestOutcome outcome) {
+            if (progress_key) DetachProgressCallback(*progress_key);
+            cancellation->Complete();
+            promise->set_value(std::move(outcome));
+        },
+        options.cancel_on_timeout);
+
+    std::weak_ptr<McpSessionHandler> weak_handler = handler_;
+    cancellation->Attach(options.cancel_token,
+        [weak_handler, request_id](std::string_view reason) {
+            if (auto handler = weak_handler.lock()) {
+                handler->CancelRequest(request_id, reason);
+            }
+        });
+
+    return RequestHandle{
+        request_id,
+        std::move(future),
+        [weak_handler, request_id](std::string_view reason) {
+            if (auto handler = weak_handler.lock()) {
+                handler->CancelRequest(request_id, reason);
+            }
+        }};
+}
+
 std::future<JsonValue> McpClient::SendRequest(
+    std::string_view method,
+    JsonValue params,
+    const RequestMeta& meta,
+    std::chrono::milliseconds timeout)
+{
+    return SendRequestRaw(method, std::move(params), meta, timeout);
+}
+
+std::future<JsonValue> McpClient::SendRequestRaw(
     std::string_view method,
     JsonValue params,
     const RequestMeta& meta,
@@ -1820,12 +1907,7 @@ void McpClient::SendNotification(std::string_view method, JsonValue params) {
 }
 
 void McpClient::CancelRequest(const RequestId& id, std::string_view reason) {
-    JsonValue params(JsonValue::object_tag);
-    std::visit([&params](const auto& value) {
-        params[detail::kRequestId] = JsonValue(value);
-    }, id);
-    if (!reason.empty()) params[detail::kReason] = JsonValue(std::string(reason));
-    handler_->SendNotification(notifications::kCancelled, std::move(params));
+    handler_->CancelRequest(id, reason);
 }
 
 void McpClient::SetLoggingLevel(LoggingLevel level) {

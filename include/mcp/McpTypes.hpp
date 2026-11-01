@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/CancelToken.hpp>
 #include <mcp/Content.hpp>
 #include <mcp/Capabilities.hpp>
 #include <mcp/Implementation.hpp>
@@ -9,6 +10,7 @@
 
 #include <mcp/JsonValue.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -20,6 +22,8 @@
 #include <vector>
 
 namespace mcp {
+
+inline constexpr std::chrono::milliseconds kDefaultRequestTimeout{60000};
 
 struct ToolAnnotations {
     std::optional<std::string> title;
@@ -396,6 +400,9 @@ struct RequestOptions {
     std::optional<JsonValue> input_responses;
     std::optional<std::string> request_state;
     std::function<void(const ProgressNotificationParams&)> on_progress;
+    std::chrono::milliseconds timeout{kDefaultRequestTimeout};
+    bool cancel_on_timeout{true};
+    CancelToken cancel_token;
 };
 
 struct CacheableRequestOptions : RequestOptions {

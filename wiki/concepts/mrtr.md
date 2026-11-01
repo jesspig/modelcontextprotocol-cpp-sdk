@@ -3,7 +3,7 @@ type: Concept
 title: MRTR 多轮请求-响应
 description: 服务端发起的输入请求（inputRequests 键→{method,params} 映射）：elicitation form/URL 双模式、URL 三态返回、requestState HMAC 签发/校验、客户端默认自动补全与超时预算。
 tags: [协议, mrtr, elicitation, 多轮, hmac]
-timestamp: 2026-10-29T22:02:08+08:00
+timestamp: 2026-10-31T18:13:54+08:00
 resource: include/mcp/McpTypes.hpp
 ---
 
@@ -28,9 +28,9 @@ resource: include/mcp/McpTypes.hpp
 
 ## 服务端（[/classes/mcp-server.md](../classes/mcp-server.md)）
 
-- `IsMrtrSupported()`：非 stateless 且客户端 capabilities 含 `elicitation`
-- `Elicit`：无 config 时超时 600s；结果 `code` 为负抛 McpError
-- `ElicitUrl(url, message, timeout=600s)`：modern 时代直接抛 `ElicitationInputRequired`（`inputRequests["elicitation"]` + 可选 `requestState`），由 MRTR 往返完成并忽略 `timeout`；legacy 时代为 URL 模式 elicitation——自增 `elicitationId`，**先注册 `pending_url_elicitations_` 再发 `mode="url"` 请求**（complete 通知可能先于注册到达，旧顺序下会静默丢弃、promise 永不完成）；`SendRequest` 抛异常时清理条目并 rethrow；随后挂起等待客户端 `notifications/elicitation/complete` 唤醒，以客户端返回的 action 完成；两条超时消息区分 `(no response)`（请求无应答）与 `(no complete notification)`（响应已到但 complete 未到）；未知 `elicitationId` 的 complete 通知丢弃并记 Warning。客户端经 `SetUrlElicitationHandler` 消费（legacy SDK 自动回 complete 通知）
+- `IsMrtrSupported()`：非 stateless 且客户端 capabilities 含 `elicitation`（能力按 `EffectiveSessionId({})` 解析：显式会话 > 全局能力已设 > 唯一非空会话）
+- `Elicit(params, session_id={})`：无 config 时超时 600s；结果 `code` 为负抛 McpError；协商版本与客户端能力均按解析后的目标会话读取（stateful HTTP 多会话下能力只存按会话表，无参读全局会误判未声明 elicitation 能力而抛 `-32021`）
+- `ElicitUrl(url, message, timeout=600s, session_id={})`：会话解析同 `Elicit`；modern 时代直接抛 `ElicitationInputRequired`（`inputRequests["elicitation"]` + 可选 `requestState`），由 MRTR 往返完成并忽略 `timeout`；legacy 时代为 URL 模式 elicitation——自增 `elicitationId`，**先注册 `pending_url_elicitations_` 再发 `mode="url"` 请求**（complete 通知可能先于注册到达，旧顺序下会静默丢弃、promise 永不完成）；`SendRequest` 抛异常时清理条目并 rethrow；随后挂起等待客户端 `notifications/elicitation/complete` 唤醒，以客户端返回的 action 完成；两条超时消息区分 `(no response)`（请求无应答）与 `(no complete notification)`（响应已到但 complete 未到）；未知 `elicitationId` 的 complete 通知丢弃并记 Warning。客户端经 `SetUrlElicitationHandler` 消费（legacy SDK 自动回 complete 通知）
 - `ServerOptions::InputRequiredConfig`：`max_rounds{10}`、`round_timeout{600s}`（无额外兼容垫片字段）
 - **`CallToolResult::input_required`**（`std::optional<InputRequiredResult>`）：工具 handler 返回内嵌 MRTR 结果时，wire 写 `resultType: "input_required"` + `inputRequests` + `requestState`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)——该分支独有，普通结果仍写自身 `resultType`）
 - **requestState HMAC 签发/校验**（[RequestState.hpp](../../include/mcp/server/RequestState.hpp)）：`ServerOptions::request_state_key` 配置后，`HandleCallTool` 对 `input_required` 结果自动 mint——payload（bare JSON，可空）注入 `iat` 经 `MintRequestState` 签名（`base64url(payload).hex(HMAC-SHA256)`）；下一轮请求携带的 requestState 在 handler 运行前经 `McpSessionHandler::SetRequestStateVerifier` 校验，失败回 `InvalidParams` + `data.reason="invalid_request_state"`；`request_state_ttl`（默认 0 不校验过期）超期拒绝；显式 `request_state_verifier` 优先于内置 HMAC 校验器

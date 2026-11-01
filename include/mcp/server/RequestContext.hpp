@@ -12,6 +12,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 
 namespace mcp {
@@ -29,13 +30,15 @@ public:
         TParams params,
         LogFn log_fn = nullptr,
         std::shared_ptr<const std::atomic<bool>> cancellation_flag = nullptr,
-        bool require_request_log_level = false)
+        bool require_request_log_level = false,
+        std::string_view session_id = {})
         : server_(&server)
         , jsonrpc_request_(jsonrpc_request)
         , params_(std::move(params))
         , log_fn_(std::move(log_fn))
         , cancellation_flag_(std::move(cancellation_flag))
         , require_request_log_level_(require_request_log_level)
+        , session_id_(session_id)
     {
         if (jsonrpc_request_.meta) {
             auto* lv = jsonrpc_request_.meta->Find("io.modelcontextprotocol/logLevel");
@@ -56,6 +59,7 @@ public:
     McpServer& Server() const { return *server_; }
     const mcp::JsonRpcRequest& GetRequest() const { return jsonrpc_request_; }
     std::optional<LoggingLevel> LogLevel() const { return log_level_; }
+    std::string_view SessionId() const { return session_id_; }
 
     void Log(LoggingLevel level, std::string_view data) const {
         if (require_request_log_level_ && !log_level_)
@@ -77,6 +81,7 @@ private:
     LogFn log_fn_;
     std::shared_ptr<const std::atomic<bool>> cancellation_flag_;
     bool require_request_log_level_{false};
+    std::string session_id_;
 };
 
 } // namespace mcp

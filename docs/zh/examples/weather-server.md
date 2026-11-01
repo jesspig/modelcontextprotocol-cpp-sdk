@@ -2,7 +2,7 @@
 
 一个更接近实际的 MCP 服务器，演示多工具注册和模拟天气数据。
 
-源代码：[`examples/WeatherServer/`](https://github.com/modelcontextprotocol/cpp-sdk/tree/main/examples/WeatherServer)
+源代码：[`examples/WeatherServer/`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/tree/master/examples/WeatherServer)
 
 ## 特性
 

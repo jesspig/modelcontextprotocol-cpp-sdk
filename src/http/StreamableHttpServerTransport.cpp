@@ -20,6 +20,7 @@
 #include <cctype>
 #include <chrono>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 #include <thread>
 
@@ -39,6 +40,52 @@ constexpr std::chrono::milliseconds kSseListenerWaitStep(50);
 constexpr std::chrono::milliseconds kSseListenerWaitBudget(2000);
 const char* kMcpParamHeaderPrefix = "mcp-param-";
 constexpr size_t kMaxStatelessInflight = 8;
+constexpr char kSseSessionKey[] = "__session";
+constexpr char kSseStreamKey[] = "__stream";
+constexpr char kSseStreamGet[] = "get";
+constexpr char kSseStreamListen[] = "listen";
+
+int64_t NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string MakeSessionId() {
+    static std::atomic<uint64_t> counter{0};
+    auto stamp = static_cast<uint64_t>(NowMs());
+    auto seq = counter.fetch_add(1);
+    std::random_device rd;
+    std::mt19937_64 engine(stamp ^ seq ^ (static_cast<uint64_t>(rd()) << 32) ^ rd());
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string out = "sess-";
+    out.reserve(37);
+    for (int i = 0; i < 16; ++i) {
+        auto byte = static_cast<uint8_t>(engine() & 0xFF);
+        out.push_back(kHexDigits[byte >> 4]);
+        out.push_back(kHexDigits[byte & 0x0F]);
+    }
+    return out;
+}
+
+const std::string& MessageSessionId(const JsonRpcMessage& message) {
+    static const std::string kEmpty;
+    if (const auto* req = std::get_if<JsonRpcRequest>(&message))
+        return req->session_id;
+    if (const auto* notif = std::get_if<JsonRpcNotification>(&message))
+        return notif->session_id;
+    if (const auto* resp = std::get_if<JsonRpcResponse>(&message))
+        return resp->session_id;
+    if (const auto* err = std::get_if<JsonRpcErrorResponse>(&message))
+        return err->session_id;
+    return kEmpty;
+}
+
+std::string& MutableMessageSessionId(JsonRpcMessage& message) {
+    if (auto* req = std::get_if<JsonRpcRequest>(&message)) return req->session_id;
+    if (auto* notif = std::get_if<JsonRpcNotification>(&message)) return notif->session_id;
+    if (auto* resp = std::get_if<JsonRpcResponse>(&message)) return resp->session_id;
+    return std::get<JsonRpcErrorResponse>(message).session_id;
+}
 
 struct StatelessInflightGuard {
     explicit StatelessInflightGuard(std::atomic<size_t>& counter)
@@ -359,8 +406,10 @@ StreamableHttpServerTransport::ParseListenFilter(const JsonRpcRequest& req) {
 }
 
 std::string StreamableHttpServerTransport::EncodeListenTag(
-    const ListenFilter& filter) {
+    const ListenFilter& filter, std::string_view session_id) {
     JsonValue::Object tag;
+    tag[kSseStreamKey] = JsonValue(std::string(kSseStreamListen));
+    if (!session_id.empty()) tag[kSseSessionKey] = JsonValue(std::string(session_id));
     tag["toolsListChanged"] = JsonValue(filter.tools);
     tag["promptsListChanged"] = JsonValue(filter.prompts);
     tag["resourcesListChanged"] = JsonValue(filter.resources);
@@ -371,6 +420,29 @@ std::string StreamableHttpServerTransport::EncodeListenTag(
         tag["resourceSubscriptions"] = JsonValue(std::move(uris));
     }
     return JsonValue(std::move(tag)).Dump();
+}
+
+std::string StreamableHttpServerTransport::EncodeSseStreamTag(
+    std::string_view session_id) {
+    JsonValue::Object tag;
+    tag[kSseStreamKey] = JsonValue(std::string(kSseStreamGet));
+    if (!session_id.empty()) tag[kSseSessionKey] = JsonValue(std::string(session_id));
+    return JsonValue(std::move(tag)).Dump();
+}
+
+bool StreamableHttpServerTransport::TagMatchesSession(
+    const std::string& tag, std::string_view session_id) {
+    if (session_id.empty()) return true;
+    if (tag.empty()) return false;
+    JsonValue tag_doc;
+    try {
+        tag_doc = JsonValue::Parse(tag);
+    } catch (...) {
+        return false;
+    }
+    if (!tag_doc.IsObject()) return false;
+    auto* value = tag_doc.Find(kSseSessionKey);
+    return value && value->IsString() && value->GetString() == session_id;
 }
 
 bool StreamableHttpServerTransport::IsListenFilteredNotification(
@@ -392,6 +464,9 @@ bool StreamableHttpServerTransport::ListenTagAccepts(
         return true;
     }
     if (!tag_doc.IsObject()) return true;
+    auto* stream = tag_doc.Find(kSseStreamKey);
+    if (stream && stream->IsString() && stream->GetString() == kSseStreamGet)
+        return true;
     auto flag = [&tag_doc](const char* key) {
         auto* value = tag_doc.Find(key);
         return value && value->IsBool() && value->GetBool();
@@ -442,9 +517,6 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
             "bearer_auth.verify is required when bearer auth is enabled");
     }
 
-    session_id_ = "srv-" + std::to_string(
-        std::chrono::system_clock::now().time_since_epoch().count());
-
     http_server_->SetHandler("POST", options_.endpoint,
         [this](const HttpRequest& req, HttpResponse& resp) {
             HandlePost(req, resp);
@@ -458,7 +530,7 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     }
 
     http_server_->SetHandler("DELETE", options_.endpoint,
-        [this](const HttpRequest&, HttpResponse& resp) {
+        [this](const HttpRequest& req, HttpResponse& resp) {
             if (options_.stateless) {
                 resp.status_code = 405;
                 resp.status_text = "Method Not Allowed";
@@ -466,9 +538,15 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
                 resp.headers["content-type"] = "application/json";
                 return;
             }
-            if (session_store_) session_store_->Remove(ActiveSessionId());
-            if (channel_) channel_->Close();
-            SetDisconnected();
+            auto session_id = GetMcpHeader(req, "mcp-session-id");
+            if (session_id && !session_id->empty() && !HasSession(*session_id)) {
+                resp.status_code = 404;
+                resp.status_text = "Not Found";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32009,"message":"Session expired"}})";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
+            if (session_id && !session_id->empty()) EraseSession(*session_id);
             resp.status_code = 200;
             resp.status_text = "OK";
             resp.body = "{}";
@@ -501,7 +579,19 @@ void StreamableHttpServerTransport::Start() {
 
 void StreamableHttpServerTransport::Close() {
     if (http_server_) http_server_->Stop();
-    if (!options_.stateless && event_store_) event_store_->Clear(ActiveSessionId());
+    std::vector<std::string> session_ids;
+    {
+        std::lock_guard<std::mutex> lock(session_state_mutex_);
+        for (const auto& [id, state] : sessions_) session_ids.push_back(id);
+        sessions_.clear();
+    }
+    if (event_store_) {
+        for (const auto& id : session_ids) event_store_->Clear(id);
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_responses_.clear();
+    }
     if (channel_) channel_->Close();
     SetDisconnected();
 }
@@ -675,33 +765,194 @@ void StreamableHttpServerTransport::HandleServerCardRequest(HttpResponse& resp) 
     resp.headers["cache-control"] = "public,max-age=60";
 }
 
-std::string StreamableHttpServerTransport::ActiveSessionId() const {
-    std::lock_guard<std::mutex> lock(session_state_mutex_);
-    return session_id_;
+std::string StreamableHttpServerTransport::PendingKey(
+    std::string_view session_id, const std::string& request_id) {
+    return std::to_string(session_id.size()) + ":" +
+           std::string(session_id) + request_id;
 }
 
-void StreamableHttpServerTransport::AdoptSession(const std::string& session_id) {
-    std::lock_guard<std::mutex> lock(session_state_mutex_);
-    session_id_ = session_id;
-}
-
-bool StreamableHttpServerTransport::EnsureSession(
-    const HttpRequest& req, HttpResponse& resp)
+bool StreamableHttpServerTransport::ResolveSession(
+    const HttpRequest& req, bool is_initialize,
+    const std::string& protocol_version,
+    std::string& session_id, HttpResponse& resp)
 {
-    if (options_.stateless) return true;
-    if (!session_store_) return true;
-    auto session_id = GetMcpHeader(req, "mcp-session-id");
-    if (!session_id || session_id->empty()) return true;
-    if (session_store_->Load(*session_id)) {
-        if (*session_id != ActiveSessionId()) AdoptSession(*session_id);
+    if (options_.stateless) {
+        session_id.clear();
         return true;
     }
-    resp.status_code = 404;
-    resp.status_text = "Not Found";
-    resp.body = R"({"jsonrpc":"2.0","error":{"code":-32009,"message":"Session expired"}})";
-    resp.headers["content-type"] = "application/json";
-    return false;
+    auto header = GetMcpHeader(req, "mcp-session-id");
+    if (header && !header->empty()) {
+        if (!TouchSession(*header, is_initialize, protocol_version)) {
+            resp.status_code = 404;
+            resp.status_text = "Not Found";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32009,"message":"Session expired"}})";
+            resp.headers["content-type"] = "application/json";
+            return false;
+        }
+        session_id = *header;
+        return true;
+    }
+    if (!is_initialize) {
+        session_id.clear();
+        return true;
+    }
+    std::string version = protocol_version.empty()
+        ? std::string(kDefaultNegotiatedProtocolVersion)
+        : protocol_version;
+    auto candidate = MakeSessionId();
+    SessionRecord record;
+    record.protocol_version = version;
+    record.created_at_ms = NowMs();
+    record.last_seen_ms = record.created_at_ms;
+    if (session_store_ && !session_store_->TrySave(candidate, record)) {
+        resp.status_code = 503;
+        resp.status_text = "Service Unavailable";
+        resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session store is full"}})";
+        resp.headers["content-type"] = "application/json";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(session_state_mutex_);
+        auto now = NowMs();
+        for (auto it = sessions_.begin(); it != sessions_.end();) {
+            if (now - it->second.last_seen_ms > detail::kSessionIdleTimeoutMs)
+                it = sessions_.erase(it);
+            else
+                ++it;
+        }
+        if (sessions_.size() >= detail::kMaxHttpSessions) {
+            if (session_store_) session_store_->Remove(candidate);
+            resp.status_code = 503;
+            resp.status_text = "Service Unavailable";
+            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session capacity exceeded"}})";
+            resp.headers["content-type"] = "application/json";
+            return false;
+        }
+        sessions_[candidate] = SessionState{version, record.last_seen_ms};
+    }
+    session_id = candidate;
+    return true;
 }
+
+bool StreamableHttpServerTransport::TouchSession(
+    const std::string& session_id, bool is_initialize,
+    const std::string& protocol_version)
+{
+    auto now = NowMs();
+    if (session_store_) {
+        auto record = session_store_->Load(session_id);
+        if (!record) {
+            std::lock_guard<std::mutex> lock(session_state_mutex_);
+            sessions_.erase(session_id);
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(session_state_mutex_);
+        auto it = sessions_.find(session_id);
+        if (it == sessions_.end()) {
+            SessionState state;
+            state.protocol_version = record->protocol_version.empty()
+                ? std::string(kDefaultNegotiatedProtocolVersion)
+                : record->protocol_version;
+            state.last_seen_ms = now;
+            sessions_[session_id] = std::move(state);
+        } else {
+            it->second.last_seen_ms = now;
+            if (is_initialize && !protocol_version.empty())
+                it->second.protocol_version = protocol_version;
+        }
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(session_state_mutex_);
+    auto it = sessions_.find(session_id);
+    if (it == sessions_.end()) return false;
+    if (now - it->second.last_seen_ms > detail::kSessionIdleTimeoutMs) {
+        sessions_.erase(it);
+        return false;
+    }
+    it->second.last_seen_ms = now;
+    if (is_initialize && !protocol_version.empty())
+        it->second.protocol_version = protocol_version;
+    return true;
+}
+
+std::string StreamableHttpServerTransport::SessionProtocolVersion(
+    const std::string& session_id) const {
+    if (session_id.empty()) return std::string(kDefaultNegotiatedProtocolVersion);
+    std::lock_guard<std::mutex> lock(session_state_mutex_);
+    auto it = sessions_.find(session_id);
+    if (it == sessions_.end() || it->second.protocol_version.empty())
+        return std::string(kDefaultNegotiatedProtocolVersion);
+    return it->second.protocol_version;
+}
+
+bool StreamableHttpServerTransport::HasSession(const std::string& session_id) {    if (session_store_ && session_store_->Load(session_id)) return true;
+    std::lock_guard<std::mutex> lock(session_state_mutex_);
+    auto it = sessions_.find(session_id);
+    if (it == sessions_.end()) return false;
+    if (!session_store_ &&
+        NowMs() - it->second.last_seen_ms > detail::kSessionIdleTimeoutMs) {
+        sessions_.erase(it);
+        return false;
+    }
+    return true;
+}
+
+void StreamableHttpServerTransport::EraseSession(const std::string& session_id) {
+    {
+        std::lock_guard<std::mutex> lock(session_state_mutex_);
+        sessions_.erase(session_id);
+    }
+    if (session_store_) session_store_->Remove(session_id);
+    if (event_store_) event_store_->Clear(session_id);
+
+    const auto prefix = PendingKey(session_id, "");
+    std::vector<PendingResponse> abandoned;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        for (auto it = pending_responses_.begin(); it != pending_responses_.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                abandoned.push_back(std::move(it->second));
+                it = pending_responses_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = request_stream_frames_.begin(); it != request_stream_frames_.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0)
+                it = request_stream_frames_.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = hold_open_requests_.begin(); it != hold_open_requests_.end();) {
+            if (it->compare(0, prefix.size(), prefix) == 0)
+                it = hold_open_requests_.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = listen_filters_.begin(); it != listen_filters_.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0)
+                it = listen_filters_.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = progress_token_routes_.begin();
+             it != progress_token_routes_.end();) {
+            if (it->second.compare(0, prefix.size(), prefix) == 0)
+                it = progress_token_routes_.erase(it);
+            else
+                ++it;
+        }
+    }
+    for (auto& entry : abandoned) {
+        JsonRpcErrorResponse error;
+        error.id = entry.request_id;
+        error.error.code = McpErrorCode::SessionExpired;
+        error.error.message = "session closed";
+        error.session_id = session_id;
+        entry.promise->set_value(JsonRpcMessage{std::move(error)});
+    }
+}
+
 
 bool StreamableHttpServerTransport::ValidateMcpHeaders(
     const std::string& method_header,
@@ -824,7 +1075,6 @@ void StreamableHttpServerTransport::HandlePost(
     const HttpRequest& req, HttpResponse& resp)
 {
     if (!AuthorizeRequest(req, resp)) return;
-    if (!EnsureSession(req, resp)) return;
 
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     if (proto_ver.has_value() && !proto_ver->empty() &&
@@ -890,6 +1140,37 @@ void StreamableHttpServerTransport::HandlePost(
         return;
     }
 
+    bool needs_response = IsRequest(msg);
+    std::optional<RequestId> req_id;
+    bool is_initialize = false;
+    if (needs_response) {
+        if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
+            req_id = r->id;
+            is_initialize = (r->method == methods::kInitialize);
+        }
+    }
+
+    std::string requested_version;
+    if (auto* init_req = std::get_if<JsonRpcRequest>(&msg)) {
+        if (is_initialize && init_req->params && init_req->params->IsObject()) {
+            if (auto* pv = init_req->params->Find("protocolVersion");
+                pv && pv->IsString()) {
+                requested_version = pv->GetString();
+            }
+        }
+    }
+    if (requested_version.empty() && proto_ver && !proto_ver->empty())
+        requested_version = *proto_ver;
+
+    std::string session_id;
+    if (!ResolveSession(req, is_initialize, requested_version,
+                        session_id, resp)) {
+        return;
+    }
+    MutableMessageSessionId(msg) = session_id;
+    if (is_initialize && !session_id.empty())
+        resp.headers["mcp-session-id"] = session_id;
+
     if (options_.stateless) {
         if (auto* post_req = std::get_if<JsonRpcRequest>(&msg)) {
             bool legacy_pinned = proto_ver.has_value() && !proto_ver->empty() &&
@@ -933,12 +1214,13 @@ void StreamableHttpServerTransport::HandlePost(
         }
     }
 
+    std::string response_version = std::string(kDefaultNegotiatedProtocolVersion);
     if (proto_ver.has_value() && !proto_ver->empty()) {
-        resp.headers["mcp-protocol-version"] = proto_ver.value();
-    } else {
-        resp.headers["mcp-protocol-version"] =
-            std::string(kDefaultNegotiatedProtocolVersion);
+        response_version = proto_ver.value();
+    } else if (!session_id.empty()) {
+        response_version = SessionProtocolVersion(session_id);
     }
+    resp.headers["mcp-protocol-version"] = response_version;
 
     if (mcp_method.has_value()) {
         resp.headers["mcp-method"] = mcp_method.value();
@@ -969,31 +1251,6 @@ void StreamableHttpServerTransport::HandlePost(
         }
     }
 
-    bool needs_response = IsRequest(msg);
-
-    std::optional<RequestId> req_id;
-    bool is_initialize = false;
-    if (needs_response) {
-        if (auto* r = std::get_if<JsonRpcRequest>(&msg)) {
-            req_id = r->id;
-            is_initialize = (r->method == methods::kInitialize);
-        }
-    }
-
-    if (is_initialize && session_store_ && !options_.stateless) {
-        SessionRecord record;
-        record.protocol_version = std::string(kDefaultNegotiatedProtocolVersion);
-        record.created_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        if (!session_store_->TrySave(ActiveSessionId(), record)) {
-            resp.status_code = 503;
-            resp.status_text = "Service Unavailable";
-            resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session store is full"}})";
-            resp.headers["content-type"] = "application/json";
-            return;
-        }
-    }
-
     if (needs_response) {
         if (!(channel_ && channel_->IsOpen())) {
             resp.status_code = 503;
@@ -1015,8 +1272,8 @@ void StreamableHttpServerTransport::HandlePost(
             inflight_guard.emplace(stateless_inflight_);
         }
         auto id_str = RequestIdToString(*req_id);
-        std::string hold_version(kDefaultNegotiatedProtocolVersion);
-        if (proto_ver && !proto_ver->empty()) hold_version = *proto_ver;
+        const auto pending_key = PendingKey(session_id, id_str);
+        std::string hold_version = response_version;
         bool hold_open = IsModernProtocolVersion(hold_version);
         std::optional<std::string> hold_token;
         if (hold_open) {
@@ -1031,7 +1288,7 @@ void StreamableHttpServerTransport::HandlePost(
                 if (hold_req->method == methods::kSubscribe) {
                     hold_listen = true;
                     listen_filter = ParseListenFilter(*hold_req);
-                    listen_tag = EncodeListenTag(listen_filter);
+                    listen_tag = EncodeListenTag(listen_filter, session_id);
                 }
             }
         }
@@ -1039,18 +1296,18 @@ void StreamableHttpServerTransport::HandlePost(
         auto future = promise->get_future();
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
-            pending_responses_[id_str] = promise;
+            pending_responses_[pending_key] = PendingResponse{*req_id, promise};
             if (hold_open) {
-                hold_open_requests_.insert(id_str);
-                if (hold_token) progress_token_routes_[*hold_token] = id_str;
+                hold_open_requests_.insert(pending_key);
+                if (hold_token) progress_token_routes_[*hold_token] = pending_key;
             }
-            if (hold_listen) listen_filters_[id_str] = std::move(listen_filter);
+            if (hold_listen) listen_filters_[pending_key] = std::move(listen_filter);
         }
         if (!channel_->TrySend(std::move(msg))) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
-                pending_responses_.erase(id_str);
-                EraseRequestStreamStateLocked(id_str);
+                pending_responses_.erase(pending_key);
+                EraseRequestStreamStateLocked(pending_key);
             }
             resp.status_code = 503;
             resp.status_text = "Service Unavailable";
@@ -1063,8 +1320,8 @@ void StreamableHttpServerTransport::HandlePost(
         if (future.wait_until(deadline) != std::future_status::ready) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
-                pending_responses_.erase(id_str);
-                EraseRequestStreamStateLocked(id_str);
+                pending_responses_.erase(pending_key);
+                EraseRequestStreamStateLocked(pending_key);
             }
             resp.status_code = 504;
             resp.status_text = "Gateway Timeout";
@@ -1085,10 +1342,10 @@ void StreamableHttpServerTransport::HandlePost(
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
             if (hold_open) {
-                auto fit = request_stream_frames_.find(id_str);
+                auto fit = request_stream_frames_.find(pending_key);
                 if (fit != request_stream_frames_.end())
                     hold_frames = std::move(fit->second);
-                EraseRequestStreamStateLocked(id_str);
+                EraseRequestStreamStateLocked(pending_key);
             }
         }
         if (const auto* err = std::get_if<JsonRpcErrorResponse>(&response)) {
@@ -1127,14 +1384,11 @@ void StreamableHttpServerTransport::HandlePost(
                 }
             }
         }
-        if (is_initialize && session_store_ && !options_.stateless) {
-            resp.headers["mcp-session-id"] = ActiveSessionId();
-        }
         resp.status_code = 200;
         resp.status_text = "OK";
         resp.is_sse = true;
         resp.sse_close_after_write = !hold_listen;
-        resp.sse_client_tag = std::move(listen_tag);
+        if (hold_listen) resp.sse_client_tag = std::move(listen_tag);
         resp.headers["content-type"] = "text/event-stream";
         resp.headers["cache-control"] = "no-cache";
         resp.headers["x-accel-buffering"] = "no";
@@ -1164,7 +1418,9 @@ void StreamableHttpServerTransport::HandleGet(
     const HttpRequest& req, HttpResponse& resp)
 {
     if (!AuthorizeRequest(req, resp)) return;
-    if (!EnsureSession(req, resp)) return;
+
+    std::string session_id;
+    if (!ResolveSession(req, false, {}, session_id, resp)) return;
 
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     if (proto_ver.has_value() && !proto_ver->empty() &&
@@ -1172,16 +1428,18 @@ void StreamableHttpServerTransport::HandleGet(
         RespondUnsupportedVersion(resp, *proto_ver, std::nullopt);
         return;
     }
+    std::string response_version = std::string(kDefaultNegotiatedProtocolVersion);
     if (proto_ver.has_value() && !proto_ver->empty()) {
-        resp.headers["mcp-protocol-version"] = proto_ver.value();
-    } else {
-        resp.headers["mcp-protocol-version"] =
-            std::string(kDefaultNegotiatedProtocolVersion);
+        response_version = proto_ver.value();
+    } else if (!session_id.empty()) {
+        response_version = SessionProtocolVersion(session_id);
     }
+    resp.headers["mcp-protocol-version"] = response_version;
 
     resp.is_sse = true;
     resp.headers["content-type"] = "text/event-stream";
     resp.headers["cache-control"] = "no-cache";
+    if (!session_id.empty()) resp.sse_client_tag = EncodeSseStreamTag(session_id);
 
     resp.body = "event: endpoint\ndata: " + SseEscapeData(options_.endpoint) + "\n\n";
 
@@ -1191,7 +1449,7 @@ void StreamableHttpServerTransport::HandleGet(
             try {
                 auto from = std::stoull(*last_id);
                 for (const auto& [ev_id, ev_data] :
-                        event_store_->GetEventsSince(ActiveSessionId(), from)) {
+                        event_store_->GetEventsSince(session_id, from)) {
                     resp.body += "id: " + std::to_string(ev_id) + "\n" + ev_data;
                 }
             } catch (const std::exception&) {
@@ -1202,23 +1460,47 @@ void StreamableHttpServerTransport::HandleGet(
 }
 
 void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
+    const std::string message_session = MessageSessionId(message);
+
+    const auto match_pending = [&](const RequestId& id) -> std::string {
+        std::string id_str = RequestIdToString(id);
+        auto key = PendingKey(message_session, id_str);
+        if (pending_responses_.find(key) != pending_responses_.end()) return key;
+        if (!message_session.empty()) return {};
+        std::string matched_key;
+        for (const auto& [candidate_key, entry] : pending_responses_) {
+            if (candidate_key.size() < id_str.size()) continue;
+            if (candidate_key.compare(candidate_key.size() - id_str.size(),
+                                      id_str.size(), id_str) != 0) {
+                continue;
+            }
+            if (!matched_key.empty()) return {};
+            matched_key = candidate_key;
+        }
+        return matched_key;
+    };
+
     if (auto* resp = std::get_if<JsonRpcResponse>(&message)) {
-        auto id_str = RequestIdToString(resp->id);
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        auto it = pending_responses_.find(id_str);
+        auto key = match_pending(resp->id);
+        auto it = key.empty() ? pending_responses_.end()
+                              : pending_responses_.find(key);
         if (it != pending_responses_.end()) {
-            it->second->set_value(std::move(message));
+            auto promise = std::move(it->second.promise);
             pending_responses_.erase(it);
+            promise->set_value(std::move(message));
             return;
         }
     } else if (auto* err = std::get_if<JsonRpcErrorResponse>(&message)) {
         if (err->id) {
-            auto id_str = RequestIdToString(*err->id);
             std::lock_guard<std::mutex> lock(pending_mutex_);
-            auto it = pending_responses_.find(id_str);
+            auto key = match_pending(*err->id);
+            auto it = key.empty() ? pending_responses_.end()
+                                  : pending_responses_.find(key);
             if (it != pending_responses_.end()) {
-                it->second->set_value(std::move(message));
+                auto promise = std::move(it->second.promise);
                 pending_responses_.erase(it);
+                promise->set_value(std::move(message));
                 return;
             }
         }
@@ -1257,13 +1539,23 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     }
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
-        auto event_id = event_store_->Append(ActiveSessionId(), event_data);
+        auto event_id = event_store_->Append(message_session, event_data);
         event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
         if (event_data.size() > SseEventLimit()) event_data.resize(SseEventLimit());
     }
     if (http_server_) {
-        if (!broadcast_method.empty() &&
-            IsListenFilteredNotification(broadcast_method)) {
+        const bool filtered = !broadcast_method.empty() &&
+            IsListenFilteredNotification(broadcast_method);
+        if (!message_session.empty()) {
+            http_server_->BroadcastSse(event_data,
+                [session = message_session, filtered,
+                 method = broadcast_method, resource = broadcast_resource](
+                    const std::string& tag) {
+                    if (!TagMatchesSession(tag, session)) return false;
+                    if (!filtered) return true;
+                    return ListenTagAccepts(tag, method, resource);
+                });
+        } else if (filtered) {
             http_server_->BroadcastSse(event_data,
                 [method = broadcast_method, resource = broadcast_resource](
                     const std::string& tag) {
@@ -1335,11 +1627,19 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
     if (!notif) return false;
     std::lock_guard<std::mutex> lock(pending_mutex_);
     if (hold_open_requests_.empty()) return false;
+    const auto session_prefix = notif->session_id.empty()
+        ? std::string{}
+        : PendingKey(notif->session_id, "");
+    const auto belongs = [&session_prefix](const std::string& key) {
+        return session_prefix.empty() ||
+               key.compare(0, session_prefix.size(), session_prefix) == 0;
+    };
     if (notif->method == notifications::kProgress) {
         auto key = NotificationTokenKey(*notif);
         if (!key) return false;
         auto route = progress_token_routes_.find(*key);
         if (route == progress_token_routes_.end()) return false;
+        if (!belongs(route->second)) return false;
         if (hold_open_requests_.count(route->second) == 0) return false;
         request_stream_frames_[route->second].push_back(
             BuildSseEvent(JsonRpcMessage(message)));
@@ -1347,9 +1647,11 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
     }
     if (notif->method == notifications::kMessage ||
         notif->method == notifications::kSubscriptionsAcknowledged) {
-        for (const auto& id_str : hold_open_requests_)
+        for (const auto& id_str : hold_open_requests_) {
+            if (!belongs(id_str)) continue;
             request_stream_frames_[id_str].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));
+        }
         return true;
     }
     if (notif->method == notifications::kToolListChanged ||
@@ -1357,6 +1659,7 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
         notif->method == notifications::kResourceListChanged) {
         bool appended = false;
         for (const auto& [id_str, filter] : listen_filters_) {
+            if (!belongs(id_str)) continue;
             if (hold_open_requests_.count(id_str) == 0) continue;
             bool match = false;
             if (notif->method == notifications::kToolListChanged) match = filter.tools;
@@ -1374,6 +1677,7 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
         if (!uri) return false;
         bool appended = false;
         for (const auto& [id_str, filter] : listen_filters_) {
+            if (!belongs(id_str)) continue;
             if (hold_open_requests_.count(id_str) == 0) continue;
             bool match = false;
             for (const auto& candidate : filter.resource_uris) {
@@ -1392,6 +1696,7 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
     if (IsTaskStreamNotification(notif->method)) {
         bool appended = false;
         for (const auto& entry : listen_filters_) {
+            if (!belongs(entry.first)) continue;
             if (hold_open_requests_.count(entry.first) == 0) continue;
             request_stream_frames_[entry.first].push_back(
                 BuildSseEvent(JsonRpcMessage(message)));

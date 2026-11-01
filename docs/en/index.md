@@ -11,7 +11,7 @@ hero:
       link: /en/guide/quick-start
     - theme: alt
       text: View on GitHub
-      link: https://github.com/modelcontextprotocol/cpp-sdk
+      link: https://github.com/jesspig/modelcontextprotocol-cpp-sdk
 
 features:
   - title: Full Protocol
@@ -23,7 +23,7 @@ features:
   - title: C++17 Native
     details: No GC, no heavy frameworks. Uses std::variant and smart pointers for type-safe, zero-cost abstractions.
   - title: Tier 1 Ready
-    details: See wiki/concepts/tier1-parity.md for Tier 1 parity; OAuth PKCE, bearer auth, persistent storage backends, MessageFilter pipeline.
+    details: OAuth PKCE, bearer auth, persistent storage backends, MessageFilter pipeline.
   - title: Cross-Platform
     details: Windows (MSVC, clang-cl), Linux (GCC, Clang), macOS (Clang). Unified CMake presets for all platforms (debug/release).
 ---

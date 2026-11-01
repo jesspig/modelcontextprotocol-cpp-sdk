@@ -2,6 +2,7 @@
 #include <mcp/Export.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
 #include <mcp/client/ClientOptions.hpp>
+#include <mcp/client/RequestHandle.hpp>
 #include <mcp/client/VersionNegotiation.hpp>
 
 #include <atomic>
@@ -126,7 +127,16 @@ public:
 
     void SubscribeAsync(const SubscriptionsListenRequestParams& params = {});
 
+    RequestHandle SendRequest(
+        std::string_view method,
+        JsonValue params,
+        const RequestOptions& options);
     std::future<JsonValue> SendRequest(
+        std::string_view method,
+        JsonValue params,
+        const RequestMeta& meta = {},
+        std::chrono::milliseconds timeout = kDefaultRequestTimeout);
+    std::future<JsonValue> SendRequestRaw(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},

@@ -2,6 +2,7 @@
 #include <mcp/protocol/MessageFilter.hpp>
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/JsonRpc.hpp>
+#include <mcp/transport/IRequestCanceller.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
@@ -50,6 +51,57 @@ RequestMeta ModernMeta() {
     meta.client_info = Implementation{"meta-client", "1.0"};
     return meta;
 }
+
+RequestMeta LegacyMeta() {
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLegacyProtocolVersion);
+    meta.client_info = Implementation{"meta-client", "1.0"};
+    return meta;
+}
+
+class RecordingCancellerTransport : public TransportBase,
+                                    public IRequestCanceller {
+public:
+    struct Cancelled {
+        RequestId id;
+        std::string reason;
+    };
+
+    RecordingCancellerTransport() {
+        SetConnected();
+    }
+
+    void SendMessageAsync(JsonRpcMessage message) override {
+        auto* notification = AsNotification(message);
+        if (!notification) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        notification_methods_.push_back(notification->method);
+    }
+
+    void Close() override {
+        SetDisconnected();
+    }
+
+    void CancelRequest(const RequestId& id, std::string_view reason) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_.push_back(Cancelled{id, std::string(reason)});
+    }
+
+    std::vector<std::string> NotificationMethods() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return notification_methods_;
+    }
+
+    std::vector<Cancelled> CancelledRequests() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return cancelled_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<std::string> notification_methods_;
+    std::vector<Cancelled> cancelled_;
+};
 
 } // namespace
 
@@ -1103,4 +1155,224 @@ TEST(SessionHandlerTest, HandlerFailureDoesNotLeakExceptionText) {
     EXPECT_EQ(result["message"].GetString(), std::string("request handler failed"));
     EXPECT_EQ(result["message"].GetString().find("secret-token-abc123"),
               std::string::npos);
+}
+
+TEST(SessionHandlerTest, CancelRequestSettlesPendingOnceAndNotifiesPeer) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.client->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+
+    std::mutex pending_mutex;
+    std::condition_variable pending_cv;
+    std::optional<RequestId> pending_id;
+    std::shared_ptr<std::promise<JsonValue>> pending_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            pending_id = req.id;
+            pending_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+            pending_cv.notify_all();
+        });
+
+    std::mutex cancel_mutex;
+    std::condition_variable cancel_cv;
+    std::vector<RequestId> cancel_ids;
+    std::vector<std::string> cancel_reasons;
+    hp.server->SetOnNotificationCallback(
+        [&](const JsonRpcNotification& notif) {
+            if (notif.method != notifications::kCancelled) return;
+            if (!notif.params || !notif.params->IsObject()) return;
+            auto* id = notif.params->Find("requestId");
+            auto* reason = notif.params->Find("reason");
+            std::lock_guard<std::mutex> lock(cancel_mutex);
+            if (id && id->IsInt()) {
+                cancel_ids.push_back(RequestId{id->GetInt()});
+            } else if (id && id->IsString()) {
+                cancel_ids.push_back(RequestId{id->GetString()});
+            }
+            cancel_reasons.push_back(
+                reason && reason->IsString() ? reason->GetString()
+                                             : std::string());
+            cancel_cv.notify_all();
+        });
+
+    std::atomic<int> deliveries{0};
+    std::promise<RequestOutcome> outcome_promise;
+    auto outcome_future = outcome_promise.get_future();
+    auto raw_future = hp.client->SendRequest(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), LegacyMeta(),
+        std::chrono::seconds(5),
+        [&](RequestOutcome outcome) {
+            ++deliveries;
+            outcome_promise.set_value(std::move(outcome));
+        });
+
+    RequestId captured;
+    {
+        std::unique_lock<std::mutex> lock(pending_mutex);
+        ASSERT_TRUE(pending_cv.wait_for(lock, std::chrono::seconds(3),
+            [&pending_id] { return pending_id.has_value(); }));
+        captured = *pending_id;
+    }
+
+    hp.client->CancelRequest(captured, "user aborted");
+
+    ASSERT_EQ(raw_future.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    auto raw = raw_future.get();
+    ASSERT_TRUE(raw.Contains("code"));
+    EXPECT_EQ(raw["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestCancelled));
+
+    ASSERT_EQ(outcome_future.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    auto outcome = outcome_future.get();
+    ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+    const auto& error = std::get<ErrorData>(outcome);
+    EXPECT_EQ(static_cast<int32_t>(error.code),
+              static_cast<int32_t>(McpErrorCode::RequestCancelled));
+    ASSERT_TRUE(error.data.has_value());
+    auto* reason = error.data->Find("reason");
+    ASSERT_NE(reason, nullptr);
+    EXPECT_EQ(reason->GetString(), std::string("user aborted"));
+
+    {
+        std::unique_lock<std::mutex> lock(cancel_mutex);
+        ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
+            [&cancel_ids] { return !cancel_ids.empty(); }));
+        ASSERT_TRUE(std::holds_alternative<int64_t>(cancel_ids[0]));
+        EXPECT_EQ(std::get<int64_t>(cancel_ids[0]),
+                  std::get<int64_t>(captured));
+        EXPECT_EQ(cancel_reasons[0], std::string("user aborted"));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        ASSERT_NE(pending_promise, nullptr);
+        pending_promise->set_value(JsonValue(JsonValue::object_tag));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    EXPECT_EQ(deliveries.load(), 1);
+}
+
+TEST(SessionHandlerTest, LegacyTimeoutSendsCancelledNotification) {
+    HandlerPair hp(kLegacyProtocolVersion);
+    hp.client->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion(kLegacyProtocolVersion);
+
+    std::mutex pending_mutex;
+    std::condition_variable pending_cv;
+    std::optional<RequestId> pending_id;
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            pending_id = req.id;
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+            pending_cv.notify_all();
+        });
+
+    std::mutex cancel_mutex;
+    std::condition_variable cancel_cv;
+    std::optional<RequestId> cancel_id;
+    std::string cancel_reason;
+    hp.server->SetOnNotificationCallback(
+        [&](const JsonRpcNotification& notif) {
+            if (notif.method != notifications::kCancelled) return;
+            if (!notif.params || !notif.params->IsObject()) return;
+            auto* id = notif.params->Find("requestId");
+            auto* reason = notif.params->Find("reason");
+            std::lock_guard<std::mutex> lock(cancel_mutex);
+            if (id && id->IsInt()) {
+                cancel_id = RequestId{id->GetInt()};
+            } else if (id && id->IsString()) {
+                cancel_id = RequestId{id->GetString()};
+            }
+            cancel_reason =
+                reason && reason->IsString() ? reason->GetString()
+                                             : std::string();
+            cancel_cv.notify_all();
+        });
+
+    auto future = hp.client->SendRequest(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), LegacyMeta(),
+        std::chrono::milliseconds(200));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestTimeout));
+
+    RequestId captured;
+    {
+        std::unique_lock<std::mutex> lock(pending_mutex);
+        ASSERT_TRUE(pending_cv.wait_for(lock, std::chrono::seconds(2),
+            [&pending_id] { return pending_id.has_value(); }));
+        captured = *pending_id;
+    }
+    {
+        std::unique_lock<std::mutex> lock(cancel_mutex);
+        ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
+            [&cancel_id] { return cancel_id.has_value(); }));
+        ASSERT_TRUE(cancel_id.has_value());
+        EXPECT_EQ(*cancel_id, captured);
+        EXPECT_EQ(cancel_reason, std::string("timeout"));
+    }
+}
+
+TEST(SessionHandlerTest, ModernCancellerClosesStreamWithoutNotification) {
+    auto transport = std::make_shared<RecordingCancellerTransport>();
+    auto handler = std::make_shared<McpSessionHandler>(
+        transport, MakeWireCodec(kLatestProtocolVersion));
+    handler->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    handler->Start();
+
+    auto future = handler->SendRequest(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(200));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto result = future.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestTimeout));
+
+    auto cancelled = transport->CancelledRequests();
+    ASSERT_EQ(cancelled.size(), 1u);
+    EXPECT_EQ(cancelled[0].reason, std::string("timeout"));
+    EXPECT_TRUE(transport->NotificationMethods().empty());
+    handler->Close();
+}
+
+TEST(SessionHandlerTest, TimeoutWithoutTransportCancelSendsNoNotification) {
+    auto transport = std::make_shared<RecordingCancellerTransport>();
+    auto handler = std::make_shared<McpSessionHandler>(
+        transport, MakeWireCodec(kLatestProtocolVersion));
+    handler->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    handler->Start();
+
+    std::promise<RequestOutcome> outcome_promise;
+    auto outcome_future = outcome_promise.get_future();
+    handler->SendRequestWithOutcome(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(200),
+        [&outcome_promise](RequestOutcome outcome) {
+            outcome_promise.set_value(std::move(outcome));
+        },
+        false);
+
+    ASSERT_EQ(outcome_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto outcome = outcome_future.get();
+    ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+    EXPECT_EQ(static_cast<int32_t>(std::get<ErrorData>(outcome).code),
+              static_cast<int32_t>(McpErrorCode::RequestTimeout));
+    EXPECT_TRUE(transport->CancelledRequests().empty());
+    EXPECT_TRUE(transport->NotificationMethods().empty());
+    handler->Close();
 }

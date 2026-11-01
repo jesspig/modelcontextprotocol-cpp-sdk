@@ -6,6 +6,7 @@
 #include <mcp/Log.hpp>
 #include <mcp/Methods.hpp>
 #include <mcp/ProtocolVersion.hpp>
+#include <mcp/transport/IRequestCanceller.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
@@ -40,6 +41,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
@@ -339,7 +341,8 @@ std::string QueryResponseHeader(HINTERNET request, const wchar_t* name) {
     return WideToUtf8(buffer);
 }
 
-class StreamableHttpSessionTransport : public TransportBase {
+class StreamableHttpSessionTransport : public TransportBase,
+                                       public IRequestCanceller {
 public:
     StreamableHttpSessionTransport(
         HttpClientTransportOptions options)
@@ -406,6 +409,59 @@ public:
     }
 
 private:
+    void CancelRequest(const RequestId& id, std::string_view) override {
+        const std::string key = http_detail::KeyFromId(id);
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(cancelled_mutex_);
+            PruneCancelledLocked(now);
+            cancelled_requests_[key] = now;
+        }
+        bool active = false;
+        {
+            std::lock_guard<std::mutex> lock(active_post_mutex_);
+            active = active_post_key_ == key;
+        }
+        if (!active) return;
+        if (auto request = sse_request_.load()) {
+            WinHttpSetTimeouts(request, 0, 0, 0, 1);
+        }
+        if (auto request = resume_request_.load()) {
+            WinHttpSetTimeouts(request, 0, 0, 0, 1);
+        }
+    }
+
+    bool IsRequestCancelled(const std::string& key) {
+        std::lock_guard<std::mutex> lock(cancelled_mutex_);
+        return cancelled_requests_.find(key) != cancelled_requests_.end();
+    }
+
+    void ClearRequestCancelled(const std::string& key) {
+        std::lock_guard<std::mutex> lock(cancelled_mutex_);
+        cancelled_requests_.erase(key);
+    }
+
+    void PruneCancelledLocked(std::chrono::steady_clock::time_point now) {
+        constexpr auto kCancelledEntryTtl = std::chrono::seconds(60);
+        for (auto it = cancelled_requests_.begin(); it != cancelled_requests_.end();) {
+            if (now - it->second >= kCancelledEntryTtl) {
+                it = cancelled_requests_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void SetActivePost(std::string key) {
+        std::lock_guard<std::mutex> lock(active_post_mutex_);
+        active_post_key_ = std::move(key);
+    }
+
+    void ClearActivePost(const std::string& key) {
+        std::lock_guard<std::mutex> lock(active_post_mutex_);
+        if (active_post_key_ == key) active_post_key_.clear();
+    }
+
     void LaunchImmediatePost(std::string body) {
         try {
             auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
@@ -717,6 +773,15 @@ private:
         for (;;) {
         bool redirected = false;
         for (int attempt = 0; attempt < 2; ++attempt) {
+            std::optional<RequestId> post_request_id =
+                streamable_http_client_impl::RequestIdFromBody(current_body);
+            const std::string post_key = post_request_id.has_value()
+                ? http_detail::KeyFromId(*post_request_id)
+                : std::string();
+            if (!post_key.empty() && IsRequestCancelled(post_key)) {
+                ClearRequestCancelled(post_key);
+                return;
+            }
             HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -838,6 +903,13 @@ private:
             if (!WinHttpReceiveResponse(hRequest, nullptr)) {
                 MCP_LOG(Error, "WinHttpReceiveResponse failed");
                 NotifyError("WinHttpReceiveResponse failed");
+                WinHttpCloseHandle(hRequest);
+                WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                return;
+            }
+            if (!post_key.empty() && IsRequestCancelled(post_key)) {
+                ClearRequestCancelled(post_key);
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
@@ -1028,12 +1100,13 @@ private:
 
             if (isSse) {
                 sse_request_ = hRequest;
-                std::optional<RequestId> request_id =
-                    streamable_http_client_impl::RequestIdFromBody(current_body);
+                std::optional<RequestId> request_id = post_request_id;
+                SetActivePost(post_key);
                 bool resolved = false;
                 std::string sse_body;
                 char sbuf[4096];
                 for (;;) {
+                    if (!post_key.empty() && IsRequestCancelled(post_key)) break;
                     DWORD savail = 0;
                     if (!WinHttpQueryDataAvailable(hRequest, &savail)) {
                         if (GetLastError() == ERROR_WINHTTP_TIMEOUT && running_)
@@ -1049,6 +1122,8 @@ private:
                     sse_body.append(sbuf, sread);
                     if (sse_body.size() > SseEventLimit()) {
                         sse_request_ = nullptr;
+                        ClearActivePost(post_key);
+                        ClearRequestCancelled(post_key);
                         sse_body.clear();
                         MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
                         NotifyError("HTTP SSE event exceeded max SSE event size");
@@ -1066,10 +1141,11 @@ private:
                     }
                 }
                 sse_request_ = nullptr;
-                if (!resolved && request_id.has_value() && running_) {
+                const bool cancelled = !post_key.empty() && IsRequestCancelled(post_key);
+                if (!cancelled && !resolved && request_id.has_value() && running_) {
                     resolved = ResumePostStreamViaGet(*request_id, is_initialize);
                 }
-                if (!resolved && request_id.has_value() && running_ && channel_) {
+                if (!cancelled && !resolved && request_id.has_value() && running_ && channel_) {
                     JsonRpcErrorResponse stream_error;
                     stream_error.id = request_id;
                     stream_error.error.code = McpErrorCode::ConnectionClosed;
@@ -1077,11 +1153,20 @@ private:
                     channel_->Send(JsonRpcMessage(std::move(stream_error)));
                     NotifyError("HTTP POST SSE stream ended without response");
                 }
+                ClearActivePost(post_key);
+                ClearRequestCancelled(post_key);
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
                 WinHttpCloseHandle(hSession);
                 return;
             } else {
+                if (!post_key.empty() && IsRequestCancelled(post_key)) {
+                    ClearRequestCancelled(post_key);
+                    WinHttpCloseHandle(hRequest);
+                    WinHttpCloseHandle(hConnect);
+                    WinHttpCloseHandle(hSession);
+                    return;
+                }
                 std::string resp_body;
                 char buf[4096];
                 DWORD read = 0;
@@ -1127,6 +1212,7 @@ private:
             resume_id = last_event_id_;
         }
         if (options_.stateless) return false;
+        if (IsRequestCancelled(http_detail::KeyFromId(request_id))) return false;
         streamable_http_client_impl::SleepInterruptibly(
             running_,
             streamable_http_client_impl::ReconnectDelayForAttempt(
@@ -1367,6 +1453,11 @@ private:
     std::atomic<bool> delete_pending_{false};
     std::atomic<HINTERNET> sse_request_{nullptr};
     std::atomic<HINTERNET> resume_request_{nullptr};
+    std::mutex cancelled_mutex_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        cancelled_requests_;
+    std::mutex active_post_mutex_;
+    std::string active_post_key_;
     std::thread listen_thread_;
     std::mutex listen_mutex_;
     std::atomic<streamable_http_client_impl::ListenState> listen_state_{
@@ -1407,7 +1498,8 @@ struct PostBodyTooLarge {};
 
 struct ResumeMatched {};
 
-class StreamableHttpSessionTransport : public TransportBase {
+class StreamableHttpSessionTransport : public TransportBase,
+                                       public IRequestCanceller {
 public:
     explicit StreamableHttpSessionTransport(
         HttpClientTransportOptions options)
@@ -1463,6 +1555,57 @@ public:
     }
 
 private:
+    void CancelRequest(const RequestId& id, std::string_view) override {
+        const std::string key = http_detail::KeyFromId(id);
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(cancelled_mutex_);
+            PruneCancelledLocked(now);
+            cancelled_requests_[key] = now;
+        }
+        detail::net::HttpClient* client = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(active_post_mutex_);
+            if (active_post_key_ == key) client = active_post_client_;
+        }
+        if (client) client->Close();
+    }
+
+    bool IsRequestCancelled(const std::string& key) {
+        std::lock_guard<std::mutex> lock(cancelled_mutex_);
+        return cancelled_requests_.find(key) != cancelled_requests_.end();
+    }
+
+    void ClearRequestCancelled(const std::string& key) {
+        std::lock_guard<std::mutex> lock(cancelled_mutex_);
+        cancelled_requests_.erase(key);
+    }
+
+    void PruneCancelledLocked(std::chrono::steady_clock::time_point now) {
+        constexpr auto kCancelledEntryTtl = std::chrono::seconds(60);
+        for (auto it = cancelled_requests_.begin(); it != cancelled_requests_.end();) {
+            if (now - it->second >= kCancelledEntryTtl) {
+                it = cancelled_requests_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void SetActivePost(const std::string& key, detail::net::HttpClient* client) {
+        std::lock_guard<std::mutex> lock(active_post_mutex_);
+        active_post_key_ = key;
+        active_post_client_ = client;
+    }
+
+    void ClearActivePost(detail::net::HttpClient* client) {
+        std::lock_guard<std::mutex> lock(active_post_mutex_);
+        if (active_post_client_ == client) {
+            active_post_client_ = nullptr;
+            active_post_key_.clear();
+        }
+    }
+
     void LaunchImmediatePost(std::string body) {
         try {
             auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
@@ -1674,7 +1817,16 @@ private:
 
     void DoPost(const std::string& body) {
         std::string auth_value;
+        const std::optional<RequestId> post_request_id =
+            streamable_http_client_impl::RequestIdFromBody(body);
+        const std::string post_key = post_request_id.has_value()
+            ? http_detail::KeyFromId(*post_request_id)
+            : std::string();
         for (int attempt = 0; attempt < 2; ++attempt) {
+            if (!post_key.empty() && IsRequestCancelled(post_key)) {
+                ClearRequestCancelled(post_key);
+                return;
+            }
             std::unordered_map<std::string, std::string> headers;
             headers["Content-Type"] = "application/json";
             headers["Accept"] = "application/json, text/event-stream";
@@ -1744,9 +1896,8 @@ private:
             detail::net::HttpResponseInfo resp;
             std::string full_body;
             std::string sse_pending;
-            std::optional<RequestId> post_request_id =
-                streamable_http_client_impl::RequestIdFromBody(body);
             bool post_resolved = false;
+            SetActivePost(post_key, &client);
             try {
                 resp = client.Request(req, [&](std::string_view chunk) {
                     full_body.append(chunk.data(), chunk.size());
@@ -1766,12 +1917,19 @@ private:
                     }
                 });
             } catch (const PostBodyTooLarge&) {
+                ClearActivePost(&client);
                 MCP_LOG(Error, "HTTP response exceeded max message size");
                 NotifyError("HTTP response exceeded max message size");
                 return;
             } catch (...) {
+                ClearActivePost(&client);
                 MCP_LOG(Error, "HTTP POST failed");
                 NotifyError("HTTP POST failed");
+                return;
+            }
+            ClearActivePost(&client);
+            if (!post_key.empty() && IsRequestCancelled(post_key)) {
+                ClearRequestCancelled(post_key);
                 return;
             }
 
@@ -1910,6 +2068,7 @@ private:
             resume_id = last_event_id_;
         }
         if (options_.stateless) return false;
+        if (IsRequestCancelled(http_detail::KeyFromId(request_id))) return false;
         streamable_http_client_impl::SleepInterruptibly(
             running_,
             streamable_http_client_impl::ReconnectDelayForAttempt(
@@ -1944,6 +2103,7 @@ private:
             if (!running_) return false;
             resume_client_ = resume_client.get();
         }
+        SetActivePost(http_detail::KeyFromId(request_id), resume_client.get());
         bool matched = false;
         std::string pending;
         std::optional<RequestId> wanted = request_id;
@@ -1968,6 +2128,7 @@ private:
             MCP_LOG(Error, "HTTP resume stream exceeded max message size");
         } catch (const std::exception&) {
         }
+        ClearActivePost(resume_client.get());
         {
             std::lock_guard<std::mutex> lk(listen_mutex_);
             resume_client_ = nullptr;
@@ -2059,6 +2220,12 @@ private:
     std::atomic<bool> listen_requested_{false};
     detail::net::HttpClient* listen_client_ = nullptr;
     detail::net::HttpClient* resume_client_ = nullptr;
+    std::mutex cancelled_mutex_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        cancelled_requests_;
+    std::mutex active_post_mutex_;
+    std::string active_post_key_;
+    detail::net::HttpClient* active_post_client_ = nullptr;
 
     http_detail::ToolAnnotationCache tool_annotations_;
 

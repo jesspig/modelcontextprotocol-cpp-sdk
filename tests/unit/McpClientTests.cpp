@@ -4394,7 +4394,7 @@ TEST(McpClientTest, SendNotificationReachesServer) {
     });
 }
 
-TEST(McpClientTest, CancelRequestSendsNotification) {
+TEST(McpClientTest, CancelRequestSettlesLocallyAndNotifiesPeer) {
     MCP_RUN_WITH_TIMEOUT([&] {
         auto pair = InMemoryTransport::CreatePair();
         auto server_handler = MakeControlServer(std::move(pair.server));
@@ -4459,33 +4459,208 @@ TEST(McpClientTest, CancelRequestSendsNotification) {
             EXPECT_EQ(cancel_reasons[0], "user aborted");
         }
 
-        client->CancelRequest(
-            RequestId{std::string("string-request-id")}, "typed");
-        {
-            std::unique_lock<std::mutex> lock(cancel_mutex);
-            ASSERT_TRUE(cancel_cv.wait_for(lock, std::chrono::seconds(2),
-                [&cancel_ids] { return cancel_ids.size() == 2; }));
-            ASSERT_TRUE(std::holds_alternative<std::string>(cancel_ids[1]));
-            EXPECT_EQ(std::get<std::string>(cancel_ids[1]),
-                      "string-request-id");
-            EXPECT_EQ(cancel_reasons[1], "typed");
-        }
-
-        JsonValue error(JsonValue::object_tag);
-        error["code"] =
-            JsonValue(static_cast<int64_t>(McpErrorCode::RequestCancelled));
-        error["message"] = JsonValue("cancelled by test");
-        {
-            std::lock_guard<std::mutex> lock(pending_mutex);
-            ASSERT_NE(pending_promise, nullptr);
-            pending_promise->set_value(std::move(error));
-        }
         ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
                   std::future_status::ready);
         auto result = future.get();
         ASSERT_TRUE(result.IsObject());
-        ASSERT_NE(result.Find("message"), nullptr);
-        EXPECT_EQ(result["message"].GetString(), "cancelled by test");
+        ASSERT_NE(result.Find("code"), nullptr);
+        EXPECT_EQ(result["code"].GetInt(),
+                  static_cast<int64_t>(McpErrorCode::RequestCancelled));
+        EXPECT_EQ(result["message"].GetString(),
+                  std::string("request cancelled"));
+
+        client->CancelRequest(
+            RequestId{std::string("string-request-id")}, "typed");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            std::lock_guard<std::mutex> lock(cancel_mutex);
+            EXPECT_EQ(cancel_ids.size(), 1u);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            ASSERT_NE(pending_promise, nullptr);
+            pending_promise->set_value(JsonValue(JsonValue::object_tag));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, SendRequestHandleExposesIdAndTypedOutcome) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+
+        std::mutex pending_mutex;
+        std::condition_variable pending_cv;
+        std::optional<RequestId> pending_id;
+        server_handler->SetRequestHandler("test/custom",
+            [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                {
+                    std::lock_guard<std::mutex> lock(pending_mutex);
+                    pending_id = req.id;
+                    pending_cv.notify_all();
+                }
+                JsonValue result(JsonValue::object_tag);
+                result["echo"] = JsonValue("handle");
+                p.set_value(std::move(result));
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        RequestOptions options;
+        options.timeout = std::chrono::seconds(2);
+        auto handle = client->SendRequest(
+            "test/custom", JsonValue(JsonValue::object_tag), options);
+
+        ASSERT_TRUE(std::holds_alternative<int64_t>(handle.id));
+        {
+            std::unique_lock<std::mutex> lock(pending_mutex);
+            ASSERT_TRUE(pending_cv.wait_for(lock, std::chrono::seconds(2),
+                [&pending_id] { return pending_id.has_value(); }));
+            EXPECT_EQ(handle.id, *pending_id);
+        }
+
+        auto outcome = handle.future.get();
+        ASSERT_TRUE(std::holds_alternative<JsonValue>(outcome));
+        EXPECT_EQ(std::get<JsonValue>(outcome)["echo"], JsonValue("handle"));
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, RawAndTypedErrorModelsDiffer) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+        server_handler->SetRequestHandler("test/custom",
+            [](const JsonRpcRequest&, std::promise<JsonValue>) {
+                throw McpError(McpErrorCode::InvalidParams, "bad input");
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+
+        auto raw_future = client->SendRequestRaw(
+            "test/custom", JsonValue(JsonValue::object_tag));
+        ASSERT_EQ(raw_future.wait_for(std::chrono::seconds(2)),
+                  std::future_status::ready);
+        auto raw = raw_future.get();
+        ASSERT_TRUE(raw.Contains("code"));
+        EXPECT_EQ(raw["code"].GetInt(),
+                  static_cast<int64_t>(McpErrorCode::InvalidParams));
+        EXPECT_EQ(raw["message"].GetString(), std::string("bad input"));
+
+        auto handle = client->SendRequest(
+            "test/custom", JsonValue(JsonValue::object_tag), RequestOptions{});
+        auto outcome = handle.future.get();
+        ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+        const auto& error = std::get<ErrorData>(outcome);
+        EXPECT_EQ(static_cast<int32_t>(error.code),
+                  static_cast<int32_t>(McpErrorCode::InvalidParams));
+        EXPECT_EQ(error.message, std::string("bad input"));
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, CancelTokenCancelsPendingHandle) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+
+        std::mutex pending_mutex;
+        std::condition_variable pending_cv;
+        std::optional<RequestId> pending_id;
+        std::shared_ptr<std::promise<JsonValue>> held_promise;
+        server_handler->SetRequestHandler("test/hang",
+            [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                std::lock_guard<std::mutex> lock(pending_mutex);
+                pending_id = req.id;
+                held_promise =
+                    std::make_shared<std::promise<JsonValue>>(std::move(p));
+                pending_cv.notify_all();
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        CancelToken token;
+        RequestOptions options;
+        options.timeout = std::chrono::seconds(5);
+        options.cancel_token = token;
+        auto handle = client->SendRequest(
+            "test/hang", JsonValue(JsonValue::object_tag), options);
+
+        {
+            std::unique_lock<std::mutex> lock(pending_mutex);
+            ASSERT_TRUE(pending_cv.wait_for(lock, std::chrono::seconds(2),
+                [&pending_id] { return pending_id.has_value(); }));
+            EXPECT_EQ(handle.id, *pending_id);
+        }
+
+        token.Cancel("token aborted");
+        auto outcome = handle.future.get();
+        ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+        const auto& error = std::get<ErrorData>(outcome);
+        EXPECT_EQ(static_cast<int32_t>(error.code),
+                  static_cast<int32_t>(McpErrorCode::RequestCancelled));
+        ASSERT_TRUE(error.data.has_value());
+        auto* reason = error.data->Find("reason");
+        ASSERT_NE(reason, nullptr);
+        EXPECT_EQ(reason->GetString(), std::string("token aborted"));
+
+        client->Close();
+        server_handler->Close();
+    });
+}
+
+TEST(McpClientTest, RequestOptionsTimeoutCanSkipTransportCancel) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        auto pair = InMemoryTransport::CreatePair();
+        auto server_handler = MakeControlServer(std::move(pair.server));
+
+        std::mutex cancel_mutex;
+        std::vector<RequestId> cancel_ids;
+        std::shared_ptr<std::promise<JsonValue>> held_promise;
+        server_handler->SetRequestHandler("test/hang",
+            [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+                held_promise =
+                    std::make_shared<std::promise<JsonValue>>(std::move(p));
+            });
+        server_handler->SetOnNotificationCallback(
+            [&](const JsonRpcNotification& notif) {
+                if (notif.method != notifications::kCancelled) return;
+                if (!notif.params || !notif.params->IsObject()) return;
+                auto* id = notif.params->Find("requestId");
+                std::lock_guard<std::mutex> lock(cancel_mutex);
+                if (id && id->IsInt()) {
+                    cancel_ids.push_back(RequestId{id->GetInt()});
+                }
+            });
+        server_handler->Start();
+
+        auto client = MakeLegacyControlClient(std::move(pair.client));
+        RequestOptions options;
+        options.timeout = std::chrono::milliseconds(200);
+        options.cancel_on_timeout = false;
+        auto handle = client->SendRequest(
+            "test/hang", JsonValue(JsonValue::object_tag), options);
+
+        auto outcome = handle.future.get();
+        ASSERT_TRUE(std::holds_alternative<ErrorData>(outcome));
+        EXPECT_EQ(static_cast<int32_t>(std::get<ErrorData>(outcome).code),
+                  static_cast<int32_t>(McpErrorCode::RequestTimeout));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        {
+            std::lock_guard<std::mutex> lock(cancel_mutex);
+            EXPECT_TRUE(cancel_ids.empty());
+        }
 
         client->Close();
         server_handler->Close();
