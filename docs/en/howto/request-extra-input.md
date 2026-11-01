@@ -61,7 +61,7 @@ The default configuration suffices: with `auto_fulfill=true`, once the client se
 
 In manual mode (`input_required_config = std::nullopt` or `auto_fulfill=false`) the result stops in `CallToolResult::input_required`, and **you cannot send the second round through `CallTool()`**: that overload only consumes `name`/`arguments`/`meta`/progress, and `RequestOptions::input_responses` and `::request_state` are never written into the request (`src/client/McpClient.cpp:1312-1356`). The working path is to assemble `CallToolRequestParams` yourself (with `input_responses`/`request_state`) and call `SendRequest(methods::kCallTool, SerializeCallToolRequestParams(params))` (`src/core/McpTypesParams.cpp:45-53`).
 
-## Full code
+## Complete code
 
 `docs/snippets/request-extra-input.cpp` is the compilable file, with regions `form-schema`, `input-request`, `read-back`, `state-payload`, `input-required-result`, `full-tool`, `server-signing`, `custom-verifier`, `tool-registration`, `client-auto`, `manual-round`. The in-repo reference implementation on the same topic is `examples/conformance/server/MrtrTools.cpp:123-295` (one tool each for single key, multiple keys, signed state and multi-round).
 
@@ -96,7 +96,7 @@ You should see all four cases `Passed` and a final `100% tests passed, 0 tests f
 | State carrier | None (only in-call blocking) | `requestState`, with signing and lifetime controlled by server options |
 | Retry closure | Not applicable | The retried `tools/call` carries both `inputResponses` and `requestState`, mirroring task resumption (`tasks/update` rejects both fields together, `src/server/McpServer.cpp:1586-1591`) |
 
-## Common failures
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -116,7 +116,7 @@ You should see all four cases `Passed` and a final `100% tests passed, 0 tests f
 - Long-running task flows and progress: [/en/howto/run-long-tasks](/en/howto/run-long-tasks), [/en/howto/report-progress](/en/howto/report-progress)
 - Full error-code table: [/en/reference/errors](/en/reference/errors)
 
-## Source files behind this page
+## Source behind this page
 
 - `include/mcp/McpTypes.hpp`
 - `include/mcp/server/RequestContext.hpp`

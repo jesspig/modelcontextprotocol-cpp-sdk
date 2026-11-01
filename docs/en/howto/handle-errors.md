@@ -2,6 +2,13 @@
 
 A single "failure" has three completely different exits in the SDK: a thrown `McpError`, an `is_error` tool result, and the `ErrorData` inside `RequestOutcome` — then protocol-era error-code remapping is layered on top. This page gives you the decision order and a retry policy. Cancellation and timeout details are in [/en/howto/cancel-a-request](/en/howto/cancel-a-request).
 
+## Prerequisites
+
+- Headers: `mcp/McpError.hpp`, `mcp/ErrorCodes.hpp`, `mcp/McpTypes.hpp`, `mcp/protocol/IncomingRequestMeta.hpp`, `mcp/client/McpClient.hpp`, `mcp/client/RequestHandle.hpp`, `mcp/server/RequestContext.hpp`; include paths must carry the subdirectory.
+- Type testing needs `<variant>`: `RequestOutcome` is `std::variant<JsonValue, ErrorData>` (`include/mcp/protocol/IncomingRequestMeta.hpp:29`).
+- Grouping by semantics needs `<system_error>` (already pulled in by the public headers): `McpErrorCode` is registered as a `std::error_code` enum (`include/mcp/ErrorCodes.hpp:32-39`).
+- One division of labour has to be understood first: tool-call failures surface as `is_error` results, protocol-method failures as error frames — the two are tested differently, and this page covers each.
+
 ## Fix the decision order first
 
 | Which API layer you use | Shape of failure | How to test it |

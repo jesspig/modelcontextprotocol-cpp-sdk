@@ -67,7 +67,7 @@ Server identity, instructions, element-count cap, schema, behaviour hints, conte
 
 <<< @/snippets/register-a-tool.cpp#full
 
-## Verify
+## Verification
 
 Snippets are syntax-checked only (`/Zs` or `-fsyntax-only`); no process needs to run. From the worktree root:
 
@@ -81,11 +81,11 @@ Expected output: configure prints `[mcp-docs] syntax-checking <N> snippet(s) wit
 
 Runtime sanity check: `tools/list` must return the name you registered together with `description`/`title`; if nothing shows up, first confirm the transport handed to `Create()` and the one the client connected to are the same pair.
 
-## Protocol-era differences
+## Era differences
 
 Neither the registration API nor the serialization of `inputSchema`/`outputSchema`/`annotations` is era-gated; the only differences are the routing of `tools/list_changed` (subscribers in the modern era, broadcast in the legacy era) and `RequestContext::Log()`, which requires the request to carry a `_meta` log level — see [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
-## Common errors
+## Common mistakes
 
 | Wire behaviour | Cause | Remedy |
 |---|---|---|
@@ -105,7 +105,7 @@ Neither the registration API nor the serialization of `inputSchema`/`outputSchem
 - Long tasks and progress: [/en/howto/run-long-tasks](/en/howto/run-long-tasks), [/en/howto/report-progress](/en/howto/report-progress)
 - Full signature and field tables: [/en/reference/server](/en/reference/server), [/en/reference/types](/en/reference/types)
 
-## Source files behind this page
+## Source behind this page
 
 - `include/mcp/server/McpServer.hpp`
 - `include/mcp/server/McpServerTool.hpp`

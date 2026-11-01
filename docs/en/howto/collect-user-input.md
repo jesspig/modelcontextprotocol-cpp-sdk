@@ -63,7 +63,7 @@ On the server, `input_required_config` has exactly one point of use: it supplies
 
 <<< @/snippets/collect-user-input.cpp#end-to-end
 
-## Full code
+## Complete code
 
 Server identity and options, registration of both tools, the two client handlers and one end-to-end call are all given region by region in the five steps above; the compilable file is `docs/snippets/collect-user-input.cpp`, with regions `form-schema`, `read-back`, `outcome`, `form-tool-handler`, `url-tool-handler`, `server-options`, `server-registration`, `client-handlers`, `end-to-end`.
 
@@ -107,7 +107,7 @@ The discriminator is the lexicographic comparison `>= "2026-07-28"` (`IsModernPr
 | Handler lifetime | Entered once, returns once, blocks in place | The same handler re-runs from the top each round and must read `input_responses` |
 | Waiting limit | `input_required_config->round_timeout`, else 600s | Governed by the client's `round_timeout`/`max_rounds`; the server does not wait |
 
-## Common failures
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -126,7 +126,7 @@ The discriminator is the lexicographic comparison `>= "2026-07-28"` (`IsModernPr
 - Long-running work and progress: [/en/howto/run-long-tasks](/en/howto/run-long-tasks), [/en/howto/report-progress](/en/howto/report-progress)
 - Full error-code table: [/en/reference/errors](/en/reference/errors)
 
-## Source files behind this page
+## Source behind this page
 
 - `include/mcp/server/McpServer.hpp`
 - `src/server/McpServer.cpp`

@@ -120,11 +120,11 @@ server->SetCompletionHandler(
 - `CompleteResult::completion` is a raw `JsonValue` too, and the SDK validates no shape. The convention is `values` / `total` / `hasMore`, and `total` has to be computed before `values` is moved out.
 - Without `SetCompletionHandler`, `completion/complete` returns `MethodNotFound` with the message `No completion handler registered` (`src/server/McpServer.cpp:3111-3114`); passing an empty callback throws `InvalidParams` at registration time.
 
-## Complete Code
+## Complete code
 
 <<< @/snippets/serve-a-prompt.cpp#full
 
-## Verify
+## Verification
 
 ```bash
 ctest --preset debug -R 'McpServerTest\.(RegisterPrompt|ListPrompts|Prompts|Complete|InitializeDeclares|ExplicitCapability)'
@@ -139,11 +139,11 @@ All 6 cases should report `Passed`, with the final line `100% tests passed, 0 te
 | `McpServerTest.InitializeDeclaresExplicitLoggingAndCompletions` | `completions` has a value once `declare_completions` is set |
 | `McpServerTest.CompleteRequestCarriesContextArguments` | `context_arguments` reaches the callback verbatim |
 
-## Protocol Era Differences
+## Era differences
 
 `prompts/list`, `prompts/get`, `completion/complete` and the `prompts/list_changed` notification exist in both eras. In the legacy era a session that has not handshaked gets `InvalidRequest` (`Server not initialized`) for these three requests; the modern era lets them through directly. See [Protocol Versions](/en/learn/protocol-versions).
 
-## Common Errors
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -154,13 +154,13 @@ All 6 cases should report `Passed`, with the final line `100% tests passed, 0 te
 | The completion capability is missing from the `initialize` result | `declare_completions` defaults to `false` and is not derived | Set it to true explicitly on `ServerOptions` |
 | An unknown prompt name yields `prompt not found: <name>` | The name is not in the registry | Compare against the names actually returned by `prompts/list`, watching hyphens versus underscores |
 
-## Next Steps
+## Next steps
 
 - Embed resources and links in a prompt: [Serve a Resource](/en/howto/serve-a-resource)
 - Ask the user instead when an argument is missing: [Request Extra Input](/en/howto/request-extra-input)
 - Declaring and rejecting arguments: [Validate Tool Input](/en/howto/validate-tool-input)
 
-## Source Files Behind This Page
+## Source behind this page
 
 - `include/mcp/server/McpServer.hpp`
 - `include/mcp/server/ServerOptions.hpp` (`declare_completions`)

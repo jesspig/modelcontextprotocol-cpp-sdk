@@ -109,11 +109,11 @@ Use `ResourceLink` to hand back a reference instead of the contents: missing, no
 
 When a client only wants part of a file, it sends a `FileRef`: with `enable_file_input` on, a tool argument holding `{"uri","offset","length"}` is resolved through the very same two-pass match, the full resource is read, and then sliced. `offset` / `length` default to 0, and once present they must be integral (integer, or a double with an integral value) inside the int64 range, otherwise `DeserializeFailed` (`include/mcp/McpTypes.hpp:162-189`).
 
-## Complete Code
+## Complete code
 
 <<< @/snippets/serve-a-resource.cpp#full
 
-## Verify
+## Verification
 
 ```bash
 ctest --preset debug -R 'McpServerTest\.(RegisterResource|ReadResource|SendResourceUpdated)|UriTemplateTest\.'
@@ -127,11 +127,11 @@ All 31 cases should report `Passed`, with the final line `100% tests passed, 0 t
 | `McpServerTest.ReadResourcePrefersStaticOverTemplate` | `contents[0].text` equals `static` |
 | `McpServerTest.ReadResourceMissCarriesUri` | error code `-32602`, `data.uri` equals `test://missing-resource` |
 
-## Protocol Era Differences
+## Era differences
 
 `resources/list`, `resources/templates/list`, `resources/read` and the `resources/updated` / `resources/list_changed` notifications exist in both eras. What differs is how a subscription is established (`resources/subscribe` is legacy-only) and the delivery scope of `list_changed` (broadcast in the legacy era, subscribers only in the modern era). See [Protocol Versions](/en/learn/protocol-versions).
 
-## Common Errors
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -142,13 +142,13 @@ All 31 cases should report `Passed`, with the final line `100% tests passed, 0 t
 | The peer gets `-32602` instead of `-32002` | The miss path deliberately uses `InvalidParams` | Branch on the `resource not found:` message prefix; `data.uri` is already echoed |
 | A freshly registered resource is missing from the list | Pagination truncates at 100 entries per page | Page with `cursor`, or move the long tail into templates |
 
-## Next Steps
+## Next steps
 
 - Parameterised argument capture: [Serve a Prompt](/en/howto/serve-a-prompt)
 - Accept a file slice as a tool argument: [Register a Tool](/en/howto/register-a-tool)
 - Use a resource as the carrier for user input: [Collect User Input](/en/howto/collect-user-input)
 
-## Source Files Behind This Page
+## Source behind this page
 
 - `include/mcp/server/McpServer.hpp`
 - `include/mcp/server/ServerOptions.hpp`

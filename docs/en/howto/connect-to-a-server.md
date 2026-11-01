@@ -79,11 +79,11 @@ Evidence: `include/mcp/client/ClientOptions.hpp:32-36`, `src/client/McpClient.cp
 `on_transport_close`／`on_transport_error` and every notification handler run on the transport's IO thread. Calling `Close()` from such a callback joins the current thread and self-deadlocks. Dispatch the shutdown onto your own thread instead; for stuck-session triage see [/en/howto/debug-a-stuck-server](/en/howto/debug-a-stuck-server).
 :::
 
-## Complete Code
+## Complete code
 
 The compilable file is `docs/snippets/connect-to-a-server.cpp`, with regions `stdio-transport`, `http-transport`, `in-memory-pair`, `client-options`, `open-client`, `negotiate-failure`, `negotiated-snapshot`, `passive-handlers` and `shutdown` — each referenced once across the six steps above.
 
-## Verify
+## Verification
 
 Snippets are only syntax-checked (`/Zs` on the MSVC frontend). From the worktree root:
 
@@ -110,7 +110,7 @@ Observed: the `McpClientTest` group printed `[==========] 8 tests from 1 test su
 | `McpClientTest.InitialState` | under `Pin`, `GetServerInfo().name` is an empty string |
 | `TransportTest.StdioPidAvailable` | `Pid()` has no value before `Connect()`, a positive one after |
 
-## Protocol Era Differences
+## Era differences
 
 The test is lexicographic `>= "2026-07-28"`, applied per session.
 
@@ -122,7 +122,7 @@ The test is lexicographic `>= "2026-07-28"`, applied per session.
 | Initialised precondition on the server | requests before `initialized` are rejected (`src/server/McpServer.cpp:587-592`) | the check is skipped |
 | Subscription channel | `resources/subscribe` (`src/protocol/WireCodec.cpp:24-32`) | `subscriptions/listen` plus the acknowledged frame (`:34-39`) |
 
-## Common Errors
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -134,7 +134,7 @@ The test is lexicographic `>= "2026-07-28"`, applied per session.
 | `on_transport_close` never fires | a custom transport that does not derive from `TransportBase` | use a bundled transport, or signal from your own close path (`src/client/McpClient.cpp:643-649`) |
 | The process hangs in `Close()` on exit | `Close()` called from an IO-thread callback, joining itself | move the shutdown onto another thread; see the warning in Step 6 |
 
-## Next Steps
+## Next steps
 
 - Getting data after the connection: [/en/howto/call-tools-and-read-resources](/en/howto/call-tools-and-read-resources)
 - Answering server-initiated requests: [/en/howto/handle-server-initiated-requests](/en/howto/handle-server-initiated-requests)
@@ -143,7 +143,7 @@ The test is lexicographic `>= "2026-07-28"`, applied per session.
 - Cancelling a request in flight: [/en/howto/cancel-a-request](/en/howto/cancel-a-request)
 - Full facade signature and field tables: [/en/reference/client](/en/reference/client)
 
-## Source Files Behind This Page
+## Source behind this page
 
 - `include/mcp/client/McpClient.hpp`
 - `include/mcp/client/ClientOptions.hpp`

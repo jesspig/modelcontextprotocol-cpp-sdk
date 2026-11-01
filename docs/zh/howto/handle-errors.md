@@ -2,6 +2,13 @@
 
 同一个「出错」在 SDK 里有三条完全不同的出口：抛 `McpError`、回 `is_error` 的工具结果、以及 `RequestOutcome` 里的 `ErrorData`；再叠上协议时代的错误码重映射。这一页给你判定顺序与重试策略。取消与超时的细节在 [/zh/howto/cancel-a-request](/zh/howto/cancel-a-request)。
 
+## 前置条件
+
+- 头文件：`mcp/McpError.hpp`、`mcp/ErrorCodes.hpp`、`mcp/McpTypes.hpp`、`mcp/protocol/IncomingRequestMeta.hpp`、`mcp/client/McpClient.hpp`、`mcp/client/RequestHandle.hpp`、`mcp/server/RequestContext.hpp`；include 必须写全子目录路径。
+- 判型要 `<variant>`：`RequestOutcome` 是 `std::variant<JsonValue, ErrorData>`（`include/mcp/protocol/IncomingRequestMeta.hpp:29`）。
+- 按语义分组判错要 `<system_error>`（公共头已带）：`McpErrorCode` 注册为 `std::error_code` 枚举（`include/mcp/ErrorCodes.hpp:32-39`）。
+- 需要先理解一层分工：工具调用的失败走 `is_error` 结果，协议方法的失败走错误帧——两者判定方式不同，本页逐条给出。
+
 ## 先定判定顺序
 
 | 你在用哪层 API | 出错形态 | 判定代码 |

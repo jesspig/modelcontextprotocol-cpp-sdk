@@ -82,11 +82,11 @@ Each era has its own entry point. Legacy: `SubscribeResource(uri)` sends `resour
 
 Once an update arrives, the built-in handler invalidates the cache entry for exactly that URI (`src/client/McpClient.cpp:757-766`) and `*_list_changed` clears the whole table (`:751-756`) — provided you did not replace those handlers with your own `SetNotificationHandler()`, because that table holds one slot per method (`src/protocol/McpSessionHandler.cpp:1193-1196`).
 
-## Complete Code
+## Complete code
 
 The compilable file is `docs/snippets/call-tools-and-read-resources.cpp`, with regions `list-tools`, `read-content`, `required-arguments`, `call-tool`, `progress`, `list-resources`, `read-resource`, `cache-modes` and `subscribe-updates`. The `progress` region demonstrates `RequestOptions::on_progress`: a non-empty callback registers a progress token and detaches it when the call returns, and each progress frame re-extends that request's timeout (`src/client/McpClient.cpp:937-973`, `1323-1329`).
 
-## Verify
+## Verification
 
 Snippets are only syntax-checked (`/Zs` on the MSVC frontend). From the worktree root:
 
@@ -112,7 +112,7 @@ Observed: `[==========] 14 tests from 1 test suite ran` followed by `[  PASSED  
 | `McpClientTest.CallToolReceivesProgressNotifications` | `progress == 0.5`, `*total == 1.0`, `*message == "half"`, integer token 1 |
 | `McpClientTest.ReadResourceCachesPerUri` | two reads of one URI send only one request |
 
-## Protocol Era Differences
+## Era differences
 
 This table covers only the differences that matter to calling and reading; the full method and notification matrix is in [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
@@ -123,7 +123,7 @@ This table covers only the differences that matter to calling and reading; the f
 | Resource subscription | `resources/subscribe`／`unsubscribe` | `subscriptions/listen` plus the acknowledged frame; the legacy methods are not in the method set (`src/protocol/WireCodec.cpp:24-39`) |
 | Internal error codes | passed through unchanged | `RequestTimeout`／`ConnectionRefused`／`TlsHandshakeFailed` are rewritten to `InternalError` (`src/protocol/WireCodec.cpp:271-283`) |
 
-## Common Errors
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -135,7 +135,7 @@ This table covers only the differences that matter to calling and reading; the f
 | etag never takes effect | a `ServerOptions::enable_etag_cache = false` in the same process flipped the global switch | keep both sides consistent, or run server and client in separate processes |
 | `SubscribeResource` throws `-32601` on a modern session | `resources/subscribe` is a legacy-only method | use `SubscribeAsync`; see Step 7 |
 
-## Next Steps
+## Next steps
 
 - Progress, timeouts and cancellation: [/en/howto/report-progress](/en/howto/report-progress), [/en/howto/cancel-a-request](/en/howto/cancel-a-request)
 - Task-based invocation: [/en/howto/run-long-tasks](/en/howto/run-long-tasks)
@@ -143,7 +143,7 @@ This table covers only the differences that matter to calling and reading; the f
 - Full error code table: [/en/reference/errors](/en/reference/errors)
 - Connection and session snapshot: [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server)
 
-## Source Files Behind This Page
+## Source behind this page
 
 - `include/mcp/client/McpClient.hpp`
 - `include/mcp/McpTypes.hpp` (`Tool`, `Resource`, `ResourceTemplate`, `CallToolResult`, `ReadResourceResult`, `RequestOptions`, `CacheableRequestOptions`, `SubscriptionsListenRequestParams`)
