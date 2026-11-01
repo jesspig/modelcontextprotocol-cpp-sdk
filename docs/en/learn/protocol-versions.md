@@ -133,3 +133,5 @@ Pin mode skips negotiation, which also skips learning the server's capabilities 
 - [/en/reference/client](/en/reference/client) — connect modes and negotiation entry signatures
 - [/en/learn/transports](/en/learn/transports) — probe fallback classified by transport
 - [/en/learn/extensions](/en/learn/extensions) — how extension switches stack on top of the allow-lists
+- [/en/howto/cancel-a-request](/en/howto/cancel-a-request) — cancellation landing in different places per era
+- [/en/howto/collect-user-input](/en/howto/collect-user-input) — how asking the user changes shape across eras

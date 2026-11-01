@@ -12,18 +12,13 @@
 #include <string>
 #include <utility>
 
-// region full
 using namespace mcp;
 
-void ServeAResource() {
-    auto pair = InMemoryTransport::CreatePair();
+namespace serve_a_resource {
 
-    ServerOptions options;
-    options.server_info = Implementation{"DocsResourceServer", "1.0.0"};
-
-    auto server = McpServer::Create(std::move(pair.server), options);
-
-    server->RegisterResource("release-notes", "docs://release-notes",
+// region register-static
+void RegisterReleaseNotes(McpServer& server) {
+    server.RegisterResource("release-notes", "docs://release-notes",
         ResourceOptions{}
             .Title("Release Notes")
             .Description("Notes for the newest published release")
@@ -38,8 +33,12 @@ void ServeAResource() {
             result.contents.push_back(ResourceContents{std::move(text)});
             return result;
         });
+}
+// endregion
 
-    server->RegisterResourceTemplate("user-profile", "docs://users/{userId}/profile",
+// region register-template
+void RegisterUserProfile(McpServer& server) {
+    server.RegisterResourceTemplate("user-profile", "docs://users/{userId}/profile",
         ResourceOptions{}
             .Title("User Profile")
             .Description("One profile document per user id")
@@ -55,8 +54,29 @@ void ServeAResource() {
             result.contents.push_back(ResourceContents{std::move(text)});
             return result;
         });
-
-    server->SendResourceListChanged();
-    server->SendResourceUpdated("docs://release-notes");
 }
 // endregion
+
+// region notify-subscribers
+void NotifySubscribers(McpServer& server) {
+    server.SendResourceListChanged();
+    server.SendResourceUpdated("docs://release-notes");
+}
+// endregion
+
+// region full
+void ServeAResource() {
+    auto pair = InMemoryTransport::CreatePair();
+
+    ServerOptions options;
+    options.server_info = Implementation{"DocsResourceServer", "1.0.0"};
+
+    auto server = McpServer::Create(std::move(pair.server), options);
+
+    RegisterReleaseNotes(*server);
+    RegisterUserProfile(*server);
+    NotifySubscribers(*server);
+}
+// endregion
+
+} // namespace serve_a_resource

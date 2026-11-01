@@ -200,6 +200,8 @@
 - `detail::ResponseCache`、`detail::Base64Url`、`detail::JoinThreadSafely` 等 `detail` 命名空间符号不是公共契约，文档与代码不得把它们当用户 API 引用。
 - `kElicitTimeout`、`kMaxListPages`、`kMrtrStateOnlyBackoff*`、`kSubscriptionAckTimeout` 等常量位于 `src/` 匿名 namespace，仅在行为说明中作为“实现内部值”引用。
 
+相关任务写法：[/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)、[/zh/howto/call-tools-and-read-resources](/zh/howto/call-tools-and-read-resources)、[/zh/howto/cancel-a-request](/zh/howto/cancel-a-request)。
+
 ## 本页对应源码
 
 - `include/mcp/client/McpClient.hpp`

@@ -21,12 +21,12 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected }` | `Initial` | Three-state machine backed by `std::atomic<int>` | `Transport.hpp:31`、`62` |
-| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | Common base of every session-side transport; owns `channel_`/`session_id_` | `Transport.hpp:33`、`60-61` |
-| `SetConnected` | `void SetConnected()` | — | Only `Initial → Connected` succeeds (CAS); otherwise a Warning is logged | `Transport.hpp:42`、`80-86` |
-| `SetDisconnected` | `void SetDisconnected()` | — | Repeat calls fire `on_close_` only once | `Transport.hpp:43`、`88-93` |
+| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected }` | `Initial` | Three-state machine backed by `std::atomic<int>` | `Transport.hpp:31`, `62` |
+| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | Common base of every session-side transport; owns `channel_`/`session_id_` | `Transport.hpp:33`, `60-61` |
+| `SetConnected` | `void SetConnected()` | — | Only `Initial → Connected` succeeds (CAS); otherwise a Warning is logged | `Transport.hpp:42`, `80-86` |
+| `SetDisconnected` | `void SetDisconnected()` | — | Repeat calls fire `on_close_` only once | `Transport.hpp:43`, `88-93` |
 | `GetState` | `TransportState GetState() const` | `Initial` | Atomic read of the current state | `Transport.hpp:44` |
-| `SetOnClose` / `SetOnError` | `void SetOnClose(std::function<void()>)` / `void SetOnError(std::function<void(std::string_view)>)` | unset | Close and error callbacks, written under a lock; read-loop failures surface via `SetOnError` | `Transport.hpp:46-53`、`58`、`111-114` |
+| `SetOnClose` / `SetOnError` | `void SetOnClose(std::function<void()>)` / `void SetOnError(std::function<void(std::string_view)>)` | unset | Close and error callbacks, written under a lock; read-loop failures surface via `SetOnError` | `Transport.hpp:46-53`, `58`, `111-114` |
 
 ### `IClientTransport`
 
@@ -39,11 +39,11 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| Constructor | `explicit MessageChannel(size_t max_buffer = 64)` | `64` | Transport bases actually pass `detail::kChannelCapacity` | `include/mcp/protocol/MessageChannel.hpp:18`、`Transport.hpp:76` |
+| Constructor | `explicit MessageChannel(size_t max_buffer = 64)` | `64` | Transport bases actually pass `detail::kChannelCapacity` | `include/mcp/protocol/MessageChannel.hpp:18`, `Transport.hpp:76` |
 | `AsyncReceive` | `template <typename Callback> void AsyncReceive(Callback&& cb)` | — | Blocks for a message; after close reports `operation_canceled` | `MessageChannel.hpp:21-38` |
 | `Send` | `bool Send(JsonRpcMessage message)` | — | Blocks while the queue is full | `MessageChannel.hpp:40` |
 | `TrySend` | `bool TrySend(JsonRpcMessage message)` | — | Returns `false` immediately when full or closed | `MessageChannel.hpp:51` |
-| `Close` / `IsOpen` / `Empty` | `void Close()` / `bool IsOpen() const` / `bool Empty() const` | open | Closing wakes both condition variables | `MessageChannel.hpp:61`、`70`、`72` |
+| `Close` / `IsOpen` / `Empty` | `void Close()` / `bool IsOpen() const` / `bool Empty() const` | open | Closing wakes both condition variables | `MessageChannel.hpp:61`, `70`, `72` |
 
 ## stdio
 
@@ -51,7 +51,7 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| Constructors | `StdioServerTransport()` / `explicit StdioServerTransport(std::optional<std::size_t> max_frame_bytes)` | `detail::kMaxStdioFrameBytes` (8 MiB) | The process' own stdin/stdout are the pipe; there is no Options struct | `include/mcp/transport/StdioServerTransport.hpp:18-19`、`33` |
+| Constructors | `StdioServerTransport()` / `explicit StdioServerTransport(std::optional<std::size_t> max_frame_bytes)` | `detail::kMaxStdioFrameBytes` (8 MiB) | The process' own stdin/stdout are the pipe; there is no Options struct | `include/mcp/transport/StdioServerTransport.hpp:18-19`, `33` |
 | `Start` / `Close` / `SendMessageAsync` | `override` | — | `Start()` spawns the reader thread; `SendMessageAsync` writes one JSON line | `StdioServerTransport.hpp:22-24` |
 
 ### `StdioClientTransport`
@@ -61,7 +61,7 @@ This page is the **authoritative field table** for the transport layer and the H
 | Constructor | `explicit StdioClientTransport(const StdioClientTransportOptions& options)` | — | Stores configuration only; no child process yet | `include/mcp/transport/StdioClientTransport.hpp:33` |
 | `Name` | `std::string_view Name() const override` | `"stdio"` | Fallback when `options.name` is empty | `StdioClientTransport.hpp:36`; `src/transport/StdioClientTransport.cpp:186` |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | Spawns the child and returns the session transport; option conflicts are validated here | `StdioClientTransport.hpp:37`; `src/transport/StdioClientTransport.cpp:189-192` |
-| `Pid` | `std::optional<int64_t> Pid() const` | `std::nullopt` | Only holds a value after a successful `Connect()` | `StdioClientTransport.hpp:38`、`42` |
+| `Pid` | `std::optional<int64_t> Pid() const` | `std::nullopt` | Only holds a value after a successful `Connect()` | `StdioClientTransport.hpp:38`, `42` |
 
 ### `StdioClientTransportOptions`
 
@@ -74,10 +74,10 @@ This page is the **authoritative field table** for the transport layer and the H
 | `inherit_environment_variables` | `bool` | `true` | Inherit the parent environment | `StdioClientTransport.hpp:22` |
 | `environment_variables` | `std::map<std::string, std::string>` | `{}` | Additional environment variables | `StdioClientTransport.hpp:23` |
 | `stderr_path` | `std::string` | `""` | File path the child's stderr is written to | `StdioClientTransport.hpp:24` |
-| `on_stderr` | `std::function<void(std::string_view)>` | unset | Captures stderr into a callback on a dedicated reader thread | `StdioClientTransport.hpp:25`; `src/transport/StdioClientTransport.cpp:203`、`57-61` |
+| `on_stderr` | `std::function<void(std::string_view)>` | unset | Captures stderr into a callback on a dedicated reader thread | `StdioClientTransport.hpp:25`; `src/transport/StdioClientTransport.cpp:203`, `57-61` |
 | `shutdown_timeout` | `std::chrono::milliseconds` | `{2000}` | SIGTERM→SIGKILL grace window on close, passed to `ProcessHandle::Terminate` | `StdioClientTransport.hpp:26`; `src/transport/StdioClientTransport.cpp:68-69` |
-| `terminate_process_tree` | `bool` | `false` | Terminates the whole process tree (POSIX process group / Windows job object) | `StdioClientTransport.hpp:27`; `src/transport/detail/posix_platform.cpp:350`、`159-161`; `src/transport/detail/win32_platform.cpp:511`、`534-536` |
-| `max_frame_bytes` | `std::optional<std::size_t>` | `detail::kMaxStdioFrameBytes` (8 MiB) | Per-frame cap; violations report `stdio frame size exceeds maximum allowed size` via `SetOnError` | `StdioClientTransport.hpp:28`; `src/transport/StdioClientTransport.cpp:138-141`、`151-154` |
+| `terminate_process_tree` | `bool` | `false` | Terminates the whole process tree (POSIX process group / Windows job object) | `StdioClientTransport.hpp:27`; `src/transport/detail/posix_platform.cpp:350`, `159-161`; `src/transport/detail/win32_platform.cpp:511`, `534-536` |
+| `max_frame_bytes` | `std::optional<std::size_t>` | `detail::kMaxStdioFrameBytes` (8 MiB) | Per-frame cap; violations report `stdio frame size exceeds maximum allowed size` via `SetOnError` | `StdioClientTransport.hpp:28`; `src/transport/StdioClientTransport.cpp:138-141`, `151-154` |
 
 ::: warning
 `stderr_path` and `on_stderr` are mutually exclusive: setting both makes `Connect()` throw `McpError(McpErrorCode::InvalidParams, "stderr_path and on_stderr are mutually exclusive")` (`src/transport/StdioClientTransport.cpp:189-192`).
@@ -101,7 +101,7 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `port` | `uint16_t` | `kDefaultPort` = `3001` | Listening port | `StreamableHttpServerTransport.hpp:40`、`29` |
+| `port` | `uint16_t` | `kDefaultPort` = `3001` | Listening port | `StreamableHttpServerTransport.hpp:40`, `29` |
 | `endpoint` | `std::string` | `"/mcp"` | MCP request path | `StreamableHttpServerTransport.hpp:41` |
 | `stateless` | `bool` | `true` | Stateless mode (from 2026-07-28) | `StreamableHttpServerTransport.hpp:43` |
 | `enable_legacy_sse` | `bool` | `false` | When off, no GET route is registered: listen stream and event replay are unavailable | `StreamableHttpServerTransport.hpp:45` |
@@ -167,7 +167,7 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `HttpRequestPurpose` | `enum class { MessagePost, ListenStream, ResumeStream, SessionDelete, ToolAnnotationsRefresh }` | `MessagePost` | Distinguishes the five outgoing request kinds | `StreamableHttpClientTransport.hpp:22-28`、`33` |
+| `HttpRequestPurpose` | `enum class { MessagePost, ListenStream, ResumeStream, SessionDelete, ToolAnnotationsRefresh }` | `MessagePost` | Distinguishes the five outgoing request kinds | `StreamableHttpClientTransport.hpp:22-28`, `33` |
 | `HttpRequestHeaderContext` | `struct { std::string_view http_method; std::string_view url; HttpRequestPurpose purpose; std::optional<RequestId> request_id; int attempt_index; }` | `attempt_index = 0` | Context handed to the per-request header callback | `StreamableHttpClientTransport.hpp:30-36` |
 | `HttpResponseChallengeContext` | `struct { int status_code; std::string_view www_authenticate; std::string_view dpop_nonce; }` | `status_code = 0` | Argument of the challenge-observation callback | `StreamableHttpClientTransport.hpp:38-42` |
 
@@ -178,7 +178,7 @@ This page is the **authoritative field table** for the transport layer and the H
 | `AutoDetect` / `StreamableHttp` / `Sse` | `enum class HttpTransportMode` | `AutoDetect` | Value type of `transport_mode`, declared in `include/mcp/transport/HttpTransportMode.hpp:7-11` | `HttpTransportMode.hpp:7-11` |
 
 ::: info
-`transport_mode` and `HttpTransportMode` currently appear only in public headers and tests (`tests/unit/StreamableHttpTransportTests.cpp:68`、`93`); no production code path consumes them, so do not infer connection behaviour from them.
+`transport_mode` and `HttpTransportMode` currently appear only in public headers and tests (`tests/unit/StreamableHttpTransportTests.cpp:68`, `93`); no production code path consumes them, so do not infer connection behaviour from them.
 :::
 
 ## SSE and WebSocket clients
@@ -186,15 +186,15 @@ This page is the **authoritative field table** for the transport layer and the H
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
 | `SseClientTransport` | `class MCP_API SseClientTransport : public IClientTransport` | — | Legacy SSE client transport | `include/mcp/transport/SseClientTransport.hpp:21` |
-| Constructor | `explicit SseClientTransport(std::string_view server_url, std::string_view name = {})` / `explicit SseClientTransport(SseClientTransportOptions options)` | `name` empty → `"sse"` | Both overloads normalise an empty name to `"sse"` | `SseClientTransport.hpp:23-24`; `src/transport/SseClientTransport.cpp:369`、`375` |
+| Constructor | `explicit SseClientTransport(std::string_view server_url, std::string_view name = {})` / `explicit SseClientTransport(SseClientTransportOptions options)` | `name` empty → `"sse"` | Both overloads normalise an empty name to `"sse"` | `SseClientTransport.hpp:23-24`; `src/transport/SseClientTransport.cpp:369`, `375` |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | Establishes the long-lived SSE connection | `SseClientTransport.hpp:28` |
 | `SseClientTransportOptions::server_url` | `std::string` | empty (required) | SSE endpoint | `SseClientTransport.hpp:14` |
 | `SseClientTransportOptions::name` | `std::string` | `"sse"` | The only name field with an in-struct default | `SseClientTransport.hpp:15` |
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` | Per-event cap | `SseClientTransport.hpp:16` |
 | `redirect_policy` | `detail::HttpRedirectPolicy` | `SameOriginOnly` | Redirect policy | `SseClientTransport.hpp:17` |
 | `max_redirects` | `int` | `5` | Maximum hop count | `SseClientTransport.hpp:18` |
-| `WebSocketClientTransport` | `class WebSocketClientTransport : public IClientTransport` | — | WebSocket client transport; **there is no Options struct**, only two constructor arguments | `include/mcp/transport/WebSocketClientTransport.hpp:11`、`13` |
-| Constructor | `WebSocketClientTransport(std::string url, std::string name = "websocket")` | `name = "websocket"` | `Name()` returns the constructed name verbatim, no fallback logic | `WebSocketClientTransport.hpp:13`、`16` |
+| `WebSocketClientTransport` | `class WebSocketClientTransport : public IClientTransport` | — | WebSocket client transport; **there is no Options struct**, only two constructor arguments | `include/mcp/transport/WebSocketClientTransport.hpp:11`, `13` |
+| Constructor | `WebSocketClientTransport(std::string url, std::string name = "websocket")` | `name = "websocket"` | `Name()` returns the constructed name verbatim, no fallback logic | `WebSocketClientTransport.hpp:13`, `16` |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | Accepts `ws`/`wss` only; `wss` uses TLS; 30s connect timeout | `WebSocketClientTransport.hpp:17`; `src/transport/detail/net/WebSocketClient.cpp:67-76` |
 
 ## In-process transport
@@ -226,16 +226,16 @@ One-line difference: `Pair` is only the return type (not a factory, and it canno
 | `HttpResponse` | `struct` with `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`, `"OK"`, rest empty/`false` | The last two fields control directed SSE writes and close-after-write | `HttpServer.hpp:27-35` |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | Route body | `HttpServer.hpp:37` |
 | `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes` | `0`, `""`, `kMaxHttpBodyBytes` | The transport forwards `host`/`allowed_*` here unchanged | `HttpServer.hpp:43-56`; `src/http/StreamableHttpServerTransport.cpp:500-507` |
-| `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`, plus `void Start()` / `void Stop()` | default-constructed options | Not an `ITransport`; independent lifecycle | `HttpServer.hpp:61-62`、`65`、`67` |
+| `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`, plus `void Start()` / `void Stop()` | default-constructed options | Not an `ITransport`; independent lifecycle | `HttpServer.hpp:61-62`, `65`, `67` |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | Exact `(method, path)` match | `HttpServer.hpp:69-70` |
-| `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | no tag | `SseClientId = uint64_t`; the tagged overload enables directed broadcast and filtering | `HttpServer.hpp:72-76`、`80` |
+| `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | no tag | `SseClientId = uint64_t`; the tagged overload enables directed broadcast and filtering | `HttpServer.hpp:72-76`, `80` |
 | `BroadcastSse` | `void BroadcastSse(std::string_view event[, const std::function<bool(const std::string&)>& accept])` | all clients | Predicate form filters by tag | `HttpServer.hpp:77-79` |
 
 ### `EventStore`
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `Append` | `virtual uint64_t Append(std::string_view session_id, std::string event_data)` | — | Returns a monotonically increasing event id (starting at `1`) | `include/mcp/http/EventStore.hpp:20`、`37` |
+| `Append` | `virtual uint64_t Append(std::string_view session_id, std::string event_data)` | — | Returns a monotonically increasing event id (starting at `1`) | `include/mcp/http/EventStore.hpp:20`, `37` |
 | `GetEventsSince` | `virtual std::vector<std::pair<uint64_t, std::string>> GetEventsSince(std::string_view, uint64_t) const` | — | Replays events after `Last-Event-ID` | `EventStore.hpp:22-23` |
 | `Clear` | `virtual void Clear(std::string_view session_id)` | — | Reclaims memory when a session ends | `EventStore.hpp:25` |
 | `kMaxEventsPerSession` | `static constexpr size_t` | `10000` | Per-session ring cap | `EventStore.hpp:27` |
@@ -247,9 +247,9 @@ One-line difference: `Pair` is only the return type (not a factory, and it canno
 | `SessionRecord` | `struct { std::string protocol_version; int64_t created_at_ms{0}; int64_t last_seen_ms{0}; }` | `0` | Minimal payload for cross-process adoption | `include/mcp/http/SessionStore.hpp:17-21` |
 | `Save` / `Load` / `Remove` | pure virtual `void` / `std::optional<SessionRecord>` / `void` | — | The three mandatory operations | `SessionStore.hpp:27-29` |
 | `TrySave` | `virtual bool TrySave(const std::string&, const SessionRecord&)` | delegates to `Save`, returns `true` | Non-throwing path when the store is full | `SessionStore.hpp:31-34` |
-| `Size` / `SweepExpired` | `virtual size_t() const` / `virtual size_t()` | `0` | Optional; the base returns `0` | `SessionStore.hpp:36`、`38` |
-| `InMemorySessionStore` | `class InMemorySessionStore : public SessionStore` | — | In-process implementation; `Save` throws `std::runtime_error("session store is full")` when full | `SessionStore.hpp:41`、`43-46` |
-| Expiry rule | `now - max(last_seen_ms, created_at_ms) > detail::kSessionIdleTimeoutMs` | 30 minutes | `Load` deletes expired entries and returns `nullopt` | `SessionStore.hpp:62-73`、`96-105`; `Limits.hpp:24` |
+| `Size` / `SweepExpired` | `virtual size_t() const` / `virtual size_t()` | `0` | Optional; the base returns `0` | `SessionStore.hpp:36`, `38` |
+| `InMemorySessionStore` | `class InMemorySessionStore : public SessionStore` | — | In-process implementation; `Save` throws `std::runtime_error("session store is full")` when full | `SessionStore.hpp:41`, `43-46` |
+| Expiry rule | `now - max(last_seen_ms, created_at_ms) > detail::kSessionIdleTimeoutMs` | 30 minutes | `Load` deletes expired entries and returns `nullopt` | `SessionStore.hpp:62-73`, `96-105`; `Limits.hpp:24` |
 
 ## Limits and redirect policy
 
@@ -270,8 +270,8 @@ One-line difference: `Pair` is only the return type (not a factory, and it canno
 
 | Symbol | Form | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `MCP_WITH_OPENSSL` | CMake cache entry `AUTO|ON|OFF` | `AUTO` | `AUTO` follows `find_package`; `ON` fails configure when missing; `OFF` force-disables | `cmake/FetchDependencies.cmake:7-16`、`27-43` |
-| `MCP_HAVE_OPENSSL` | compile-time macro | undefined = no TLS | Applied uniformly by the INTERFACE target `mcp-openssl` to `mcp-transport`/`mcp-client`/`mcp-ext` | `CMakeLists.txt:226`、`229-237` |
+| `MCP_WITH_OPENSSL` | CMake cache entry `AUTO|ON|OFF` | `AUTO` | `AUTO` follows `find_package`; `ON` fails configure when missing; `OFF` force-disables | `cmake/FetchDependencies.cmake:7-16`, `27-43` |
+| `MCP_HAVE_OPENSSL` | compile-time macro | undefined = no TLS | Applied uniformly by the INTERFACE target `mcp-openssl` to `mcp-transport`/`mcp-client`/`mcp-ext` | `CMakeLists.txt:226`, `229-237` |
 | `MCP_OPENSSL_EXPECTED_MAJOR` | CMake cache entry | `""` | CI pin of the major version; supported majors are 3.x and 4.x, anything else fails configure | `FetchDependencies.cmake:11-12`; `cmake/OpenSslVersion.cmake:8-12` |
 | `https`/`wss` connections | runtime behaviour | — | Without OpenSSL the SDK throws `McpError(TlsHandshakeFailed, "TLS support not compiled in")` | `src/transport/detail/net/TlsSocket.cpp:279` |
 | PKCE randomness | compile-time fallback | — | `RAND_bytes` with OpenSSL, `BCryptGenRandom` on Windows otherwise, `random_device` elsewhere; SHA-256 is always the built-in implementation | `src/client/auth/OAuthClientProvider.cpp:291-301` |
@@ -282,8 +282,8 @@ One-line difference: `Pair` is only the return type (not a factory, and it canno
 | Scenario | `IsStateless()` | Session and notifications | Evidence |
 |---|---|---|---|
 | stdio / InMemory / SSE / WebSocket | `false` (`TransportBase` is always `false`) | One long-lived session, notifications share the channel | `Transport.hpp:40` |
-| Streamable HTTP server (default `stateless = true`) | `true` | Each request stands alone with a synchronous JSON response (deadline `kStatelessTimeout` = 30s); the zero-listener wait is skipped | `StreamableHttpServerTransport.hpp:43`、`99`; `src/http/StreamableHttpServerTransport.cpp:38`、`1263-1272`、`1319`、`1511` |
-| Streamable HTTP session mode (`stateless = false`) | `false` | Sends `Mcp-Session-Id`, supports the GET listen stream and `EventStore` replay | `StreamableHttpServerTransport.hpp:43`、`51` |
+| Streamable HTTP server (default `stateless = true`) | `true` | Each request stands alone with a synchronous JSON response (deadline `kStatelessTimeout` = 30s); the zero-listener wait is skipped | `StreamableHttpServerTransport.hpp:43`, `99`; `src/http/StreamableHttpServerTransport.cpp:38`, `1263-1272`, `1319`, `1511` |
+| Streamable HTTP session mode (`stateless = false`) | `false` | Sends `Mcp-Session-Id`, supports the GET listen stream and `EventStore` replay | `StreamableHttpServerTransport.hpp:43`, `51` |
 
 ::: tip
 For the conceptual narrative, mode selection, and negotiation details see [Transport concepts](/en/learn/transports); the corrective retry rules for version negotiation are in [Protocol versions](/en/learn/protocol-versions).
@@ -291,9 +291,9 @@ For the conceptual narrative, mode selection, and negotiation details see [Trans
 
 ## Source files behind this page
 
-- Contract: `include/mcp/Transport.hpp`、`include/mcp/protocol/MessageChannel.hpp`、`include/mcp/transport/IRequestCanceller.hpp`
-- stdio: `include/mcp/transport/StdioServerTransport.hpp`、`include/mcp/transport/StdioClientTransport.hpp`
-- Streamable HTTP: `include/mcp/transport/StreamableHttpServerTransport.hpp`、`include/mcp/transport/StreamableHttpClientTransport.hpp`、`include/mcp/transport/HttpTransportMode.hpp`
-- Other clients and in-process: `include/mcp/transport/SseClientTransport.hpp`、`include/mcp/transport/WebSocketClientTransport.hpp`、`include/mcp/transport/InMemoryTransport.hpp`
-- HTTP substrate and limits: `include/mcp/http/HttpServer.hpp`、`include/mcp/http/EventStore.hpp`、`include/mcp/http/SessionStore.hpp`、`include/mcp/transport/detail/Limits.hpp` (the last one is referenced by public Options and is not a stable API)
-- Behaviour evidence: `src/transport/StdioClientTransport.cpp`、`src/http/StreamableHttpServerTransport.cpp`、`src/http/StreamableHttpClientTransport.cpp`、`src/http/HttpServerImpl.cpp`、`src/transport/detail/net/TlsSocket.cpp`、`cmake/FetchDependencies.cmake`、`cmake/OpenSslVersion.cmake`、`CMakeLists.txt`
+- Contract: `include/mcp/Transport.hpp`, `include/mcp/protocol/MessageChannel.hpp`, `include/mcp/transport/IRequestCanceller.hpp`
+- stdio: `include/mcp/transport/StdioServerTransport.hpp`, `include/mcp/transport/StdioClientTransport.hpp`
+- Streamable HTTP: `include/mcp/transport/StreamableHttpServerTransport.hpp`, `include/mcp/transport/StreamableHttpClientTransport.hpp`, `include/mcp/transport/HttpTransportMode.hpp`
+- Other clients and in-process: `include/mcp/transport/SseClientTransport.hpp`, `include/mcp/transport/WebSocketClientTransport.hpp`, `include/mcp/transport/InMemoryTransport.hpp`
+- HTTP substrate and limits: `include/mcp/http/HttpServer.hpp`, `include/mcp/http/EventStore.hpp`, `include/mcp/http/SessionStore.hpp`, `include/mcp/transport/detail/Limits.hpp` (the last one is referenced by public Options and is not a stable API)
+- Behaviour evidence: `src/transport/StdioClientTransport.cpp`, `src/http/StreamableHttpServerTransport.cpp`, `src/http/StreamableHttpClientTransport.cpp`, `src/http/HttpServerImpl.cpp`, `src/transport/detail/net/TlsSocket.cpp`, `cmake/FetchDependencies.cmake`, `cmake/OpenSslVersion.cmake`, `CMakeLists.txt`; task-shaped guides: [/en/howto/run-a-streamable-http-server](/en/howto/run-a-streamable-http-server), [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server), [/en/howto/manage-subprocesses](/en/howto/manage-subprocesses)

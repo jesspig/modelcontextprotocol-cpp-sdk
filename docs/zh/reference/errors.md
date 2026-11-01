@@ -118,10 +118,10 @@ typed 包装在还原时只取 `code` 与 `message`，**`data` 被丢弃**（`sr
 
 | handler 抛出 | 对外结果 | 码是否保留 | 证据 |
 |---|---|---|---|
-| `McpError`（同步/非任务路径） | `CallToolResult.isError = true`，`content[0].text = e.ErrorMessage()` | **丢弃**（含 `data`） | `src/server/McpServer.cpp:2633-2636` |
-| 其它 `std::exception` | 同样 `isError = true`，文本泛化为 `Error executing tool <name>`，原文只进 `Error` 日志 | 丢弃 | `:2637-2643`、`:549-551` |
+| `McpError`（同步/非任务路径） | `CallToolResult.is_error = true`（线上字段名 `isError`），`content[0].text = e.ErrorMessage()` | **丢弃**（含 `data`） | `src/server/McpServer.cpp:2633-2636` |
+| 其它 `std::exception` | 同样 `is_error = true`，文本泛化为 `Error executing tool <name>`，原文只进 `Error` 日志 | 丢弃 | `:2637-2643`、`:549-551` |
 | `...` 未知异常 | 同上 | 丢弃 | `:2644-2650` |
-| 参数不合 `inputSchema` | `isError = true`，文本 `invalid arguments: <原因>` | 无码 | `:2617-2623`、`:553` |
+| 参数不合 `inputSchema` | `is_error = true`，文本 `invalid arguments: <原因>` | 无码 | `:2617-2623`、`:553` |
 | 结果不合 `outputSchema` | JSON-RPC 错误 `InvalidParams` | 保留 | `:2675-2679` |
 
 ::: danger
@@ -149,8 +149,10 @@ typed 包装在还原时只取 `code` 与 `message`，**`data` 被丢弃**（`sr
 | 长任务中途断流 | -32000 | 读到底或对端关闭 | 用 `IsEof()` 区分超时与 EOF，见 [传输层参考](/zh/reference/transports) |
 | 取消后拿不到结果 | -32800 | 对端 `notifications/cancelled` 或本地 `Cancel` | 检查 `data.reason`；`src/protocol/McpSessionHandler.cpp:1100` |
 | 列表翻页跑不完 | -32005 | 对端 `nextCursor` 不收敛（>64 页） | `src/client/McpClient.cpp:169`、`:1392` |
-| 连 TLS 端点必失败 | -32004 | 未编译 OpenSSL（`TLS support not compiled in`） | 确认 `MCP_HAVE_OPENSSL`，见 [安装](/zh/guide/installation) |
+| 连 TLS 端点必失败 | -32004 | 未编译 OpenSSL（`TLS support not compiled in`） | 确认 `MCP_HAVE_OPENSSL`，见 [安装与集成](/zh/start/installation) |
 | MRTR 多轮后突然报错 | -32007 或 -32603 | handler 返回非法 action / 超出 `max_rounds` | `src/client/McpClient.cpp:290`、`:1133` |
+
+相关任务写法：[/zh/howto/handle-errors](/zh/howto/handle-errors)、[/zh/howto/cancel-a-request](/zh/howto/cancel-a-request)。
 
 ## 本页对应源码
 

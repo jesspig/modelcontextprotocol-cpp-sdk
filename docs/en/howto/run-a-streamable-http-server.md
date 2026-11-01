@@ -39,10 +39,7 @@ Three fields matter: `stateless = false`, a `session_store` implementation, and 
 
 ## Step 3: Stateless and the held-open POST stream
 
-```cpp
-http_options.stateless = true;
-http_options.listen_hold_open = true;
-```
+<<< @/snippets/run-a-streamable-http-server.cpp#stateless-hold-open
 
 `listen_hold_open` makes the server inject progress, logs and other notifications into the SSE stream of the POST that owns them (routed by `progressToken`), so the client receives notifications and the final response on one request. In stateless mode without this switch, server-initiated notifications have nowhere to go.
 
@@ -53,7 +50,7 @@ http_options.listen_hold_open = true;
 - `max_request_body_bytes` and `max_sse_event_bytes` bound inbound and outbound size; exceeding them is rejected, never silently truncated.
 - To check that `Mcp-Param-*` headers match the `tools/call` body, wire `resolve_param_annotations` to `McpServer::ResolveToolParamAnnotations` (real wiring: `examples/conformance/server/main.cpp:149-153`).
 
-## Full code
+## Complete code
 
 <<< @/snippets/run-a-streamable-http-server.cpp#stateful
 
@@ -86,7 +83,7 @@ curl.exe -i -X POST http://127.0.0.1:3001/mcp \
 
 Stateful runs the `initialize` handshake, so negotiation can only land in the legacy era. The modern era's single-request model via `server/discover` needs stateless mode plus `listen_hold_open`. Matrix: [Protocol Versions](/en/learn/protocol-versions).
 
-## Common failures
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -103,6 +100,6 @@ Stateful runs the `initialize` handshake, so negotiation can only land in the le
 - All fields and signatures: [Transports Reference](/en/reference/transports)
 - Transport choice rationale: [Transports](/en/learn/transports)
 
-## Source files behind this page
+## Source behind this page
 
 - `include/mcp/transport/StreamableHttpServerTransport.hpp`, `src/http/StreamableHttpServerTransport.cpp`, `include/mcp/http/SessionStore.hpp`, `include/mcp/http/EventStore.hpp`, `include/mcp/storage/FileEventStore.hpp`, `examples/conformance/server/main.cpp`

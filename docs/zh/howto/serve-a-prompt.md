@@ -4,28 +4,13 @@
 
 ## 前置条件
 
-- 已能让一个服务端实例跑起来，见 [服务端总览](/zh/server/overview)。
+- 已能让一个服务端实例跑起来，见 [快速上手](/zh/start/quickstart)。
 - 手上有一个 `std::shared_ptr<ITransport>`；进程内自测用 `InMemoryTransport::CreatePair()` 取成对的 `.client` 与 `.server`。
 - 签名与字段表只在参考层维护，本篇不重复：`RegisterPrompt`、`SetCompletionHandler` 见 [服务端门面参考](/zh/reference/server)，`PromptOptions`、`PromptArgument`、`GetPromptResult`、`CompleteRequestParams`、`CompleteResult` 见 [类型层参考](/zh/reference/types)。
 
 ## 第一步：声明提示与参数
 
-```cpp
-PromptArgument language;
-language.name = "language";
-language.description = "Language the snippet is written in";
-language.required = true;
-
-PromptArgument code;
-code.name = "code";
-code.description = "Snippet to review";
-code.required = true;
-
-PromptOptions prompt_options;
-prompt_options.Title("Code Review")
-    .Description("Review a snippet written in one language")
-    .Arguments({language, code});
-```
+<<< @/snippets/serve-a-prompt.cpp#declare-arguments
 
 把 `prompt_options` 交给 `McpServer::RegisterPrompt("code-review", prompt_options, handler)` 即完成注册。
 
@@ -36,24 +21,11 @@ prompt_options.Title("Code Review")
 
 ## 第二步：在 handler 里构造消息
 
-```cpp
-const std::string language_value = read_argument(args, "language");
-const std::string code_value = read_argument(args, "code");
-
-PromptMessage instruction;
-instruction.role = "user";
-instruction.content = TextContent{"text",
-    "Review this " + language_value + " snippet for correctness and safety:\n"
-        + code_value};
-
-GetPromptResult result;
-result.description = "Review a " + language_value + " snippet";
-result.messages.push_back(std::move(instruction));
-return result;
-```
+<<< @/snippets/serve-a-prompt.cpp#read-argument
+<<< @/snippets/serve-a-prompt.cpp#build-message
 
 - handler 签名是 `(const std::string& name, const std::optional<JsonValue>& args)`：`name` 是命中的注册名，`args` 是客户端 `arguments` 对象的原样反序列化结果。客户端不给 `arguments` 时 `args` 为 `nullopt`。
-- 示例里的 `read_argument` 是完整代码中那个取参 lambda：`args` 为空、键不存在或值不是字符串都回空串——`args->Find(key)` 返回 `nullptr` 而不是抛错，判空必须由取参代码负责。
+- 上面那段 `ReadArgument` 是完整代码里的取参函数：`args` 为空、键不存在或值不是字符串都回空串——`args->Find(key)` 返回 `nullptr` 而不是抛错，判空必须由取参代码负责。
 - `role` 直接写线、不做校验，按协议只能填 `user` 或 `assistant`。
 - `content` 是 `ContentVariant`，五种变体都能用：文本、图片、音频、内嵌资源、资源链接。内嵌资源那条见 [提供资源](/zh/howto/serve-a-resource)。
 - `messages` 永远会被序列化，空 vector 也照样发出 `"messages": []`——SDK 不拦，条数下限要你自己保证。
@@ -63,12 +35,7 @@ return result;
 
 `prompts/get` 这条路径上 SDK **不做任何参数校验**：既不查 `required`，也不查类型，`args` 直接进 handler。这与 `tools/call` 会按 `input_schema` 走 JSON Schema 校验不同。缺参必须自己抛，否则对端只看到一条内容空泛的消息。
 
-```cpp
-if (language_value.empty() || code_value.empty()) {
-    throw McpError(McpErrorCode::InvalidParams,
-        "prompt '" + name + "' requires arguments 'language' and 'code'");
-}
-```
+<<< @/snippets/serve-a-prompt.cpp#reject-missing-argument
 
 抛出的 `McpError` 会原样编码成 JSON-RPC 错误响应，码与消息都保留；抛其它异常收敛为 `InternalError` + 固定文本 `internal error`（见 [错误码与错误模型](/zh/reference/errors)）。
 
@@ -80,40 +47,8 @@ if (language_value.empty() || code_value.empty()) {
 
 补全能力由 `ServerOptions::declare_completions` 决定，默认 `false` 且不随注册派生；但 `completion/complete` 的请求处理器是无条件挂载的，所以没声明能力时方法仍然可达，只是对端不会去问。
 
-```cpp
-options.declare_completions = true;
-
-server->SetCompletionHandler(
-    [](const CompleteRequestParams& params) -> CompleteResult {
-        const auto* ref_type = params.ref.Find("type");
-        const bool is_prompt_ref =
-            ref_type && ref_type->IsString() && ref_type->GetString() == "ref/prompt";
-
-        std::vector<std::string> candidates;
-        if (is_prompt_ref && params.argument_name == "language") {
-            candidates = {"cpp", "go", "python", "rust"};
-        }
-
-        JsonValue values(JsonValue::array_tag);
-        for (const auto& candidate : candidates) {
-            if (candidate.rfind(params.argument_value, 0) != 0) {
-                continue;
-            }
-            values.PushBack(JsonValue(candidate));
-        }
-
-        const int64_t total = static_cast<int64_t>(values.Size());
-
-        JsonValue completion(JsonValue::object_tag);
-        completion["values"] = std::move(values);
-        completion["total"] = JsonValue(total);
-        completion["hasMore"] = JsonValue(false);
-
-        CompleteResult result;
-        result.completion = std::move(completion);
-        return result;
-    });
-```
+<<< @/snippets/serve-a-prompt.cpp#declare-completions
+<<< @/snippets/serve-a-prompt.cpp#completion-handler
 
 - 一个实例只有一个全局补全回调，靠 `params.ref` 分流：`ref` 是未经解析的原始 `JsonValue`，形如 `{"type":"ref/prompt","name":"code-review"}`，`type`／`name` 都得自己读。
 - `params.argument_name` 是正在输入的参数的键名，`params.argument_value` 是已输入的片段；`params.context_arguments` 带上同一请求里其它已确定的参数值（值必须是字符串，否则整条请求按 `InvalidParams` 拒收，`src/core/McpTypesParams.cpp:113-126`）。

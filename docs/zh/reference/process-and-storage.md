@@ -251,6 +251,8 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 
 头文件位置提醒：`TokenCache.hpp` 实际在 `include/mcp/client/auth/TokenCache.hpp`（不存在 `include/mcp/auth/` 目录）。
 
+相关任务写法：[/zh/howto/manage-subprocesses](/zh/howto/manage-subprocesses)、[/zh/howto/run-long-tasks](/zh/howto/run-long-tasks)。
+
 ## 本页对应源码
 
 - 进程：`include/mcp/process/Process.hpp`、`src/process/ProcessWin32.cpp`、`src/process/ProcessPosix.cpp`、`src/process/detail/WindowsProcessSupport.cpp`、`src/process/detail/PosixProcessSupport.cpp`

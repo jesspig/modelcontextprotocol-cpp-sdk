@@ -79,3 +79,5 @@
 - [/zh/learn/architecture](/zh/learn/architecture) — 能力由注册推导
 - [/zh/learn/transports](/zh/learn/transports) — 无状态对多轮往返的限制
 - [/zh/reference/server](/zh/reference/server) — 注册与开关接线的服务端签名
+- [/zh/howto/run-long-tasks](/zh/howto/run-long-tasks) — 任务扩展的开关与存储接线
+- [/zh/howto/protect-an-http-server](/zh/howto/protect-an-http-server) — 认证与卡片开关的实际效果

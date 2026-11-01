@@ -133,3 +133,5 @@ Pin 模式跳过协商，也就跳过了服务端能力与信息的获取——�
 - [/zh/reference/client](/zh/reference/client) — 连接模式与协商入口签名
 - [/zh/learn/transports](/zh/learn/transports) — 探测回退按传输分类
 - [/zh/learn/extensions](/zh/learn/extensions) — 扩展开关与方法白名单的叠加效果
+- [/zh/howto/cancel-a-request](/zh/howto/cancel-a-request) — 两种时代落点不同的取消
+- [/zh/howto/collect-user-input](/zh/howto/collect-user-input) — 反问在两个时代的形态差异

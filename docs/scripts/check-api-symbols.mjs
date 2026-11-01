@@ -158,8 +158,52 @@ for (const file of docFiles) {
   })
 }
 
+// 点号形式（Options.field）也计入：左侧必须是公共头里真的声明过的类型名，
+// 并排除路径与文件名（`McpClient.cpp` 这类）造成的假阳性
+const typeNames = new Set(
+  headerUnits.flatMap((unit) => [
+    ...unit.text.matchAll(/\b(?:struct|class|enum class)\s+(?:MCP_API\s+)?([A-Z][A-Za-z0-9_]*)/g),
+  ].map((m) => m[1]))
+)
+const fileExtensions = new Set([
+  'cpp', 'cxx', 'cc', 'h', 'hpp', 'hh', 'md', 'txt', 'rst', 'yaml', 'yml', 'json',
+  'js', 'mjs', 'ts', 'tsx', 'mts', 'sh', 'bash', 'ps1', 'cmake', 'in', 'txt', 'log',
+  'png', 'svg', 'jpg', 'html', 'css', 'lock', 'gitignore', 'editorconfig',
+])
+const dottedPattern = /(^|[^/\w.])([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?![\w./])/g
+
+for (const file of docFiles) {
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    for (const match of line.matchAll(dottedPattern)) {
+      const [, , scope, member] = match
+      if (!typeNames.has(scope) || fileExtensions.has(member.toLowerCase())) {
+        continue
+      }
+      const ref = `${scope}.${member}`
+      if (references.has(`${scope}::${member}`)) {
+        continue
+      }
+      if (!references.has(ref)) {
+        references.set(ref, [])
+      }
+      references.get(ref).push({ file: relative(file), line: index + 1 })
+    }
+  })
+}
+
+function splitRef(ref) {
+  const separator = ref.indexOf('::') >= 0 ? '::' : '.'
+  const index = ref.indexOf(separator)
+  return [ref.slice(0, index), ref.slice(index + separator.length)]
+}
+
+function canonicalRef(ref) {
+  return ref.replace(/\./, '::')
+}
+
 function findIn(units, ref) {
-  const [scope, member] = ref.split('::')
+  const [scope, member] = splitRef(ref)
   const scopePattern = tokenPattern(scope)
   const memberPattern = tokenPattern(member)
   const scopeFiles = units.filter((unit) => scopePattern.test(unit.text))
@@ -173,7 +217,7 @@ function findIn(units, ref) {
 }
 
 function resolve(ref) {
-  const scopeName = ref.split('::')[0]
+  const scopeName = splitRef(ref)[0]
   if (snippetLocalTypes.has(scopeName)) {
     return { status: 'LOCAL', detail: `${scopeName} 是文档片段内自定义的演示类型，非 SDK 符号` }
   }
@@ -181,7 +225,7 @@ function resolve(ref) {
   if (publicHit.evidence) {
     return { status: 'HIT', evidence: publicHit.evidence }
   }
-  const [scope, member] = ref.split('::')
+  const [scope, member] = splitRef(ref)
   const internalHit = findIn(internalCorpus, ref)
   if (internalHit.evidence) {
     return {
@@ -206,10 +250,11 @@ function resolve(ref) {
 const exemptReasons = new Map(
   exemptRefs.map((entry) => [entry.ref, entry.reason])
 )
+const isExempt = (ref) => exemptReasons.has(ref) || exemptReasons.has(canonicalRef(ref))
 const results = [...references.keys()]
   .sort()
-  .map((ref) => ({ ref, occurrences: references.get(ref), ...(exemptReasons.has(ref)
-    ? { status: 'EXEMPT', detail: exemptReasons.get(ref) }
+  .map((ref) => ({ ref, occurrences: references.get(ref), ...(isExempt(ref)
+    ? { status: 'EXEMPT', detail: exemptReasons.get(ref) ?? exemptReasons.get(canonicalRef(ref)) }
     : resolve(ref)) }))
 
 const hits = results.filter((item) => item.status === 'HIT')
@@ -219,7 +264,7 @@ const locals = results.filter((item) => item.status === 'LOCAL')
 
 console.log(
   `check-api-symbols: 扫描 ${docFiles.length} 个文档/片段文件，` +
-    `提取 ${results.length} 个唯一 Scope::member 引用，` +
+    `提取 ${results.length} 个唯一 Scope::member / Options.field 引用，` +
     `公共头文件 ${corpus.length} 个（内部头 ${internalCorpus.length} 个不计入命中）`
 )
 
@@ -246,11 +291,102 @@ for (const hit of hits) {
   console.log(`  HIT ${hit.ref} -> ${hit.evidence}`)
 }
 
+// 片段 region 双向完整性：页面引用的 region 必须存在，存在的 region 必须被引用，
+// 且标记必须顶格——VitePress 只识别行首的 `// region`，缩进会让标记本身被渲染进代码块
+const snippetDir = path.join(docsDir, 'snippets')
+const usedRegions = new Map()
+for (const file of docFiles) {
+  if (!file.endsWith('.md')) {
+    continue
+  }
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    const match = /<<< +@\/snippets\/([A-Za-z0-9._-]+\.cpp)#([A-Za-z0-9_-]+)/.exec(line)
+    if (!match) {
+      return
+    }
+    const key = `${match[1]}#${match[2]}`
+    if (!usedRegions.has(key)) {
+      usedRegions.set(key, [])
+    }
+    usedRegions.get(key).push({ file: relative(file), line: index + 1 })
+  })
+}
+
+const declaredRegions = new Set()
+const markerProblems = []
+for (const file of walk(snippetDir, (candidate) => candidate.endsWith('.cpp'))) {
+  const base = path.basename(file)
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    const marker = /^(\s*)\/\/\s+(region|endregion)(\s+\S+)?\s*$/.exec(line)
+    if (!marker) {
+      return
+    }
+    if (marker[1].length > 0) {
+      markerProblems.push(`${relative(file)}:${index + 1} region 标记必须顶格书写：${line.trim()}`)
+    }
+    if (marker[2] === 'region' && marker[3]) {
+      declaredRegions.add(`${base}#${marker[3].trim()}`)
+    }
+  })
+}
+
+const regionProblems = []
+const howtoFenceProblems = []
+for (const file of docFiles) {
+  if (!file.endsWith('.md') || !/[\\/]howto[\\/]/.test(file)) {
+    continue
+  }
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    if (/^ {0,3}```(cpp|c\+\+)\b/.test(line)) {
+      howtoFenceProblems.push(
+        `${relative(file)}:${index + 1} 任务手册正文禁止手写 C++ 围栏，代码必须来自 docs/snippets 的 region`
+      )
+    }
+  })
+}
+howtoFenceProblems.sort()
+for (const [key, occurrences] of usedRegions) {
+  if (!declaredRegions.has(key)) {
+    const where = occurrences.map((item) => `${item.file}:${item.line}`).join(', ')
+    regionProblems.push(`${key} 被页面引用，但片段里没有该 region（引用处 ${where}）`)
+  }
+}
+for (const key of declaredRegions) {
+  if (!usedRegions.has(key)) {
+    regionProblems.push(`${key} 已定义但没有任何页面引用（死代码）`)
+  }
+}
+regionProblems.sort()
+markerProblems.sort()
+
+console.log(
+  `\n片段 region：定义 ${declaredRegions.size} 个，被引用 ${usedRegions.size} 处，` +
+    `完整性问题 ${regionProblems.length} 处，标记书写问题 ${markerProblems.length} 处，` +
+    `任务手册手写代码块 ${howtoFenceProblems.length} 处`
+)
+for (const problem of regionProblems) {
+  console.log(`  REGION ${problem}`)
+}
+for (const problem of markerProblems) {
+  console.log(`  MARKER ${problem}`)
+}
+for (const problem of howtoFenceProblems) {
+  console.log(`  FENCE ${problem}`)
+}
+
 console.log(
   `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}`
 )
 
-if (misses.length > 0) {
+if (
+  misses.length > 0 ||
+  regionProblems.length > 0 ||
+  markerProblems.length > 0 ||
+  howtoFenceProblems.length > 0
+) {
   process.exit(1)
 }
 process.exit(0)

@@ -39,3 +39,5 @@ The reference layer answers exactly three things: **what the signature is, what 
 - [Concepts: protocol versions](/en/learn/protocol-versions) — the single authoritative dual-era matrix
 - [Concepts: architecture](/en/learn/architecture) — library layering, threading model, capability derivation boundaries
 - [Concepts: extensions](/en/learn/extensions) — explicit declaration requirements for the `enable_*` switches
+- [How-to: register a tool](/en/howto/register-a-tool) — from field tables to running code
+- [How-to: handle server-initiated requests](/en/howto/handle-server-initiated-requests) — passive callbacks and follow-up rounds

@@ -39,10 +39,7 @@
 
 ## 步骤三：无状态与保持打开的 POST 流
 
-```cpp
-http_options.stateless = true;
-http_options.listen_hold_open = true;
-```
+<<< @/snippets/run-a-streamable-http-server.cpp#stateless-hold-open
 
 `listen_hold_open` 让服务端把 progress、日志等通知按 `progressToken` 注回所属 POST 的 SSE 流，客户端因此能在同一个请求里既拿到通知又拿到最终响应；无状态模式下不开这个开关，服务端主动通知就没有落点。
 

@@ -81,7 +81,7 @@ Schema constraints plus handler self-checks plus the element-count cap, combined
 
 <<< @/snippets/validate-tool-input.cpp#full
 
-## Verify
+## Verification
 
 ```bash
 cmake -S . -B build/p2a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
@@ -91,11 +91,11 @@ cmake --build build/p2a --target mcp-doc-snippet-validate-tool-input
 
 Expected output: configure prints `[mcp-docs] syntax-checking <N> snippet(s) with '/Zs'` (clang-cl) or `'-fsyntax-only'` (Clang/GCC), the build stops at `[N/N] Building CXX object ...` with exit code 0 and no `error:` line (clang-cl adds one `argument unused during compilation: '-c'` warning that has nothing to do with snippet content). Behaviourally, the validator itself has direct tests: `ctest --preset debug -R 'McpTypesTest.JsonSchemaValidator'`; registration-time failures use `ctest --preset debug -R 'McpServerTest.RegisterToolRejectsInvalidName'` and `ctest --preset debug -R 'McpServerTest.DuplicateRegistrationThrowsInvalidParams'`. Note that the `invalid arguments:` and element-count branches currently have an implementation path but no test asserting their text, so verify them yourself when touching `HandleCallTool`.
 
-## Protocol-era differences
+## Era differences
 
 Where validation happens and what `is_error` means are identical in both protocol eras; the only divergence is how task-backed and MRTR results carry failure (exceptions keep their error code on the task path) — see [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
-## Common errors
+## Common mistakes
 
 | Symptom | Cause | Remedy |
 |---|---|---|
@@ -115,7 +115,7 @@ Where validation happens and what `is_error` means are identical in both protoco
 - Long tasks and failure reporting: [/en/howto/run-long-tasks](/en/howto/run-long-tasks)
 - Error code table: [/en/reference/errors](/en/reference/errors); type fields: [/en/reference/types](/en/reference/types)
 
-## Source files behind this page
+## Source behind this page
 
 - `include/mcp/server/McpServer.hpp`
 - `include/mcp/server/RequestContext.hpp`

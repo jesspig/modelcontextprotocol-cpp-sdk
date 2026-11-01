@@ -270,6 +270,8 @@
 | 工厂返回所有权 | `McpClient`/`McpServer::Create` 返回 `std::unique_ptr`；`IClientTransport::Connect()` 返回 `std::shared_ptr<ITransport>` | — | 见 [客户端参考](/zh/reference/client)、[传输层参考](/zh/reference/transports) | `Transport.hpp:72` |
 | 设计动机 | 一句话：让「未设置」可被类型系统区分、让 JSON 拥有明确生命周期，从而免除哨兵值与悬垂引用 | — | 惯例本身不进代码注释，意图靠类型表达 | `JsonValue.hpp:25`、`CancelToken.hpp:26-28` |
 
+相关任务写法：[/zh/howto/validate-tool-input](/zh/howto/validate-tool-input)、[/zh/howto/report-progress](/zh/howto/report-progress)。
+
 ## 本页对应源码
 
 - `include/mcp/JsonValue.hpp`、`include/mcp/JsonRpc.hpp`、`include/mcp/Content.hpp`、`include/mcp/Meta.hpp`

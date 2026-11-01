@@ -1,6 +1,6 @@
 # Request Extra Input Across Rounds (MRTR)
 
-When a tool discovers mid-flight that it still needs input, do not block the server and do not send `elicitation/create` directly: return an `input_required` result and let the client answer, then re-run the same handler with `inputResponses`. This page covers building the result, minting and verifying `requestState`, reading answers back, and how this differs from [/en/howto/collect-user-input](/en/howto/collect-user-input); field tables live in [/en/reference/types](/en/reference/types) and the mechanism in [/en/advanced/mrtr](/en/advanced/mrtr).
+When a tool discovers mid-flight that it still needs input, do not block the server and do not send `elicitation/create` directly: return an `input_required` result and let the client answer, then re-run the same handler with `inputResponses`. This page covers building the result, minting and verifying `requestState`, reading answers back, and how this differs from [/en/howto/collect-user-input](/en/howto/collect-user-input); field tables live in [/en/reference/types](/en/reference/types) and era differences in [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
 ## Prerequisites
 
@@ -18,6 +18,10 @@ When a tool discovers mid-flight that it still needs input, do not block the ser
 | You must remember what was already answered, or which phase you are in | MRTR + `requestState` | The direct route has no carrier for state |
 | Stateless deployment | MRTR only | `McpServer::IsMrtrSupported()` returns `false` when stateless (`src/server/McpServer.cpp:3351-3355`), and the modern direct call already becomes MRTR anyway |
 | Waiting on the user may take long | MRTR | No server thread parks; the deadline is the client's `round_timeout`/`max_rounds` |
+
+The form's `requestedSchema` is plain JSON Schema; this snippet builds it with a single-field helper (the helper and the request assembly below are separate regions):
+
+<<< @/snippets/request-extra-input.cpp#form-schema
 
 ## Step 2: Build the `input_required` result
 
@@ -61,7 +65,7 @@ The default configuration suffices: with `auto_fulfill=true`, once the client se
 
 In manual mode (`input_required_config = std::nullopt` or `auto_fulfill=false`) the result stops in `CallToolResult::input_required`, and **you cannot send the second round through `CallTool()`**: that overload only consumes `name`/`arguments`/`meta`/progress, and `RequestOptions::input_responses` and `::request_state` are never written into the request (`src/client/McpClient.cpp:1312-1356`). The working path is to assemble `CallToolRequestParams` yourself (with `input_responses`/`request_state`) and call `SendRequest(methods::kCallTool, SerializeCallToolRequestParams(params))` (`src/core/McpTypesParams.cpp:45-53`).
 
-## Full code
+## Complete code
 
 `docs/snippets/request-extra-input.cpp` is the compilable file, with regions `form-schema`, `input-request`, `read-back`, `state-payload`, `input-required-result`, `full-tool`, `server-signing`, `custom-verifier`, `tool-registration`, `client-auto`, `manual-round`. The in-repo reference implementation on the same topic is `examples/conformance/server/MrtrTools.cpp:123-295` (one tool each for single key, multiple keys, signed state and multi-round).
 
@@ -96,7 +100,7 @@ You should see all four cases `Passed` and a final `100% tests passed, 0 tests f
 | State carrier | None (only in-call blocking) | `requestState`, with signing and lifetime controlled by server options |
 | Retry closure | Not applicable | The retried `tools/call` carries both `inputResponses` and `requestState`, mirroring task resumption (`tasks/update` rejects both fields together, `src/server/McpServer.cpp:1586-1591`) |
 
-## Common failures
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -116,7 +120,7 @@ You should see all four cases `Passed` and a final `100% tests passed, 0 tests f
 - Long-running task flows and progress: [/en/howto/run-long-tasks](/en/howto/run-long-tasks), [/en/howto/report-progress](/en/howto/report-progress)
 - Full error-code table: [/en/reference/errors](/en/reference/errors)
 
-## Source files behind this page
+## Source behind this page
 
 - `include/mcp/McpTypes.hpp`
 - `include/mcp/server/RequestContext.hpp`

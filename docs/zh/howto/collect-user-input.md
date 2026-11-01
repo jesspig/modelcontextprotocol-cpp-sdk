@@ -1,6 +1,6 @@
 # 向用户收集输入
 
-服务端在一次工具调用里向用户要结构化输入（`form`）或把人支到站外页面完成确认（`url`），只需 `McpServer::Elicit` 与 `McpServer::ElicitUrl` 两个入口；真正的难点是会话定位与两个协议时代的不同行为。签名与字段表在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，机制原理见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions) 与 [/zh/advanced/mrtr](/zh/advanced/mrtr)。
+服务端在一次工具调用里向用户要结构化输入（`form`）或把人支到站外页面完成确认（`url`），只需 `McpServer::Elicit` 与 `McpServer::ElicitUrl` 两个入口；真正的难点是会话定位与两个协议时代的不同行为。签名与字段表在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，机制原理见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions) 与 [/zh/howto/request-extra-input](/zh/howto/request-extra-input)。
 
 ## 前置条件
 
@@ -62,6 +62,12 @@ handler 的骨架是「先回读、再发问」：现代时代 `Elicit` 不直�
 `input_required_config` 在服务端只有一个实际作用点：给 legacy 时代的 `Elicit` 提供等待时限；`max_rounds` 是客户端循环上界（`src/client/McpClient.cpp:1076-1134`），服务端不消费它（`src/server/McpServer.cpp:1173-1177`）。
 
 <<< @/snippets/collect-user-input.cpp#end-to-end
+
+## 把三态写成结果
+
+三态不必各写一份返回值：`ReportDecision` 把 `action` 与可选 `content` 统一压成一条正常文本结果——只有接受带内容，拒绝与取消只有一句话，三者都不是协议错误。`is_error` 留给超时与异常这类真失败：
+
+<<< @/snippets/collect-user-input.cpp#outcome
 
 ## 完整代码
 

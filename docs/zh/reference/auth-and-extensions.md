@@ -280,6 +280,8 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `kProtocolVersions` | `{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}` | 支持的五个版本，字典序即时间序 | `ProtocolVersion.hpp:13-19` |
 | `IsModernProtocolVersion` | `constexpr bool IsModernProtocolVersion(std::string_view version) noexcept` | 字典序 `>= kLatestProtocolVersion`（判据不是 `kModernProtocolVersion`，当前两者同值） | `ProtocolVersion.hpp:21-23` |
 
+相关任务写法：[/zh/howto/add-oauth-to-a-client](/zh/howto/add-oauth-to-a-client)、[/zh/howto/protect-an-http-server](/zh/howto/protect-an-http-server)。
+
 ## 本页对应源码
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`、`include/mcp/client/auth/TokenCache.hpp`、`include/mcp/storage/FileTokenCache.hpp`、`include/mcp/client/SkillVerify.hpp`

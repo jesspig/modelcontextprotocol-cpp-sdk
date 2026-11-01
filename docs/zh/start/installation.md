@@ -121,6 +121,12 @@ ctest --preset debug --output-on-failure
 - 选择传输方式：[传输层概念](/zh/learn/transports)
 - 查阅签名与字段：[服务端参考](/zh/reference/server)
 
+## 下一步
+
+- 装好之后跑通一次端到端：[/zh/start/quickstart](/zh/start/quickstart)
+- 服务端第一件要做的事：[/zh/howto/register-a-tool](/zh/howto/register-a-tool)
+- 客户端侧的传输与鉴权选择：[/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)、[/zh/howto/add-oauth-to-a-client](/zh/howto/add-oauth-to-a-client)
+
 ## 本页对应源码
 
 - `CMakeLists.txt`、`CMakePresets.json`、`cmake/CompilerOptions.cmake`、`cmake/FetchDependencies.cmake`、`cmake/BuildOptimization.cmake`、`cmake/Lto.cmake`、`cmake/Platform.cmake`、`cmake/mcpConfig.cmake.in`、`include/mcp/McpVersion.hpp`

@@ -121,6 +121,12 @@ Expect: configure prints `[mcp] SDK version: 0.3.10` plus the OpenSSL decision; 
 - Choosing a transport: [Transports](/en/learn/transports)
 - Signatures and fields: [Server reference](/en/reference/server)
 
+## Next steps
+
+- Run one end-to-end round trip after installing: [/en/start/quickstart](/en/start/quickstart)
+- The first thing a server does: [/en/howto/register-a-tool](/en/howto/register-a-tool)
+- Client-side transport and auth choices: [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server), [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-client)
+
 ## Source files behind this page
 
 - `CMakeLists.txt`, `CMakePresets.json`, `cmake/CompilerOptions.cmake`, `cmake/FetchDependencies.cmake`, `cmake/BuildOptimization.cmake`, `cmake/Lto.cmake`, `cmake/Platform.cmake`, `cmake/mcpConfig.cmake.in`, `include/mcp/McpVersion.hpp`

@@ -4,7 +4,7 @@ A resource is read-only data a client fetches by URI — closest in shape to a R
 
 ## Prerequisites
 
-- You can already bring up a server instance: see [Server Overview](/en/server/overview).
+- You can already bring up a server instance: see [Quick Start](/en/start/quickstart).
 - You have a `std::shared_ptr<ITransport>`. For an in-process round trip, `InMemoryTransport::CreatePair()` hands back a matched `.client` and `.server`.
 - Signatures and field tables live only in the reference layer and are not repeated here: registration entry points and registration-time validation in [Server Facade Reference](/en/reference/server), `ResourceOptions`, `ReadResourceResult` and `ResourceLink` in [Type Reference](/en/reference/types).
 
@@ -23,23 +23,7 @@ Any successful registration declares the `resources` capability and sets both `s
 
 ## Step 2: Register a Static Resource
 
-```cpp
-server->RegisterResource("release-notes", "docs://release-notes",
-    ResourceOptions{}
-        .Title("Release Notes")
-        .Description("Notes for the newest published release")
-        .MimeType("text/plain"),
-    [](const std::string& uri) -> ReadResourceResult {
-        TextResourceContents text;
-        text.uri = uri;
-        text.mime_type = "text/plain";
-        text.text = "1.0.0 - first published release.";
-
-        ReadResourceResult result;
-        result.contents.push_back(ResourceContents{std::move(text)});
-        return result;
-    });
-```
+<<< @/snippets/serve-a-resource.cpp#register-static
 
 - Every variant in `contents` needs its `uri` filled in by you — the SDK does not backfill it. One response may carry several entries.
 - Text goes into `TextResourceContents::text`, binary into `BlobResourceContents::blob` as base64 per the protocol. The SDK neither decodes nor validates it (`src/core/Content.cpp:92-104`), so `mime_type` has to be correct on its own.
@@ -47,24 +31,7 @@ server->RegisterResource("release-notes", "docs://release-notes",
 
 ## Step 3: Write the URI Template and Read Its Variables
 
-```cpp
-server->RegisterResourceTemplate("user-profile", "docs://users/{userId}/profile",
-    ResourceOptions{}
-        .Title("User Profile")
-        .Description("One profile document per user id")
-        .MimeType("application/json"),
-    [](const std::string& uri,
-       const std::map<std::string, std::string>& vars) -> ReadResourceResult {
-        TextResourceContents text;
-        text.uri = uri;
-        text.mime_type = "application/json";
-        text.text = "{\"id\":\"" + vars.at("userId") + "\"}";
-
-        ReadResourceResult result;
-        result.contents.push_back(ResourceContents{std::move(text)});
-        return result;
-    });
-```
+<<< @/snippets/serve-a-resource.cpp#register-template
 
 Template syntax is a subset of RFC 6570, and every rule below is enforced at registration time:
 
@@ -94,10 +61,7 @@ A `McpError` thrown from your handler is encoded verbatim as a JSON-RPC error re
 
 ## Step 5: Notify Subscribers on Change
 
-```cpp
-server->SendResourceListChanged();
-server->SendResourceUpdated("docs://release-notes");
-```
+<<< @/snippets/serve-a-resource.cpp#notify-subscribers
 
 - `SendResourceUpdated(uri)` is subscription-routed only: it reaches subscribers whose filter lists that URI. With an empty subscription table it returns immediately and sends nothing (`src/protocol/McpSessionHandler.cpp:979-988`).
 - While the instance is running, registration emits a `list_changed` on its own (`src/server/McpServer.cpp:819-821`); call it by hand only after you add or drop entries yourself.
@@ -109,11 +73,11 @@ Use `ResourceLink` to hand back a reference instead of the contents: missing, no
 
 When a client only wants part of a file, it sends a `FileRef`: with `enable_file_input` on, a tool argument holding `{"uri","offset","length"}` is resolved through the very same two-pass match, the full resource is read, and then sliced. `offset` / `length` default to 0, and once present they must be integral (integer, or a double with an integral value) inside the int64 range, otherwise `DeserializeFailed` (`include/mcp/McpTypes.hpp:162-189`).
 
-## Complete Code
+## Complete code
 
 <<< @/snippets/serve-a-resource.cpp#full
 
-## Verify
+## Verification
 
 ```bash
 ctest --preset debug -R 'McpServerTest\.(RegisterResource|ReadResource|SendResourceUpdated)|UriTemplateTest\.'
@@ -127,11 +91,11 @@ All 31 cases should report `Passed`, with the final line `100% tests passed, 0 t
 | `McpServerTest.ReadResourcePrefersStaticOverTemplate` | `contents[0].text` equals `static` |
 | `McpServerTest.ReadResourceMissCarriesUri` | error code `-32602`, `data.uri` equals `test://missing-resource` |
 
-## Protocol Era Differences
+## Era differences
 
 `resources/list`, `resources/templates/list`, `resources/read` and the `resources/updated` / `resources/list_changed` notifications exist in both eras. What differs is how a subscription is established (`resources/subscribe` is legacy-only) and the delivery scope of `list_changed` (broadcast in the legacy era, subscribers only in the modern era). See [Protocol Versions](/en/learn/protocol-versions).
 
-## Common Errors
+## Common mistakes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -142,13 +106,13 @@ All 31 cases should report `Passed`, with the final line `100% tests passed, 0 t
 | The peer gets `-32602` instead of `-32002` | The miss path deliberately uses `InvalidParams` | Branch on the `resource not found:` message prefix; `data.uri` is already echoed |
 | A freshly registered resource is missing from the list | Pagination truncates at 100 entries per page | Page with `cursor`, or move the long tail into templates |
 
-## Next Steps
+## Next steps
 
 - Parameterised argument capture: [Serve a Prompt](/en/howto/serve-a-prompt)
 - Accept a file slice as a tool argument: [Register a Tool](/en/howto/register-a-tool)
 - Use a resource as the carrier for user input: [Collect User Input](/en/howto/collect-user-input)
 
-## Source Files Behind This Page
+## Source behind this page
 
 - `include/mcp/server/McpServer.hpp`
 - `include/mcp/server/ServerOptions.hpp`

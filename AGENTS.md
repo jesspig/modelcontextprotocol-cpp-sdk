@@ -1,6 +1,6 @@
 # AGENTS.md — MCP C++17 SDK
 
-Model Context Protocol 的 C++17 实现，全静态库。依赖链：`mcp-core` → `mcp-transport` → `mcp-protocol` → `mcp-server` | `mcp-client`；`mcp-http` 依赖 `mcp-transport`。架构见 [wiki/index.md](wiki/index.md) 与 [docs/zh/guide/architecture.md](docs/zh/guide/architecture.md)。
+Model Context Protocol 的 C++17 实现，全静态库。依赖链：`mcp-core` → `mcp-transport` → `mcp-protocol` → `mcp-server` | `mcp-client`；`mcp-http` 依赖 `mcp-transport`。架构见 [wiki/index.md](wiki/index.md) 与 [docs/zh/learn/architecture.md](docs/zh/learn/architecture.md)。
 
 ## 构建与测试
 

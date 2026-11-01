@@ -72,3 +72,5 @@ Streamable HTTP 服务端默认无状态（`StreamableHttpServerOptions::statele
 - [/zh/learn/protocol-versions](/zh/learn/protocol-versions) — 时代判定与双时代矩阵
 - [/zh/learn/architecture](/zh/learn/architecture) — 传输与引擎的线程模型
 - [/zh/learn/extensions](/zh/learn/extensions) — 无状态如何影响扩展可用性
+- [/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server) — 按传输选择连接模式
+- [/zh/howto/manage-subprocesses](/zh/howto/manage-subprocesses) — stdio 传输的子进程生命周期

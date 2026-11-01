@@ -27,7 +27,7 @@ This page is the **authoritative field table** for the core type layer; every en
 | `PushBack` | `void PushBack(JsonValue val)` | — | Appends by value | `JsonValue.hpp:92` |
 | Equality | `bool operator==(const JsonValue&) const` / `operator!=` | — | Structural deep comparison | `JsonValue.hpp:94-95` |
 | Range-for | `begin()` / `end()` | — | **Only objects are iterable** (they forward to `GetObject()`); arrays need an explicit `GetArray()` | `JsonValue.hpp:97-100` |
-| `GetObject` macro guard | `#pragma push_macro("GetObject")` / `pop_macro` | — | Defends against the same-named Windows header macro; do not remove | `JsonValue.hpp:11-15`、`105-108` |
+| `GetObject` macro guard | `#pragma push_macro("GetObject")` / `pop_macro` | — | Defends against the same-named Windows header macro; do not remove | `JsonValue.hpp:11-15`, `105-108` |
 
 ## JSON-RPC envelope
 
@@ -78,9 +78,9 @@ This page is the **authoritative field table** for the core type layer; every en
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `ToolsCapability` / `PromptsCapability` / `RootsCapability` | `struct { std::optional<bool> list_changed; }` | `nullopt` | Identical shape | `include/mcp/Capabilities.hpp:12-14`、`21-23`、`27-29` |
+| `ToolsCapability` / `PromptsCapability` / `RootsCapability` | `struct { std::optional<bool> list_changed; }` | `nullopt` | Identical shape | `include/mcp/Capabilities.hpp:12-14`, `21-23`, `27-29` |
 | `ResourcesCapability` | `struct { optional<bool> subscribe; optional<bool> list_changed; }` | `nullopt` | The only one carrying `subscribe` | `Capabilities.hpp:16-19` |
-| `SamplingCapability` / `EmptyCapability` | `struct {}` | — | Empty markers; `LoggingCapability`, `TasksCapability`, `SubscriptionsCapability`, `CompletionsCapability` are aliases of `EmptyCapability` | `Capabilities.hpp:25`、`36`、`38-41` |
+| `SamplingCapability` / `EmptyCapability` | `struct {}` | — | Empty markers; `LoggingCapability`, `TasksCapability`, `SubscriptionsCapability`, `CompletionsCapability` are aliases of `EmptyCapability` | `Capabilities.hpp:25`, `36`, `38-41` |
 | `ElicitationCapability` | `struct { std::optional<JsonValue> form; std::optional<JsonValue> url; }` | `nullopt` | Declares supported elicitation shapes | `Capabilities.hpp:31-34` |
 | `kTasksExtensionId` / `kSkillsExtensionId` | `inline constexpr std::string_view` | `"io.modelcontextprotocol/tasks"` / `".../skills"` | Extension declaration keys | `Capabilities.hpp:43-44` |
 | `TasksExtensionSettings` / `SkillsExtensionSettings` | `struct {}` / `struct { bool directory_read{false}; }` | `false` | Extension settings bodies | `Capabilities.hpp:46-50` |
@@ -139,13 +139,13 @@ This page is the **authoritative field table** for the core type layer; every en
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `PaginatedRequestParams` | `struct { optional<string> cursor; optional<RequestMeta> meta; }` | `nullopt` | Aliased as `ListToolsRequestParams`, `ListResourcesRequestParams`, `ListResourceTemplatesRequestParams`, `ListPromptsRequestParams`, `ListSkillsRequestParams` | `McpTypes.hpp:119-126`、`468` |
+| `PaginatedRequestParams` | `struct { optional<string> cursor; optional<RequestMeta> meta; }` | `nullopt` | Aliased as `ListToolsRequestParams`, `ListResourcesRequestParams`, `ListResourceTemplatesRequestParams`, `ListPromptsRequestParams`, `ListSkillsRequestParams` | `McpTypes.hpp:119-126`, `468` |
 | `ResourceRequestParams` | `struct { std::string uri; optional<RequestMeta> meta; optional<JsonValue> input_responses; optional<string> request_state; }` | `uri` required | Aliased as `ReadResourceRequestParams`, `SubscribeRequestParams`, `UnsubscribeRequestParams` | `McpTypes.hpp:128-136` |
 | `CallToolRequestParams` | `struct { name; optional<JsonValue> arguments; optional<RequestMeta> meta; optional<JsonValue> input_responses; optional<string> request_state; }` | `name` required | MRTR continuation relies on the last two fields | `McpTypes.hpp:138-144` |
 | `GetPromptRequestParams` | `struct { name; optional<JsonValue> arguments; optional<RequestMeta> meta; optional<JsonValue> input_responses; optional<string> request_state; }` | `name` required | Same shape as `CallTool` | `McpTypes.hpp:191-197` |
 | `CompleteRequestParams` | `struct { JsonValue ref; std::string argument_name; std::string argument_value; map<string,string,less<>> context_arguments; optional<RequestMeta> meta; }` | `context_arguments = {}` | `ref` is a raw object (`{"type":"ref/prompt","name":...}`), not a strongly typed variant | `McpTypes.hpp:199-205` |
 | `InitializeRequestParams` | `struct { std::string protocol_version; ClientCapabilities capabilities; Implementation client_info; }` | no optionals | All three fields mandatory | `McpTypes.hpp:209-213` |
-| `DiscoverRequestParams` / `ListRootsRequestParams` | `struct {}` | — | Empty-parameter requests | `McpTypes.hpp:207`、`243` |
+| `DiscoverRequestParams` / `ListRootsRequestParams` | `struct {}` | — | Empty-parameter requests | `McpTypes.hpp:207`, `243` |
 | `Pagination` | `struct { std::optional<std::string> next_cursor; }` | `nullopt` | Cursor envelope | `McpTypes.hpp:105-107` |
 | `FileRef` | `struct { std::string uri; int64_t offset{0}; int64_t length{0}; }` | `0` | `x-mcp-fileref` argument; zero-valued fields are omitted during serialisation | `McpTypes.hpp:146-158` |
 | `SubscriptionFilter` | `struct { optional<bool> tools_list_changed/prompts_list_changed/resources_list_changed; vector<string> resource_subscriptions; }` | `nullopt` / `{}` | `subscriptions/listen` filter | `McpTypes.hpp:215-220` |
@@ -160,8 +160,8 @@ This page is the **authoritative field table** for the core type layer; every en
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `Result` | `struct { std::optional<JsonValue> meta; ResultType result_type{Complete}; }` | `Complete` | Base of every result; `ResultType = { Complete, InputRequired, Task }` | `McpTypes.hpp:109`、`114-117` |
-| `EmptyResult` / `PingResult` | `struct EmptyResult : Result {}`; `using PingResult = EmptyResult` | — | Empty result | `McpTypes.hpp:257`、`330` |
+| `Result` | `struct { std::optional<JsonValue> meta; ResultType result_type{Complete}; }` | `Complete` | Base of every result; `ResultType = { Complete, InputRequired, Task }` | `McpTypes.hpp:109`, `114-117` |
+| `EmptyResult` / `PingResult` | `struct EmptyResult : Result {}`; `using PingResult = EmptyResult` | — | Empty result | `McpTypes.hpp:257`, `330` |
 | `CacheableResult` | `struct CacheableResult : Result { std::optional<std::string> etag; }` | `nullopt` | ETag governed by the global switch | `McpTypes.hpp:259-266` |
 | `CallToolResult` | `struct : Result { vector<ContentVariant> content; optional<JsonValue> structured_content; bool is_error{false}; optional<InputRequiredResult> input_required; }` | `is_error = false` | Four own fields plus the two inherited ones | `McpTypes.hpp:268-273` |
 | `ListToolsResult` / `ListResourcesResult` / `ListResourceTemplatesResult` / `ListPromptsResult` | `struct : Result { vector<…>; optional<string> next_cursor; optional<CacheHint> cache_hint; }` | `nullopt` | Four isomorphic paginated list results | `McpTypes.hpp:275-303` |
@@ -181,7 +181,7 @@ This page is the **authoritative field table** for the core type layer; every en
 | `InputRequests` | `using InputRequests = std::map<std::string, InputRequest, std::less<>>` | — | Indexed by id, transparent key lookup | `McpTypes.hpp:250` |
 | `InputRequiredResult` | `struct { InputRequests input_requests; std::optional<std::string> request_state; }` | `nullopt` | Continuation payload on the result side | `McpTypes.hpp:252-255` |
 | `MakeInputRequestForElicitation` / `...ForSampling` / `...ForRoots` | `InputRequest Make...(const *RequestParams&)` | — | Three constructors | `McpTypes.hpp:371-373` |
-| `MakeInputResponseFromElicitResult` / `...FromCreateMessageResult` / `...FromListRootsResult` | `JsonValue Make...(const ...Result&)` | — | Wrap the user's answer as an `input_responses` entry | `McpTypes.hpp:374`、`394-395` |
+| `MakeInputResponseFromElicitResult` / `...FromCreateMessageResult` / `...FromListRootsResult` | `JsonValue Make...(const ...Result&)` | — | Wrap the user's answer as an `input_responses` entry | `McpTypes.hpp:374`, `394-395` |
 | `IsInputRequiredResult` / `ExtractInputRequests` | `bool (const JsonValue&)` / `std::optional<InputRequests> (const JsonValue&)` | — | Detect input_required in a raw result | `McpTypes.hpp:375-376` |
 | `ElicitRequestParams` | `struct { std::string message; optional<JsonValue> requested_schema; std::string mode{"form"}; optional<string> url; optional<string> elicitation_id; }` | `mode = "form"` | Server-initiated elicitation input | `McpTypes.hpp:350-356` |
 | `ElicitResult` | `struct : Result { std::string action; optional<JsonValue> content; }` | `action` has no default | Wire result (`accept`/`decline`/`cancel`) | `McpTypes.hpp:358-361` |
@@ -208,7 +208,7 @@ This page is the **authoritative field table** for the core type layer; every en
 | `RequestOptions::input_responses` | `std::optional<JsonValue>` | `nullopt` | MRTR continuation payload | `McpTypes.hpp:400` |
 | `RequestOptions::request_state` | `std::optional<std::string>` | `nullopt` | Paired with `input_responses` | `McpTypes.hpp:401` |
 | `RequestOptions::on_progress` | `std::function<void(const ProgressNotificationParams&)>` | unset | Equivalent to `mcp::ProgressCallback` (`include/mcp/client/McpClient.hpp:27`) | `McpTypes.hpp:402` |
-| `RequestOptions::timeout` | `std::chrono::milliseconds` | `kDefaultRequestTimeout` = `60000` | Total timeout | `McpTypes.hpp:403`、`26` |
+| `RequestOptions::timeout` | `std::chrono::milliseconds` | `kDefaultRequestTimeout` = `60000` | Total timeout | `McpTypes.hpp:403`, `26` |
 | `RequestOptions::cancel_on_timeout` | `bool` | `true` | Cancel as soon as the deadline hits | `McpTypes.hpp:404` |
 | `RequestOptions::cancel_token` | `CancelToken` | default (not cancelled) | The member is a value type, not a pointer | `McpTypes.hpp:405` |
 | `CacheableRequestOptions` | `struct : RequestOptions { optional<string> cache_mode; optional<int64_t> max_age_ms; }` | `nullopt` | Cache entry point for read-shaped requests | `McpTypes.hpp:408-411` |
@@ -221,12 +221,12 @@ This page is the **authoritative field table** for the core type layer; every en
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `CancelToken` | `class MCP_API CancelToken` (value semantics, internal `shared_ptr<State>`) | not cancelled | Copyable; copies share one state across threads | `include/mcp/CancelToken.hpp:13`、`26-28` |
+| `CancelToken` | `class MCP_API CancelToken` (value semantics, internal `shared_ptr<State>`) | not cancelled | Copyable; copies share one state across threads | `include/mcp/CancelToken.hpp:13`, `26-28` |
 | `Cancel` | `void Cancel(std::string_view reason = {})` | empty reason | Sets the flag and broadcasts handlers | `CancelToken.hpp:19` |
 | `IsCancelled` / `Reason` | `bool () const` / `std::string () const` | `false` / `""` | State queries | `CancelToken.hpp:20-21` |
-| `AddCancelHandler` / `RemoveCancelHandler` | `std::size_t AddCancelHandler(CancelHandler)` / `void RemoveCancelHandler(std::size_t)` | — | Registration returns a handle id for removal; `CancelHandler = std::function<void(std::string_view)>` | `CancelToken.hpp:15`、`23-24` |
+| `AddCancelHandler` / `RemoveCancelHandler` | `std::size_t AddCancelHandler(CancelHandler)` / `void RemoveCancelHandler(std::size_t)` | — | Registration returns a handle id for removal; `CancelHandler = std::function<void(std::string_view)>` | `CancelToken.hpp:15`, `23-24` |
 | `McpErrorCode` | `enum class McpErrorCode : int32_t` | — | JSON-RPC standard codes plus SDK extensions; the full table is in the [Error codes reference](/en/reference/errors) | `include/mcp/ErrorCodes.hpp:8-30` |
-| `make_error_code` / `McpErrorCategory` / `GetMcpErrorCategory` | `std::error_code` / `class std::error_category` / `const McpErrorCategory&` | — | `is_error_code_enum` is specialised, so implicit conversion to `std::error_code` works | `ErrorCodes.hpp:32`、`36-39`、`43-92`、`94-101` |
+| `make_error_code` / `McpErrorCategory` / `GetMcpErrorCategory` | `std::error_code` / `class std::error_category` / `const McpErrorCategory&` | — | `is_error_code_enum` is specialised, so implicit conversion to `std::error_code` works | `ErrorCodes.hpp:32`, `36-39`, `43-92`, `94-101` |
 | `McpError` | `class McpError : public std::runtime_error` | — | The only business exception type | `include/mcp/McpError.hpp:13` |
 | `McpError` constructors | `McpError(McpErrorCode, std::string message)` / `McpError(McpErrorCode, std::string, std::optional<JsonValue> data)` | — | The second overload carries `data` | `McpError.hpp:15-24` |
 | `Code` / `ErrorMessage` / `Data` | `McpErrorCode Code() const noexcept` / `std::string_view ErrorMessage() const noexcept` / `const std::optional<JsonValue>& Data() const noexcept` | — | All three accessors are `noexcept` | `McpError.hpp:26-28` |
@@ -235,16 +235,16 @@ This page is the **authoritative field table** for the core type layer; every en
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `LogLevel` | `enum class LogLevel : int { Off=0, Error=1, Warning=2, Info=3, Debug=4, Trace=5 }` | `Off` | SDK-internal log level; a different scale from the protocol-level `LoggingLevel` | `include/mcp/Log.hpp:15-22`、`48` |
+| `LogLevel` | `enum class LogLevel : int { Off=0, Error=1, Warning=2, Info=3, Debug=4, Trace=5 }` | `Off` | SDK-internal log level; a different scale from the protocol-level `LoggingLevel` | `include/mcp/Log.hpp:15-22`, `48` |
 | `MCP_LOG_LEVEL` | environment variable `0`–`5` | unset = all off | Read on first touch of the log state; values `≥5` map to `Trace` | `Log.hpp:55-60` |
 | `LogContext` | `struct { std::string request_id; std::string method; std::string session_id; std::string peer; }` | all empty | Carried by `MCP_LOG_CTX` | `Log.hpp:24-29` |
 | `LogRecord` | `struct { LogLevel level; string_view tag; string_view message; const char* file; int line; const LogContext* context; }` | — | Handler argument; `tag`/`message` stay valid only during the callback | `Log.hpp:31-38` |
-| `LogHandler` | `using LogHandler = std::function<void(const LogRecord&)>` | — | While a handler is installed, nothing is written to `stderr` | `Log.hpp:40`、`108-122` |
-| `SetLogLevel` / `GetLogLevel` | `void SetLogLevel(LogLevel)` / `LogLevel GetLogLevel()` | `Off` | Override the environment variable at runtime | `Log.hpp:82`、`99` |
-| `SetLogHandler` / `GetLogHandler` | `void SetLogHandler(LogHandler)` / `LogHandler GetLogHandler()` | unset | Passing `nullptr` restores the default `stderr` sink | `Log.hpp:86`、`93` |
-| `MCP_LOG` / `MCP_LOG_CTX` | macros | — | Used inside the SDK; the level name must match a `LogLevel` enumerator | `Log.hpp:172`、`179` |
-| `SpanKind` | `enum class SpanKind : std::uint8_t { ServerRequest, TransportReceive, TransportSend }` | `ServerRequest` | Span category | `include/mcp/SpanHooks.hpp:9-13`、`22` |
-| `SpanPhase` | `enum class SpanPhase : std::uint8_t { Begin, End }` | `Begin` | The two phases of a paired event | `SpanHooks.hpp:15-18`、`21` |
+| `LogHandler` | `using LogHandler = std::function<void(const LogRecord&)>` | — | While a handler is installed, nothing is written to `stderr` | `Log.hpp:40`, `108-122` |
+| `SetLogLevel` / `GetLogLevel` | `void SetLogLevel(LogLevel)` / `LogLevel GetLogLevel()` | `Off` | Override the environment variable at runtime | `Log.hpp:82`, `99` |
+| `SetLogHandler` / `GetLogHandler` | `void SetLogHandler(LogHandler)` / `LogHandler GetLogHandler()` | unset | Passing `nullptr` restores the default `stderr` sink | `Log.hpp:86`, `93` |
+| `MCP_LOG` / `MCP_LOG_CTX` | macros | — | Used inside the SDK; the level name must match a `LogLevel` enumerator | `Log.hpp:172`, `179` |
+| `SpanKind` | `enum class SpanKind : std::uint8_t { ServerRequest, TransportReceive, TransportSend }` | `ServerRequest` | Span category | `include/mcp/SpanHooks.hpp:9-13`, `22` |
+| `SpanPhase` | `enum class SpanPhase : std::uint8_t { Begin, End }` | `Begin` | The two phases of a paired event | `SpanHooks.hpp:15-18`, `21` |
 | `SpanEvent` | `struct { SpanPhase phase; SpanKind kind; string name/method/request_id/traceparent/tracestate/baggage; bool failed; }` | `failed = false` | Trace context comes from `RequestMeta` | `SpanHooks.hpp:20-30` |
 | `SpanHandler` | `using SpanHandler = std::function<void(const SpanEvent&)>` | — | Injection points are the server/client options, see those reference pages | `SpanHooks.hpp:32` |
 
@@ -263,17 +263,19 @@ This page is the **authoritative field table** for the core type layer; every en
 
 | Convention | Form | Default | Notes | Evidence |
 |---|---|---|---|---|
-| Type conversion entry points | one pair of free functions per struct: `JsonValue SerializeX(const X&)` / `X DeserializeX(const JsonValue&)` | — | There is no member `to_json`/`from_json`; lookup happens via ADL on the free functions | `McpTypes.hpp:567-691`、`Content.hpp:93-129`、`Capabilities.hpp:74-95` |
+| Type conversion entry points | one pair of free functions per struct: `JsonValue SerializeX(const X&)` / `X DeserializeX(const JsonValue&)` | — | There is no member `to_json`/`from_json`; lookup happens via ADL on the free functions | `McpTypes.hpp:567-691`, `Content.hpp:93-129`, `Capabilities.hpp:74-95` |
 | Global ETag switch | `void SetEtagCacheEnabled(bool)` / `bool IsEtagCacheEnabled()` | — | Process-wide; decides whether `CacheableResult` carries an `etag` | `McpTypes.hpp:263-264` |
-| Optional fields | `std::optional<T>` | `std::nullopt` | "Not set" and "empty string / 0" are two different meanings | `Content.hpp:15-18`、`McpTypes.hpp:52-59` |
-| JSON passed by value | `JsonValue` (never a reference) in parameters and return values | — | `JsonValue` holds a `variant` with deep-copy semantics, so by-value works well with moves | `JsonRpc.hpp:60-62`、`McpTypes.hpp:540` |
+| Optional fields | `std::optional<T>` | `std::nullopt` | "Not set" and "empty string / 0" are two different meanings | `Content.hpp:15-18`, `McpTypes.hpp:52-59` |
+| JSON passed by value | `JsonValue` (never a reference) in parameters and return values | — | `JsonValue` holds a `variant` with deep-copy semantics, so by-value works well with moves | `JsonRpc.hpp:60-62`, `McpTypes.hpp:540` |
 | Factories return ownership | `McpClient`/`McpServer::Create` return `std::unique_ptr`; `IClientTransport::Connect()` returns `std::shared_ptr<ITransport>` | — | See the [Client reference](/en/reference/client) and the [Transports reference](/en/reference/transports) | `Transport.hpp:72` |
-| Rationale | one sentence: the modelling makes "unset" distinguishable by the type system and gives JSON values a clear lifetime, removing sentinel values and dangling references | — | The conventions live in the docs, not in code comments; intent is expressed through types | `JsonValue.hpp:25`、`CancelToken.hpp:26-28` |
+| Rationale | one sentence: the modelling makes "unset" distinguishable by the type system and gives JSON values a clear lifetime, removing sentinel values and dangling references | — | The conventions live in the docs, not in code comments; intent is expressed through types | `JsonValue.hpp:25`, `CancelToken.hpp:26-28` |
+
+Task-shaped guides: [/en/howto/validate-tool-input](/en/howto/validate-tool-input), [/en/howto/report-progress](/en/howto/report-progress).
 
 ## Source files behind this page
 
-- `include/mcp/JsonValue.hpp`、`include/mcp/JsonRpc.hpp`、`include/mcp/Content.hpp`、`include/mcp/Meta.hpp`
-- `include/mcp/Capabilities.hpp`、`include/mcp/Implementation.hpp`、`include/mcp/McpTypes.hpp`、`include/mcp/Methods.hpp`
-- `include/mcp/Log.hpp`、`include/mcp/SpanHooks.hpp`、`include/mcp/CancelToken.hpp`
-- `include/mcp/ErrorCodes.hpp`、`include/mcp/McpError.hpp`、`include/mcp/server/McpTaskStore.hpp` (`TaskState`/`TaskStatus`)
-- `include/mcp/ProtocolVersion.hpp`、`include/mcp/McpVersion.hpp`
+- `include/mcp/JsonValue.hpp`, `include/mcp/JsonRpc.hpp`, `include/mcp/Content.hpp`, `include/mcp/Meta.hpp`
+- `include/mcp/Capabilities.hpp`, `include/mcp/Implementation.hpp`, `include/mcp/McpTypes.hpp`, `include/mcp/Methods.hpp`
+- `include/mcp/Log.hpp`, `include/mcp/SpanHooks.hpp`, `include/mcp/CancelToken.hpp`
+- `include/mcp/ErrorCodes.hpp`, `include/mcp/McpError.hpp`, `include/mcp/server/McpTaskStore.hpp` (`TaskState`/`TaskStatus`)
+- `include/mcp/ProtocolVersion.hpp`, `include/mcp/McpVersion.hpp`

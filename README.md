@@ -203,6 +203,20 @@ auth.Authenticate();
 
 The `WireCodec` factory auto-selects the correct codec for the negotiated version via a simple string comparison (`version >= "2026-07-28"`).
 
+## Documentation
+
+The online manual is published at <https://jesspig.github.io/modelcontextprotocol-cpp-sdk/> and lives in `docs/en` (Chinese mirror in `docs/zh`). It is organised in three layers — concepts, task-shaped how-tos, and an API reference:
+
+- [Quick start](docs/en/start/quickstart.md) — five minutes to a working server and client, with expected output.
+- [Installation](docs/en/start/installation.md) — dependencies, build options, CMake integration, optional OpenSSL.
+- [Protocol versions](docs/en/learn/protocol-versions.md) — the authoritative matrix of both eras.
+- [Register a tool](docs/en/howto/register-a-tool.md) — descriptions, input schema, annotations, structured output.
+- [Connect to a server](docs/en/howto/connect-to-a-server.md) — transports, connect modes, close timing.
+- [Handle errors](docs/en/howto/handle-errors.md) — the three failure channels and error-code remapping.
+- [API reference](docs/en/reference/index.md) — tables only: signatures, defaults, throws, source files.
+
+All C++ samples come from [`docs/snippets`](docs/snippets), which is compiled by the `mcp-docs-snippets` target in CI, so a renamed or changed API fails the docs build instead of silently rotting the manual.
+
 ## Migration
 
 - [0.3.9 migration guide](docs/en/migration/0.3.9.md) — 0.3.8 → 0.3.9 breaking changes with old/new forms and impact.

@@ -39,3 +39,5 @@
 - [概念层：协议版本](/zh/learn/protocol-versions) — 双时代可用性的唯一权威表
 - [概念层：架构](/zh/learn/architecture) — 库分层、线程模型与能力推导边界
 - [概念层：扩展开关](/zh/learn/extensions) — 各 `enable_*` 开关的显式声明要求
+- [任务层：注册一个工具](/zh/howto/register-a-tool) — 从字段表走向可运行代码
+- [任务层：承接服务端发起的请求](/zh/howto/handle-server-initiated-requests) — 被动侧回调与续轮

@@ -1,6 +1,6 @@
 # 多轮往返补参（MRTR）
 
-工具跑到一半发现还缺输入时，不阻塞服务端、也不直发 `elicitation/create`，而是回一个 `input_required` 结果，让客户端答完再带着 `inputResponses` 重跑同一个 handler。本页给出结果构造、`requestState` 签发与校验、续轮读回，以及它和 [/zh/howto/collect-user-input](/zh/howto/collect-user-input) 的分工；字段表见 [/zh/reference/types](/zh/reference/types)，原理见 [/zh/advanced/mrtr](/zh/advanced/mrtr)。
+工具跑到一半发现还缺输入时，不阻塞服务端、也不直发 `elicitation/create`，而是回一个 `input_required` 结果，让客户端答完再带着 `inputResponses` 重跑同一个 handler。本页给出结果构造、`requestState` 签发与校验、续轮读回，以及它和 [/zh/howto/collect-user-input](/zh/howto/collect-user-input) 的分工；字段表见 [/zh/reference/types](/zh/reference/types)，双时代差异见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
 
 ## 前置条件
 
@@ -18,6 +18,10 @@
 | 需要跨轮记住已答内容或阶段 | MRTR + `requestState` | 直发没有承载状态的载体 |
 | stateless 部署 | 只能 MRTR | `McpServer::IsMrtrSupported()` 在 stateless 下返回 `false`（`src/server/McpServer.cpp:3351-3355`），而现代时代的直发本来就走 MRTR |
 | 需要长时间等用户 | MRTR | 服务端不挂线程等待，时限由客户端 `round_timeout`/`max_rounds` 控制 |
+
+表单的 `requestedSchema` 是普通 JSON Schema，本片段用一个单字段构造器拼出来（构造器与下面的请求装配分属两段）：
+
+<<< @/snippets/request-extra-input.cpp#form-schema
 
 ## 第 2 步：构造 `input_required` 结果
 
