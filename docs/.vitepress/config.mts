@@ -45,6 +45,7 @@ const en = {
       { text: 'Cancel a request', link: '/en/howto/cancel-a-request' },
       { text: 'Handle server-initiated requests', link: '/en/howto/handle-server-initiated-requests' },
       { text: 'Add OAuth to a client', link: '/en/howto/add-oauth-to-a-client' },
+      { text: 'Manage subprocesses', link: '/en/howto/manage-subprocesses' },
     ]},
     { text: 'Learn', items: [
       { text: 'What is MCP?', link: '/en/learn/what-is-mcp' },
@@ -127,6 +128,7 @@ const zh = {
       { text: '取消请求与超时', link: '/zh/howto/cancel-a-request' },
       { text: '承接服务端发起的请求', link: '/zh/howto/handle-server-initiated-requests' },
       { text: '给客户端加上 OAuth', link: '/zh/howto/add-oauth-to-a-client' },
+      { text: '管住子进程', link: '/zh/howto/manage-subprocesses' },
     ]},
     { text: '核心概念', items: [
       { text: '什么是 MCP？', link: '/zh/learn/what-is-mcp' },
