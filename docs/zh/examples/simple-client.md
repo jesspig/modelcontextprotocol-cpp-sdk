@@ -145,6 +145,7 @@ Done!
 | 分页、搜索与缓存提示 | [/zh/howto/call-tools-and-read-resources](/zh/howto/call-tools-and-read-resources) |
 | 取消与超时 | [/zh/howto/cancel-a-request](/zh/howto/cancel-a-request) |
 | 读懂错误码 | [/zh/howto/handle-errors](/zh/howto/handle-errors) |
+| `McpClient` 方法全表 | [/zh/reference/client](/zh/reference/client) |
 
 ## 本页对应源码
 

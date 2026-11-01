@@ -141,6 +141,7 @@ EchoServer starting on stdio...
 | 资源订阅与 `list_changed` | [/zh/howto/serve-a-resource](/zh/howto/serve-a-resource) |
 | 提示词参数与补全 | [/zh/howto/serve-a-prompt](/zh/howto/serve-a-prompt) |
 | 换成 Streamable HTTP 对外提供 | [/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server) |
+| 注册 API 的签名与字段表 | [/zh/reference/server](/zh/reference/server) |
 
 ## 本页对应源码
 

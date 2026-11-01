@@ -145,6 +145,7 @@ Done!
 | Paging, search and cache hints | [/en/howto/call-tools-and-read-resources](/en/howto/call-tools-and-read-resources) |
 | Cancellation and timeouts | [/en/howto/cancel-a-request](/en/howto/cancel-a-request) |
 | Making sense of error codes | [/en/howto/handle-errors](/en/howto/handle-errors) |
+| Full `McpClient` method table | [/en/reference/client](/en/reference/client) |
 
 ## Source behind this page
 

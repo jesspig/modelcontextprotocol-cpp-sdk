@@ -114,6 +114,8 @@ ctest --preset debug -R 'McpClientTest\.(ListToolsAutoPaginates|ListToolsAllAggr
 
 ## 时代差异
 
+本表只列与调用、读取相关的差异；方法与通知的完整双时代矩阵见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
+
 | 维度 | legacy（早于 2026-07-28） | modern（2026-07-28 及以后） |
 |---|---|---|
 | `tools/list`、`resources/list`、`resources/templates/list`、`resources/read`、`tools/call` | 双时代同名同形 | 同左，但响应必须带 `resultType`，列表类必须为 `complete`（`src/protocol/WireCodec.cpp:205-221`） |

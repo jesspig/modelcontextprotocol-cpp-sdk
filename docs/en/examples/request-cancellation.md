@@ -114,6 +114,7 @@ The two terminal codes differ and both are **settled locally**: the timeout line
 | Error-code typing and remapping | [/en/howto/handle-errors](/en/howto/handle-errors) |
 | Diagnosing a request that never answers | [/en/howto/debug-a-stuck-server](/en/howto/debug-a-stuck-server) |
 | Turning long work into a pollable task | [/en/howto/run-long-tasks](/en/howto/run-long-tasks) |
+| Full table of error codes and terminal shapes | [/en/reference/errors](/en/reference/errors) |
 
 ## Source behind this page
 

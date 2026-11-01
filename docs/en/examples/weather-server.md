@@ -109,6 +109,7 @@ The banner goes to stderr (`examples/WeatherServer/main.cpp:94`) and then `serve
 | Input validation and failure returns | [/en/howto/validate-tool-input](/en/howto/validate-tool-input) |
 | Structured output (`outputSchema`) | [/en/howto/register-a-tool](/en/howto/register-a-tool) |
 | How errors reach the model | [/en/howto/handle-errors](/en/howto/handle-errors) |
+| `ToolOptions` and `CallToolRequestParams` field tables | [/en/reference/types](/en/reference/types) |
 
 ## Source behind this page
 

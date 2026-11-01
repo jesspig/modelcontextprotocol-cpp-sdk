@@ -114,6 +114,7 @@ error: request cancelled (code -32800)
 | 错误码分型与重映射 | [/zh/howto/handle-errors](/zh/howto/handle-errors) |
 | 请求永无响应时的排障顺序 | [/zh/howto/debug-a-stuck-server](/zh/howto/debug-a-stuck-server) |
 | 长活儿改成可轮询的任务 | [/zh/howto/run-long-tasks](/zh/howto/run-long-tasks) |
+| 错误码与终局形态全表 | [/zh/reference/errors](/zh/reference/errors) |
 
 ## 本页对应源码
 

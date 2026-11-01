@@ -141,6 +141,7 @@ To watch it actually answer, use `SimpleClient` (see [/en/examples/simple-client
 | Resource subscriptions and `list_changed` | [/en/howto/serve-a-resource](/en/howto/serve-a-resource) |
 | Prompt arguments and completion | [/en/howto/serve-a-prompt](/en/howto/serve-a-prompt) |
 | Serve over Streamable HTTP instead | [/en/howto/run-a-streamable-http-server](/en/howto/run-a-streamable-http-server) |
+| Signatures and field tables for the registration API | [/en/reference/server](/en/reference/server) |
 
 ## Source behind this page
 

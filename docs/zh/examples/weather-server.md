@@ -109,6 +109,7 @@ WeatherServer starting on stdio...
 | 入参校验与失败返回 | [/zh/howto/validate-tool-input](/zh/howto/validate-tool-input) |
 | 结构化输出（`outputSchema`） | [/zh/howto/register-a-tool](/zh/howto/register-a-tool) |
 | 错误如何回给模型 | [/zh/howto/handle-errors](/zh/howto/handle-errors) |
+| `ToolOptions` 与 `CallToolRequestParams` 字段表 | [/zh/reference/types](/zh/reference/types) |
 
 ## 本页对应源码
 

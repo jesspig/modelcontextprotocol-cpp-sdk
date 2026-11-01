@@ -114,6 +114,8 @@ Observed: `[==========] 14 tests from 1 test suite ran` followed by `[  PASSED  
 
 ## Protocol Era Differences
 
+This table covers only the differences that matter to calling and reading; the full method and notification matrix is in [/en/learn/protocol-versions](/en/learn/protocol-versions).
+
 | Aspect | Legacy (before 2026-07-28) | Modern (2026-07-28 and later) |
 |---|---|---|
 | `tools/list`, `resources/list`, `resources/templates/list`, `resources/read`, `tools/call` | available in both eras with the same shape | same methods, but responses must carry `resultType` and list results must say `complete` (`src/protocol/WireCodec.cpp:205-221`) |
