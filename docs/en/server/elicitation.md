@@ -37,6 +37,31 @@ if (result.content) {
 
 The inherited `result_type` (`Complete` or `InputRequired`) indicates whether the input was fulfilled or is still pending.
 
+## URL Mode
+
+`ElicitUrl` lets the server send the user to an external URL to complete authorization or similar steps (`mode: "url"`, with an auto-generated `elicitation_id`):
+
+```cpp
+auto future = server->ElicitUrl(
+    "https://auth.example.com/oauth/authorize",
+    "Please finish sign-in in your browser",
+    std::chrono::seconds(600));  // defaults to 600s; throws McpError(RequestTimeout) on expiry
+auto result = future.get();
+```
+
+The client receives URL elicitation requests through `SetUrlElicitationHandler` (open a browser or surface the link):
+
+```cpp
+client->SetUrlElicitationHandler(
+    [](const ElicitRequestParams& params) -> ElicitResult {
+        // params.mode == "url", carrying params.url and params.elicitation_id
+        // Open the browser or surface the link, then return accept / decline / cancel
+        ElicitResult result;
+        result.action = "accept";
+        return result;
+    });
+```
+
 ## Typed Helper
 
 `ElicitResultTyped<T>` is a user-side convenience struct for wrapping a deserialized result:
