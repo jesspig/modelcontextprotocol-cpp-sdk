@@ -48,6 +48,7 @@ const en = {
       { text: 'Manage subprocesses', link: '/en/howto/manage-subprocesses' },
       { text: 'Debug a stuck server', link: '/en/howto/debug-a-stuck-server' },
       { text: 'Protect an HTTP server', link: '/en/howto/protect-an-http-server' },
+      { text: 'Handle errors', link: '/en/howto/handle-errors' },
     ]},
     { text: 'Learn', items: [
       { text: 'What is MCP?', link: '/en/learn/what-is-mcp' },
@@ -133,6 +134,7 @@ const zh = {
       { text: '管住子进程', link: '/zh/howto/manage-subprocesses' },
       { text: '排查卡住的服务端', link: '/zh/howto/debug-a-stuck-server' },
       { text: '给 HTTP 服务端加防护', link: '/zh/howto/protect-an-http-server' },
+      { text: '处理错误', link: '/zh/howto/handle-errors' },
     ]},
     { text: '核心概念', items: [
       { text: '什么是 MCP？', link: '/zh/learn/what-is-mcp' },
