@@ -32,7 +32,7 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/modelcontextprotocol/cpp-sdk
-    GIT_TAG        main
+    GIT_TAG        master
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 

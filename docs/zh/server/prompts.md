@@ -55,7 +55,7 @@ p.description = "审查代码变更";
 p.arguments = {arg};
 ```
 
-::: note
+::: info
 `PromptOptions` 中的字段（`description`、`title`、`icons`、`arguments`）会传播到通过 `prompts/list` 返回的协议级 `Prompt` 结构中。
 :::
 

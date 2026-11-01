@@ -36,7 +36,7 @@ server->RegisterResourceTemplate(
     });
 ```
 
-::: note
+::: info
 `ResourceOptions` 中的字段（`description`、`title`、`mime_type`、`icons`）会传播到通过 `resources/list` 和 `resources/templates/list` 返回的协议级 `Resource` 和 `ResourceTemplate` 结构中。
 :::
 
