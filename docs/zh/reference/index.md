@@ -32,7 +32,7 @@
 | [类型总表](/zh/reference/types) | `JsonValue`、内容与各 `*Result`/`*RequestParams`、能力、任务与 MRTR 类型、日志与 span | `include/mcp/McpTypes.hpp` 等核心头 |
 | [错误码](/zh/reference/errors) | `McpErrorCode` 全表、抛出点、时代重映射、`RequestOutcome` 分型 | `include/mcp/ErrorCodes.hpp`、`src/protocol/` |
 | [进程与存储](/zh/reference/process-and-storage) | `mcp::Spawn` 与 `SpawnedProcess`、任务/事件/会话存储、`HttpServer` | `include/mcp/process/`、`include/mcp/storage/`、`include/mcp/http/` |
-| [授权与扩展](/zh/reference/auth-and-extensions) | OAuth 与 PKCE、DPoP、token 缓存、server card/apps/triggers、技能校验、方法名与版本常量 | `include/mcp/ext/`、`include/mcp/auth/` |
+| [授权与扩展](/zh/reference/auth-and-extensions) | OAuth 与 PKCE、DPoP、token 缓存、server card/apps/triggers、技能校验、方法名与版本常量 | `include/mcp/ext/`、`include/mcp/client/auth/` |
 
 ## 相关页面
 

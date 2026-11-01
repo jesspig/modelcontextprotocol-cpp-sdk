@@ -201,7 +201,7 @@
 
 | 符号 | 签名/类型 | 默认值 | 说明 | 证据 |
 |---|---|---|---|---|
-| `InMemoryTransport` | `class MCP_API InMemoryTransport` | — | 无实例、无公有构造：只是 `CreatePair()` 的命名空间 | `include/mcp/transport/InMemoryTransport.hpp:10` |
+| `InMemoryTransport` | `class MCP_API InMemoryTransport` | — | 类体只有嵌套 `Pair` 与静态 `CreatePair()`，无任何实例成员：把它当命名空间用 | `include/mcp/transport/InMemoryTransport.hpp:10-18` |
 | `InMemoryTransport::Pair` | `struct { std::shared_ptr<ITransport> client; std::shared_ptr<ITransport> server; }` | — | **两条端点句柄的数据载体**，本身不建通道 | `InMemoryTransport.hpp:12-15` |
 | `CreatePair` | `static Pair CreatePair()` | — | **工厂函数**：交叉连接两条 `MessageChannel` 并返回已成对的 `Pair`；实现体 `InMemoryTransportImpl` 在源文件匿名 namespace 内，非公共 API | `InMemoryTransport.hpp:17`；`src/transport/InMemoryTransport.cpp:42-53` |
 

@@ -201,7 +201,7 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes | Evidence |
 |---|---|---|---|---|
-| `InMemoryTransport` | `class MCP_API InMemoryTransport` | — | No instance, no public constructor: it is merely the namespace of `CreatePair()` | `include/mcp/transport/InMemoryTransport.hpp:10` |
+| `InMemoryTransport` | `class MCP_API InMemoryTransport` | — | The class body holds only the nested `Pair` and the static `CreatePair()`, with no instance members: use it as a namespace | `include/mcp/transport/InMemoryTransport.hpp:10-18` |
 | `InMemoryTransport::Pair` | `struct { std::shared_ptr<ITransport> client; std::shared_ptr<ITransport> server; }` | — | **Data carrier for the two endpoint handles**; it does not build the channels itself | `InMemoryTransport.hpp:12-15` |
 | `CreatePair` | `static Pair CreatePair()` | — | **Factory function**: cross-links two `MessageChannel`s and returns the ready `Pair`; the implementation type `InMemoryTransportImpl` lives in an anonymous namespace and is not public API | `InMemoryTransport.hpp:17`; `src/transport/InMemoryTransport.cpp:42-53` |
 
