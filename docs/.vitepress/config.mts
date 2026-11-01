@@ -1,11 +1,21 @@
 import { defineConfig } from 'vitepress'
 
+const githubLink = 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk'
+
+// socialLinks/footer 属于 themeConfig，写在站点根配置不会生效
+const sharedTheme = {
+  search: { provider: 'local' },
+  socialLinks: [{ icon: 'github', link: githubLink }],
+  footer: { message: 'MIT License' },
+}
+
 const en = {
+  ...sharedTheme,
   nav: [
     { text: 'Guide', link: '/en/guide/quick-start' },
     { text: 'Server', link: '/en/server/overview' },
     { text: 'Client', link: '/en/client/overview' },
-    { text: 'GitHub', link: 'https://github.com/modelcontextprotocol/cpp-sdk' },
+    { text: 'GitHub', link: githubLink },
   ],
   sidebar: [
     { text: 'Getting Started', items: [
@@ -14,6 +24,23 @@ const en = {
       { text: 'Quick Start', link: '/en/guide/quick-start' },
       { text: 'Architecture', link: '/en/guide/architecture' },
       { text: 'Transports', link: '/en/guide/transports' },
+    ]},
+    { text: 'Learn', items: [
+      { text: 'What is MCP?', link: '/en/learn/what-is-mcp' },
+      { text: 'Architecture', link: '/en/learn/architecture' },
+      { text: 'Transports', link: '/en/learn/transports' },
+      { text: 'Protocol Versions', link: '/en/learn/protocol-versions' },
+      { text: 'Extensions', link: '/en/learn/extensions' },
+    ]},
+    { text: 'Reference', items: [
+      { text: 'Overview', link: '/en/reference/' },
+      { text: 'Server', link: '/en/reference/server' },
+      { text: 'Client', link: '/en/reference/client' },
+      { text: 'Transports', link: '/en/reference/transports' },
+      { text: 'Types', link: '/en/reference/types' },
+      { text: 'Errors', link: '/en/reference/errors' },
+      { text: 'Process & Storage', link: '/en/reference/process-and-storage' },
+      { text: 'Auth & Extensions', link: '/en/reference/auth-and-extensions' },
     ]},
     { text: 'Server', items: [
       { text: 'Overview', link: '/en/server/overview' },
@@ -44,11 +71,12 @@ const en = {
 }
 
 const zh = {
+  ...sharedTheme,
   nav: [
     { text: '指南', link: '/zh/guide/quick-start' },
     { text: '服务端', link: '/zh/server/overview' },
     { text: '客户端', link: '/zh/client/overview' },
-    { text: 'GitHub', link: 'https://github.com/modelcontextprotocol/cpp-sdk' },
+    { text: 'GitHub', link: githubLink },
   ],
   sidebar: [
     { text: '快速入门', items: [
@@ -57,6 +85,23 @@ const zh = {
       { text: '快速开始', link: '/zh/guide/quick-start' },
       { text: '架构', link: '/zh/guide/architecture' },
       { text: '传输层', link: '/zh/guide/transports' },
+    ]},
+    { text: '核心概念', items: [
+      { text: '什么是 MCP？', link: '/zh/learn/what-is-mcp' },
+      { text: '架构', link: '/zh/learn/architecture' },
+      { text: '传输层', link: '/zh/learn/transports' },
+      { text: '协议版本', link: '/zh/learn/protocol-versions' },
+      { text: '扩展', link: '/zh/learn/extensions' },
+    ]},
+    { text: 'API 参考', items: [
+      { text: '总览', link: '/zh/reference/' },
+      { text: '服务端', link: '/zh/reference/server' },
+      { text: '客户端', link: '/zh/reference/client' },
+      { text: '传输', link: '/zh/reference/transports' },
+      { text: '类型', link: '/zh/reference/types' },
+      { text: '错误', link: '/zh/reference/errors' },
+      { text: '进程与存储', link: '/zh/reference/process-and-storage' },
+      { text: '认证与扩展', link: '/zh/reference/auth-and-extensions' },
     ]},
     { text: '服务端', items: [
       { text: '概述', link: '/zh/server/overview' },
@@ -105,10 +150,4 @@ export default defineConfig({
       themeConfig: zh,
     },
   },
-
-  socialLinks: [
-    { icon: 'github', link: 'https://github.com/modelcontextprotocol/cpp-sdk' },
-  ],
-
-  footer: { message: 'MIT License' },
 })

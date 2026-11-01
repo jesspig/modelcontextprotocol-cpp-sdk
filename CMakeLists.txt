@@ -52,6 +52,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
 option(MCP_BUILD_CONFORMANCE "Build conformance server fixture (examples/conformance/server)" OFF)
+option(MCP_BUILD_DOCS_SNIPPETS "Build documentation snippets for syntax validation" OFF)
 
 function(mcp_enable_werror target)
     if(NOT MCP_WERROR)
@@ -272,6 +273,11 @@ if(MCP_BUILD_CONFORMANCE)
     if(NOT MCP_BUILD_EXAMPLES)
         add_subdirectory(examples/conformance/client)
     endif()
+endif()
+
+# 文档片段只做语法校验，不依赖 googletest，因此独立于 MCP_BUILD_TESTS
+if(MCP_BUILD_DOCS_SNIPPETS)
+    add_subdirectory(tests/docs)
 endif()
 
 file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
