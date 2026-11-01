@@ -20,25 +20,25 @@ Underlying type `int32_t`, 20 entries, listed in declaration order (`include/mcp
 | Enumerator | Value | Meaning | Typical trigger | Throw-site evidence |
 |---|---|---|---|---|
 | `ParseError` | -32700 | The JSON text itself cannot be parsed | Malformed peer message; the text carries the failing offset | `src/core/JsonParser.cpp:35`; mapped to HTTP 400 at `src/http/StreamableHttpServerTransport.cpp:118` |
-| `InvalidRequest` | -32600 | Envelope violates JSON-RPC 2.0 or the era's requirements | Wrong `jsonrpc` version, missing or null request `id`, call before initialise, modern era without `_meta` | `src/core/JsonRpc.cpp:17`、`src/core/JsonRpc.cpp:104`、`src/protocol/McpSessionHandler.cpp:419`、`src/server/McpServer.cpp:590` |
-| `MethodNotFound` | -32601 | Method unknown, or not part of the negotiated era | Era check missed, extension disabled (skills/tasks/apps), client has no elicitation/sampling/roots handler | `src/protocol/McpSessionHandler.cpp:415`、`src/server/McpServer.cpp:2956`、`src/client/McpClient.cpp:739` |
-| `InvalidParams` | -32602 | `params` or `_meta` break the contract, plus every "not found" case | Field type/range validation, illegal `_meta` field type, tool/resource/prompt/task/skill miss, `outputSchema` mismatch, tasks request without `taskId` | `src/core/Content.cpp:213`、`src/protocol/McpSessionHandler.cpp:425`、`src/protocol/WireCodec.cpp:308`、`src/server/McpServer.cpp:2148` |
-| `InternalError` | -32603 | Internal SDK failure; also the convergence code for every non-`McpError` exception | Secure random generation, atomic JSON storage write, DPoP/OAuth internals, generalized handler failures | `src/server/McpServer.cpp:438`、`src/detail/AtomicJsonFile.cpp:106`、`src/protocol/McpSessionHandler.cpp:505` |
-| `HeaderMismatch` | -32020 | `Mcp-Method`/`Mcp-Name` headers disagree with the body | Stateful HTTP request missing required headers, `Mcp-Name` not equal to body `taskId` | `src/protocol/WireCodec.cpp:311`、`src/http/StreamableHttpServerTransport.cpp:317`、`src/http/StreamableHttpServerTransport.cpp:1197` |
-| `MissingRequiredClientCapability` | -32021 | Client lacks a required capability; `data.requiredCapabilities` names it | `VerifyCapability` checks, server needing sampling/elicitation/tasks | `src/protocol/McpSessionHandler.cpp:533`、`src/server/McpServer.cpp:386`、`src/server/McpServer.cpp:1165` |
-| `UnsupportedProtocolVersion` | -32022 | Negotiated version unsupported; `data.supported`/`data.requested` | Unsupported `_meta.protocolVersion`, mismatching HTTP version header, rejected `server/discover` probe | `src/protocol/McpSessionHandler.cpp:432`、`src/http/StreamableHttpServerTransport.cpp:362`、`src/client/McpClient.cpp:542` |
+| `InvalidRequest` | -32600 | Envelope violates JSON-RPC 2.0 or the era's requirements | Wrong `jsonrpc` version, missing or null request `id`, call before initialise, modern era without `_meta` | `src/core/JsonRpc.cpp:17`, `src/core/JsonRpc.cpp:104`, `src/protocol/McpSessionHandler.cpp:419`, `src/server/McpServer.cpp:590` |
+| `MethodNotFound` | -32601 | Method unknown, or not part of the negotiated era | Era check missed, extension disabled (skills/tasks/apps), client has no elicitation/sampling/roots handler | `src/protocol/McpSessionHandler.cpp:415`, `src/server/McpServer.cpp:2956`, `src/client/McpClient.cpp:739` |
+| `InvalidParams` | -32602 | `params` or `_meta` break the contract, plus every "not found" case | Field type/range validation, illegal `_meta` field type, tool/resource/prompt/task/skill miss, `outputSchema` mismatch, tasks request without `taskId` | `src/core/Content.cpp:213`, `src/protocol/McpSessionHandler.cpp:425`, `src/protocol/WireCodec.cpp:308`, `src/server/McpServer.cpp:2148` |
+| `InternalError` | -32603 | Internal SDK failure; also the convergence code for every non-`McpError` exception | Secure random generation, atomic JSON storage write, DPoP/OAuth internals, generalized handler failures | `src/server/McpServer.cpp:438`, `src/detail/AtomicJsonFile.cpp:106`, `src/protocol/McpSessionHandler.cpp:505` |
+| `HeaderMismatch` | -32020 | `Mcp-Method`/`Mcp-Name` headers disagree with the body | Stateful HTTP request missing required headers, `Mcp-Name` not equal to body `taskId` | `src/protocol/WireCodec.cpp:311`, `src/http/StreamableHttpServerTransport.cpp:317`, `src/http/StreamableHttpServerTransport.cpp:1197` |
+| `MissingRequiredClientCapability` | -32021 | Client lacks a required capability; `data.requiredCapabilities` names it | `VerifyCapability` checks, server needing sampling/elicitation/tasks | `src/protocol/McpSessionHandler.cpp:533`, `src/server/McpServer.cpp:386`, `src/server/McpServer.cpp:1165` |
+| `UnsupportedProtocolVersion` | -32022 | Negotiated version unsupported; `data.supported`/`data.requested` | Unsupported `_meta.protocolVersion`, mismatching HTTP version header, rejected `server/discover` probe | `src/protocol/McpSessionHandler.cpp:432`, `src/http/StreamableHttpServerTransport.cpp:362`, `src/client/McpClient.cpp:542` |
 | `UrlElicitationRequired` | -32042 | Protocol definition: URL-mode elicitation required | See the dedicated section below | **No throw site in the SDK** |
 | `ResourceNotFound` | -32002 | Protocol reserved: resource unreadable | See the dedicated section below | **No throw site in the SDK** |
-| `ConnectionClosed` | -32000 | Connection or handle already closed | Socket/HTTP read hits the end, `HttpClient` closed, pending requests aborted at close | `src/transport/detail/net/HttpClient.cpp:60`、`src/transport/detail/net/TcpSocketPosix.cpp:195`、`src/protocol/McpSessionHandler.cpp:275` |
-| `RequestTimeout` | -32001 | Request timed out | Session deadline (60 s by default), HTTP read/write timeout, URL elicitation watchdog | `src/protocol/McpSessionHandler.cpp:337`、`src/transport/detail/net/HttpClient.cpp:245`、`src/server/McpServer.cpp:1254` |
-| `RequestCancelled` | -32800 | Request cancelled; `data.reason` optional | Peer `notifications/cancelled`, local `CancelRequest` or `RequestHandle::Cancel` | `src/protocol/McpSessionHandler.cpp:1100`、`src/protocol/McpSessionHandler.cpp:1128` |
-| `ConnectionRefused` | -32003 | Connection could not be established | TCP connect refused, Winsock initialisation failure | `src/transport/detail/net/TcpSocketPosix.cpp:128`、`src/transport/detail/net/TcpSocketWin32.cpp:87`、`src/transport/detail/net/TcpSocketWin32.cpp:130` |
-| `TlsHandshakeFailed` | -32004 | TLS unavailable or the handshake failed | OpenSSL init/`SSL_new`/handshake failure; same code when TLS was not compiled in | `src/transport/detail/net/TlsSocket.cpp:93`、`src/transport/detail/net/TlsSocket.cpp:137`、`src/transport/detail/net/TlsSocket.cpp:279` |
-| `ProtocolViolation` | -32005 | Protocol misuse (usually by the peer) | Pagination not converging within 64 pages, `logging/setLevel` or `notifications/roots/list_changed` in the modern era, illegal URL scheme | `src/client/McpClient.cpp:169`、`src/client/McpClient.cpp:1915`、`src/transport/detail/net/HttpClient.cpp:69` |
+| `ConnectionClosed` | -32000 | Connection or handle already closed | Socket/HTTP read hits the end, `HttpClient` closed, pending requests aborted at close | `src/transport/detail/net/HttpClient.cpp:60`, `src/transport/detail/net/TcpSocketPosix.cpp:195`, `src/protocol/McpSessionHandler.cpp:275` |
+| `RequestTimeout` | -32001 | Request timed out | Session deadline (60 s by default), HTTP read/write timeout, URL elicitation watchdog | `src/protocol/McpSessionHandler.cpp:337`, `src/transport/detail/net/HttpClient.cpp:245`, `src/server/McpServer.cpp:1254` |
+| `RequestCancelled` | -32800 | Request cancelled; `data.reason` optional | Peer `notifications/cancelled`, local `CancelRequest` or `RequestHandle::Cancel` | `src/protocol/McpSessionHandler.cpp:1100`, `src/protocol/McpSessionHandler.cpp:1128` |
+| `ConnectionRefused` | -32003 | Connection could not be established | TCP connect refused, Winsock initialisation failure | `src/transport/detail/net/TcpSocketPosix.cpp:128`, `src/transport/detail/net/TcpSocketWin32.cpp:87`, `src/transport/detail/net/TcpSocketWin32.cpp:130` |
+| `TlsHandshakeFailed` | -32004 | TLS unavailable or the handshake failed | OpenSSL init/`SSL_new`/handshake failure; same code when TLS was not compiled in | `src/transport/detail/net/TlsSocket.cpp:93`, `src/transport/detail/net/TlsSocket.cpp:137`, `src/transport/detail/net/TlsSocket.cpp:279` |
+| `ProtocolViolation` | -32005 | Protocol misuse (usually by the peer) | Pagination not converging within 64 pages, `logging/setLevel` or `notifications/roots/list_changed` in the modern era, illegal URL scheme | `src/client/McpClient.cpp:169`, `src/client/McpClient.cpp:1915`, `src/transport/detail/net/HttpClient.cpp:69` |
 | `TaskNotFound` | -32006 | Protocol reserved: task missing | See the dedicated section below | **No throw site in the SDK** |
-| `HandlerError` | -32007 | Local callback or extension precondition not met | Task result received without declaring the tasks extension, unknown MRTR input-request method, URL elicitation returning an illegal action, apps/server-card disabled | `src/client/McpClient.cpp:290`、`src/client/McpClient.cpp:1042`、`src/server/McpServer.cpp:2768` |
-| `DeserializeFailed` | -32008 | Typed deserialization failed | `JsonValue` holds a different type, content block/enum cannot be restored, error-code value outside `int32_t` | `src/core/JsonValue.cpp:184`、`src/core/Content.cpp:123`、`src/core/JsonRpc.cpp:68` |
-| `SessionExpired` | -32009 | Stateful session no longer valid | Server reclaimed the session while requests were still in flight, client POST answered with 404 | `src/http/StreamableHttpServerTransport.cpp:949`、`src/http/StreamableHttpClientTransport.cpp:85` |
+| `HandlerError` | -32007 | Local callback or extension precondition not met | Task result received without declaring the tasks extension, unknown MRTR input-request method, URL elicitation returning an illegal action, apps/server-card disabled | `src/client/McpClient.cpp:290`, `src/client/McpClient.cpp:1042`, `src/server/McpServer.cpp:2768` |
+| `DeserializeFailed` | -32008 | Typed deserialization failed | `JsonValue` holds a different type, content block/enum cannot be restored, error-code value outside `int32_t` | `src/core/JsonValue.cpp:184`, `src/core/Content.cpp:123`, `src/core/JsonRpc.cpp:68` |
+| `SessionExpired` | -32009 | Stateful session no longer valid | Server reclaimed the session while requests were still in flight, client POST answered with 404 | `src/http/StreamableHttpServerTransport.cpp:949`, `src/http/StreamableHttpClientTransport.cpp:85` |
 
 ### The three codes without a throw site
 
@@ -91,9 +91,9 @@ Evidence: `src/protocol/WireCodec.cpp:271-283` (the modern codec's `EncodeErrorC
 
 | Shape | Signature | How the error appears | Evidence |
 |---|---|---|---|
-| Handle | `RequestHandle SendRequest(std::string_view method, JsonValue params, const RequestOptions& options)` | `future<RequestOutcome>` **never throws**; the error is the `ErrorData` branch | `include/mcp/client/McpClient.hpp:130-133`、`include/mcp/client/RequestHandle.hpp:14-25` |
-| Raw | `future<JsonValue> SendRequestRaw(...)`; the compatibility overload `SendRequest(..., meta, timeout)` | The error is serialized into a **normal return value** `{"code","message"[,"data"]}` | `McpClient.hpp:134-143`、`src/client/McpClient.cpp:1884-1903` |
-| Typed wrapper | `CallTool`/`ListTools`/`GetTask`/`Ping` and friends | Internal `DoSendRequest` sees `code < 0` and does `throw McpError(code, message)` | `src/client/McpClient.cpp:74-89`、`:61-71` |
+| Handle | `RequestHandle SendRequest(std::string_view method, JsonValue params, const RequestOptions& options)` | `future<RequestOutcome>` **never throws**; the error is the `ErrorData` branch | `include/mcp/client/McpClient.hpp:130-133`, `include/mcp/client/RequestHandle.hpp:14-25` |
+| Raw | `future<JsonValue> SendRequestRaw(...)`; the compatibility overload `SendRequest(..., meta, timeout)` | The error is serialized into a **normal return value** `{"code","message"[,"data"]}` | `McpClient.hpp:134-143`, `src/client/McpClient.cpp:1884-1903` |
+| Typed wrapper | `CallTool`/`ListTools`/`GetTask`/`Ping` and friends | Internal `DoSendRequest` sees `code < 0` and does `throw McpError(code, message)` | `src/client/McpClient.cpp:74-89`, `:61-71` |
 
 ### `RequestOutcome`
 
@@ -110,7 +110,7 @@ The typed wrapper restores only `code` and `message`; **`data` is dropped** (`sr
 ### Inconsistent handling of unknown peer codes
 
 - The client side `ExtractProtocolError` does no whitelist check: any negative `code` is `static_cast` straight into `McpErrorCode` (`src/client/McpClient.cpp:61-71`).
-- The server side (when it acts as a caller, e.g. elicitation) uses `FindResponseErrorCode`, and **a negative code outside the whitelist is silently treated as a successful payload** (`src/server/McpServer.cpp:485-491`、`:1181`、`:1258`).
+- The server side (when it acts as a caller, e.g. elicitation) uses `FindResponseErrorCode`, and **a negative code outside the whitelist is silently treated as a successful payload** (`src/server/McpServer.cpp:485-491`, `:1181`, `:1258`).
 
 ## Convergence of user handler exceptions
 
@@ -119,9 +119,9 @@ The typed wrapper restores only `code` and `message`; **`data` is dropped** (`sr
 | What the handler throws | Outcome visible to the peer | Code preserved | Evidence |
 |---|---|---|---|
 | `McpError` (sync, non-task path) | `CallToolResult.isError = true` with `content[0].text = e.ErrorMessage()` | **dropped** (together with `data`) | `src/server/McpServer.cpp:2633-2636` |
-| Any other `std::exception` | Also `isError = true`, text generalized to `Error executing tool <name>`; the original text goes to the `Error` log only | dropped | `:2637-2643`、`:549-551` |
+| Any other `std::exception` | Also `isError = true`, text generalized to `Error executing tool <name>`; the original text goes to the `Error` log only | dropped | `:2637-2643`, `:549-551` |
 | `...` unknown exception | Same as above | dropped | `:2644-2650` |
-| Arguments violating `inputSchema` | `isError = true`, text `invalid arguments: <reason>` | no code at all | `:2617-2623`、`:553` |
+| Arguments violating `inputSchema` | `isError = true`, text `invalid arguments: <reason>` | no code at all | `:2617-2623`, `:553` |
 | Result violating `outputSchema` | JSON-RPC error `InvalidParams` | preserved | `:2675-2679` |
 
 ::: danger
@@ -130,7 +130,7 @@ A `McpError` thrown by a tool handler **never** becomes a JSON-RPC error respons
 
 ### Protocol, resource and prompt handlers
 
-Non-tool paths propagate `McpError` untouched through `promise.set_exception(std::current_exception())` (`src/server/McpServer.cpp:2815`、`:2911`; client side `src/client/McpClient.cpp:747`), and `McpSessionHandler::DeliverResponse` encodes it as a JSON-RPC error: code through the era remapping, `message` from `e.what()`, `data` preserved (`src/protocol/McpSessionHandler.cpp:576-585`). Any non-`McpError` exception converges to `InternalError` plus the fixed text `"internal error"`, with the original `e.what()` going to the log only (`:587-610`). When a handler throws **synchronously** instead of using the promise: `McpError` → `reject(e.Code(), e.what(), e.Data())` (`:491-497`), any other exception → `InternalError` plus `request handler failed` (`:499-513`、`:116-117`).
+Non-tool paths propagate `McpError` untouched through `promise.set_exception(std::current_exception())` (`src/server/McpServer.cpp:2815`, `:2911`; client side `src/client/McpClient.cpp:747`), and `McpSessionHandler::DeliverResponse` encodes it as a JSON-RPC error: code through the era remapping, `message` from `e.what()`, `data` preserved (`src/protocol/McpSessionHandler.cpp:576-585`). Any non-`McpError` exception converges to `InternalError` plus the fixed text `"internal error"`, with the original `e.what()` going to the log only (`:587-610`). When a handler throws **synchronously** instead of using the promise: `McpError` → `reject(e.Code(), e.what(), e.Data())` (`:491-497`), any other exception → `InternalError` plus `request handler failed` (`:499-513`, `:116-117`).
 
 ### Task-backed calls
 
@@ -148,18 +148,18 @@ Tool calls suspended as a task **keep the code**: `McpError` → failure payload
 | First request after an idle period fails, retry succeeds | -32009 | Stateful session was reclaimed | `reinit_on_expired_session` (default true), `include/mcp/client/ClientOptions.hpp:67` |
 | Long task stream drops mid-flight | -32000 | Read hit the end or the peer closed | Distinguish timeout from EOF with `IsEof()`, see [Transports reference](/en/reference/transports) |
 | No result after a cancellation | -32800 | Peer `notifications/cancelled` or local `Cancel` | Check `data.reason`; `src/protocol/McpSessionHandler.cpp:1100` |
-| List pagination never finishes | -32005 | Peer `nextCursor` does not converge (>64 pages) | `src/client/McpClient.cpp:169`、`:1392` |
+| List pagination never finishes | -32005 | Peer `nextCursor` does not converge (>64 pages) | `src/client/McpClient.cpp:169`, `:1392` |
 | Connecting to a TLS endpoint always fails | -32004 | OpenSSL not compiled in (`TLS support not compiled in`) | Check `MCP_HAVE_OPENSSL`, see [Installation](/en/start/installation) |
-| MRTR fails after several rounds | -32007 or -32603 | Handler returned an illegal action / `max_rounds` exceeded | `src/client/McpClient.cpp:290`、`:1133` |
+| MRTR fails after several rounds | -32007 or -32603 | Handler returned an illegal action / `max_rounds` exceeded | `src/client/McpClient.cpp:290`, `:1133` |
 
 Task-shaped guides: [/en/howto/handle-errors](/en/howto/handle-errors), [/en/howto/cancel-a-request](/en/howto/cancel-a-request).
 
 ## Source files behind this page
 
-- `include/mcp/ErrorCodes.hpp`、`include/mcp/McpError.hpp`、`include/mcp/JsonRpc.hpp`
-- `include/mcp/protocol/IncomingRequestMeta.hpp`、`include/mcp/client/RequestHandle.hpp`、`include/mcp/client/McpClient.hpp`、`include/mcp/client/ClientOptions.hpp`
-- Protocol layer: `src/protocol/WireCodec.cpp`、`src/protocol/McpSessionHandler.cpp`
-- Server and client: `src/server/McpServer.cpp`、`src/client/McpClient.cpp`
-- Core: `src/core/JsonParser.cpp`、`src/core/JsonRpc.cpp`、`src/core/JsonValue.cpp`、`src/core/Content.cpp`
-- Transport and networking: `src/http/StreamableHttpServerTransport.cpp`、`src/http/StreamableHttpClientTransport.cpp`、`src/transport/detail/net/HttpClient.cpp`、`src/transport/detail/net/TlsSocket.cpp`、`src/transport/detail/net/TcpSocketPosix.cpp`、`src/transport/detail/net/TcpSocketWin32.cpp`
-- Other throw sites: `src/detail/AtomicJsonFile.cpp`、`src/ext/DPoP.cpp`
+- `include/mcp/ErrorCodes.hpp`, `include/mcp/McpError.hpp`, `include/mcp/JsonRpc.hpp`
+- `include/mcp/protocol/IncomingRequestMeta.hpp`, `include/mcp/client/RequestHandle.hpp`, `include/mcp/client/McpClient.hpp`, `include/mcp/client/ClientOptions.hpp`
+- Protocol layer: `src/protocol/WireCodec.cpp`, `src/protocol/McpSessionHandler.cpp`
+- Server and client: `src/server/McpServer.cpp`, `src/client/McpClient.cpp`
+- Core: `src/core/JsonParser.cpp`, `src/core/JsonRpc.cpp`, `src/core/JsonValue.cpp`, `src/core/Content.cpp`
+- Transport and networking: `src/http/StreamableHttpServerTransport.cpp`, `src/http/StreamableHttpClientTransport.cpp`, `src/transport/detail/net/HttpClient.cpp`, `src/transport/detail/net/TlsSocket.cpp`, `src/transport/detail/net/TcpSocketPosix.cpp`, `src/transport/detail/net/TcpSocketWin32.cpp`
+- Other throw sites: `src/detail/AtomicJsonFile.cpp`, `src/ext/DPoP.cpp`
