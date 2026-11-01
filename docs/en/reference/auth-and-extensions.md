@@ -280,6 +280,8 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kProtocolVersions` | `{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}` | The five supported versions; lexicographic order equals chronological order | `ProtocolVersion.hpp:13-19` |
 | `IsModernProtocolVersion` | `constexpr bool IsModernProtocolVersion(std::string_view version) noexcept` | Lexicographic `>= kLatestProtocolVersion` (the predicate is not `kModernProtocolVersion`; both currently hold the same value) | `ProtocolVersion.hpp:21-23` |
 
+Task-shaped guides: [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-client), [/en/howto/protect-an-http-server](/en/howto/protect-an-http-server).
+
 ## Source files behind this page
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`、`include/mcp/client/auth/TokenCache.hpp`、`include/mcp/storage/FileTokenCache.hpp`、`include/mcp/client/SkillVerify.hpp`

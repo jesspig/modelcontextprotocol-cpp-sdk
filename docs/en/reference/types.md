@@ -270,6 +270,8 @@ This page is the **authoritative field table** for the core type layer; every en
 | Factories return ownership | `McpClient`/`McpServer::Create` return `std::unique_ptr`; `IClientTransport::Connect()` returns `std::shared_ptr<ITransport>` | — | See the [Client reference](/en/reference/client) and the [Transports reference](/en/reference/transports) | `Transport.hpp:72` |
 | Rationale | one sentence: the modelling makes "unset" distinguishable by the type system and gives JSON values a clear lifetime, removing sentinel values and dangling references | — | The conventions live in the docs, not in code comments; intent is expressed through types | `JsonValue.hpp:25`、`CancelToken.hpp:26-28` |
 
+Task-shaped guides: [/en/howto/validate-tool-input](/en/howto/validate-tool-input), [/en/howto/report-progress](/en/howto/report-progress).
+
 ## Source files behind this page
 
 - `include/mcp/JsonValue.hpp`、`include/mcp/JsonRpc.hpp`、`include/mcp/Content.hpp`、`include/mcp/Meta.hpp`

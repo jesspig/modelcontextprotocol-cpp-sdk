@@ -200,6 +200,8 @@ Public free functions for consistency checks before and after adopting a skill (
 - `detail::ResponseCache`, `detail::Base64Url`, `detail::JoinThreadSafely` and other `detail` namespace symbols are not public contracts; neither docs nor code may reference them as user API.
 - Constants such as `kElicitTimeout`, `kMaxListPages`, `kMrtrStateOnlyBackoff*` and `kSubscriptionAckTimeout` live in the anonymous namespace inside `src/` and may only be cited as implementation-internal values when describing behaviour.
 
+Task-shaped guides: [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server), [/en/howto/call-tools-and-read-resources](/en/howto/call-tools-and-read-resources), [/en/howto/cancel-a-request](/en/howto/cancel-a-request).
+
 ## Source files behind this page
 
 - `include/mcp/client/McpClient.hpp`

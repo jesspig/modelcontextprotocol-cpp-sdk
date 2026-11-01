@@ -152,6 +152,8 @@ typed 包装在还原时只取 `code` 与 `message`，**`data` 被丢弃**（`sr
 | 连 TLS 端点必失败 | -32004 | 未编译 OpenSSL（`TLS support not compiled in`） | 确认 `MCP_HAVE_OPENSSL`，见 [安装与集成](/zh/start/installation) |
 | MRTR 多轮后突然报错 | -32007 或 -32603 | handler 返回非法 action / 超出 `max_rounds` | `src/client/McpClient.cpp:290`、`:1133` |
 
+相关任务写法：[/zh/howto/handle-errors](/zh/howto/handle-errors)、[/zh/howto/cancel-a-request](/zh/howto/cancel-a-request)。
+
 ## 本页对应源码
 
 - `include/mcp/ErrorCodes.hpp`、`include/mcp/McpError.hpp`、`include/mcp/JsonRpc.hpp`

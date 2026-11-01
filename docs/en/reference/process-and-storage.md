@@ -251,6 +251,8 @@ The decision order is: `on_request` callback → every `OPTIONS` request answere
 
 Header location note: `TokenCache.hpp` really lives at `include/mcp/client/auth/TokenCache.hpp` (there is no `include/mcp/auth/` directory).
 
+Task-shaped guides: [/en/howto/manage-subprocesses](/en/howto/manage-subprocesses), [/en/howto/run-long-tasks](/en/howto/run-long-tasks).
+
 ## Source files behind this page
 
 - Process: `include/mcp/process/Process.hpp`, `src/process/ProcessWin32.cpp`, `src/process/ProcessPosix.cpp`, `src/process/detail/WindowsProcessSupport.cpp`, `src/process/detail/PosixProcessSupport.cpp`

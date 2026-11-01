@@ -79,3 +79,5 @@ stdio、SSE、HTTP 三种传输的 IO 线程直接执行用户回调（`on_trans
 - [/zh/learn/protocol-versions](/zh/learn/protocol-versions) — `WireCodec` 的双时代裁决
 - [/zh/learn/extensions](/zh/learn/extensions) — 开关与能力推导的对应关系
 - [/zh/reference/process-and-storage](/zh/reference/process-and-storage) — 子进程与存储类型
+- [/zh/howto/register-a-tool](/zh/howto/register-a-tool) — 注册 API 的实际调用序列
+- [/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server) — 服务端装配与线程观察

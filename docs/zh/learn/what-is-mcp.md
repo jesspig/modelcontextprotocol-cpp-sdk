@@ -58,3 +58,5 @@
 - [/zh/learn/protocol-versions](/zh/learn/protocol-versions) — 双时代可用性的唯一权威表
 - [/zh/learn/extensions](/zh/learn/extensions) — 扩展开关族与显式声明要求
 - [/zh/reference/types](/zh/reference/types) — 类型与字段表
+- [/zh/howto/register-a-tool](/zh/howto/register-a-tool) — 工具元语的落地写法
+- [/zh/howto/serve-a-resource](/zh/howto/serve-a-resource) — 资源与模板的暴露方式

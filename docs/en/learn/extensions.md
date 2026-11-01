@@ -79,3 +79,5 @@ Both server and client copy options by value at construction, so mutating your o
 - [/en/learn/architecture](/en/learn/architecture) — capabilities derived from registration
 - [/en/learn/transports](/en/learn/transports) — how statelessness limits multi-round-trip
 - [/en/reference/server](/en/reference/server) — server signatures for registration and switch wiring
+- [/en/howto/run-long-tasks](/en/howto/run-long-tasks) — task extension wiring, switches and stores
+- [/en/howto/protect-an-http-server](/en/howto/protect-an-http-server) — what the auth and card switches actually do

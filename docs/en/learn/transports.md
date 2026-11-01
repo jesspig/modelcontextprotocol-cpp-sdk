@@ -72,3 +72,5 @@ The three connect modes and which era each lands in are covered in [/en/learn/pr
 - [/en/learn/protocol-versions](/en/learn/protocol-versions) — era detection and the dual-era matrix
 - [/en/learn/architecture](/en/learn/architecture) — threading model of transports and engine
 - [/en/learn/extensions](/en/learn/extensions) — how statelessness limits extensions
+- [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server) — picking a connect mode per transport
+- [/en/howto/manage-subprocesses](/en/howto/manage-subprocesses) — subprocess lifetime behind the stdio transport

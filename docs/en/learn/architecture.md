@@ -79,3 +79,5 @@ These four are not implementation trivia — they are the source of several warn
 - [/en/learn/protocol-versions](/en/learn/protocol-versions) — the dual-era arbitration done by `WireCodec`
 - [/en/learn/extensions](/en/learn/extensions) — switches and how they map onto capabilities
 - [/en/reference/process-and-storage](/en/reference/process-and-storage) — process and storage types
+- [/en/howto/register-a-tool](/en/howto/register-a-tool) — the real call sequence behind the registration API
+- [/en/howto/run-a-streamable-http-server](/en/howto/run-a-streamable-http-server) — server assembly and threading in practice

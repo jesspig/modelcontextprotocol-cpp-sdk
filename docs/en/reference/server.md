@@ -200,6 +200,8 @@ Based on the synchronous path in `src/server/McpServer.cpp` (no `task_store`, or
 - The `Wire*`, `Handle*`, `EffectiveSessionId` and `ClientCapabilitiesFor` members of `McpServer` are private (`McpServer.hpp:122-188`) and are not part of any public contract.
 - `ResolveToolParamAnnotations` is a public method but returns `std::vector<detail::McpParamAnnotation>` (`McpServer.hpp:52-53`); it is an advanced facility that ordinary registrations never need.
 
+Task-shaped guides: [/en/howto/register-a-tool](/en/howto/register-a-tool), [/en/howto/collect-user-input](/en/howto/collect-user-input), [/en/howto/run-long-tasks](/en/howto/run-long-tasks).
+
 ## Source files behind this page
 
 - `include/mcp/server/McpServer.hpp`

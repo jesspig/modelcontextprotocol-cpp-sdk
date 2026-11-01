@@ -152,6 +152,8 @@ Tool calls suspended as a task **keep the code**: `McpError` → failure payload
 | Connecting to a TLS endpoint always fails | -32004 | OpenSSL not compiled in (`TLS support not compiled in`) | Check `MCP_HAVE_OPENSSL`, see [Installation](/en/start/installation) |
 | MRTR fails after several rounds | -32007 or -32603 | Handler returned an illegal action / `max_rounds` exceeded | `src/client/McpClient.cpp:290`、`:1133` |
 
+Task-shaped guides: [/en/howto/handle-errors](/en/howto/handle-errors), [/en/howto/cancel-a-request](/en/howto/cancel-a-request).
+
 ## Source files behind this page
 
 - `include/mcp/ErrorCodes.hpp`、`include/mcp/McpError.hpp`、`include/mcp/JsonRpc.hpp`

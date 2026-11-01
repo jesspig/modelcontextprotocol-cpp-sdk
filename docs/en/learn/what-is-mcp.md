@@ -58,3 +58,5 @@ This SDK supports five protocol versions spanning two eras: the legacy era hands
 - [/en/learn/protocol-versions](/en/learn/protocol-versions) — the single authoritative dual-era matrix
 - [/en/learn/extensions](/en/learn/extensions) — the extension switch family and explicit declaration
 - [/en/reference/types](/en/reference/types) — types and field tables
+- [/en/howto/register-a-tool](/en/howto/register-a-tool) — turning the tool primitive into running code
+- [/en/howto/serve-a-resource](/en/howto/serve-a-resource) — exposing resources and templates

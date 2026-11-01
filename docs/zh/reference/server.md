@@ -200,6 +200,8 @@
 - `McpServer` 的 `Wire*`、`Handle*`、`EffectiveSessionId`、`ClientCapabilitiesFor` 等为私有成员函数（`McpServer.hpp:122-188`），不可作为公共契约引用。
 - `ResolveToolParamAnnotations` 虽是公开方法，返回值却是 `std::vector<detail::McpParamAnnotation>`（`McpServer.hpp:52-53`），属高级用法，常规注册无需触碰。
 
+相关任务写法：[/zh/howto/register-a-tool](/zh/howto/register-a-tool)、[/zh/howto/collect-user-input](/zh/howto/collect-user-input)、[/zh/howto/run-long-tasks](/zh/howto/run-long-tasks)。
+
 ## 本页对应源码
 
 - `include/mcp/server/McpServer.hpp`
