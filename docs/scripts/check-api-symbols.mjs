@@ -11,8 +11,57 @@ const includeDir = path.join(repoRoot, 'include')
 const headerExtensions = new Set(['.hpp', '.h', '.hh'])
 // 非本 SDK 符号：标准库/第三方命名空间、CMake 目标名
 const externalScopes = new Set(['std', 'boost', 'chrono', 'OpenSSL', 'fmt', 'ranges', 'nlohmann'])
-// 需要人工判定为误报时在此登记，格式 'Scope::member'
-const exemptRefs = []
+// 需要放行时在此登记并写明理由；理由会打印在 CI 输出里
+const exemptRefs = [
+  {
+    ref: 'ClientOptions::enable_apps_extension',
+    reason: '0.3.9 已删除字段，迁移页与发布说明必须点名其不存在',
+  },
+  {
+    ref: 'InputRequiredConfig::legacy_shim',
+    reason: '0.3.9 已删除字段，迁移页与发布说明必须点名其不存在',
+  },
+  {
+    ref: 'ServerOptions::enable_dpop',
+    reason: '0.3.9 已删除字段，迁移页与发布说明必须点名其不存在',
+  },
+  {
+    ref: 'ServerOptions::enable_interceptor_alias',
+    reason: '0.3.9 已删除字段，迁移页与发布说明必须点名其不存在',
+  },
+  {
+    ref: 'ProcessHandle::Terminate',
+    reason: '内部平台抽象，用于说明 shutdown_timeout 的去处，未列入接口表',
+  },
+  {
+    ref: 'Rev2026Codec::EncodeErrorCode',
+    reason: 'src/protocol/WireCodec.cpp 内的私有编解码器，仅用于解释时代重映射',
+  },
+  {
+    ref: 'Rev2026Codec::ValidateNotification',
+    reason: '私有编解码器，仅用于解释入站校验位置',
+  },
+  {
+    ref: 'Rev2026Codec::ValidateRequest',
+    reason: '私有编解码器，仅用于解释入站校验位置',
+  },
+  {
+    ref: 'Rev2026Codec::ValidateResponse',
+    reason: '私有编解码器，仅用于解释响应校验与 resultType 要求',
+  },
+  {
+    ref: 'detail::JoinThreadSafely',
+    reason: '内部线程工具，用于说明 IO 回调内 Close 的 self-join 规避',
+  },
+  {
+    ref: 'detail::WriteAtomicSecure',
+    reason: '内部安全写辅助，迁移页记录其引入',
+  },
+  {
+    ref: 'detail::WriteWholeMessage',
+    reason: '内部整帧写辅助，仅用于解释 stdio 写入行为',
+  },
+]
 
 function walk(dir, predicate) {
   const collected = []
@@ -141,11 +190,13 @@ function resolve(ref) {
   }
 }
 
-const exemptSet = new Set(exemptRefs)
+const exemptReasons = new Map(
+  exemptRefs.map((entry) => [entry.ref, entry.reason])
+)
 const results = [...references.keys()]
   .sort()
-  .map((ref) => ({ ref, occurrences: references.get(ref), ...(exemptSet.has(ref)
-    ? { status: 'EXEMPT', detail: '显式豁免' }
+  .map((ref) => ({ ref, occurrences: references.get(ref), ...(exemptReasons.has(ref)
+    ? { status: 'EXEMPT', detail: exemptReasons.get(ref) }
     : resolve(ref)) }))
 
 const hits = results.filter((item) => item.status === 'HIT')
@@ -172,7 +223,7 @@ for (const miss of misses) {
 if (exempted.length > 0) {
   console.log('\n显式豁免：')
   for (const item of exempted) {
-    console.log(`  EXEMPT ${item.ref}`)
+    console.log(`  EXEMPT ${item.ref} — ${item.detail}`)
   }
 }
 
