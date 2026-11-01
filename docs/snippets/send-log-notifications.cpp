@@ -17,7 +17,8 @@
 #include <string>
 #include <thread>
 
-namespace mcp::docs {
+namespace mcp_docs {
+using namespace mcp;
 namespace {
 
 constexpr char kRequestLogLevelKey[] = "io.modelcontextprotocol/logLevel";
@@ -124,4 +125,4 @@ void RunLoggingFlow() {
 }
 // endregion
 
-} // namespace mcp::docs
+} // namespace mcp_docs

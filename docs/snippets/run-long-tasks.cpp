@@ -21,7 +21,8 @@
 #include <string>
 #include <thread>
 
-namespace mcp::docs {
+namespace mcp_docs {
+using namespace mcp;
 namespace {
 
 CallToolResult TextResult(const std::string& text) {
@@ -203,4 +204,4 @@ void RunLongTaskFlow() {
 }
 // endregion
 
-} // namespace mcp::docs
+} // namespace mcp_docs

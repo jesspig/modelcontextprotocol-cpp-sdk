@@ -18,7 +18,8 @@
 #include <string>
 #include <thread>
 
-namespace mcp::docs {
+namespace mcp_docs {
+using namespace mcp;
 namespace {
 
 constexpr char kProgressTokenKey[] = "progressToken";
@@ -153,4 +154,4 @@ void RunProgressFlow() {
 }
 // endregion
 
-} // namespace mcp::docs
+} // namespace mcp_docs
