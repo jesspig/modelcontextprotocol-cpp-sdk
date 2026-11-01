@@ -2,7 +2,7 @@
 
 A more realistic MCP server that demonstrates multi-tool registration with simulated weather data.
 
-Source: [`examples/WeatherServer/`](https://github.com/modelcontextprotocol/cpp-sdk/tree/main/examples/WeatherServer)
+Source: [`examples/WeatherServer/`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/tree/master/examples/WeatherServer)
 
 ## Features
 

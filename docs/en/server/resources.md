@@ -36,7 +36,7 @@ server->RegisterResourceTemplate(
     });
 ```
 
-::: note
+::: info
 `ResourceOptions` fields (`description`, `title`, `mime_type`, `icons`) are propagated to the protocol-level `Resource` and `ResourceTemplate` structs returned via `resources/list` and `resources/templates/list`.
 :::
 

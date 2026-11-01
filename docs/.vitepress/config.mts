@@ -5,7 +5,7 @@ const en = {
     { text: 'Guide', link: '/en/guide/quick-start' },
     { text: 'Server', link: '/en/server/overview' },
     { text: 'Client', link: '/en/client/overview' },
-    { text: 'GitHub', link: 'https://github.com/modelcontextprotocol/cpp-sdk' },
+    { text: 'GitHub', link: 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk' },
   ],
   sidebar: [
     { text: 'Getting Started', items: [
@@ -48,7 +48,7 @@ const zh = {
     { text: '指南', link: '/zh/guide/quick-start' },
     { text: '服务端', link: '/zh/server/overview' },
     { text: '客户端', link: '/zh/client/overview' },
-    { text: 'GitHub', link: 'https://github.com/modelcontextprotocol/cpp-sdk' },
+    { text: 'GitHub', link: 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk' },
   ],
   sidebar: [
     { text: '快速入门', items: [
@@ -107,7 +107,7 @@ export default defineConfig({
   },
 
   socialLinks: [
-    { icon: 'github', link: 'https://github.com/modelcontextprotocol/cpp-sdk' },
+    { icon: 'github', link: 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk' },
   ],
 
   footer: { message: 'MIT License' },

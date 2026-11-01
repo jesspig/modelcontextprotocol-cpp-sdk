@@ -52,7 +52,7 @@ p.description = "Review code changes";
 p.arguments = {arg};
 ```
 
-::: note
+::: info
 `PromptOptions` fields (`description`, `title`, `icons`, `arguments`) are propagated to the protocol-level `Prompt` struct returned via `prompts/list`.
 :::
 

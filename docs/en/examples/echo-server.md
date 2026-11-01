@@ -2,7 +2,7 @@
 
 A minimal MCP server that demonstrates tools, resources, and prompts.
 
-Source: [`examples/EchoServer/`](https://github.com/modelcontextprotocol/cpp-sdk/tree/main/examples/EchoServer)
+Source: [`examples/EchoServer/`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/tree/master/examples/EchoServer)
 
 ## Features
 

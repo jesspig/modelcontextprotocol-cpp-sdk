@@ -11,7 +11,7 @@ hero:
       link: /zh/guide/quick-start
     - theme: alt
       text: 在 GitHub 查看
-      link: https://github.com/modelcontextprotocol/cpp-sdk
+      link: https://github.com/jesspig/modelcontextprotocol-cpp-sdk
 
 features:
   - title: 完整协议
@@ -23,7 +23,7 @@ features:
   - title: C++17 原生
     details: 无 GC，无臃肿框架。使用 std::variant、智能指针实现类型安全、零成本抽象。
   - title: 一级就绪
-    details: Tier1 技术对标详见 wiki/concepts/tier1-parity.md；OAuth PKCE、Bearer 鉴权、持久化存储后端、MessageFilter 管道。
+    details: OAuth PKCE、Bearer 鉴权、持久化存储后端、MessageFilter 管道。
   - title: 跨平台
     details: Windows（MSVC、clang-cl）、Linux（GCC、Clang）、macOS（Clang）。所有平台使用统一 CMake 预设（debug/release）。
 ---
