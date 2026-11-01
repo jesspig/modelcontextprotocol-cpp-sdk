@@ -23,23 +23,7 @@ Any successful registration declares the `resources` capability and sets both `s
 
 ## Step 2: Register a Static Resource
 
-```cpp
-server->RegisterResource("release-notes", "docs://release-notes",
-    ResourceOptions{}
-        .Title("Release Notes")
-        .Description("Notes for the newest published release")
-        .MimeType("text/plain"),
-    [](const std::string& uri) -> ReadResourceResult {
-        TextResourceContents text;
-        text.uri = uri;
-        text.mime_type = "text/plain";
-        text.text = "1.0.0 - first published release.";
-
-        ReadResourceResult result;
-        result.contents.push_back(ResourceContents{std::move(text)});
-        return result;
-    });
-```
+<<< @/snippets/serve-a-resource.cpp#register-static
 
 - Every variant in `contents` needs its `uri` filled in by you — the SDK does not backfill it. One response may carry several entries.
 - Text goes into `TextResourceContents::text`, binary into `BlobResourceContents::blob` as base64 per the protocol. The SDK neither decodes nor validates it (`src/core/Content.cpp:92-104`), so `mime_type` has to be correct on its own.
@@ -47,24 +31,7 @@ server->RegisterResource("release-notes", "docs://release-notes",
 
 ## Step 3: Write the URI Template and Read Its Variables
 
-```cpp
-server->RegisterResourceTemplate("user-profile", "docs://users/{userId}/profile",
-    ResourceOptions{}
-        .Title("User Profile")
-        .Description("One profile document per user id")
-        .MimeType("application/json"),
-    [](const std::string& uri,
-       const std::map<std::string, std::string>& vars) -> ReadResourceResult {
-        TextResourceContents text;
-        text.uri = uri;
-        text.mime_type = "application/json";
-        text.text = "{\"id\":\"" + vars.at("userId") + "\"}";
-
-        ReadResourceResult result;
-        result.contents.push_back(ResourceContents{std::move(text)});
-        return result;
-    });
-```
+<<< @/snippets/serve-a-resource.cpp#register-template
 
 Template syntax is a subset of RFC 6570, and every rule below is enforced at registration time:
 
@@ -94,10 +61,7 @@ A `McpError` thrown from your handler is encoded verbatim as a JSON-RPC error re
 
 ## Step 5: Notify Subscribers on Change
 
-```cpp
-server->SendResourceListChanged();
-server->SendResourceUpdated("docs://release-notes");
-```
+<<< @/snippets/serve-a-resource.cpp#notify-subscribers
 
 - `SendResourceUpdated(uri)` is subscription-routed only: it reaches subscribers whose filter lists that URI. With an empty subscription table it returns immediately and sends nothing (`src/protocol/McpSessionHandler.cpp:979-988`).
 - While the instance is running, registration emits a `list_changed` on its own (`src/server/McpServer.cpp:819-821`); call it by hand only after you add or drop entries yourself.

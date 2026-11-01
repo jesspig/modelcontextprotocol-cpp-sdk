@@ -42,6 +42,13 @@ void stateful_server() {
 }
 // endregion
 
+// region stateless-hold-open
+void stateless_hold_open(StreamableHttpServerOptions& http_options) {
+    http_options.stateless = true;
+    http_options.listen_hold_open = true;
+}
+// endregion
+
 // region stateless
 void stateless_server_options() {
     StreamableHttpServerOptions http_options;

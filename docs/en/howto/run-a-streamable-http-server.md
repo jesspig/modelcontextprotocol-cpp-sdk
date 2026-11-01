@@ -39,10 +39,7 @@ Three fields matter: `stateless = false`, a `session_store` implementation, and 
 
 ## Step 3: Stateless and the held-open POST stream
 
-```cpp
-http_options.stateless = true;
-http_options.listen_hold_open = true;
-```
+<<< @/snippets/run-a-streamable-http-server.cpp#stateless-hold-open
 
 `listen_hold_open` makes the server inject progress, logs and other notifications into the SSE stream of the POST that owns them (routed by `progressToken`), so the client receives notifications and the final response on one request. In stateless mode without this switch, server-initiated notifications have nowhere to go.
 

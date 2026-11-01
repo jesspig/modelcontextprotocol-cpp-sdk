@@ -8,36 +8,32 @@
 #include <mcp/server/ServerOptions.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 
-#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-// region full
 using namespace mcp;
 
-void ServeAPrompt() {
-    auto read_argument = [](const std::optional<JsonValue>& args,
-                            std::string_view key) -> std::string {
-        if (!args) {
-            return {};
-        }
-        const auto* value = args->Find(key);
-        if (!value || !value->IsString()) {
-            return {};
-        }
-        return value->GetString();
-    };
+namespace serve_a_prompt {
 
-    ServerOptions options;
-    options.server_info = Implementation{"DocsPromptServer", "1.0.0"};
-    options.declare_completions = true;
+// region read-argument
+std::string ReadArgument(const std::optional<JsonValue>& args, std::string_view key) {
+    if (!args) {
+        return {};
+    }
+    const auto* value = args->Find(key);
+    if (!value || !value->IsString()) {
+        return {};
+    }
+    return value->GetString();
+}
+// endregion
 
-    auto pair = InMemoryTransport::CreatePair();
-    auto server = McpServer::Create(std::move(pair.server), options);
-
+// region declare-arguments
+PromptOptions MakeReviewPromptOptions() {
     PromptArgument language;
     language.name = "language";
     language.description = "Language the snippet is written in";
@@ -48,33 +44,53 @@ void ServeAPrompt() {
     code.description = "Snippet to review";
     code.required = true;
 
-    server->RegisterPrompt("code-review",
-        PromptOptions{}
-            .Title("Code Review")
-            .Description("Review a snippet written in one language")
-            .Arguments({language, code}),
-        [read_argument](const std::string& name,
-                        const std::optional<JsonValue>& args) -> GetPromptResult {
-            const std::string language_value = read_argument(args, "language");
-            const std::string code_value = read_argument(args, "code");
-            if (language_value.empty() || code_value.empty()) {
-                throw McpError(McpErrorCode::InvalidParams,
-                    "prompt '" + name + "' requires arguments 'language' and 'code'");
-            }
+    PromptOptions prompt_options;
+    prompt_options.Title("Code Review")
+        .Description("Review a snippet written in one language")
+        .Arguments({language, code});
+    return prompt_options;
+}
+// endregion
 
-            PromptMessage instruction;
-            instruction.role = "user";
-            instruction.content = TextContent{"text",
-                "Review this " + language_value + " snippet for correctness and safety:\n"
-                    + code_value};
+// region reject-missing-argument
+void RequireLanguageAndCode(const std::string& name,
+                            const std::string& language_value,
+                            const std::string& code_value) {
+    if (language_value.empty() || code_value.empty()) {
+        throw McpError(McpErrorCode::InvalidParams,
+            "prompt '" + name + "' requires arguments 'language' and 'code'");
+    }
+}
+// endregion
 
-            GetPromptResult result;
-            result.description = "Review a " + language_value + " snippet";
-            result.messages.push_back(std::move(instruction));
-            return result;
-        });
+// region build-message
+GetPromptResult BuildReviewMessage(const std::string& language_value,
+                                   const std::string& code_value) {
+    PromptMessage instruction;
+    instruction.role = "user";
+    instruction.content = TextContent{"text",
+        "Review this " + language_value + " snippet for correctness and safety:\n"
+            + code_value};
 
-    server->SetCompletionHandler(
+    GetPromptResult result;
+    result.description = "Review a " + language_value + " snippet";
+    result.messages.push_back(std::move(instruction));
+    return result;
+}
+// endregion
+
+// region declare-completions
+ServerOptions MakePromptServerOptions() {
+    ServerOptions options;
+    options.server_info = Implementation{"DocsPromptServer", "1.0.0"};
+    options.declare_completions = true;
+    return options;
+}
+// endregion
+
+// region completion-handler
+void InstallCompletionHandler(McpServer& server) {
+    server.SetCompletionHandler(
         [](const CompleteRequestParams& params) -> CompleteResult {
             const auto* ref_type = params.ref.Find("type");
             const bool is_prompt_ref =
@@ -106,3 +122,23 @@ void ServeAPrompt() {
         });
 }
 // endregion
+
+// region full
+void ServeAPrompt() {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = McpServer::Create(std::move(pair.server), MakePromptServerOptions());
+
+    server->RegisterPrompt("code-review", MakeReviewPromptOptions(),
+        [](const std::string& name,
+           const std::optional<JsonValue>& args) -> GetPromptResult {
+            const std::string language_value = ReadArgument(args, "language");
+            const std::string code_value = ReadArgument(args, "code");
+            RequireLanguageAndCode(name, language_value, code_value);
+            return BuildReviewMessage(language_value, code_value);
+        });
+
+    InstallCompletionHandler(*server);
+}
+// endregion
+
+} // namespace serve_a_prompt

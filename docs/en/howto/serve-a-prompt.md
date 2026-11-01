@@ -10,22 +10,7 @@ A prompt is a reusable message template: the client fetches it by name and fills
 
 ## Step 1: Declare the Prompt and Its Arguments
 
-```cpp
-PromptArgument language;
-language.name = "language";
-language.description = "Language the snippet is written in";
-language.required = true;
-
-PromptArgument code;
-code.name = "code";
-code.description = "Snippet to review";
-code.required = true;
-
-PromptOptions prompt_options;
-prompt_options.Title("Code Review")
-    .Description("Review a snippet written in one language")
-    .Arguments({language, code});
-```
+<<< @/snippets/serve-a-prompt.cpp#declare-arguments
 
 Handing `prompt_options` to `McpServer::RegisterPrompt("code-review", prompt_options, handler)` completes the registration.
 
@@ -36,24 +21,11 @@ Handing `prompt_options` to `McpServer::RegisterPrompt("code-review", prompt_opt
 
 ## Step 2: Build the Messages in the Handler
 
-```cpp
-const std::string language_value = read_argument(args, "language");
-const std::string code_value = read_argument(args, "code");
-
-PromptMessage instruction;
-instruction.role = "user";
-instruction.content = TextContent{"text",
-    "Review this " + language_value + " snippet for correctness and safety:\n"
-        + code_value};
-
-GetPromptResult result;
-result.description = "Review a " + language_value + " snippet";
-result.messages.push_back(std::move(instruction));
-return result;
-```
+<<< @/snippets/serve-a-prompt.cpp#read-argument
+<<< @/snippets/serve-a-prompt.cpp#build-message
 
 - The handler signature is `(const std::string& name, const std::optional<JsonValue>& args)`: `name` is the registered name that matched, `args` is the client's `arguments` object deserialized verbatim. When the client sends no `arguments`, `args` is `nullopt`.
-- `read_argument` in the example is the argument-fetching lambda in the complete code: it returns an empty string when `args` is empty, the key is absent, or the value is not a string — `args->Find(key)` returns `nullptr` rather than throwing, so the empty check has to live in your fetching code.
+- `ReadArgument` above is the argument-fetching function used by the complete code: it returns an empty string when `args` is empty, the key is absent, or the value is not a string — `args->Find(key)` returns `nullptr` rather than throwing, so the empty check has to live in your fetching code.
 - `role` goes onto the wire unchecked; per the protocol only `user` or `assistant` are valid.
 - `content` is a `ContentVariant` and any of the five variants works: text, image, audio, embedded resource, resource link. See [Serve a Resource](/en/howto/serve-a-resource) for the embedded-resource variant.
 - `messages` is always serialized, so an empty vector still goes out as `"messages": []` — the SDK does not stop you, and you have to guarantee the minimum count yourself.
@@ -63,12 +35,7 @@ return result;
 
 On the `prompts/get` path the SDK performs **no argument validation at all**: it checks neither `required` nor types, and `args` reaches your handler untouched. This differs from `tools/call`, which runs JSON Schema validation against `input_schema`. A missing argument must be raised by you, or the peer just receives a content-free message.
 
-```cpp
-if (language_value.empty() || code_value.empty()) {
-    throw McpError(McpErrorCode::InvalidParams,
-        "prompt '" + name + "' requires arguments 'language' and 'code'");
-}
-```
+<<< @/snippets/serve-a-prompt.cpp#reject-missing-argument
 
 The thrown `McpError` is encoded verbatim as a JSON-RPC error response with code and message preserved; any other exception collapses to `InternalError` plus the fixed text `internal error` (see [Error Codes and Model](/en/reference/errors)).
 
@@ -80,40 +47,8 @@ Declare and validate as a pair: `required = true` is metadata the client reads, 
 
 The completion capability is decided by `ServerOptions::declare_completions`, which defaults to `false` and is never derived from registrations. The `completion/complete` request handler is wired unconditionally, though, so the method stays reachable without the capability — the peer simply will not ask.
 
-```cpp
-options.declare_completions = true;
-
-server->SetCompletionHandler(
-    [](const CompleteRequestParams& params) -> CompleteResult {
-        const auto* ref_type = params.ref.Find("type");
-        const bool is_prompt_ref =
-            ref_type && ref_type->IsString() && ref_type->GetString() == "ref/prompt";
-
-        std::vector<std::string> candidates;
-        if (is_prompt_ref && params.argument_name == "language") {
-            candidates = {"cpp", "go", "python", "rust"};
-        }
-
-        JsonValue values(JsonValue::array_tag);
-        for (const auto& candidate : candidates) {
-            if (candidate.rfind(params.argument_value, 0) != 0) {
-                continue;
-            }
-            values.PushBack(JsonValue(candidate));
-        }
-
-        const int64_t total = static_cast<int64_t>(values.Size());
-
-        JsonValue completion(JsonValue::object_tag);
-        completion["values"] = std::move(values);
-        completion["total"] = JsonValue(total);
-        completion["hasMore"] = JsonValue(false);
-
-        CompleteResult result;
-        result.completion = std::move(completion);
-        return result;
-    });
-```
+<<< @/snippets/serve-a-prompt.cpp#declare-completions
+<<< @/snippets/serve-a-prompt.cpp#completion-handler
 
 - One instance holds a single global completion callback, so you dispatch on `params.ref`: it is an unparsed `JsonValue` shaped like `{"type":"ref/prompt","name":"code-review"}`, and you must read `type` / `name` yourself.
 - `params.argument_name` is the key being typed and `params.argument_value` the text entered so far; `params.context_arguments` carries the other arguments already fixed in the same request (values must be strings, otherwise the whole request is rejected as `InvalidParams` — `src/core/McpTypesParams.cpp:113-126`).

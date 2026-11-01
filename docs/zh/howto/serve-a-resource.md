@@ -23,23 +23,7 @@
 
 ## 第二步：注册静态资源
 
-```cpp
-server->RegisterResource("release-notes", "docs://release-notes",
-    ResourceOptions{}
-        .Title("Release Notes")
-        .Description("Notes for the newest published release")
-        .MimeType("text/plain"),
-    [](const std::string& uri) -> ReadResourceResult {
-        TextResourceContents text;
-        text.uri = uri;
-        text.mime_type = "text/plain";
-        text.text = "1.0.0 - first published release.";
-
-        ReadResourceResult result;
-        result.contents.push_back(ResourceContents{std::move(text)});
-        return result;
-    });
-```
+<<< @/snippets/serve-a-resource.cpp#register-static
 
 - `contents` 的每个变体都要自己填 `uri`，SDK 不回填；一次响应可以给多条。
 - 文本走 `TextResourceContents::text`，二进制走 `BlobResourceContents::blob`，按协议放 base64 文本——SDK 既不解码也不校验（`src/core/Content.cpp:92-104`），`mime_type` 必须写对。
@@ -47,24 +31,7 @@ server->RegisterResource("release-notes", "docs://release-notes",
 
 ## 第三步：写 URI 模板并读懂变量
 
-```cpp
-server->RegisterResourceTemplate("user-profile", "docs://users/{userId}/profile",
-    ResourceOptions{}
-        .Title("User Profile")
-        .Description("One profile document per user id")
-        .MimeType("application/json"),
-    [](const std::string& uri,
-       const std::map<std::string, std::string>& vars) -> ReadResourceResult {
-        TextResourceContents text;
-        text.uri = uri;
-        text.mime_type = "application/json";
-        text.text = "{\"id\":\"" + vars.at("userId") + "\"}";
-
-        ReadResourceResult result;
-        result.contents.push_back(ResourceContents{std::move(text)});
-        return result;
-    });
-```
+<<< @/snippets/serve-a-resource.cpp#register-template
 
 模板语法是 RFC 6570 的一个子集，全部判定发生在注册期：
 
@@ -94,10 +61,7 @@ handler 里抛 `McpError` 会原样编码成 JSON-RPC 错误响应；抛其它�
 
 ## 第五步：在内容变化时通知订阅者
 
-```cpp
-server->SendResourceListChanged();
-server->SendResourceUpdated("docs://release-notes");
-```
+<<< @/snippets/serve-a-resource.cpp#notify-subscribers
 
 - `SendResourceUpdated(uri)` 只走订阅路由，仅投递给过滤器里列了该 URI 的订阅者；订阅表为空时直接返回，什么都不发（`src/protocol/McpSessionHandler.cpp:979-988`）。
 - 实例已 `Run()` 时，注册动作会自己补发一次 `list_changed`（`src/server/McpServer.cpp:819-821`），手写调用只在你主动增删条目之后才需要。

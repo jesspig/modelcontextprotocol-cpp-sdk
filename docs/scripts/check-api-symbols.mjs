@@ -333,6 +333,21 @@ for (const file of walk(snippetDir, (candidate) => candidate.endsWith('.cpp'))) 
 }
 
 const regionProblems = []
+const howtoFenceProblems = []
+for (const file of docFiles) {
+  if (!file.endsWith('.md') || !/[\\/]howto[\\/]/.test(file)) {
+    continue
+  }
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  lines.forEach((line, index) => {
+    if (/^ {0,3}```(cpp|c\+\+)\b/.test(line)) {
+      howtoFenceProblems.push(
+        `${relative(file)}:${index + 1} 任务手册正文禁止手写 C++ 围栏，代码必须来自 docs/snippets 的 region`
+      )
+    }
+  })
+}
+howtoFenceProblems.sort()
 for (const [key, occurrences] of usedRegions) {
   if (!declaredRegions.has(key)) {
     const where = occurrences.map((item) => `${item.file}:${item.line}`).join(', ')
@@ -349,7 +364,8 @@ markerProblems.sort()
 
 console.log(
   `\n片段 region：定义 ${declaredRegions.size} 个，被引用 ${usedRegions.size} 处，` +
-    `完整性问题 ${regionProblems.length} 处，标记书写问题 ${markerProblems.length} 处`
+    `完整性问题 ${regionProblems.length} 处，标记书写问题 ${markerProblems.length} 处，` +
+    `任务手册手写代码块 ${howtoFenceProblems.length} 处`
 )
 for (const problem of regionProblems) {
   console.log(`  REGION ${problem}`)
@@ -357,12 +373,20 @@ for (const problem of regionProblems) {
 for (const problem of markerProblems) {
   console.log(`  MARKER ${problem}`)
 }
+for (const problem of howtoFenceProblems) {
+  console.log(`  FENCE ${problem}`)
+}
 
 console.log(
   `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}`
 )
 
-if (misses.length > 0 || regionProblems.length > 0 || markerProblems.length > 0) {
+if (
+  misses.length > 0 ||
+  regionProblems.length > 0 ||
+  markerProblems.length > 0 ||
+  howtoFenceProblems.length > 0
+) {
   process.exit(1)
 }
 process.exit(0)
