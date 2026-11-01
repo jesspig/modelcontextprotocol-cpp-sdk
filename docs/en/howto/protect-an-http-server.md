@@ -63,7 +63,7 @@ This check lives in the generic HTTP layer and gates every path (`src/http/HttpS
 
 <<< @/snippets/protect-an-http-server.cpp#stateless-mode
 
-`stateless` defaults to `true`: no sessions are created, `session_store` is passed `nullptr`, and replay after a disconnect relies on `event_store` (`FileEventStore` persists to disk and survives processes). Only with `stateless = false` do you need `session_store` — and then **the session ID is a capability bearer**: once leaked, the peer can keep using that session within its TTL, so it must be combined with Bearer auth, and `Close()`/TTL expiry has to actually evict it. `listen_hold_open` keeps the modern `GET` stream open so progress and logging are routed into the owning request stream (details in [/en/howto/report-progress](/en/howto/report-progress)).
+`stateless` defaults to `true`: no sessions are created, `session_store` is passed `nullptr`, and replay after a disconnect relies on `event_store` (`FileEventStore` persists to disk and survives processes). Only with `stateless = false` do you need `session_store` — and then **the session ID is a capability bearer**: once leaked, the peer can keep using that session **within the idle window** (the built-in constant `kSessionIdleTimeoutMs` expires a session after 30 inactive minutes, `include/mcp/transport/detail/Limits.hpp:24`, not configurable), so it must be combined with Bearer auth, and you should `Remove` the session explicitly on logout or revocation. `listen_hold_open` keeps the modern `GET` stream open so progress and logging are routed into the owning request stream (details in [/en/howto/report-progress](/en/howto/report-progress)).
 
 ## Header/body parameter consistency
 
@@ -122,7 +122,7 @@ For behaviour, the cheapest reproduction is pointing the official referee at you
 | Large bodies exhaust memory | `max_request_body_bytes` not set | tighten it explicitly and watch for 413 |
 | SSE streams get cut after idle | `sse_keep_alive_ms` larger than the intermediary idle timeout | lower the heartbeat interval |
 | Header/body mismatch slips through | `resolve_param_annotations` returns empty (server pointer not yet assigned) | only `Start()` once the callback reaches the real `McpServer` |
-| Treating the session ID as a secret | stateful mode distinguishing callers by session alone | combine sessions with Bearer auth, set a TTL, and evict actively |
+| Treating the session ID as a secret | stateful mode distinguishing callers by session alone | combine sessions with Bearer auth; the idle expiry is a fixed 30 minutes, so call `Remove` yourself when you need immediate revocation |
 
 ## Next steps
 

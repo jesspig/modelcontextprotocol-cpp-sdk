@@ -63,7 +63,7 @@ SDK 不看令牌内容：`ok` 为假就 401，仅此而已。签名验证、过�
 
 <<< @/snippets/protect-an-http-server.cpp#stateless-mode
 
-`stateless` 默认 `true`：不建会话、`session_store` 传 `nullptr`，断线重放靠 `event_store`（`FileEventStore` 落盘可跨进程）。`stateless = false` 时才需要 `session_store`，此时**会话 ID 是能力凭证**——一旦泄漏，对端可以在 TTL 内继续用同一个会话，因此必须与 Bearer 同时启用，且 `Close()`/TTL 到期要能把会话清掉。`listen_hold_open` 让 modern 的 `GET` 流保持打开，进度与日志会写进所属请求流（详见 [/zh/howto/report-progress](/zh/howto/report-progress)）。
+`stateless` 默认 `true`：不建会话、`session_store` 传 `nullptr`，断线重放靠 `event_store`（`FileEventStore` 落盘可跨进程）。`stateless = false` 时才需要 `session_store`，此时**会话 ID 是能力凭证**——一旦泄漏，对端可以在**空闲窗口内**继续用同一个会话（内置常量 `kSessionIdleTimeoutMs` = 30 分钟无活动即失效，`include/mcp/transport/detail/Limits.hpp:24`，不可配置），因此必须与 Bearer 同时启用，并在登出或撤销时主动 `Remove` 会话。`listen_hold_open` 让 modern 的 `GET` 流保持打开，进度与日志会写进所属请求流（详见 [/zh/howto/report-progress](/zh/howto/report-progress)）。
 
 ## 参数头一致性
 
@@ -122,7 +122,7 @@ cmake --build build/p3a --target mcp-doc-snippet-protect-an-http-server
 | 大 body 打满内存 | 没设 `max_request_body_bytes` | 显式收紧，观察 413 |
 | 空闲后 SSE 流被中间层切断 | `sse_keep_alive_ms` 大于中间层空闲超时 | 调小心跳间隔 |
 | 头与 body 不一致却通过 | `resolve_param_annotations` 返回空（服务端尚未赋好指针） | 确认回调命中真实 `McpServer` 实例后再 `Start()` |
-| 会话 ID 被当密码用 | stateful 下只靠会话 ID 区分调用方 | 会话必须与 Bearer 同用，并设置 TTL 与主动清理 |
+| 会话 ID 被当密码用 | stateful 下只靠会话 ID 区分调用方 | 会话必须与 Bearer 同用；空闲失效是内置 30 分钟，需要立即失效就自己 `Remove` |
 
 ## 下一步
 
