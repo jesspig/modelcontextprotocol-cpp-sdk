@@ -47,6 +47,7 @@ const en = {
       { text: 'Add OAuth to a client', link: '/en/howto/add-oauth-to-a-client' },
       { text: 'Manage subprocesses', link: '/en/howto/manage-subprocesses' },
       { text: 'Debug a stuck server', link: '/en/howto/debug-a-stuck-server' },
+      { text: 'Protect an HTTP server', link: '/en/howto/protect-an-http-server' },
     ]},
     { text: 'Learn', items: [
       { text: 'What is MCP?', link: '/en/learn/what-is-mcp' },
@@ -131,6 +132,7 @@ const zh = {
       { text: '给客户端加上 OAuth', link: '/zh/howto/add-oauth-to-a-client' },
       { text: '管住子进程', link: '/zh/howto/manage-subprocesses' },
       { text: '排查卡住的服务端', link: '/zh/howto/debug-a-stuck-server' },
+      { text: '给 HTTP 服务端加防护', link: '/zh/howto/protect-an-http-server' },
     ]},
     { text: '核心概念', items: [
       { text: '什么是 MCP？', link: '/zh/learn/what-is-mcp' },
