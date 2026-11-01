@@ -187,6 +187,7 @@
 | handler 抛其它 `std::exception` 或未知异常 | 对外文本泛化为 `Error executing tool <name>`；原始 `what()` 只写内部日志（默认日志全关，故外部不可见） | `McpServer.cpp:2637-2650`、`549-551` |
 | handler 抛 `ElicitationInputRequired`（`Elicit`/`ElicitUrl` 在 modern 时代抛出） | 转为 `resultType=input_required` 结果，`inputRequests["elicitation"]` 携发起参数 | `McpServer.cpp:2630-2632`、`1142-1149` |
 | `arguments` 不合 `input_schema` | SDK 主动 JSON Schema 校验并回 `is_error` + `"invalid arguments: <原因>"`，handler 不被调用 | `McpServer.cpp:2616-2623`、`553-561`；任务化路径 `2359-2362`、`2508-2515` |
+| `structured_content` 不合 `output_schema` | **协议错误**而非 `is_error`：`InvalidParams` + `"tool output does not match outputSchema: <原因>"`，该次调用不会产出工具结果 | `McpServer.cpp:2673-2681` |
 | 参数元素数超 `max_tool_input_elements` | `is_error` + `"tool arguments exceed maximum input element count"` | `McpServer.cpp:2323-2328` |
 | 工具名未注册 | 协议错误 `InvalidParams`，`tool not found: <name>`（不是 `is_error`） | `McpServer.cpp:2145-2151` |
 | legacy 时代未完成握手 | 协议错误 `InvalidRequest`，`Server not initialized`；modern 时代跳过该检查 | `McpServer.cpp:587-592`、`2086` |

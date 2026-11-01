@@ -187,6 +187,7 @@ Based on the synchronous path in `src/server/McpServer.cpp` (no `task_store`, or
 | Handler throws another `std::exception` or an unknown type | Outgoing text is generalized to `Error executing tool <name>`; the original `what()` goes only to internal logging (logging is off by default, so it is invisible externally) | `McpServer.cpp:2637-2650`, `549-551` |
 | Handler throws `ElicitationInputRequired` (raised by `Elicit`/`ElicitUrl` in the modern era) | Converted into a `resultType=input_required` result whose `inputRequests["elicitation"]` carries the original arguments | `McpServer.cpp:2630-2632`, `1142-1149` |
 | `arguments` violate `input_schema` | The SDK validates against the JSON Schema itself and returns `is_error` + `"invalid arguments: <reason>"`; the handler never runs | `McpServer.cpp:2616-2623`, `553-561`; task paths `2359-2362`, `2508-2515` |
+| `structured_content` violates `output_schema` | A **protocol error**, not `is_error`: `InvalidParams` + `"tool output does not match outputSchema: <reason>"`; no tool result is produced for that call | `McpServer.cpp:2673-2681` |
 | Argument element count exceeds `max_tool_input_elements` | `is_error` + `"tool arguments exceed maximum input element count"` | `McpServer.cpp:2323-2328` |
 | Unknown tool name | Protocol error `InvalidParams`, `tool not found: <name>` (not an `is_error` result) | `McpServer.cpp:2145-2151` |
 | Legacy era, handshake incomplete | Protocol error `InvalidRequest`, `Server not initialized`; the modern era skips this check | `McpServer.cpp:587-592`, `2086` |
