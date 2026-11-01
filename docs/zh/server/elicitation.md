@@ -53,8 +53,12 @@ auto result = future.get();
 
 ```cpp
 client->SetUrlElicitationHandler(
-    [](const ElicitRequestParams& params) {
+    [](const ElicitRequestParams& params) -> ElicitResult {
         // params.mode == "url"，含 params.url 与 params.elicitation_id
+        // 打开浏览器或展示链接后返回 accept / decline / cancel
+        ElicitResult result;
+        result.action = "accept";
+        return result;
     });
 ```
 
