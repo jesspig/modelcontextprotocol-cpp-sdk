@@ -26,7 +26,7 @@ namespace mcp { namespace detail { namespace net {
 
 namespace {
 
-constexpr std::chrono::milliseconds kTlsCloseNotifyWait(500);
+constexpr std::chrono::milliseconds kTlsCloseNotifyWait(100);
 
 int ToOpenSslFd(NativeFd fd) {
 #ifdef _WIN32
@@ -248,14 +248,18 @@ void TlsSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
 }
 
 void TlsSocket::Close() {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    if (ssl_ != nullptr) {
-        if (SSL_shutdown(ssl_) == 0) {
-            if (tcp_.WaitReadable(kTlsCloseNotifyWait))
-                SSL_shutdown(ssl_);
-        }
-        SSL_free(ssl_);
+    SSL* pending = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(io_mutex_);
+        pending = ssl_;
         ssl_ = nullptr;
+    }
+    if (pending != nullptr) {
+        if (SSL_shutdown(pending) == 0) {
+            if (tcp_.WaitReadable(kTlsCloseNotifyWait))
+                SSL_shutdown(pending);
+        }
+        SSL_free(pending);
     }
     tcp_.Close();
 }
