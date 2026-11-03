@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cctype>
 #include <chrono>
 #include <mutex>
@@ -85,6 +86,7 @@ std::string& MutableMessageSessionId(JsonRpcMessage& message) {
     if (auto* req = std::get_if<JsonRpcRequest>(&message)) return req->session_id;
     if (auto* notif = std::get_if<JsonRpcNotification>(&message)) return notif->session_id;
     if (auto* resp = std::get_if<JsonRpcResponse>(&message)) return resp->session_id;
+    assert(std::holds_alternative<JsonRpcErrorResponse>(message));
     return std::get<JsonRpcErrorResponse>(message).session_id;
 }
 

@@ -1,5 +1,6 @@
 #include <mcp/http/EventStore.hpp>
 
+#include <cassert>
 #include <mutex>
 #include <utility>
 
@@ -18,6 +19,7 @@ uint64_t EventStore::Append(
             events.begin(),
             events.begin() + (events.size() - kMaxEventsPerSession));
     }
+    assert(events.size() <= kMaxEventsPerSession);
     return id;
 }
 

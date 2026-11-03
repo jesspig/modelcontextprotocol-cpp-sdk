@@ -2,6 +2,7 @@
 
 #include <mcp/transport/detail/Limits.hpp>
 
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 
@@ -56,6 +57,7 @@ public:
         if (stored.last_seen_ms == 0)
             stored.last_seen_ms = now;
         records_[session_id] = stored;
+        assert(records_.size() <= detail::kMaxHttpSessions);
         return true;
     }
 

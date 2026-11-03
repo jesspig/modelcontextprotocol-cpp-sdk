@@ -4,6 +4,7 @@
 #include <mcp/Log.hpp>
 
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -16,7 +17,9 @@ namespace mcp {
 class MCP_API MessageChannel {
 public:
     explicit MessageChannel(size_t max_buffer = 64)
-        : max_buffer_(max_buffer) {}
+        : max_buffer_(max_buffer) {
+        assert(max_buffer_ > 0);
+    }
 
     template <typename Callback>
     void AsyncReceive(Callback&& cb) {
