@@ -105,6 +105,11 @@ std::string SseEscapeData(std::string_view data) {
     return out;
 }
 
+std::string BuildSseLimitErrorFrame() {
+    return "event: message\ndata: {\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,"
+           "\"message\":\"event exceeds max_sse_event_bytes\"}}\n\n";
+}
+
 std::optional<std::string> RequestStreamTokenFromObject(const JsonValue& obj) {
     auto* pt = obj.Find(detail::kProgressToken);
     if (!pt) return std::nullopt;
@@ -1401,10 +1406,12 @@ void StreamableHttpServerTransport::HandlePost(
         resp.body.clear();
         for (auto& hold_frame : hold_frames) resp.body += hold_frame;
         if (!hold_listen || !std::get_if<JsonRpcResponse>(&response)) {
-            resp.body += "event: message\ndata: " +
-                        SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
+            resp.body += BuildSseEvent(std::move(response));
         }
-        if (resp.body.size() > SseEventLimit()) resp.body.resize(SseEventLimit());
+        if (resp.body.size() > SseEventLimit()) {
+            MCP_LOG(Error, "SSE response exceeds max_sse_event_bytes; returning error frame");
+            resp.body = BuildSseLimitErrorFrame();
+        }
     } else {
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
             resp.status_code = 503;
@@ -1546,8 +1553,13 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
         auto event_id = event_store_->Append(message_session, event_data);
-        event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
-        if (event_data.size() > SseEventLimit()) event_data.resize(SseEventLimit());
+        auto prefix = "id: " + std::to_string(event_id) + "\n";
+        if (prefix.size() + event_data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "SSE event with id exceeds max_sse_event_bytes; "
+                            "broadcasting error frame");
+            event_data = BuildSseLimitErrorFrame();
+        }
+        event_data = prefix + event_data;
     }
     if (http_server_) {
         const bool filtered = !broadcast_method.empty() &&
@@ -1584,7 +1596,10 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
     JsonRpcMessage msg)
 {
     std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(std::move(msg))) + "\n\n";
-    if (data.size() > SseEventLimit()) data.resize(SseEventLimit());
+    if (data.size() > SseEventLimit()) {
+        MCP_LOG(Error, "SSE event exceeds max_sse_event_bytes; returning error frame");
+        return BuildSseLimitErrorFrame();
+    }
     return data;
 }
 

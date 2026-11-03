@@ -1458,7 +1458,7 @@ TEST(StreamableHttpTest, ServerRejectsDeeplyNestedBody) {
     transport->Close();
 }
 
-TEST(StreamableHttpTest, SseEventCapTruncatesResponse) {
+TEST(StreamableHttpTest, SseEventCapYieldsCompleteFrame) {
     auto port = PickFreePort(kTestBasePort + 1430);
     mcp::StreamableHttpServerOptions opts;
     opts.port = port;
@@ -1488,6 +1488,10 @@ TEST(StreamableHttpTest, SseEventCapTruncatesResponse) {
         hdrs);
     ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
+    ASSERT_GE(r->body.size(), 2u);
+    EXPECT_EQ(r->body.compare(r->body.size() - 2, 2, "\n\n"), 0);
+    EXPECT_NE(r->body.find("event: message"), std::string::npos);
+    EXPECT_NE(r->body.find("-32000"), std::string::npos);
     EXPECT_LE(r->body.size(), 256u);
 
     handler->Close();
