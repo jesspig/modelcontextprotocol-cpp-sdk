@@ -43,6 +43,8 @@ inline constexpr std::size_t kMaxBodyBytes = mcp::detail::kMaxHttpBodyBytes;
 inline constexpr std::size_t kMaxConnections = 256;
 inline constexpr std::chrono::milliseconds kKeepAliveIdleTimeout(30000);
 inline constexpr std::chrono::milliseconds kIoTimeout(30000);
+inline constexpr std::chrono::milliseconds kHeaderReadBudget(10000);
+inline constexpr std::chrono::milliseconds kSseWriteTimeout(2000);
 inline constexpr std::string_view kSsePingFrame = ": ping\r\n\r\n";
 
 namespace {
@@ -149,6 +151,12 @@ inline bool HasCloseToken(std::string_view value) {
     return false;
 }
 
+inline bool IsCriticalHeader(std::string_view name) {
+    return name == "content-length" || name == "host" ||
+           name == "transfer-encoding" || name == "authorization" ||
+           name == "mcp-session-id";
+}
+
 inline void AppendCorsHeaders(std::string& out) {
     out += "Access-Control-Allow-Origin: *\r\n";
     out += "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n";
@@ -245,7 +253,7 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
     }
 }
 
-void Impl::Stop() {
+void Impl::Stop(std::thread::id origin) {
     if (!running_.exchange(false))
         return;
     keepalive_cv_.notify_all();
@@ -270,9 +278,17 @@ void Impl::Stop() {
         conn->Close();
     detail::JoinThreadSafely(keepalive_thread_);
     detail::JoinThreadSafely(accept_thread_);
-    for (auto& e : conn_threads_)
-        detail::JoinThreadSafely(e.thread);
-    conn_threads_.clear();
+    std::vector<ConnEntry> entries;
+    {
+        std::lock_guard<std::mutex> lock(conns_mutex_);
+        entries.swap(conn_threads_);
+    }
+    for (auto& e : entries) {
+        if (e.thread.joinable() && e.thread.get_id() == origin)
+            e.thread.detach();
+        else
+            detail::JoinThreadSafely(e.thread);
+    }
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
         conn_fds_.clear();
@@ -360,8 +376,11 @@ void Impl::AcceptLoop(HandlerMap handlers) {
         }
         try {
             auto done = std::make_shared<std::atomic<bool>>(false);
+            auto self = shared_from_this();
             conn_threads_.emplace_back(ConnEntry{
-                std::thread(&Impl::HandleConnection, this, conn_obj, handlers, done), done});
+                std::thread([self, conn_obj, handlers, done]() mutable {
+                    self->HandleConnection(conn_obj, std::move(handlers), done);
+                }), done});
         } catch (const std::exception&) {
             std::lock_guard<std::mutex> lock(conns_mutex_);
             auto it = std::find(conn_fds_.begin(), conn_fds_.end(), conn_obj);
@@ -512,7 +531,7 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
             }
             auto buffer = std::make_shared<SseSendBuffer>(
                 [conn](std::string_view data) {
-                    conn->Write(data.data(), data.size());
+                    conn->Write(data.data(), data.size(), kSseWriteTimeout);
                 });
             auto id = AddSseClient([buffer](std::string_view data) {
                 buffer->Send(data);
@@ -625,11 +644,20 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
     headers.clear();
     content_length_out = 0;
     std::size_t total = 0;
+    const auto budget = options_.header_read_budget.value_or(kHeaderReadBudget);
+    const auto deadline = std::chrono::steady_clock::now() + budget;
     for (;;) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::milliseconds(0))
+            return HeaderResult::BadRequest;
         std::string line;
-        auto r = ReadLine(conn, buffer, line, timeout, kMaxHeaderBytes);
-        if (r == LineResult::Timeout || r == LineResult::Eof)
+        auto r = ReadLine(conn, buffer, line, (std::min)(timeout, remaining),
+                          kMaxHeaderBytes);
+        if (r == LineResult::Eof)
             return HeaderResult::Close;
+        if (r == LineResult::Timeout)
+            continue;
         if (r == LineResult::TooLong)
             return HeaderResult::BadRequest;
         if (line.empty())
@@ -642,6 +670,8 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
             return HeaderResult::BadRequest;
         std::string name(line, 0, colon);
         ToLowerInPlace(name);
+        if (IsCriticalHeader(name) && headers.find(name) != headers.end())
+            return HeaderResult::BadRequest;
         std::string value(line, colon + 1);
         auto first = value.find_first_not_of(" \t");
         auto last = value.find_last_not_of(" \t");

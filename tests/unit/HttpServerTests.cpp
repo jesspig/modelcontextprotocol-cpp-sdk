@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
+#include <mcp/test/McpTimeout.hpp>
 
 #include <atomic>
 #include <cctype>
@@ -91,6 +92,86 @@ std::optional<NetResp> HttpDelete(const std::string& url) {
         return std::nullopt;
     }
 }
+
+struct RawSocketClient {
+    RawSocketClient() {
+#ifdef _WIN32
+        WSADATA wsa;
+        valid = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        valid = valid && sock != INVALID_SOCKET;
+#else
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        valid = sock >= 0;
+#endif
+    }
+
+    ~RawSocketClient() {
+#ifdef _WIN32
+        if (sock != INVALID_SOCKET) closesocket(sock);
+        if (valid) WSACleanup();
+#else
+        if (sock >= 0) close(sock);
+#endif
+    }
+
+    RawSocketClient(const RawSocketClient&) = delete;
+    RawSocketClient& operator=(const RawSocketClient&) = delete;
+
+    bool Connect(uint16_t port, int recv_buffer_bytes, int recv_timeout_ms) {
+        if (!valid) return false;
+        if (recv_buffer_bytes > 0) {
+#ifdef _WIN32
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       reinterpret_cast<const char*>(&recv_buffer_bytes),
+                       sizeof(recv_buffer_bytes));
+#else
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_bytes,
+                       sizeof(recv_buffer_bytes));
+#endif
+        }
+#ifdef _WIN32
+        DWORD timeout_ms = static_cast<DWORD>(recv_timeout_ms);
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+#else
+        timeval timeout{};
+        timeout.tv_usec = recv_timeout_ms * 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+#endif
+        struct sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        return connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0;
+    }
+
+    bool Send(const std::string& data) {
+        if (!valid) return false;
+        return send(sock, data.c_str(), static_cast<int>(data.size()), 0) ==
+               static_cast<int>(data.size());
+    }
+
+    std::string ReceiveUntilIdle(std::chrono::milliseconds window) {
+        std::string received;
+        if (!valid) return received;
+        char chunk[16384];
+        auto deadline = std::chrono::steady_clock::now() + window;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int n = recv(sock, chunk, sizeof(chunk), 0);
+            if (n <= 0) break;
+            received.append(chunk, static_cast<std::size_t>(n));
+        }
+        return received;
+    }
+
+    bool valid{false};
+#ifdef _WIN32
+    SOCKET sock{INVALID_SOCKET};
+#else
+    int sock{-1};
+#endif
+};
 
 } // namespace
 
@@ -487,9 +568,11 @@ TEST(HttpServerTest, HostValidationRejectsForeignHost) {
 
     std::unordered_map<std::string, std::string> hdrs;
     hdrs["Host"] = "evil.example.com";
-    auto rejected = HttpGet(base + "/ping", hdrs);
-    ASSERT_NE(rejected, std::nullopt);
-    EXPECT_EQ(rejected->status_code, 403);
+    RawSocketClient foreign;
+    ASSERT_TRUE(foreign.Connect(port, 0, 400));
+    ASSERT_TRUE(foreign.Send("GET /ping HTTP/1.1\r\nHost: evil.example.com\r\n\r\n"));
+    auto raw = foreign.ReceiveUntilIdle(std::chrono::milliseconds(2000));
+    EXPECT_NE(raw.find("403 Forbidden"), std::string::npos);
     server.Stop();
 }
 
@@ -505,11 +588,12 @@ TEST(HttpServerTest, HostValidationAllowsConfiguredHosts) {
     ASSERT_TRUE(WaitUntilReady(port));
 
     auto base = "http://127.0.0.1:" + std::to_string(port);
-    std::unordered_map<std::string, std::string> hdrs;
-    hdrs["Host"] = "my-host:1234";
-    auto ok = HttpGet(base + "/ping", hdrs);
-    ASSERT_NE(ok, std::nullopt);
-    EXPECT_EQ(ok->status_code, 200);
+    RawSocketClient configured;
+    ASSERT_TRUE(configured.Connect(port, 0, 400));
+    ASSERT_TRUE(configured.Send("GET /ping HTTP/1.1\r\nHost: my-host:1234\r\n\r\n"));
+    auto raw = configured.ReceiveUntilIdle(std::chrono::milliseconds(2000));
+    EXPECT_NE(raw.find("200 OK"), std::string::npos);
+    EXPECT_NE(raw.find("pong"), std::string::npos);
 
     auto rejected = HttpGet(base + "/ping");
     ASSERT_NE(rejected, std::nullopt);
@@ -683,6 +767,79 @@ TEST(StreamableHttpTest, StatefulRequestTimeoutReturns504) {
     EXPECT_EQ(resp.status_code, 504);
     EXPECT_EQ(resp.headers["content-type"], "application/json");
     EXPECT_NE(resp.body.find("-32000"), std::string::npos);
+
+    handler->Close();
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, RequestTimeoutConfigurable) {
+    auto port = PickFreePort(kTestBasePort + 721);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = false;
+    opts.request_timeout = std::chrono::milliseconds(300);
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            g_held_promises.push_back(std::move(p));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "POST";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.body = R"({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})";
+    req.headers["Content-Type"] = "application/json";
+    req.headers["Mcp-Method"] = "tools/call";
+    req.timeout = std::chrono::milliseconds(30000);
+    auto started = std::chrono::steady_clock::now();
+    auto resp = client.Request(req);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_EQ(resp.status_code, 504);
+    EXPECT_NE(resp.body.find("-32000"), std::string::npos);
+    EXPECT_LT(elapsed_ms, 5000);
+
+    handler->Close();
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, RequestTimeoutDisabled) {
+    auto port = PickFreePort(kTestBasePort + 722);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = false;
+    opts.request_timeout = std::chrono::milliseconds(0);
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(600));
+            mcp::JsonValue result(mcp::JsonValue::object_tag);
+            result["text"] = mcp::JsonValue("slow-ok");
+            p.set_value(std::move(result));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto r = HttpPost(
+        "http://127.0.0.1:" + std::to_string(port) + "/mcp",
+        R"({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})",
+        {{"Content-Type", "application/json"}, {"Mcp-Method", "tools/call"}});
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 200);
+    EXPECT_NE(r->body.find("slow-ok"), std::string::npos);
 
     handler->Close();
     transport->Close();
@@ -1322,6 +1479,27 @@ TEST(HttpServerTest, OriginValidationRejectsForeignOrigin) {
     server.Stop();
 }
 
+TEST(HttpServerTest, HandlerCallingStopDoesNotDeadlock) {
+    auto port = PickFreePort(kTestBasePort + 2400);
+    mcp::HttpServer server(port);
+    std::atomic<bool> stop_returned{false};
+    MCP_RUN_WITH_TIMEOUT([&]() {
+        server.SetHandler("GET", "/stop",
+            [&server, &stop_returned](const MCP_Request&, MCP_Response& resp) {
+                server.Stop();
+                stop_returned.store(true);
+                resp.body = "stopped";
+            });
+        server.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+
+        HttpGet("http://127.0.0.1:" + std::to_string(port) + "/stop");
+        EXPECT_TRUE(WaitForCondition([&] { return stop_returned.load(); }, 5000));
+        EXPECT_EQ(server.SseClientCount(), 0u);
+    });
+    server.Stop();
+}
+
 TEST(StreamableHttpTest, ServerRejectsOversizedBody) {
     auto port = PickFreePort(kTestBasePort + 1410);
     mcp::StreamableHttpServerOptions opts;
@@ -1365,7 +1543,7 @@ TEST(StreamableHttpTest, ServerRejectsDeeplyNestedBody) {
     transport->Close();
 }
 
-TEST(StreamableHttpTest, SseEventCapTruncatesResponse) {
+TEST(StreamableHttpTest, SseEventCapYieldsCompleteFrame) {
     auto port = PickFreePort(kTestBasePort + 1430);
     mcp::StreamableHttpServerOptions opts;
     opts.port = port;
@@ -1395,9 +1573,101 @@ TEST(StreamableHttpTest, SseEventCapTruncatesResponse) {
         hdrs);
     ASSERT_NE(r, std::nullopt);
     EXPECT_EQ(r->status_code, 200);
+    ASSERT_GE(r->body.size(), 2u);
+    EXPECT_EQ(r->body.compare(r->body.size() - 2, 2, "\n\n"), 0);
+    EXPECT_NE(r->body.find("event: message"), std::string::npos);
+    EXPECT_NE(r->body.find("-32000"), std::string::npos);
     EXPECT_LE(r->body.size(), 256u);
 
     handler->Close();
+    transport->Close();
+}
+
+std::string RawHttpGet(const std::string& path, uint16_t port,
+                       const std::unordered_map<std::string, std::string>& hdrs,
+                       std::chrono::milliseconds read_window) {
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return {};
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) return {};
+    DWORD recv_timeout_ms = 500;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&recv_timeout_ms), sizeof(recv_timeout_ms));
+#else
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return {};
+    timeval recv_timeout{};
+    recv_timeout.tv_usec = 500000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
+#endif
+    struct sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    std::string received;
+    if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+        std::string request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+        for (const auto& [name, value] : hdrs)
+            request += name + ": " + value + "\r\n";
+        request += "\r\n";
+        send(sock, request.c_str(), static_cast<int>(request.size()), 0);
+        char chunk[4096];
+        auto deadline = std::chrono::steady_clock::now() + read_window;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int n = recv(sock, chunk, sizeof(chunk), 0);
+            if (n <= 0) break;
+            received.append(chunk, static_cast<std::size_t>(n));
+        }
+    }
+#ifdef _WIN32
+    closesocket(sock);
+    WSACleanup();
+#else
+    close(sock);
+#endif
+    return received;
+}
+
+std::string RawResponseBody(const std::string& raw) {
+    auto sep = raw.find("\r\n\r\n");
+    if (sep == std::string::npos) return {};
+    return raw.substr(sep + 4);
+}
+
+TEST(StreamableHttpTest, ReplayRespectsByteBudget) {
+    auto port = PickFreePort(kTestBasePort + 1440);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = true;
+    opts.sse_keep_alive_ms = 0;
+    opts.max_sse_replay_bytes = 1024;
+    auto store = std::make_shared<mcp::EventStore>();
+    opts.event_store = store;
+    for (int i = 1; i <= 8; ++i) {
+        std::string frame = "event: message\ndata: {\"marker\":\"e" +
+                            std::to_string(i) + "\",\"pad\":\"" +
+                            std::string(300, 'p') + "\"}\n\n";
+        store->Append(std::string{}, std::move(frame));
+    }
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::unordered_map<std::string, std::string> hdrs;
+    hdrs["Last-Event-ID"] = "0";
+    auto raw = RawHttpGet("/mcp", port, hdrs, std::chrono::milliseconds(1500));
+    ASSERT_NE(raw.find("200 OK"), std::string::npos);
+    auto body = RawResponseBody(raw);
+    ASSERT_FALSE(body.empty());
+    EXPECT_NE(body.find("e8"), std::string::npos);
+    EXPECT_NE(body.find("e7"), std::string::npos);
+    EXPECT_EQ(body.find("e6"), std::string::npos);
+    EXPECT_EQ(body.find("e1\""), std::string::npos);
+    EXPECT_LE(body.size(), 1024u + 64u);
+
     transport->Close();
 }
 
@@ -1500,5 +1770,81 @@ TEST(HttpServerTest, SseRegistrationPrecedesFirstFrameWrite) {
     ASSERT_NE(first_pos, std::string::npos);
     ASSERT_NE(second_pos, std::string::npos);
     EXPECT_LT(first_pos, second_pos);
+    server.Stop();
+}
+
+TEST(HttpServerTest, SlowHeadersRejectedWithinBudget) {
+    auto port = PickFreePort(kTestBasePort + 2420);
+    mcp::HttpServerOptions opts;
+    opts.header_read_budget = std::chrono::milliseconds(300);
+    mcp::HttpServer server(port, opts);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    RawSocketClient client;
+    ASSERT_TRUE(client.Connect(port, 0, 400));
+    ASSERT_TRUE(client.Send("GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: a\r\n"));
+    auto started = std::chrono::steady_clock::now();
+    auto received = client.ReceiveUntilIdle(std::chrono::milliseconds(5000));
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_NE(received.find("400 Bad Request"), std::string::npos);
+    EXPECT_LT(elapsed_ms, 5000);
+    server.Stop();
+}
+
+TEST(HttpServerTest, DuplicateContentLengthRejected) {
+    auto port = PickFreePort(kTestBasePort + 2430);
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/echo", [](const MCP_Request& req, MCP_Response& resp) {
+        resp.body = req.body;
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    RawSocketClient client;
+    ASSERT_TRUE(client.Connect(port, 0, 400));
+    ASSERT_TRUE(client.Send("POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                            "Content-Length: 4\r\nContent-Length: 4\r\n\r\nbody"));
+    auto received = client.ReceiveUntilIdle(std::chrono::milliseconds(2000));
+    EXPECT_NE(received.find("400 Bad Request"), std::string::npos);
+    server.Stop();
+}
+
+TEST(HttpServerTest, SlowSseClientDoesNotBlockBroadcast) {
+    auto port = PickFreePort(kTestBasePort + 2440);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/sse", [](const MCP_Request&, MCP_Response& resp) {
+        resp.is_sse = true;
+        resp.headers["content-type"] = "text/event-stream";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    RawSocketClient slow_client;
+    ASSERT_TRUE(slow_client.Connect(port, 4096, 400));
+    ASSERT_TRUE(slow_client.Send(
+        "GET /sse HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n"));
+    ASSERT_TRUE(WaitForCondition([&] { return server.SseClientCount() == 1; }, 5000));
+
+    const std::string burst(512 * 1024, 's');
+    auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < 128 && server.SseClientCount() > 0; ++i)
+        server.BroadcastSse(burst);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_EQ(server.SseClientCount(), 0u);
+    EXPECT_LT(elapsed_ms, 20000);
+
+    std::string received;
+    auto fast_id = server.AddSseClient(
+        [&received](std::string_view data) { received.append(data); });
+    ASSERT_NE(fast_id, 0u);
+    server.BroadcastSse("event: message\ndata: fast\n\n");
+    EXPECT_NE(received.find("fast"), std::string::npos);
+    server.RemoveSseClient(fast_id);
     server.Stop();
 }
