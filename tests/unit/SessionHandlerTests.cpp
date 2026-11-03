@@ -1409,3 +1409,105 @@ TEST(SessionHandlerTest, TimeoutWithoutTransportCancelSendsNoNotification) {
     EXPECT_TRUE(transport->NotificationMethods().empty());
     handler->Close();
 }
+
+TEST(SessionHandlerTest, PeerCancelDoesNotResolveOwnOutgoingRequest) {
+    HandlerPair hp;
+
+    std::promise<RequestId> id_promise;
+    auto id_future = id_promise.get_future();
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&id_promise, &held_promise](const JsonRpcRequest& req,
+                                     std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+            id_promise.set_value(req.id);
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+
+    ASSERT_EQ(id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_NE(held_promise, nullptr);
+
+    JsonValue cancel_params(JsonValue::object_tag);
+    cancel_params["requestId"] = std::visit(
+        [](const auto& value) { return JsonValue(value); }, id_future.get());
+    hp.server->SendNotification(notifications::kCancelled,
+                               std::move(cancel_params));
+
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    JsonValue result(JsonValue::object_tag);
+    result["marker"] = JsonValue("real-response");
+    held_promise->set_value(std::move(result));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto delivered = future.get();
+    ASSERT_TRUE(delivered.Contains("marker"));
+    EXPECT_EQ(delivered["marker"].GetString(), std::string("real-response"));
+}
+
+TEST(SessionHandlerTest, CancelCallbackRunsOnJoinedThread) {
+    HandlerPair hp;
+
+    std::promise<RequestId> id_promise;
+    auto id_future = id_promise.get_future();
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&id_promise, &held_promise](const JsonRpcRequest& req,
+                                     std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+            id_promise.set_value(req.id);
+        });
+
+    std::promise<void> callback_entered;
+    auto entered_future = callback_entered.get_future();
+    auto callback_release = std::make_shared<std::promise<void>>();
+    auto release_future =
+        std::make_shared<std::future<void>>(callback_release->get_future());
+
+    auto future = hp.client->SendRequest(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30),
+        [&callback_entered, release_future](RequestOutcome) {
+            callback_entered.set_value();
+            release_future->wait();
+        });
+
+    ASSERT_EQ(id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_NE(held_promise, nullptr);
+
+    std::thread canceller([client = hp.client, id = id_future.get()] {
+        client->CancelRequest(id, "test-cancel");
+    });
+
+    ASSERT_EQ(entered_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    std::atomic<bool> close_returned{false};
+    std::thread closer([client = hp.client, &close_returned] {
+        client->Close();
+        close_returned.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(close_returned.load());
+
+    callback_release->set_value();
+    closer.join();
+    canceller.join();
+    EXPECT_TRUE(close_returned.load());
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    auto settled = future.get();
+    ASSERT_TRUE(settled.Contains("code"));
+    EXPECT_EQ(settled["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestCancelled));
+}

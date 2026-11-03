@@ -159,9 +159,13 @@ private:
         JsonRpcRequest req;
         std::future<JsonValue> future;
         std::string cancel_key;
+        std::shared_ptr<PendingRequest> cancelled_request;
+        std::optional<ErrorData> cancel_error;
     };
 
     void DeliverResponse(PendingResponse item);
+    void DeliverCancellation(const PendingResponse& item);
+    void EnqueueCancellation(std::shared_ptr<PendingRequest> request, ErrorData error);
     void ResponseWorkerLoop();
 
     static std::string GetRequestIdKey(const RequestId& rid);
