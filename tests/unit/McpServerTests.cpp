@@ -1563,6 +1563,38 @@ RequestMeta MetaWithSubscriptionId(std::string_view subscription_id) {
 
 } // namespace
 
+TEST(McpServerTest, ExtensionsListConcurrentWithRegistration) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::atomic<bool> stop{false};
+    std::thread reader([&ctx, &stop] {
+        while (!stop.load()) {
+            auto future = ctx.client->SendRequest(methods::kListExtensions,
+                JsonValue(JsonValue::object_tag), {},
+                std::chrono::milliseconds(5000));
+            if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+                ADD_FAILURE() << "extensions/list timed out";
+                return;
+            }
+            auto resp = future.get();
+            EXPECT_FALSE(resp.Contains("code"));
+            EXPECT_TRUE(resp.Contains("extensions"));
+        }
+    });
+
+    for (int i = 0; i < 20; ++i) {
+        ctx.server->RegisterTool("concurrent_tool_" + std::to_string(i),
+            ToolOptions{},
+            [](const Ctx&) { return CallToolResult{}; });
+    }
+    stop.store(true);
+    reader.join();
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
 TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
     auto ctx = MakeModernServerWithClient();
     NegotiateModernVersion(ctx.server);

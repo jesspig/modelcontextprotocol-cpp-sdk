@@ -1491,6 +1491,7 @@ void McpServer::WireExtensionHandlers() {
     handler_->SetRequestHandler(methods::kListExtensions,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             if (!RequireInitialized(IsSessionInitialized(req.session_id), handler_->IsJuly2026OrLater(req.session_id), p)) return;
+            std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
             JsonValue j(JsonValue::object_tag);
             JsonValue ext_list(JsonValue::array_tag);
             if (capabilities_.extensions) {
