@@ -38,6 +38,7 @@ struct PendingRequest {
     std::string request_id;
     RequestId id;
     bool cancel_on_timeout{true};
+    std::string session_id;
 };
 
 struct Subscription {

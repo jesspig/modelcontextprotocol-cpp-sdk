@@ -230,6 +230,39 @@ TEST(SessionHandlerTest, CancelledNotificationNotRoutedToHandlerMap) {
     EXPECT_FALSE(cancelled_handler_called);
 }
 
+TEST(SessionHandlerTest, NotificationHandlerThrowsKeepsSessionAlive) {
+    HandlerPair hp;
+
+    std::promise<void> invoked_promise;
+    auto invoked_future = invoked_promise.get_future();
+    hp.server->SetNotificationHandler(notifications::kProgress,
+        [&invoked_promise](const JsonRpcNotification&) {
+            invoked_promise.set_value();
+            throw std::runtime_error("notification handler boom");
+        });
+
+    JsonValue progress_params(JsonValue::object_tag);
+    progress_params["progressToken"] = JsonValue("pt-throw");
+    hp.client->SendNotification(notifications::kProgress,
+                                std::move(progress_params));
+
+    ASSERT_EQ(invoked_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(3000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_FALSE(future.get().Contains("code"));
+}
+
 TEST(SessionHandlerTest, ErrorResponseSatisfiesFutureContract) {
     HandlerPair hp;
 
@@ -1375,4 +1408,156 @@ TEST(SessionHandlerTest, TimeoutWithoutTransportCancelSendsNoNotification) {
     EXPECT_TRUE(transport->CancelledRequests().empty());
     EXPECT_TRUE(transport->NotificationMethods().empty());
     handler->Close();
+}
+
+TEST(SessionHandlerTest, PeerCancelDoesNotResolveOwnOutgoingRequest) {
+    HandlerPair hp;
+
+    std::promise<RequestId> id_promise;
+    auto id_future = id_promise.get_future();
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&id_promise, &held_promise](const JsonRpcRequest& req,
+                                     std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+            id_promise.set_value(req.id);
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+
+    ASSERT_EQ(id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_NE(held_promise, nullptr);
+
+    JsonValue cancel_params(JsonValue::object_tag);
+    cancel_params["requestId"] = std::visit(
+        [](const auto& value) { return JsonValue(value); }, id_future.get());
+    hp.server->SendNotification(notifications::kCancelled,
+                               std::move(cancel_params));
+
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    JsonValue result(JsonValue::object_tag);
+    result["marker"] = JsonValue("real-response");
+    held_promise->set_value(std::move(result));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto delivered = future.get();
+    ASSERT_TRUE(delivered.Contains("marker"));
+    EXPECT_EQ(delivered["marker"].GetString(), std::string("real-response"));
+}
+
+TEST(SessionHandlerTest, CancelCallbackRunsOnJoinedThread) {
+    HandlerPair hp;
+
+    std::promise<RequestId> id_promise;
+    auto id_future = id_promise.get_future();
+    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&id_promise, &held_promise](const JsonRpcRequest& req,
+                                     std::promise<JsonValue> p) {
+            held_promise =
+                std::make_shared<std::promise<JsonValue>>(std::move(p));
+            id_promise.set_value(req.id);
+        });
+
+    std::promise<void> callback_entered;
+    auto entered_future = callback_entered.get_future();
+    auto callback_release = std::make_shared<std::promise<void>>();
+    auto release_future =
+        std::make_shared<std::future<void>>(callback_release->get_future());
+
+    auto future = hp.client->SendRequest(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30),
+        [&callback_entered, release_future](RequestOutcome) {
+            callback_entered.set_value();
+            release_future->wait();
+        });
+
+    ASSERT_EQ(id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_NE(held_promise, nullptr);
+
+    std::thread canceller([client = hp.client, id = id_future.get()] {
+        client->CancelRequest(id, "test-cancel");
+    });
+
+    ASSERT_EQ(entered_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    std::atomic<bool> close_returned{false};
+    std::thread closer([client = hp.client, &close_returned] {
+        client->Close();
+        close_returned.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(close_returned.load());
+
+    callback_release->set_value();
+    closer.join();
+    canceller.join();
+    EXPECT_TRUE(close_returned.load());
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    auto settled = future.get();
+    ASSERT_TRUE(settled.Contains("code"));
+    EXPECT_EQ(settled["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestCancelled));
+}
+
+TEST(SessionHandlerTest, ResponseQueueRejectsBeyondCapacity) {
+    HandlerPair hp;
+    hp.server->SetResponseQueueCapacity(1);
+
+    std::promise<RequestId> first_id_promise;
+    auto first_id_future = first_id_promise.get_future();
+    std::promise<RequestId> second_id_promise;
+    auto second_id_future = second_id_promise.get_future();
+    std::shared_ptr<std::promise<JsonValue>> first_held;
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&first_id_promise, &second_id_promise, &first_held](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            auto held = std::make_shared<std::promise<JsonValue>>(std::move(p));
+            if (!first_held) {
+                first_held = held;
+                first_id_promise.set_value(req.id);
+                return;
+            }
+            second_id_promise.set_value(req.id);
+        });
+
+    auto first = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+    ASSERT_EQ(first_id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    auto second = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+    ASSERT_EQ(second_id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_NE(first_held, nullptr);
+
+    ASSERT_EQ(second.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto rejected = second.get();
+    ASSERT_TRUE(rejected.Contains("code"));
+    EXPECT_EQ(rejected["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InternalError));
+    EXPECT_EQ(first.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    first_held->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(first.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_FALSE(first.get().Contains("code"));
 }
