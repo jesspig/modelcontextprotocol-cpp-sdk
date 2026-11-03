@@ -53,6 +53,8 @@ struct HttpServerOptions {
     std::string bind_host;
 
     std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
+
+    std::optional<std::chrono::milliseconds> header_read_budget;
 };
 
 struct HttpServerImpl;

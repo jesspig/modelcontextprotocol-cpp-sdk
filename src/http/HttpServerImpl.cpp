@@ -43,6 +43,7 @@ inline constexpr std::size_t kMaxBodyBytes = mcp::detail::kMaxHttpBodyBytes;
 inline constexpr std::size_t kMaxConnections = 256;
 inline constexpr std::chrono::milliseconds kKeepAliveIdleTimeout(30000);
 inline constexpr std::chrono::milliseconds kIoTimeout(30000);
+inline constexpr std::chrono::milliseconds kHeaderReadBudget(10000);
 inline constexpr std::string_view kSsePingFrame = ": ping\r\n\r\n";
 
 namespace {
@@ -636,11 +637,20 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
     headers.clear();
     content_length_out = 0;
     std::size_t total = 0;
+    const auto budget = options_.header_read_budget.value_or(kHeaderReadBudget);
+    const auto deadline = std::chrono::steady_clock::now() + budget;
     for (;;) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::milliseconds(0))
+            return HeaderResult::BadRequest;
         std::string line;
-        auto r = ReadLine(conn, buffer, line, timeout, kMaxHeaderBytes);
-        if (r == LineResult::Timeout || r == LineResult::Eof)
+        auto r = ReadLine(conn, buffer, line, (std::min)(timeout, remaining),
+                          kMaxHeaderBytes);
+        if (r == LineResult::Eof)
             return HeaderResult::Close;
+        if (r == LineResult::Timeout)
+            continue;
         if (r == LineResult::TooLong)
             return HeaderResult::BadRequest;
         if (line.empty())

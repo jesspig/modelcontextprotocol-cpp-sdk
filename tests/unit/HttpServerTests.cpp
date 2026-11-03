@@ -1498,6 +1498,90 @@ TEST(StreamableHttpTest, SseEventCapYieldsCompleteFrame) {
     transport->Close();
 }
 
+namespace {
+
+struct RawSocketClient {
+    RawSocketClient() {
+#ifdef _WIN32
+        WSADATA wsa;
+        valid = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        valid = valid && sock != INVALID_SOCKET;
+#else
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        valid = sock >= 0;
+#endif
+    }
+
+    ~RawSocketClient() {
+#ifdef _WIN32
+        if (sock != INVALID_SOCKET) closesocket(sock);
+        if (valid) WSACleanup();
+#else
+        if (sock >= 0) close(sock);
+#endif
+    }
+
+    RawSocketClient(const RawSocketClient&) = delete;
+    RawSocketClient& operator=(const RawSocketClient&) = delete;
+
+    bool Connect(uint16_t port, int recv_buffer_bytes, int recv_timeout_ms) {
+        if (!valid) return false;
+        if (recv_buffer_bytes > 0) {
+#ifdef _WIN32
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       reinterpret_cast<const char*>(&recv_buffer_bytes),
+                       sizeof(recv_buffer_bytes));
+#else
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_bytes,
+                       sizeof(recv_buffer_bytes));
+#endif
+        }
+#ifdef _WIN32
+        DWORD timeout_ms = static_cast<DWORD>(recv_timeout_ms);
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+#else
+        timeval timeout{};
+        timeout.tv_usec = recv_timeout_ms * 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+#endif
+        struct sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        return connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0;
+    }
+
+    bool Send(const std::string& data) {
+        if (!valid) return false;
+        return send(sock, data.c_str(), static_cast<int>(data.size()), 0) ==
+               static_cast<int>(data.size());
+    }
+
+    std::string ReceiveUntilIdle(std::chrono::milliseconds window) {
+        std::string received;
+        if (!valid) return received;
+        char chunk[16384];
+        auto deadline = std::chrono::steady_clock::now() + window;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int n = recv(sock, chunk, sizeof(chunk), 0);
+            if (n <= 0) break;
+            received.append(chunk, static_cast<std::size_t>(n));
+        }
+        return received;
+    }
+
+    bool valid{false};
+#ifdef _WIN32
+    SOCKET sock{INVALID_SOCKET};
+#else
+    int sock{-1};
+#endif
+};
+
+} // namespace
+
 std::string RawHttpGet(const std::string& path, uint16_t port,
                        const std::unordered_map<std::string, std::string>& hdrs,
                        std::chrono::milliseconds read_window) {
@@ -1685,5 +1769,28 @@ TEST(HttpServerTest, SseRegistrationPrecedesFirstFrameWrite) {
     ASSERT_NE(first_pos, std::string::npos);
     ASSERT_NE(second_pos, std::string::npos);
     EXPECT_LT(first_pos, second_pos);
+    server.Stop();
+}
+
+TEST(HttpServerTest, SlowHeadersRejectedWithinBudget) {
+    auto port = PickFreePort(kTestBasePort + 2420);
+    mcp::HttpServerOptions opts;
+    opts.header_read_budget = std::chrono::milliseconds(300);
+    mcp::HttpServer server(port, opts);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    RawSocketClient client;
+    ASSERT_TRUE(client.Connect(port, 0, 400));
+    ASSERT_TRUE(client.Send("GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: a\r\n"));
+    auto started = std::chrono::steady_clock::now();
+    auto received = client.ReceiveUntilIdle(std::chrono::milliseconds(5000));
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_NE(received.find("400 Bad Request"), std::string::npos);
+    EXPECT_LT(elapsed_ms, 5000);
     server.Stop();
 }
