@@ -162,6 +162,9 @@ private:
                 }
             }
         }
+
+        if (channel_) channel_->Close();
+        SetDisconnected();
     }
 
     std::thread read_thread_;

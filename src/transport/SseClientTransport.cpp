@@ -68,6 +68,18 @@ struct SseEvent {
     std::optional<uint64_t> retry_ms;
 };
 
+std::size_t FindSseBlockBoundary(const std::string& buffer, std::size_t& terminator_bytes) {
+    std::size_t lf = buffer.find("\n\n");
+    std::size_t crlf = buffer.find("\r\n\r\n");
+    if (lf == std::string::npos && crlf == std::string::npos) return std::string::npos;
+    if (crlf != std::string::npos && (lf == std::string::npos || crlf < lf)) {
+        terminator_bytes = 4;
+        return crlf;
+    }
+    terminator_bytes = 2;
+    return lf;
+}
+
 SseEvent ParseSseEvent(const std::string& block) {
     SseEvent evt;
     evt.event_type = "message";
@@ -159,6 +171,7 @@ private:
             req.method = "GET";
             req.url = options_.server_url;
             req.timeout = kSseClientIdleTimeout;
+            req.max_response_bytes = std::nullopt;
             req.headers["Accept"] = "text/event-stream";
             req.redirect_policy = options_.redirect_policy;
             req.max_redirects = options_.max_redirects;
@@ -166,24 +179,27 @@ private:
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
 
-            auto body_cb = [this](std::string_view chunk) {
-                if (!chunk.empty()) {
-                    sse_buffer_.append(chunk.data(), chunk.size());
+            auto body_cb = [this, &reconnect_attempts](std::string_view chunk) {
+                if (chunk.empty()) return;
+                reconnect_attempts = 0;
 
-                    if (sse_buffer_.size() > SseEventLimit()) {
-                        sse_buffer_.clear();
-                        NotifyError("SSE event size exceeds maximum allowed size");
-                        running_.store(false);
-                        http_client_->Close();
-                        return;
-                    }
+                sse_buffer_.append(chunk.data(), chunk.size());
 
-                    size_t pos;
-                    while ((pos = sse_buffer_.find("\n\n")) != std::string::npos) {
-                        auto block = sse_buffer_.substr(0, pos);
-                        sse_buffer_.erase(0, pos + 2);
-                        DispatchSseEvent(block);
-                    }
+                if (sse_buffer_.size() > SseEventLimit()) {
+                    sse_buffer_.clear();
+                    NotifyError("SSE event size exceeds maximum allowed size");
+                    running_.store(false);
+                    http_client_->Close();
+                    return;
+                }
+
+                std::size_t terminator_bytes = 0;
+                std::size_t pos = 0;
+                while ((pos = FindSseBlockBoundary(sse_buffer_, terminator_bytes)) !=
+                       std::string::npos) {
+                    auto block = sse_buffer_.substr(0, pos);
+                    sse_buffer_.erase(0, pos + terminator_bytes);
+                    DispatchSseEvent(block);
                 }
             };
 
