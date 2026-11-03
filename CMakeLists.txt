@@ -59,9 +59,9 @@ function(mcp_enable_werror target)
         return()
     endif()
     if(MSVC)
-        target_compile_options(${target} PUBLIC /WX)
+        target_compile_options(${target} PRIVATE /WX)
     else()
-        target_compile_options(${target} PUBLIC -Werror)
+        target_compile_options(${target} PRIVATE -Werror)
     endif()
     message(STATUS "[mcp] Werror: ${target}")
 endfunction()
@@ -288,7 +288,8 @@ file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "compiler_launcher=${CMAKE_CXX_COMPILER_LAUNCHER}\n"
     "lto=${MCP_LTO}\n"
     "unity_enabled=${MCP_UNITY_ENABLED}\n"
-    "unity_batch=${MCP_UNITY_BATCH}\n")
+    "unity_batch=${MCP_UNITY_BATCH}\n"
+    "sanitize=${MCP_SANITIZE}\n")
 
 set(MCP_PACKAGE_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
 

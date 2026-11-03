@@ -140,3 +140,108 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.build_type }} --output-on-failure --timeout 120
+
+      - name: Build examples
+        if: runner.os == 'Linux' && matrix.build_type == 'debug' && matrix.compiler != 'gcc'
+        run: |
+          cmake --preset debug -DMCP_BUILD_EXAMPLES=ON
+          cmake --build --preset debug --target EchoServer WeatherServer SimpleClient
+
+      - name: Compat smoke
+        if: runner.os == 'Linux' && matrix.build_type == 'debug' && matrix.compiler != 'gcc'
+        run: cmake --build --preset debug --target mcp-compat-smoke
+
+  sanitize:
+    name: sanitize (asan+ubsan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Configure
+        run: cmake --preset debug -DMCP_WERROR=ON -DMCP_SANITIZE=address -DMCP_WITH_OPENSSL=OFF -B build/asan
+
+      - name: Build
+        run: cmake --build build/asan
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: abort_on_error=1:detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/asan --output-on-failure --timeout 300
+
+  tsan:
+    name: sanitize (tsan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Configure
+        run: cmake --preset debug -DMCP_WERROR=ON -DMCP_SANITIZE=thread -DMCP_WITH_OPENSSL=OFF -B build/tsan
+
+      - name: Build
+        run: cmake --build build/tsan
+
+      - name: Test
+        env:
+          TSAN_OPTIONS: second_deadlock_stack=1:halt_on_error=1
+        run: >-
+          ctest --test-dir build/tsan --output-on-failure --timeout 300
+          -R "Transport|HttpClient|TcpSocket|StreamableHttp|SessionHandler"
+
+  install-consumer:
+    name: install consumer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Configure
+        run: cmake --preset debug -DMCP_BUILD_TESTS=OFF -DMCP_WERROR=ON -DMCP_WITH_OPENSSL=OFF
+
+      - name: Build
+        run: cmake --build --preset debug
+
+      - name: Install
+        run: cmake --install build/debug --prefix "${{ github.workspace }}/install-prefix"
+
+      - name: Build consumer
+        run: |
+          consumer_dir="${{ runner.temp }}/mcp-consumer"
+          mkdir -p "$consumer_dir"
+          cat > "$consumer_dir/CMakeLists.txt" <<'CONSUMER_CMAKE'
+          cmake_minimum_required(VERSION 3.28)
+          project(mcp-consumer LANGUAGES CXX)
+
+          set(CMAKE_CXX_STANDARD 17)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+          find_package(mcp REQUIRED)
+
+          add_executable(mcp-consumer main.cpp)
+          target_link_libraries(mcp-consumer PRIVATE mcp::mcp-client)
+          CONSUMER_CMAKE
+          cat > "$consumer_dir/main.cpp" <<'CONSUMER_MAIN'
+          #include <mcp/McpVersion.hpp>
+          #include <mcp/client/McpClient.hpp>
+
+          #include <cstdio>
+          #include <string>
+
+          int main() {
+              std::printf("%s\n", std::string(mcp::kSdkVersion).c_str());
+              auto create = &mcp::McpClient::Create;
+              return create ? 0 : 1;
+          }
+          CONSUMER_MAIN
+          cmake -S "$consumer_dir" -B "$consumer_dir/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install-prefix"
+          cmake --build "$consumer_dir/build"
