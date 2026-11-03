@@ -22,7 +22,7 @@ public:
         McpSessionHandler& handler,
         const ClientOptions& options);
 
-    static std::optional<DiscoverResult> ProbeDiscover(
+    [[nodiscard]] static std::optional<DiscoverResult> ProbeDiscover(
         McpSessionHandler& handler,
         std::string_view preferred_version,
         std::chrono::seconds timeout,

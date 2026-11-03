@@ -37,7 +37,7 @@ public:
         cb(std::error_code{}, std::move(msg));
     }
 
-    bool Send(JsonRpcMessage message) {
+    [[nodiscard]] bool Send(JsonRpcMessage message) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_send_.wait(lock, [this] { return queue_.size() < max_buffer_ || closed_; });
@@ -48,7 +48,7 @@ public:
         return true;
     }
 
-    bool TrySend(JsonRpcMessage message) {
+    [[nodiscard]] bool TrySend(JsonRpcMessage message) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || queue_.size() >= max_buffer_) return false;
@@ -67,9 +67,9 @@ public:
         cv_send_.notify_all();
     }
 
-    bool IsOpen() const { return !closed_.load(); }
+    [[nodiscard]] bool IsOpen() const { return !closed_.load(); }
 
-    bool Empty() const {
+    [[nodiscard]] bool Empty() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return queue_.empty();
     }

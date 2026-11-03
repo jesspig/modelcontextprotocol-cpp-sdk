@@ -505,7 +505,7 @@ TEST(OAuthTest, PrivateKeyJwtUnsupportedAlgorithmRejectsBeforeTokenRequest) {
 
     bool threw = false;
     try {
-        provider.AuthenticateClientCredentials();
+        (void)provider.AuthenticateClientCredentials();
     } catch (const McpError& e) {
         threw = true;
         EXPECT_TRUE(e.Code() == McpErrorCode::InvalidParams);
@@ -1871,7 +1871,7 @@ TEST(OAuthTest, DiscoveredPlaintextTokenEndpointRejected) {
     opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
     OAuthClientProvider provider(opts);
-    EXPECT_THROW(provider.Authenticate(), McpError);
+    EXPECT_THROW((void)provider.Authenticate(), McpError);
     server.Stop();
 }
 

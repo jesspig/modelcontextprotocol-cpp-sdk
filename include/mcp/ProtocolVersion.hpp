@@ -18,7 +18,7 @@ inline constexpr std::string_view kProtocolVersions[] = {
     "2026-07-28",
 };
 
-constexpr bool IsModernProtocolVersion(std::string_view version) noexcept {
+[[nodiscard]] constexpr bool IsModernProtocolVersion(std::string_view version) noexcept {
     return version >= kLatestProtocolVersion;
 }
 

@@ -101,7 +101,7 @@ public:
     bool RequiresRequestScopedNotifications() const override { return true; }
     bool IsStateless() const override { return options_.stateless; }
 
-    static bool ValidateMcpHeaders(
+    [[nodiscard]] static bool ValidateMcpHeaders(
         const std::string& method_header,
         const std::string& name_header,
         const JsonValue& body,

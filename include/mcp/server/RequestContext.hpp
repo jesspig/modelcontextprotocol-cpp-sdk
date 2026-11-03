@@ -58,7 +58,7 @@ public:
     const TParams& Params() const { return params_; }
     McpServer& Server() const { return *server_; }
     const mcp::JsonRpcRequest& GetRequest() const { return jsonrpc_request_; }
-    std::optional<LoggingLevel> LogLevel() const { return log_level_; }
+    [[nodiscard]] std::optional<LoggingLevel> LogLevel() const { return log_level_; }
     std::string_view SessionId() const { return session_id_; }
 
     void Log(LoggingLevel level, std::string_view data) const {
@@ -69,7 +69,7 @@ public:
         if (log_fn_) log_fn_(level, data);
     }
 
-    bool IsCancellationRequested() const {
+    [[nodiscard]] bool IsCancellationRequested() const {
         return cancellation_flag_ && cancellation_flag_->load();
     }
 

@@ -1079,7 +1079,7 @@ void McpServer::SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store) {
     }
     for (const auto& task_id : expired) {
         try {
-            store->RemoveTask(task_id);
+            (void)store->RemoveTask(task_id);
         } catch (const std::exception& e) {
             MCP_LOG(Error, std::string("task store: failed to remove expired task ") +
                 task_id + ": " + e.what());
@@ -1646,7 +1646,7 @@ void McpServer::WireTaskHandlers() {
                         resumed_task->input_requests, resumed_task->input_responses);
                     if (!pending.empty()) {
                         try {
-                            store->ParkTaskForInput(params.task_id,
+                            (void)store->ParkTaskForInput(params.task_id,
                                 FilterInputRequests(resumed_task->input_requests, pending));
                         } catch (const std::exception& e) {
                             p.set_exception(std::make_exception_ptr(
@@ -1693,7 +1693,7 @@ void McpServer::WireTaskHandlers() {
                     try {
                         auto resume_result = resume_future.get();
                         if (resume_flag->load()) {
-                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                            (void)store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
                             retire_resumed_task();
                         } else if (resume_result.input_required) {
                             std::optional<InputRequests> fresh =
@@ -1703,16 +1703,16 @@ void McpServer::WireTaskHandlers() {
                             InputRequests next_park = remaining.empty()
                                 ? *fresh
                                 : FilterInputRequests(fresh, remaining);
-                            store->ParkTaskForInput(params.task_id, next_park);
+                            (void)store->ParkTaskForInput(params.task_id, next_park);
                         } else {
-                            store->UpdateTask(params.task_id,
+                            (void)store->UpdateTask(params.task_id,
                                 SerializeCallToolResult(resume_result));
-                            store->SetTaskStatus(params.task_id, TaskStatus::Completed);
+                            (void)store->SetTaskStatus(params.task_id, TaskStatus::Completed);
                             retire_resumed_task();
                         }
                     } catch (const McpError& e) {
                         if (resume_flag->load()) {
-                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                            (void)store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
                         } else {
                             JsonValue error_payload(JsonValue::object_tag);
                             error_payload[detail::kCode] =
@@ -1720,31 +1720,31 @@ void McpServer::WireTaskHandlers() {
                             error_payload[detail::kMessage] =
                                 JsonValue(std::string(e.ErrorMessage()));
                             if (e.Data()) error_payload[detail::kData] = *e.Data();
-                            store->FailTask(params.task_id, error_payload);
+                            (void)store->FailTask(params.task_id, error_payload);
                         }
                         retire_resumed_task();
                     } catch (const std::exception& e) {
                         if (resume_flag->load()) {
-                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                            (void)store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
                         } else {
                             JsonValue error_payload(JsonValue::object_tag);
                             error_payload[detail::kCode] = JsonValue(
                                 static_cast<int64_t>(McpErrorCode::InternalError));
                             error_payload[detail::kMessage] =
                                 JsonValue(std::string(e.what()));
-                            store->FailTask(params.task_id, error_payload);
+                            (void)store->FailTask(params.task_id, error_payload);
                         }
                         retire_resumed_task();
                     } catch (...) {
                         if (resume_flag->load()) {
-                            store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
+                            (void)store->SetTaskStatus(params.task_id, TaskStatus::Cancelled);
                         } else {
                             JsonValue error_payload(JsonValue::object_tag);
                             error_payload[detail::kCode] = JsonValue(
                                 static_cast<int64_t>(McpErrorCode::InternalError));
                             error_payload[detail::kMessage] =
                                 JsonValue(std::string("tool execution failed"));
-                            store->FailTask(params.task_id, error_payload);
+                            (void)store->FailTask(params.task_id, error_payload);
                         }
                         retire_resumed_task();
                     }
@@ -2425,16 +2425,16 @@ void McpServer::HandleCallTool(
             TaskStatus terminal_status = TaskStatus::Completed;
             try {
                 store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
-                store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
+                (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
                 if (cancel_flag->load()) {
-                    store->SetTaskStatus(task_id, TaskStatus::Cancelled);
+                    (void)store->SetTaskStatus(task_id, TaskStatus::Cancelled);
                     terminal_status = TaskStatus::Cancelled;
                 } else if (first_failed) {
-                    store->FailTask(task_id, first_error);
+                    (void)store->FailTask(task_id, first_error);
                     terminal_status = TaskStatus::Failed;
                 } else {
-                    store->UpdateTask(task_id, SerializeCallToolResult(first_result));
-                    store->SetTaskStatus(task_id, TaskStatus::Completed);
+                    (void)store->UpdateTask(task_id, SerializeCallToolResult(first_result));
+                    (void)store->SetTaskStatus(task_id, TaskStatus::Completed);
                 }
             } catch (...) {
                 retire_required_task();
@@ -2461,8 +2461,8 @@ void McpServer::HandleCallTool(
             running_task_cancel_flags_[task_id] = cancel_flag;
         }
         store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
-        store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
-        store->SetTaskStatus(task_id, TaskStatus::Working);
+        (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
+        (void)store->SetTaskStatus(task_id, TaskStatus::Working);
         SendTaskNotification(*handler_, notifications::kTaskStatus,
             task_id, TaskStatus::Working, modern, task_owner);
 
@@ -2532,7 +2532,7 @@ void McpServer::HandleCallTool(
                 std::string background_arguments_error;
                 if (!ValidateToolCallArguments(tool->ProtocolTool(),
                         ctx.Params().arguments, background_arguments_error)) {
-                    store->UpdateTask(task_id, SerializeCallToolResult(
+                    (void)store->UpdateTask(task_id, SerializeCallToolResult(
                         MakeToolIsErrorResult(std::string("invalid arguments: ") +
                             background_arguments_error)));
                     finish(TaskStatus::Completed, true);
@@ -2590,7 +2590,7 @@ void McpServer::HandleCallTool(
                         }
                         return;
                     }
-                    store->UpdateTask(task_id, SerializeCallToolResult(result));
+                    (void)store->UpdateTask(task_id, SerializeCallToolResult(result));
                     finish(TaskStatus::Completed, true);
                 } catch (const McpError& e) {
                     if (cancel_flag->load()) {
