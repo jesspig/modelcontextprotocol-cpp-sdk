@@ -151,6 +151,12 @@ inline bool HasCloseToken(std::string_view value) {
     return false;
 }
 
+inline bool IsCriticalHeader(std::string_view name) {
+    return name == "content-length" || name == "host" ||
+           name == "transfer-encoding" || name == "authorization" ||
+           name == "mcp-session-id";
+}
+
 inline void AppendCorsHeaders(std::string& out) {
     out += "Access-Control-Allow-Origin: *\r\n";
     out += "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n";
@@ -664,6 +670,8 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
             return HeaderResult::BadRequest;
         std::string name(line, 0, colon);
         ToLowerInPlace(name);
+        if (IsCriticalHeader(name) && headers.find(name) != headers.end())
+            return HeaderResult::BadRequest;
         std::string value(line, colon + 1);
         auto first = value.find_first_not_of(" \t");
         auto last = value.find_last_not_of(" \t");

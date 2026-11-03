@@ -1795,6 +1795,24 @@ TEST(HttpServerTest, SlowHeadersRejectedWithinBudget) {
     server.Stop();
 }
 
+TEST(HttpServerTest, DuplicateContentLengthRejected) {
+    auto port = PickFreePort(kTestBasePort + 2430);
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/echo", [](const MCP_Request& req, MCP_Response& resp) {
+        resp.body = req.body;
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    RawSocketClient client;
+    ASSERT_TRUE(client.Connect(port, 0, 400));
+    ASSERT_TRUE(client.Send("POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                            "Content-Length: 4\r\nContent-Length: 4\r\n\r\nbody"));
+    auto received = client.ReceiveUntilIdle(std::chrono::milliseconds(2000));
+    EXPECT_NE(received.find("400 Bad Request"), std::string::npos);
+    server.Stop();
+}
+
 TEST(HttpServerTest, SlowSseClientDoesNotBlockBroadcast) {
     auto port = PickFreePort(kTestBasePort + 2440);
     mcp::HttpServer server(port);
