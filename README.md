@@ -63,7 +63,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Available library targets: `mcp-core`, `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`. All libraries are static.
+Available library targets: `mcp-core`, `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`, `mcp-ext`. All libraries are static.
 
 ## Quick Start
 
@@ -89,7 +89,7 @@ Configure presets: `debug`, `release`. Ninja generator required.
 └─────────────────────────────────────┘
 ```
 
-Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All libraries are static.
+Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`, and both of those also link `mcp-ext` (apps, DPoP, server card, triggers). `mcp-http` depends on `mcp-transport` and `mcp-ext`. All libraries are static.
 
 - **mcp-core** — Core types, JSON-RPC message structures, error codes, capabilities, content types, transport interfaces.
 - **mcp-transport** — Transport implementations: StdioServerTransport, StdioClientTransport, SseClientTransport, InMemoryTransport, WebSocketClientTransport, StreamableHttpServerTransport, StreamableHttpClientTransport. Platform-specific I/O in `detail/` (posix, win32).
@@ -226,7 +226,7 @@ The `mcp-compat-smoke` target compiles the previous public API and allowlists kn
 
 ## Conformance Tests
 
-**113 conformance tests** covering protocol type serialization across both eras:
+**124 conformance tests** covering protocol type serialization across both eras:
 
 - JSON-RPC message round-trips (request, notification, response, error)
 - WireCodec era-gating (2025 vs 2026 method/notification sets)

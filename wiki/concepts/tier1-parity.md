@@ -57,7 +57,7 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 - client modern：450 passed / 9 failed；9 项均为本地构建无 OpenSSL 的 DPoP/ES256 环境限制（`auth/client-credentials-jwt`、`auth/dpop`、`auth/dpop-nonce`），CI runner 具备 OpenSSL 时预期通过，不新增基线
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-当前测试基线为静态 **968** 用例 / **4486** 断言、18 目标（Windows `ctest -N` 注册 960，差 8 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
+当前测试基线为静态 **1030** 用例 / **4873** 断言、18 目标（Windows `ctest -N` 注册 1019，差 11 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
 
 ## A-T2 auth 进展（fixture 真实流联调）
 
