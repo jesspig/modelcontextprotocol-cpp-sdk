@@ -230,6 +230,39 @@ TEST(SessionHandlerTest, CancelledNotificationNotRoutedToHandlerMap) {
     EXPECT_FALSE(cancelled_handler_called);
 }
 
+TEST(SessionHandlerTest, NotificationHandlerThrowsKeepsSessionAlive) {
+    HandlerPair hp;
+
+    std::promise<void> invoked_promise;
+    auto invoked_future = invoked_promise.get_future();
+    hp.server->SetNotificationHandler(notifications::kProgress,
+        [&invoked_promise](const JsonRpcNotification&) {
+            invoked_promise.set_value();
+            throw std::runtime_error("notification handler boom");
+        });
+
+    JsonValue progress_params(JsonValue::object_tag);
+    progress_params["progressToken"] = JsonValue("pt-throw");
+    hp.client->SendNotification(notifications::kProgress,
+                                std::move(progress_params));
+
+    ASSERT_EQ(invoked_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(JsonValue(JsonValue::object_tag));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(3000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_FALSE(future.get().Contains("code"));
+}
+
 TEST(SessionHandlerTest, ErrorResponseSatisfiesFutureContract) {
     HandlerPair hp;
 

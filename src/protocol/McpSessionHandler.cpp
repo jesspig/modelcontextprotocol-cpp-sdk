@@ -739,7 +739,7 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
         }
     }
     if (handler) {
-        handler(notif);
+        InvokeSafely([&] { handler(notif); }, notif.method);
     }
 }
 
