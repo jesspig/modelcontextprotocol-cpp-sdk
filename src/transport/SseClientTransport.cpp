@@ -178,24 +178,27 @@ private:
                 req.headers["Last-Event-ID"] = last_event_id_;
             }
 
-            auto body_cb = [this](std::string_view chunk) {
-                if (!chunk.empty()) {
-                    sse_buffer_.append(chunk.data(), chunk.size());
+            auto body_cb = [this, &reconnect_attempts](std::string_view chunk) {
+                if (chunk.empty()) return;
+                reconnect_attempts = 0;
 
-                    if (sse_buffer_.size() > SseEventLimit()) {
-                        sse_buffer_.clear();
-                        NotifyError("SSE event size exceeds maximum allowed size");
-                        running_.store(false);
-                        http_client_->Close();
-                        return;
-                    }
+                sse_buffer_.append(chunk.data(), chunk.size());
 
-                    size_t pos;
-                    while ((pos = sse_buffer_.find("\n\n")) != std::string::npos) {
-                        auto block = sse_buffer_.substr(0, pos);
-                        sse_buffer_.erase(0, pos + 2);
-                        DispatchSseEvent(block);
-                    }
+                if (sse_buffer_.size() > SseEventLimit()) {
+                    sse_buffer_.clear();
+                    NotifyError("SSE event size exceeds maximum allowed size");
+                    running_.store(false);
+                    http_client_->Close();
+                    return;
+                }
+
+                std::size_t terminator_bytes = 0;
+                std::size_t pos = 0;
+                while ((pos = FindSseBlockBoundary(sse_buffer_, terminator_bytes)) !=
+                       std::string::npos) {
+                    auto block = sse_buffer_.substr(0, pos);
+                    sse_buffer_.erase(0, pos + terminator_bytes);
+                    DispatchSseEvent(block);
                 }
             };
 

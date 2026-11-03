@@ -614,6 +614,39 @@ TEST(SseClientTransportTest, CrlfFramedStreamDispatchesEvents) {
     EXPECT_TRUE(received);
 }
 
+TEST(SseClientTransportTest, ReconnectBudgetResetsAfterSuccess) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 284));
+    SseScriptStubState state;
+    state.max_connections = 4;
+    std::thread server([port, &state]() {
+        SseScriptStubServe(port, &state, [](int index) {
+            return SseScriptHead("") +
+                   SseScriptMessageEvent("reconnect-" + std::to_string(index), "\n\n");
+        });
+    });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    auto session = SseClientTransport("http://127.0.0.1:" + std::to_string(port) + "/sse").Connect();
+    ASSERT_NE(session, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (state.connections.load() < 4 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const int connections = state.connections.load();
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+    EXPECT_GE(connections, 4);
+}
+
 namespace {
 
 constexpr std::string_view kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
