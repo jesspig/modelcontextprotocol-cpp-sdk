@@ -64,7 +64,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-可用库目标：`mcp-core`、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`。所有库均为静态库。
+可用库目标：`mcp-core`、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`、`mcp-ext`。所有库均为静态库。
 
 ## 快速开始
 
@@ -90,7 +90,7 @@ ctest --preset debug --output-on-failure
 └─────────────────────────────────────┘
 ```
 
-库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。所有库均为静态库。
+库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`，后两者同时链接 `mcp-ext`（apps、DPoP、server card、triggers）。`mcp-http` 依赖 `mcp-transport` 与 `mcp-ext`。所有库均为静态库。
 
 - **mcp-core** — 核心类型、JSON-RPC 消息结构、错误码、能力声明、内容类型、传输层接口。
 - **mcp-transport** — 传输层实现：StdioServerTransport、StdioClientTransport、SseClientTransport、InMemoryTransport、WebSocketClientTransport、StreamableHttpServerTransport、StreamableHttpClientTransport。平台相关 I/O 在 `detail/` 目录下（posix、win32）。
@@ -227,7 +227,7 @@ auth.Authenticate();
 
 ## 一致性测试
 
-**113 个一致性测试**，覆盖两个时代的协议类型序列化：
+**124 个一致性测试**，覆盖两个时代的协议类型序列化：
 
 - JSON-RPC 消息往返（请求、通知、响应、错误）
 - WireCodec 时代门控（2025 与 2026 方法/通知集）
