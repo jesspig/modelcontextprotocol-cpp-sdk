@@ -68,6 +68,18 @@ struct SseEvent {
     std::optional<uint64_t> retry_ms;
 };
 
+std::size_t FindSseBlockBoundary(const std::string& buffer, std::size_t& terminator_bytes) {
+    std::size_t lf = buffer.find("\n\n");
+    std::size_t crlf = buffer.find("\r\n\r\n");
+    if (lf == std::string::npos && crlf == std::string::npos) return std::string::npos;
+    if (crlf != std::string::npos && (lf == std::string::npos || crlf < lf)) {
+        terminator_bytes = 4;
+        return crlf;
+    }
+    terminator_bytes = 2;
+    return lf;
+}
+
 SseEvent ParseSseEvent(const std::string& block) {
     SseEvent evt;
     evt.event_type = "message";

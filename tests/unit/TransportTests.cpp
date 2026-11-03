@@ -472,9 +472,7 @@ TEST(SseClientRetryTest, ReconnectCarriesLastEventId) {
 
 namespace {
 
-constexpr std::string_view kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-bool WsStubSend(SseRetryStubSocket sock, const std::string& data) {
+bool SendAllBytes(SseRetryStubSocket sock, const std::string& data) {
     std::size_t sent = 0;
     while (sent < data.size()) {
 #ifdef _WIN32
@@ -487,6 +485,138 @@ bool WsStubSend(SseRetryStubSocket sock, const std::string& data) {
     }
     return true;
 }
+
+struct SseScriptStubState {
+    std::promise<void> listening;
+    std::atomic<bool> listening_ok{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int> connections{0};
+    int max_connections = 1;
+};
+
+void SseScriptStubServe(uint16_t port, SseScriptStubState* state,
+                        const std::function<std::string(int)>& script_for_connection) {
+    SseRetryStubSocket listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == kSseRetryStubInvalidSocket) {
+        state->listening.set_value();
+        return;
+    }
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bool ok = bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+              listen(listen_sock, 8) == 0;
+    state->listening_ok.store(ok);
+    state->listening.set_value();
+    if (!ok) {
+        SseRetryStubCloseSocket(listen_sock);
+        return;
+    }
+
+    while (!state->stop.load() && state->connections.load() < state->max_connections) {
+        if (!SseRetryStubWaitReadable(listen_sock, 100)) continue;
+        SseRetryStubSocket conn = accept(listen_sock, nullptr, nullptr);
+        if (conn == kSseRetryStubInvalidSocket) continue;
+        const int index = state->connections.fetch_add(1);
+        SseRetryStubRecvHead(conn);
+        const std::string script = script_for_connection(index);
+        if (!script.empty()) SendAllBytes(conn, script);
+        SseRetryStubCloseSocket(conn);
+    }
+    SseRetryStubCloseSocket(listen_sock);
+}
+
+std::string SseScriptHead(const std::string& extra_headers) {
+    return "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" + extra_headers +
+           "Connection: close\r\n\r\n";
+}
+
+std::string SseScriptMessageEvent(const std::string& method, const std::string& terminator) {
+    return "data: {\"jsonrpc\":\"2.0\",\"method\":\"" + method + "\"}" + terminator;
+}
+
+class TransportMethodWaiter {
+public:
+    TransportMethodWaiter(ITransport& transport, std::string method)
+        : transport_(transport), method_(std::move(method)), thread_([this] { ReceiveLoop(); }) {}
+
+    ~TransportMethodWaiter() {
+        if (thread_.joinable()) thread_.join();
+    }
+
+    TransportMethodWaiter(const TransportMethodWaiter&) = delete;
+    TransportMethodWaiter& operator=(const TransportMethodWaiter&) = delete;
+
+    bool WaitFor(int timeout_ms) {
+        return found_.get_future().wait_for(std::chrono::milliseconds(timeout_ms)) ==
+               std::future_status::ready;
+    }
+
+private:
+    void ReceiveLoop() {
+        for (;;) {
+            bool matched = false;
+            bool closed = false;
+            transport_.GetMessageChannel().AsyncReceive(
+                [this, &matched, &closed](std::error_code error, JsonRpcMessage message) {
+                    if (error) {
+                        closed = true;
+                        return;
+                    }
+                    if (IsNotification(message) && AsNotification(message)->method == method_)
+                        matched = true;
+                });
+            if (matched) {
+                found_.set_value();
+                return;
+            }
+            if (closed) return;
+        }
+    }
+
+    ITransport& transport_;
+    std::string method_;
+    std::promise<void> found_;
+    std::thread thread_;
+};
+
+} // namespace
+
+TEST(SseClientTransportTest, CrlfFramedStreamDispatchesEvents) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 280));
+    SseScriptStubState state;
+    std::thread server([port, &state]() {
+        SseScriptStubServe(port, &state, [](int) {
+            return SseScriptHead("") + ": keep-alive\r\n\r\n" +
+                   SseScriptMessageEvent("crlf-event", "\r\n\r\n");
+        });
+    });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    auto session = SseClientTransport("http://127.0.0.1:" + std::to_string(port) + "/sse").Connect();
+    ASSERT_NE(session, nullptr);
+    TransportMethodWaiter waiter(*session, "crlf-event");
+    const bool received = waiter.WaitFor(15000);
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+    EXPECT_TRUE(received);
+}
+
+namespace {
+
+constexpr std::string_view kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 std::string WsStubTextFrame(std::string_view payload) {
     std::string frame;
@@ -534,7 +664,7 @@ void WsStreamStubServe(uint16_t port, WsStreamStubState* state) {
                 std::string accept =
                     mcp::detail::net::Base64Encode(
                         mcp::detail::net::Sha1Raw(key + std::string(kWsAcceptGuid)));
-                WsStubSend(conn,
+                SendAllBytes(conn,
                     "HTTP/1.1 101 Switching Protocols\r\n"
                     "Upgrade: websocket\r\n"
                     "Connection: Upgrade\r\n"
@@ -542,7 +672,7 @@ void WsStreamStubServe(uint16_t port, WsStreamStubState* state) {
                 const std::string payload = "{\"jsonrpc\":\"2.0\",\"method\":\"probe\"}";
                 const std::string frame = WsStubTextFrame(payload);
                 while (!state->stop.load()) {
-                    if (!WsStubSend(conn, frame)) break;
+                    if (!SendAllBytes(conn, frame)) break;
                     state->frames_sent.fetch_add(1);
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
