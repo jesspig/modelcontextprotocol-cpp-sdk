@@ -288,7 +288,8 @@ file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "compiler_launcher=${CMAKE_CXX_COMPILER_LAUNCHER}\n"
     "lto=${MCP_LTO}\n"
     "unity_enabled=${MCP_UNITY_ENABLED}\n"
-    "unity_batch=${MCP_UNITY_BATCH}\n")
+    "unity_batch=${MCP_UNITY_BATCH}\n"
+    "sanitize=${MCP_SANITIZE}\n")
 
 set(MCP_PACKAGE_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
 
