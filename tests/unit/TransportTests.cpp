@@ -847,6 +847,30 @@ TEST(TransportTest, StdioPidAvailable) {
     session->Close();
 }
 
+TEST(TransportTest, StdioChildExitTriggersClose) {
+    auto options = StdioHelperOptions({"--sleep", "300"});
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    auto* base = dynamic_cast<TransportBase*>(session.get());
+    ASSERT_NE(base, nullptr);
+
+    std::atomic<int> close_notifications{0};
+    base->SetOnClose([&close_notifications] { close_notifications.fetch_add(1); });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (base->GetState() != TransportState::Disconnected &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    EXPECT_EQ(close_notifications.load(), 1);
+    EXPECT_EQ(static_cast<int>(base->GetState()),
+              static_cast<int>(TransportState::Disconnected));
+    EXPECT_FALSE(session->GetMessageChannel().IsOpen());
+    session->Close();
+}
+
 TEST(TransportTest, StdioProcessTreeTerminated) {
     StdioTempFile pid_file;
     auto options = StdioHelperOptions(
