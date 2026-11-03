@@ -92,6 +92,13 @@ private:
         TransientFailure,
     };
 
+    enum class ClientAuthMethod {
+        None,
+        ClientSecretPost,
+        ClientSecretBasic,
+        PrivateKeyJwt,
+    };
+
     struct TokenEndpointResponse {
         bool transport_ok{false};
         int status_code{0};
@@ -151,11 +158,17 @@ private:
 
     std::string CreateClientAssertion() const;
 
-    void ApplyClientAuthentication(std::map<std::string, std::string>& form) const;
+    ClientAuthMethod ResolveClientAuthMethod() const;
+
+    std::string ResolveClientId() const;
+
+    void ApplyClientAuthentication(std::map<std::string, std::string>& form,
+                                   std::map<std::string, std::string>& headers) const;
 
     TokenEndpointResponse HttpPost(
         std::string_view url,
-        const std::map<std::string, std::string>& form_data);
+        const std::map<std::string, std::string>& form_data,
+        const std::map<std::string, std::string>& extra_headers = {});
 
     OAuthClientOptions options_;
     std::shared_ptr<ITokenCache> token_cache_;

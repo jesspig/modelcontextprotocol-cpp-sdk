@@ -29,6 +29,9 @@ namespace {
 constexpr std::string_view kClientAssertionTypeJwtBearer =
     "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 constexpr std::string_view kPrivateKeyJwtAuthMethod = "private_key_jwt";
+constexpr std::string_view kClientSecretBasicAuthMethod = "client_secret_basic";
+constexpr std::string_view kClientSecretPostAuthMethod = "client_secret_post";
+constexpr std::string_view kNoClientAuthMethod = "none";
 constexpr std::string_view kEs256SigningAlgorithm = "ES256";
 constexpr std::string_view kEs256JwtHeader = R"({"alg":"ES256","typ":"JWT"})";
 constexpr int64_t kClientAssertionLifetimeSeconds = 60;
@@ -56,6 +59,19 @@ std::string UrlEncode(std::string_view input) {
 }
 
 using NetResponse = mcp::detail::net::HttpResponseInfo;
+
+std::string BasicAuthorizationValue(std::string_view client_id,
+                                   std::string_view client_secret)
+{
+    std::string encoded = mcp::detail::Base64UrlEncode(
+        UrlEncode(client_id) + ":" + UrlEncode(client_secret));
+    for (char& c : encoded) {
+        if (c == '-') c = '+';
+        else if (c == '_') c = '/';
+    }
+    while (encoded.size() % 4 != 0) encoded += '=';
+    return "Basic " + encoded;
+}
 
 std::string NormalizeResourceUrl(std::string_view url) {
     std::string out(url);
@@ -353,7 +369,8 @@ std::optional<std::string> InMemoryTokenCache::GetBoundIssuer() {
 
 OAuthClientProvider::TokenEndpointResponse OAuthClientProvider::HttpPost(
     std::string_view url_str,
-    const std::map<std::string, std::string>& form_data)
+    const std::map<std::string, std::string>& form_data,
+    const std::map<std::string, std::string>& extra_headers)
 {
     std::string body;
     for (auto it = form_data.begin(); it != form_data.end(); ++it) {
@@ -363,6 +380,7 @@ OAuthClientProvider::TokenEndpointResponse OAuthClientProvider::HttpPost(
 
     std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/x-www-form-urlencoded";
+    for (const auto& entry : extra_headers) headers[entry.first] = entry.second;
     if (options_.enable_dpop) {
         headers["DPoP"] = BuildDPoPProof("POST", std::string(url_str));
     }
@@ -433,24 +451,21 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
     }
     std::map<std::string, std::string> form;
     form["grant_type"] = "client_credentials";
-    form["client_id"] = *options_.client_id;
+    form["client_id"] = ResolveClientId();
     for (auto& s : ResolveScopes()) {
         if (!form["scope"].empty()) form["scope"] += " ";
         form["scope"] += s;
     }
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
-    if (UsesClientAssertion()) {
-        ApplyClientAuthentication(form);
-    } else {
-        if (!options_.client_secret || options_.client_secret->empty()) {
-            MCP_LOG(Error, "client_credentials requires client_secret or an advertised private_key_jwt assertion");
-            return false;
-        }
-        form["client_secret"] = *options_.client_secret;
+    if (ResolveClientAuthMethod() == ClientAuthMethod::None) {
+        MCP_LOG(Error, "client_credentials requires client_secret or an advertised private_key_jwt assertion");
+        return false;
     }
+    std::map<std::string, std::string> headers;
+    ApplyClientAuthentication(form, headers);
 
-    auto response = HttpPost(meta->token_endpoint, form);
+    auto response = HttpPost(meta->token_endpoint, form, headers);
     if (!response.Succeeded() || response.json.IsNull()) return false;
     if (!ValidateTokenIssuer(response.json)) return false;
     return ParseAndStoreTokenResponse(response.json);
@@ -727,9 +742,7 @@ std::string OAuthClientProvider::CreateClientAssertion() const {
         throw McpError(McpErrorCode::InvalidParams,
             "OAuth client assertion supports only the ES256 signing algorithm");
     }
-    auto registration = RegistrationSnapshot();
-    std::string client_id = options_.client_id.value_or(
-        registration ? registration->client_id : std::string());
+    std::string client_id = ResolveClientId();
     if (client_id.empty()) {
         throw McpError(McpErrorCode::InvalidParams,
             "OAuth private_key_jwt client assertion requires a client_id");
@@ -760,12 +773,57 @@ std::string OAuthClientProvider::CreateClientAssertion() const {
         kEs256JwtHeader, JsonValue(std::move(payload)).Dump(), *options_.private_key_pem);
 }
 
+std::string OAuthClientProvider::ResolveClientId() const {
+    auto registration = RegistrationSnapshot();
+    return options_.client_id.value_or(
+        registration ? registration->client_id : std::string());
+}
+
+OAuthClientProvider::ClientAuthMethod OAuthClientProvider::ResolveClientAuthMethod() const {
+    if (UsesClientAssertion()) return ClientAuthMethod::PrivateKeyJwt;
+    if (!options_.client_secret || options_.client_secret->empty())
+        return ClientAuthMethod::None;
+    auto registration = RegistrationSnapshot();
+    if (registration && registration->token_endpoint_auth_method) {
+        const auto& method = *registration->token_endpoint_auth_method;
+        if (method == std::string(kClientSecretBasicAuthMethod))
+            return ClientAuthMethod::ClientSecretBasic;
+        if (method == std::string(kClientSecretPostAuthMethod))
+            return ClientAuthMethod::ClientSecretPost;
+        if (method == std::string(kNoClientAuthMethod))
+            return ClientAuthMethod::None;
+    }
+    auto meta = MetadataSnapshot();
+    if (meta) {
+        const auto& supported = meta->token_endpoint_auth_methods_supported;
+        bool basic = std::find(supported.begin(), supported.end(),
+            std::string(kClientSecretBasicAuthMethod)) != supported.end();
+        bool post = std::find(supported.begin(), supported.end(),
+            std::string(kClientSecretPostAuthMethod)) != supported.end();
+        if (basic && !post) return ClientAuthMethod::ClientSecretBasic;
+    }
+    return ClientAuthMethod::ClientSecretPost;
+}
+
 void OAuthClientProvider::ApplyClientAuthentication(
-    std::map<std::string, std::string>& form) const
+    std::map<std::string, std::string>& form,
+    std::map<std::string, std::string>& headers) const
 {
-    if (!UsesClientAssertion()) return;
-    form["client_assertion_type"] = std::string(kClientAssertionTypeJwtBearer);
-    form["client_assertion"] = CreateClientAssertion();
+    switch (ResolveClientAuthMethod()) {
+    case ClientAuthMethod::PrivateKeyJwt:
+        form["client_assertion_type"] = std::string(kClientAssertionTypeJwtBearer);
+        form["client_assertion"] = CreateClientAssertion();
+        return;
+    case ClientAuthMethod::ClientSecretBasic:
+        headers["Authorization"] = BasicAuthorizationValue(
+            ResolveClientId(), *options_.client_secret);
+        return;
+    case ClientAuthMethod::ClientSecretPost:
+        form["client_secret"] = *options_.client_secret;
+        return;
+    case ClientAuthMethod::None:
+        return;
+    }
 }
 
 bool OAuthClientProvider::RegisterClient() {
@@ -796,9 +854,7 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
 
     std::string auth_url = meta->authorization_endpoint;
     auth_url += "?response_type=code";
-    auto registration = RegistrationSnapshot();
-    auth_url += "&client_id=" + UrlEncode(options_.client_id.value_or(
-        registration ? registration->client_id : ""));
+    auth_url += "&client_id=" + UrlEncode(ResolveClientId());
     auth_url += "&redirect_uri=" + UrlEncode(options_.redirect_uri);
     auth_url += "&code_challenge=" + code_challenge;
     auth_url += "&code_challenge_method=S256";
@@ -839,15 +895,14 @@ bool OAuthClientProvider::ExchangeCodeForToken(
     form["grant_type"] = "authorization_code";
     form["code"] = std::string(code);
     form["redirect_uri"] = options_.redirect_uri;
-    auto registration = RegistrationSnapshot();
-    form["client_id"] = options_.client_id.value_or(
-        registration ? registration->client_id : "");
+    form["client_id"] = ResolveClientId();
     form["code_verifier"] = std::string(code_verifier);
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
-    ApplyClientAuthentication(form);
+    std::map<std::string, std::string> headers;
+    ApplyClientAuthentication(form, headers);
 
-    auto response = HttpPost(meta->token_endpoint, form);
+    auto response = HttpPost(meta->token_endpoint, form, headers);
     if (!response.Succeeded() || response.json.IsNull()) return false;
     if (!ValidateTokenIssuer(response.json)) return false;
     return ParseAndStoreTokenResponse(response.json);
@@ -897,14 +952,13 @@ OAuthClientProvider::RefreshOutcome OAuthClientProvider::RefreshTokensInternal()
     std::map<std::string, std::string> form;
     form["grant_type"] = "refresh_token";
     form["refresh_token"] = cached->refresh_token;
-    auto registration = RegistrationSnapshot();
-    form["client_id"] = options_.client_id.value_or(
-        registration ? registration->client_id : "");
+    form["client_id"] = ResolveClientId();
     if (auto resource = ResolveResourceIndicator(); !resource.empty())
         form[detail::kResource] = std::move(resource);
-    ApplyClientAuthentication(form);
+    std::map<std::string, std::string> headers;
+    ApplyClientAuthentication(form, headers);
 
-    auto response = HttpPost(meta->token_endpoint, form);
+    auto response = HttpPost(meta->token_endpoint, form, headers);
     if (!response.Succeeded()) {
         if (response.transport_ok && response.IsCredentialRejection()) {
             MCP_LOG(Error, "OAuth refresh rejected by the authorization server: " +
@@ -1003,7 +1057,9 @@ void OAuthClientProvider::Revoke() {
         RequireSecureEndpoint(*meta->revocation_endpoint, "revocation");
         std::map<std::string, std::string> form;
         form["token"] = tokens->access_token;
-        HttpPost(*meta->revocation_endpoint, form);
+        std::map<std::string, std::string> headers;
+        ApplyClientAuthentication(form, headers);
+        HttpPost(*meta->revocation_endpoint, form, headers);
     }
     token_cache_->ClearTokens();
 }
