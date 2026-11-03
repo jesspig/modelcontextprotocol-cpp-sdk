@@ -1,6 +1,7 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
+#include <mcp/transport/WebSocketClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/McpError.hpp>
@@ -10,6 +11,8 @@
 
 #include "TestFakes.hpp"
 #include "TestServerUtil.hpp"
+
+#include <transport/detail/net/Sha1.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -464,6 +467,125 @@ TEST(SseClientRetryTest, ReconnectCarriesLastEventId) {
                           state.second_arrival - state.first_close)
                           .count();
     EXPECT_GE(elapsed_ms, 400);
+}
+
+namespace {
+
+constexpr std::string_view kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+bool WsStubSend(SseRetryStubSocket sock, const std::string& data) {
+    std::size_t sent = 0;
+    while (sent < data.size()) {
+#ifdef _WIN32
+        int n = send(sock, data.data() + sent, static_cast<int>(data.size() - sent), 0);
+#else
+        ssize_t n = send(sock, data.data() + sent, data.size() - sent, 0);
+#endif
+        if (n <= 0) return false;
+        sent += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+std::string WsStubTextFrame(std::string_view payload) {
+    std::string frame;
+    frame.push_back(static_cast<char>(0x81));
+    frame.push_back(static_cast<char>(payload.size()));
+    frame.append(payload);
+    return frame;
+}
+
+struct WsStreamStubState {
+    std::promise<void> listening;
+    std::atomic<bool> listening_ok{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int> frames_sent{0};
+};
+
+void WsStreamStubServe(uint16_t port, WsStreamStubState* state) {
+    SseRetryStubSocket listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == kSseRetryStubInvalidSocket) {
+        state->listening.set_value();
+        return;
+    }
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bool ok = bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+              listen(listen_sock, 8) == 0;
+    state->listening_ok.store(ok);
+    state->listening.set_value();
+    if (!ok) {
+        SseRetryStubCloseSocket(listen_sock);
+        return;
+    }
+
+    if (SseRetryStubWaitReadable(listen_sock, 5000)) {
+        SseRetryStubSocket conn = accept(listen_sock, nullptr, nullptr);
+        if (conn != kSseRetryStubInvalidSocket) {
+            std::string head = SseRetryStubRecvHead(conn);
+            std::string key = SseRetryStubHeaderValue(head, "sec-websocket-key");
+            if (!key.empty()) {
+                std::string accept =
+                    mcp::detail::net::Base64Encode(
+                        mcp::detail::net::Sha1Raw(key + std::string(kWsAcceptGuid)));
+                WsStubSend(conn,
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Accept: " + accept + "\r\n\r\n");
+                const std::string payload = "{\"jsonrpc\":\"2.0\",\"method\":\"probe\"}";
+                const std::string frame = WsStubTextFrame(payload);
+                while (!state->stop.load()) {
+                    if (!WsStubSend(conn, frame)) break;
+                    state->frames_sent.fetch_add(1);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            SseRetryStubCloseSocket(conn);
+        }
+    }
+    SseRetryStubCloseSocket(listen_sock);
+}
+
+} // namespace
+
+TEST(TransportTest, WebSocketConcurrentCloseDuringStreaming) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 270));
+    WsStreamStubState state;
+    std::thread server([port, &state]() { WsStreamStubServe(port, &state); });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    std::string url = "ws://127.0.0.1:" + std::to_string(port) + "/ws";
+    WebSocketClientTransport transport(url, "ws-streaming");
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    auto* base = dynamic_cast<TransportBase*>(session.get());
+    ASSERT_NE(base, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (state.frames_sent.load() < 20 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_GE(state.frames_sent.load(), 20);
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+
+    EXPECT_FALSE(session->GetMessageChannel().IsOpen());
+    EXPECT_EQ(static_cast<int>(base->GetState()),
+              static_cast<int>(TransportState::Disconnected));
 }
 
 TEST(TransportTest, StdioFrameBoundDefaultsToLimit) {
