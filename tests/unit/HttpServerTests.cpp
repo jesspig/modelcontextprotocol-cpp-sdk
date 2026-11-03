@@ -93,6 +93,86 @@ std::optional<NetResp> HttpDelete(const std::string& url) {
     }
 }
 
+struct RawSocketClient {
+    RawSocketClient() {
+#ifdef _WIN32
+        WSADATA wsa;
+        valid = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        valid = valid && sock != INVALID_SOCKET;
+#else
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        valid = sock >= 0;
+#endif
+    }
+
+    ~RawSocketClient() {
+#ifdef _WIN32
+        if (sock != INVALID_SOCKET) closesocket(sock);
+        if (valid) WSACleanup();
+#else
+        if (sock >= 0) close(sock);
+#endif
+    }
+
+    RawSocketClient(const RawSocketClient&) = delete;
+    RawSocketClient& operator=(const RawSocketClient&) = delete;
+
+    bool Connect(uint16_t port, int recv_buffer_bytes, int recv_timeout_ms) {
+        if (!valid) return false;
+        if (recv_buffer_bytes > 0) {
+#ifdef _WIN32
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       reinterpret_cast<const char*>(&recv_buffer_bytes),
+                       sizeof(recv_buffer_bytes));
+#else
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_bytes,
+                       sizeof(recv_buffer_bytes));
+#endif
+        }
+#ifdef _WIN32
+        DWORD timeout_ms = static_cast<DWORD>(recv_timeout_ms);
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+#else
+        timeval timeout{};
+        timeout.tv_usec = recv_timeout_ms * 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+#endif
+        struct sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        return connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0;
+    }
+
+    bool Send(const std::string& data) {
+        if (!valid) return false;
+        return send(sock, data.c_str(), static_cast<int>(data.size()), 0) ==
+               static_cast<int>(data.size());
+    }
+
+    std::string ReceiveUntilIdle(std::chrono::milliseconds window) {
+        std::string received;
+        if (!valid) return received;
+        char chunk[16384];
+        auto deadline = std::chrono::steady_clock::now() + window;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int n = recv(sock, chunk, sizeof(chunk), 0);
+            if (n <= 0) break;
+            received.append(chunk, static_cast<std::size_t>(n));
+        }
+        return received;
+    }
+
+    bool valid{false};
+#ifdef _WIN32
+    SOCKET sock{INVALID_SOCKET};
+#else
+    int sock{-1};
+#endif
+};
+
 } // namespace
 
 TEST(HttpServerTest, GetPing) {
@@ -488,9 +568,11 @@ TEST(HttpServerTest, HostValidationRejectsForeignHost) {
 
     std::unordered_map<std::string, std::string> hdrs;
     hdrs["Host"] = "evil.example.com";
-    auto rejected = HttpGet(base + "/ping", hdrs);
-    ASSERT_NE(rejected, std::nullopt);
-    EXPECT_EQ(rejected->status_code, 403);
+    RawSocketClient foreign;
+    ASSERT_TRUE(foreign.Connect(port, 0, 400));
+    ASSERT_TRUE(foreign.Send("GET /ping HTTP/1.1\r\nHost: evil.example.com\r\n\r\n"));
+    auto raw = foreign.ReceiveUntilIdle(std::chrono::milliseconds(2000));
+    EXPECT_NE(raw.find("403 Forbidden"), std::string::npos);
     server.Stop();
 }
 
@@ -506,11 +588,12 @@ TEST(HttpServerTest, HostValidationAllowsConfiguredHosts) {
     ASSERT_TRUE(WaitUntilReady(port));
 
     auto base = "http://127.0.0.1:" + std::to_string(port);
-    std::unordered_map<std::string, std::string> hdrs;
-    hdrs["Host"] = "my-host:1234";
-    auto ok = HttpGet(base + "/ping", hdrs);
-    ASSERT_NE(ok, std::nullopt);
-    EXPECT_EQ(ok->status_code, 200);
+    RawSocketClient configured;
+    ASSERT_TRUE(configured.Connect(port, 0, 400));
+    ASSERT_TRUE(configured.Send("GET /ping HTTP/1.1\r\nHost: my-host:1234\r\n\r\n"));
+    auto raw = configured.ReceiveUntilIdle(std::chrono::milliseconds(2000));
+    EXPECT_NE(raw.find("200 OK"), std::string::npos);
+    EXPECT_NE(raw.find("pong"), std::string::npos);
 
     auto rejected = HttpGet(base + "/ping");
     ASSERT_NE(rejected, std::nullopt);
@@ -1497,90 +1580,6 @@ TEST(StreamableHttpTest, SseEventCapYieldsCompleteFrame) {
     handler->Close();
     transport->Close();
 }
-
-namespace {
-
-struct RawSocketClient {
-    RawSocketClient() {
-#ifdef _WIN32
-        WSADATA wsa;
-        valid = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
-        sock = socket(AF_INET, SOCK_STREAM, 0);
-        valid = valid && sock != INVALID_SOCKET;
-#else
-        sock = socket(AF_INET, SOCK_STREAM, 0);
-        valid = sock >= 0;
-#endif
-    }
-
-    ~RawSocketClient() {
-#ifdef _WIN32
-        if (sock != INVALID_SOCKET) closesocket(sock);
-        if (valid) WSACleanup();
-#else
-        if (sock >= 0) close(sock);
-#endif
-    }
-
-    RawSocketClient(const RawSocketClient&) = delete;
-    RawSocketClient& operator=(const RawSocketClient&) = delete;
-
-    bool Connect(uint16_t port, int recv_buffer_bytes, int recv_timeout_ms) {
-        if (!valid) return false;
-        if (recv_buffer_bytes > 0) {
-#ifdef _WIN32
-            setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-                       reinterpret_cast<const char*>(&recv_buffer_bytes),
-                       sizeof(recv_buffer_bytes));
-#else
-            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_bytes,
-                       sizeof(recv_buffer_bytes));
-#endif
-        }
-#ifdef _WIN32
-        DWORD timeout_ms = static_cast<DWORD>(recv_timeout_ms);
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
-                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
-#else
-        timeval timeout{};
-        timeout.tv_usec = recv_timeout_ms * 1000;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-#endif
-        struct sockaddr_in addr {};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-        return connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0;
-    }
-
-    bool Send(const std::string& data) {
-        if (!valid) return false;
-        return send(sock, data.c_str(), static_cast<int>(data.size()), 0) ==
-               static_cast<int>(data.size());
-    }
-
-    std::string ReceiveUntilIdle(std::chrono::milliseconds window) {
-        std::string received;
-        if (!valid) return received;
-        char chunk[16384];
-        auto deadline = std::chrono::steady_clock::now() + window;
-        while (std::chrono::steady_clock::now() < deadline) {
-            int n = recv(sock, chunk, sizeof(chunk), 0);
-            if (n <= 0) break;
-            received.append(chunk, static_cast<std::size_t>(n));
-        }
-        return received;
-    }
-
-    bool valid{false};
-#ifdef _WIN32
-    SOCKET sock{INVALID_SOCKET};
-#else
-    int sock{-1};
-#endif
-};
-
-} // namespace
 
 std::string RawHttpGet(const std::string& path, uint16_t port,
                        const std::unordered_map<std::string, std::string>& hdrs,
