@@ -38,6 +38,7 @@ namespace {
 constexpr std::chrono::milliseconds kDefaultHttpRequestTimeout(30000);
 constexpr std::chrono::milliseconds kSseListenerWaitStep(50);
 constexpr std::chrono::milliseconds kSseListenerWaitBudget(2000);
+constexpr size_t kMaxSseReplayEvents = 512;
 const char* kMcpParamHeaderPrefix = "mcp-param-";
 constexpr size_t kMaxStatelessInflight = 8;
 constexpr char kSseSessionKey[] = "__session";
@@ -1461,9 +1462,24 @@ void StreamableHttpServerTransport::HandleGet(
         if (last_id && !last_id->empty()) {
             try {
                 auto from = std::stoull(*last_id);
-                for (const auto& [ev_id, ev_data] :
-                        event_store_->GetEventsSince(session_id, from)) {
-                    resp.body += "id: " + std::to_string(ev_id) + "\n" + ev_data;
+                auto events = event_store_->GetEventsSince(session_id, from);
+                const auto budget = options_.max_sse_replay_bytes
+                    .value_or(detail::kMaxSseEventBytes);
+                std::size_t begin = events.size();
+                std::size_t bytes = 0;
+                while (begin > 0 && events.size() - begin < kMaxSseReplayEvents) {
+                    const auto& event = events[begin - 1];
+                    auto prefix = "id: " + std::to_string(event.first) + "\n";
+                    auto frame_bytes = prefix.size() + event.second.size();
+                    if (bytes + frame_bytes > budget) break;
+                    bytes += frame_bytes;
+                    --begin;
+                }
+                if (begin > 0)
+                    MCP_LOG(Warning, "SSE replay truncated to the most recent window");
+                for (std::size_t i = begin; i < events.size(); ++i) {
+                    resp.body += "id: " + std::to_string(events[i].first) + "\n" +
+                                  events[i].second;
                 }
             } catch (const std::exception&) {
                 MCP_LOG(Warning, "invalid Last-Event-ID header; ignoring");

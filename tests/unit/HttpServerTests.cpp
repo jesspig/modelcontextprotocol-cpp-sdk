@@ -1498,6 +1498,94 @@ TEST(StreamableHttpTest, SseEventCapYieldsCompleteFrame) {
     transport->Close();
 }
 
+std::string RawHttpGet(const std::string& path, uint16_t port,
+                       const std::unordered_map<std::string, std::string>& hdrs,
+                       std::chrono::milliseconds read_window) {
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return {};
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) return {};
+    DWORD recv_timeout_ms = 500;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&recv_timeout_ms), sizeof(recv_timeout_ms));
+#else
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return {};
+    timeval recv_timeout{};
+    recv_timeout.tv_usec = 500000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
+#endif
+    struct sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    std::string received;
+    if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+        std::string request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+        for (const auto& [name, value] : hdrs)
+            request += name + ": " + value + "\r\n";
+        request += "\r\n";
+        send(sock, request.c_str(), static_cast<int>(request.size()), 0);
+        char chunk[4096];
+        auto deadline = std::chrono::steady_clock::now() + read_window;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int n = recv(sock, chunk, sizeof(chunk), 0);
+            if (n <= 0) break;
+            received.append(chunk, static_cast<std::size_t>(n));
+        }
+    }
+#ifdef _WIN32
+    closesocket(sock);
+    WSACleanup();
+#else
+    close(sock);
+#endif
+    return received;
+}
+
+std::string RawResponseBody(const std::string& raw) {
+    auto sep = raw.find("\r\n\r\n");
+    if (sep == std::string::npos) return {};
+    return raw.substr(sep + 4);
+}
+
+TEST(StreamableHttpTest, ReplayRespectsByteBudget) {
+    auto port = PickFreePort(kTestBasePort + 1440);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = true;
+    opts.sse_keep_alive_ms = 0;
+    opts.max_sse_replay_bytes = 1024;
+    auto store = std::make_shared<mcp::EventStore>();
+    opts.event_store = store;
+    for (int i = 1; i <= 8; ++i) {
+        std::string frame = "event: message\ndata: {\"marker\":\"e" +
+                            std::to_string(i) + "\",\"pad\":\"" +
+                            std::string(300, 'p') + "\"}\n\n";
+        store->Append(std::string{}, std::move(frame));
+    }
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::unordered_map<std::string, std::string> hdrs;
+    hdrs["Last-Event-ID"] = "0";
+    auto raw = RawHttpGet("/mcp", port, hdrs, std::chrono::milliseconds(1500));
+    ASSERT_NE(raw.find("200 OK"), std::string::npos);
+    auto body = RawResponseBody(raw);
+    ASSERT_FALSE(body.empty());
+    EXPECT_NE(body.find("e8"), std::string::npos);
+    EXPECT_NE(body.find("e7"), std::string::npos);
+    EXPECT_EQ(body.find("e6"), std::string::npos);
+    EXPECT_EQ(body.find("e1\""), std::string::npos);
+    EXPECT_LE(body.size(), 1024u + 64u);
+
+    transport->Close();
+}
+
 TEST(HttpServerTest, SseRegistrationPrecedesFirstFrameWrite) {
     auto port = PickFreePort(kTestBasePort + 2300);
     const std::string first_frame =
