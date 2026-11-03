@@ -40,6 +40,7 @@ struct OAuthClientOptions {
     std::string signing_algorithm{"ES256"};
     std::function<int64_t()> client_assertion_clock_seconds;
     std::vector<std::string> allowed_authorization_server_origins;
+    bool require_iss_when_advertised{false};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -92,6 +93,13 @@ private:
         TransientFailure,
     };
 
+    enum class ClientAuthMethod {
+        None,
+        ClientSecretPost,
+        ClientSecretBasic,
+        PrivateKeyJwt,
+    };
+
     struct TokenEndpointResponse {
         bool transport_ok{false};
         int status_code{0};
@@ -118,6 +126,8 @@ private:
     RefreshOutcome RefreshTokensInternal();
 
     bool ValidateTokenIssuer(const JsonValue& response) const;
+
+    bool ValidateAuthorizationResponseIssuer(const std::optional<std::string>& iss) const;
 
     bool CodeChallengeS256Supported() const;
 
@@ -151,11 +161,17 @@ private:
 
     std::string CreateClientAssertion() const;
 
-    void ApplyClientAuthentication(std::map<std::string, std::string>& form) const;
+    ClientAuthMethod ResolveClientAuthMethod() const;
+
+    std::string ResolveClientId() const;
+
+    void ApplyClientAuthentication(std::map<std::string, std::string>& form,
+                                   std::map<std::string, std::string>& headers) const;
 
     TokenEndpointResponse HttpPost(
         std::string_view url,
-        const std::map<std::string, std::string>& form_data);
+        const std::map<std::string, std::string>& form_data,
+        const std::map<std::string, std::string>& extra_headers = {});
 
     OAuthClientOptions options_;
     std::shared_ptr<ITokenCache> token_cache_;

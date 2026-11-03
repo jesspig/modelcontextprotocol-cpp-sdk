@@ -57,6 +57,7 @@ struct OAuthMetadata {
     std::vector<std::string> grant_types_supported;
     std::vector<std::string> code_challenge_methods_supported;
     std::vector<std::string> token_endpoint_auth_methods_supported;
+    bool authorization_response_iss_parameter_supported{false};
 
     static std::optional<OAuthMetadata> Discover(std::string_view server_url);
 };
