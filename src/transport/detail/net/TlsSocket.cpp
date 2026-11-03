@@ -13,6 +13,11 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 #endif
 
 namespace mcp { namespace detail { namespace net {
@@ -34,16 +39,10 @@ int ToOpenSslFd(NativeFd fd) {
 }
 
 bool IsIpLiteralHost(std::string_view host) {
-    bool has_digit = false;
-    for (char c : host) {
-        if (c == '.' || c == ':') continue;
-        if (c >= '0' && c <= '9') {
-            has_digit = true;
-            continue;
-        }
-        return false;
-    }
-    return has_digit;
+    std::string text(host);
+    unsigned char address[16] = {};
+    if (inet_pton(AF_INET, text.c_str(), address) == 1) return true;
+    return inet_pton(AF_INET6, text.c_str(), address) == 1;
 }
 
 SSL_CTX* GetSharedCtx() {
@@ -84,6 +83,7 @@ void TlsSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
     Close();
     tcp_.Connect(host, port, timeout);
     std::string host_str(host);
+    bool ip_literal = IsIpLiteralHost(host_str);
 
     try {
         {
@@ -95,13 +95,16 @@ void TlsSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
             if (ssl_ == nullptr)
                 throw McpError(McpErrorCode::TlsHandshakeFailed, "SSL_new failed");
             SSL_set_fd(ssl_, ToOpenSslFd(tcp_.NativeHandle()));
-            if (!host_str.empty() && !IsIpLiteralHost(host_str)) {
+            if (!host_str.empty() && !ip_literal) {
                 SSL_set_tlsext_host_name(ssl_, &host_str[0]);
             }
             if (verify_peer_) {
                 SSL_set_verify(ssl_, SSL_VERIFY_PEER, nullptr);
                 X509_VERIFY_PARAM* param = SSL_get0_param(ssl_);
-                X509_VERIFY_PARAM_set1_host(param, host_str.c_str(), 0);
+                if (ip_literal)
+                    X509_VERIFY_PARAM_set1_ip_asc(param, host_str.c_str());
+                else
+                    X509_VERIFY_PARAM_set1_host(param, host_str.c_str(), 0);
             }
         }
 

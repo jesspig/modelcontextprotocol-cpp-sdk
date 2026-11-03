@@ -19,6 +19,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -1169,7 +1170,162 @@ void TlsStubServe(TlsStubServer* state, const std::string& payload) {
     EVP_PKEY_free(key);
 }
 
+X509* CreateIpSanCertificate(EVP_PKEY* key) {
+    X509* cert = X509_new();
+    if (cert == nullptr) return nullptr;
+    X509_set_version(cert, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+    X509_gmtime_adj(X509_getm_notBefore(cert), 0);
+    X509_gmtime_adj(X509_getm_notAfter(cert), 3600);
+
+    X509_NAME* name = X509_get_subject_name(cert);
+    if (name == nullptr ||
+        X509_NAME_add_entry_by_txt(
+            name, "CN", MBSTRING_ASC,
+            reinterpret_cast<const unsigned char*>("localhost"), -1, -1, 0) != 1 ||
+        X509_set_issuer_name(cert, name) != 1 ||
+        X509_set_pubkey(cert, key) != 1) {
+        X509_free(cert);
+        return nullptr;
+    }
+
+    X509V3_CTX context{};
+    X509V3_set_ctx_nodb(&context);
+    X509V3_set_ctx(&context, cert, cert, nullptr, nullptr, 0);
+    X509_EXTENSION* san = X509V3_EXT_conf_nid(
+        nullptr, &context, NID_subject_alt_name, "IP:127.0.0.1");
+    if (san == nullptr) {
+        X509_free(cert);
+        return nullptr;
+    }
+    X509_add_ext(cert, san, -1);
+    X509_EXTENSION_free(san);
+
+    if (X509_sign(cert, key, EVP_sha256()) == 0) {
+        X509_free(cert);
+        return nullptr;
+    }
+    return cert;
+}
+
+bool WriteTrustAnchor(const std::filesystem::path& path, X509* cert) {
+    BIO* bio = BIO_new_file(path.string().c_str(), "w");
+    if (bio == nullptr) return false;
+    bool written = PEM_write_bio_X509(bio, cert) == 1;
+    BIO_free(bio);
+    return written;
+}
+
+void SetTrustAnchorFile(const std::filesystem::path& path) {
+#ifdef _WIN32
+    _putenv_s("SSL_CERT_FILE", path.string().c_str());
+#else
+    setenv("SSL_CERT_FILE", path.string().c_str(), 1);
+#endif
+}
+
+std::filesystem::path MakeTrustAnchorPath() {
+    static std::atomic<unsigned long long> counter{0};
+    return std::filesystem::temp_directory_path() /
+        ("mcp_tls_ipsan_" + std::to_string(counter.fetch_add(1)) + ".pem");
+}
+
+void TlsIpSanStubServe(TlsStubServer* state, X509* cert, EVP_PKEY* key,
+                       const std::string& payload) {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    if (ctx == nullptr) {
+        state->listening_ok.store(false);
+        state->listening.set_value();
+        return;
+    }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_use_certificate(ctx, cert);
+    SSL_CTX_use_PrivateKey(ctx, key);
+
+    SseRetryStubSocket listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == kSseRetryStubInvalidSocket) {
+        state->listening_ok.store(false);
+        state->listening.set_value();
+        SSL_CTX_free(ctx);
+        return;
+    }
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+        reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(state->port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bool ok = bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+              listen(listen_sock, 4) == 0;
+    state->listening_ok.store(ok);
+    state->listening.set_value();
+
+    if (ok && SseRetryStubWaitReadable(listen_sock, 10000)) {
+        SseRetryStubSocket conn = accept(listen_sock, nullptr, nullptr);
+        if (conn != kSseRetryStubInvalidSocket) {
+            SSL* ssl = SSL_new(ctx);
+            if (ssl != nullptr) {
+                SSL_set_fd(ssl, static_cast<int>(conn));
+                if (SSL_accept(ssl) == 1)
+                    SSL_write(ssl, payload.data(), static_cast<int>(payload.size()));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                SSL_free(ssl);
+            }
+            SseRetryStubCloseSocket(conn);
+        }
+    }
+
+    SseRetryStubCloseSocket(listen_sock);
+    SSL_CTX_free(ctx);
+}
+
 } // namespace
+
+TEST(TlsSocketTest, IpSanCertificateVerifies) {
+    EVP_PKEY* key = LoadTestPrivateKey();
+    ASSERT_NE(key, nullptr);
+    X509* cert = CreateIpSanCertificate(key);
+    ASSERT_NE(cert, nullptr);
+
+    const std::filesystem::path trust_anchor = MakeTrustAnchorPath();
+    const bool trust_anchor_written = WriteTrustAnchor(trust_anchor, cert);
+    SetTrustAnchorFile(trust_anchor);
+    ASSERT_TRUE(trust_anchor_written);
+
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 265));
+    TlsStubServer state;
+    state.port = port;
+    std::thread server(
+        [&state, cert, key]() { TlsIpSanStubServe(&state, cert, key, "ip-san-frame\n"); });
+
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(10)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    std::string received;
+    std::string failure;
+    try {
+        detail::net::TlsSocket client(true);
+        client.Connect("127.0.0.1", port, std::chrono::seconds(15));
+        char buffer[64];
+        std::size_t n = client.Read(buffer, sizeof(buffer), std::chrono::seconds(15));
+        received.assign(buffer, n);
+        client.Close();
+    } catch (const std::exception& e) {
+        failure = e.what();
+    }
+    state.stop.store(true);
+    server.join();
+
+    std::error_code ignored;
+    std::filesystem::remove(trust_anchor, ignored);
+    EVP_PKEY_free(key);
+    X509_free(cert);
+
+    ASSERT_TRUE(failure.empty()) << failure;
+    EXPECT_EQ(received, "ip-san-frame\n");
+}
 
 TEST(TlsSocketTest, HandshakeAndReadFirstFrame) {
     uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 260));
