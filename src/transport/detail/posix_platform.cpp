@@ -14,6 +14,7 @@
 #define MCP_HAVE_CLOSE_RANGE 1
 #endif
 #endif
+#include <array>
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
@@ -412,13 +413,13 @@ std::unique_ptr<PipeHandle> CreatePipeFromFd(int fd) {
 }
 
 void SetThreadName(const char* name) {
-    char truncated[16];
-    std::strncpy(truncated, name, sizeof(truncated) - 1);
-    truncated[sizeof(truncated) - 1] = '\0';
+    std::array<char, 16> truncated;
+    std::strncpy(truncated.data(), name, truncated.size() - 1);
+    truncated[truncated.size() - 1] = '\0';
 #ifdef __APPLE__
-    pthread_setname_np(truncated);
+    pthread_setname_np(truncated.data());
 #else
-    pthread_setname_np(pthread_self(), truncated);
+    pthread_setname_np(pthread_self(), truncated.data());
 #endif
 }
 

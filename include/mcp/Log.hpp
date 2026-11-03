@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -66,15 +67,15 @@ inline LogState& GetLogState() {
 inline std::string FormatLogTimestamp() {
     auto now = std::chrono::system_clock::now();
     auto tt = std::chrono::system_clock::to_time_t(now);
-    char time_buf[32] = {};
+    std::array<char, 32> time_buf{};
     std::tm tm;
 #ifdef _WIN32
     gmtime_s(&tm, &tt);
 #else
     gmtime_r(&tt, &tm);
 #endif
-    std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm);
-    return time_buf;
+    std::strftime(time_buf.data(), time_buf.size(), "%H:%M:%S", &tm);
+    return time_buf.data();
 }
 
 } // namespace detail

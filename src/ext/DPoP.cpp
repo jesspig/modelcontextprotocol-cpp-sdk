@@ -27,6 +27,7 @@
 #include <openssl/rand.h>
 #endif
 
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -56,7 +57,7 @@ std::string DpopEscapeJson(std::string_view input) {
             case '\t': out += "\\t"; break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[7];
+                    std::array<char, 7> buf;
                     buf[0] = '\\';
                     buf[1] = 'u';
                     buf[2] = '0';
@@ -64,7 +65,7 @@ std::string DpopEscapeJson(std::string_view input) {
                     buf[4] = "0123456789ABCDEF"[(c >> 4) & 0xF];
                     buf[5] = "0123456789ABCDEF"[c & 0xF];
                     buf[6] = '\0';
-                    out += buf;
+                    out += buf.data();
                 } else {
                     out += c;
                 }
@@ -225,11 +226,11 @@ using DpopBioPtr = std::unique_ptr<BIO, DpopBioDeleter>;
 using DpopEvpPkeyPtr = std::unique_ptr<EVP_PKEY, DpopEvpPkeyDeleter>;
 
 std::string DpopBnToFixed32(const BIGNUM* bn) {
-    unsigned char buf[32];
-    if (BN_bn2binpad(bn, buf, sizeof(buf)) != static_cast<int>(sizeof(buf))) {
+    std::array<unsigned char, 32> buf;
+    if (BN_bn2binpad(bn, buf.data(), static_cast<int>(buf.size())) != static_cast<int>(buf.size())) {
         throw McpError(McpErrorCode::InternalError, "DPoP key coordinate encoding failed");
     }
-    return std::string(reinterpret_cast<const char*>(buf), sizeof(buf));
+    return std::string(reinterpret_cast<const char*>(buf.data()), buf.size());
 }
 
 DpopBnPtr DpopBinToBn(std::string_view raw) {
@@ -298,11 +299,11 @@ std::string DpopPrivateScalarToFixed32(const EC_KEY* key) {
     if (!priv) {
         throw McpError(McpErrorCode::InvalidParams, "ES256 private key has no scalar");
     }
-    unsigned char priv_buf[32];
-    if (BN_bn2binpad(priv, priv_buf, sizeof(priv_buf)) != static_cast<int>(sizeof(priv_buf))) {
+    std::array<unsigned char, 32> priv_buf;
+    if (BN_bn2binpad(priv, priv_buf.data(), static_cast<int>(priv_buf.size())) != static_cast<int>(priv_buf.size())) {
         throw McpError(McpErrorCode::InvalidParams, "ES256 private key scalar must be 32 bytes");
     }
-    return std::string(reinterpret_cast<const char*>(priv_buf), sizeof(priv_buf));
+    return std::string(reinterpret_cast<const char*>(priv_buf.data()), priv_buf.size());
 }
 
 std::string SignEs256JwtWithPem(std::string_view header_json,
@@ -368,12 +369,12 @@ EcP256Jwk GenerateKey() {
     EcP256Jwk out;
     out.x = detail::DpopBase64Url(detail::DpopBnToFixed32(x.get()));
     out.y = detail::DpopBase64Url(detail::DpopBnToFixed32(y.get()));
-    unsigned char priv_buf[32];
-    if (BN_bn2binpad(priv, priv_buf, sizeof(priv_buf)) != static_cast<int>(sizeof(priv_buf))) {
+    std::array<unsigned char, 32> priv_buf;
+    if (BN_bn2binpad(priv, priv_buf.data(), static_cast<int>(priv_buf.size())) != static_cast<int>(priv_buf.size())) {
         throw McpError(McpErrorCode::InternalError, "DPoP key generation failed");
     }
     out.d = detail::DpopBase64Url(
-        std::string(reinterpret_cast<const char*>(priv_buf), sizeof(priv_buf)));
+        std::string(reinterpret_cast<const char*>(priv_buf.data()), priv_buf.size()));
     return out;
 }
 

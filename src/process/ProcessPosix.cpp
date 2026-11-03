@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -57,9 +58,9 @@ char** InheritedEnvironment() {
 
 std::string DefaultPath() {
 #ifdef _CS_PATH
-    char buffer[4096] = {};
-    std::size_t length = confstr(_CS_PATH, buffer, sizeof(buffer));
-    if (length > 0 && length < sizeof(buffer)) return std::string(buffer, length - 1);
+    std::array<char, 4096> buffer{};
+    std::size_t length = confstr(_CS_PATH, buffer.data(), buffer.size());
+    if (length > 0 && length < buffer.size()) return std::string(buffer.data(), length - 1);
 #endif
     return "/bin:/usr/bin";
 }

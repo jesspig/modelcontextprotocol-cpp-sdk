@@ -13,6 +13,7 @@
 #include <detail/UriTemplate.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
 
+#include <array>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -310,9 +311,9 @@ namespace {
 #else
         gmtime_r(&now, &tm_buf);
 #endif
-        char buf[32];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
-        return std::string(buf);
+        std::array<char, 32> buf;
+        std::strftime(buf.data(), buf.size(), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+        return std::string(buf.data());
     }
 
     JsonValue MakeGetTaskResultJson(

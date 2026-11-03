@@ -27,6 +27,7 @@
 #include <transport/detail/net/TcpSocket.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <cstring>
@@ -99,13 +100,13 @@ inline int LastSocketError() {
 
 inline std::string SocketErrorText(int error) {
 #ifdef _WIN32
-    char buf[256] = {0};
+    std::array<char, 256> buf{};
     DWORD written = ::FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                                      nullptr, static_cast<DWORD>(error), 0,
-                                     buf, static_cast<DWORD>(sizeof(buf)), nullptr);
+                                     buf.data(), static_cast<DWORD>(buf.size()), nullptr);
     if (written == 0)
         return "Winsock error " + std::to_string(error);
-    std::string text(buf, written);
+    std::string text(buf.data(), written);
     while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == ' '))
         text.pop_back();
     return text;
@@ -591,13 +592,13 @@ Impl::LineResult Impl::ReadLine(net::TcpSocket& conn, std::string& buffer,
         }
         if (buffer.size() > max_line_bytes)
             return LineResult::TooLong;
-        char chunk[4096];
+        std::array<char, 4096> chunk;
         auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::milliseconds(0))
             return LineResult::Timeout;
-        auto n = conn.Read(chunk, sizeof(chunk), std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
+        auto n = conn.Read(chunk.data(), chunk.size(), std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
         if (n > 0) {
-            buffer.append(chunk, n);
+            buffer.append(chunk.data(), n);
             continue;
         }
         if (conn.IsEof())
@@ -712,16 +713,16 @@ bool Impl::ReadBody(net::TcpSocket& conn, std::string& buffer, std::size_t conte
     body.append(buffer, 0, from_buffer);
     buffer.erase(0, from_buffer);
     std::size_t got = body.size();
-    char chunk[16384];
+    std::array<char, 16384> chunk;
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (got < content_length) {
         auto remaining = deadline - std::chrono::steady_clock::now();
         if (remaining <= std::chrono::milliseconds(0))
             return false;
-        auto want = (std::min)(sizeof(chunk), content_length - got);
-        auto n = conn.Read(chunk, want, std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
+        auto want = (std::min)(chunk.size(), content_length - got);
+        auto n = conn.Read(chunk.data(), want, std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
         if (n > 0) {
-            body.append(chunk, n);
+            body.append(chunk.data(), n);
             got += n;
             continue;
         }
