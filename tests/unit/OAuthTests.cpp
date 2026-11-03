@@ -831,6 +831,104 @@ TEST(OAuthTest, TokenResponseMissingIssAccepted) {
     server.Stop();
 }
 
+TEST(OAuthTest, MissingIssWarnsWhenNotRequired) {
+    auto port = PickFreePort(kTestBasePort + 1320);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"authorization_response_iss_parameter_supported\":true}";
+        });
+    server.SetHandler("POST", "/token",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"access_token\":\"flow-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string seen_url;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.client_id = "test-client";
+    opts.authorization_redirect_handler =
+        [&seen_url](std::string_view url) { seen_url = std::string(url); };
+    opts.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "auth-code";
+            auto pos = seen_url.find("state=");
+            if (pos != std::string::npos) {
+                auto end = seen_url.find('&', pos);
+                auto len = (end == std::string::npos)
+                    ? std::string::npos : end - pos - 6;
+                result.state = seen_url.substr(pos + 6, len);
+            }
+            return result;
+        };
+    OAuthClientProvider provider(opts);
+
+    EXPECT_TRUE(provider.Authenticate());
+    EXPECT_EQ(provider.GetAccessToken(), "flow-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, MissingIssRejectedWhenRequired) {
+    auto port = PickFreePort(kTestBasePort + 1330);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"authorization_response_iss_parameter_supported\":true}";
+        });
+    server.SetHandler("POST", "/token",
+        [&token_hits, issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            token_hits.fetch_add(1);
+            resp.body = "{\"access_token\":\"should-not-issue\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string seen_url;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.client_id = "test-client";
+    opts.require_iss_when_advertised = true;
+    opts.authorization_redirect_handler =
+        [&seen_url](std::string_view url) { seen_url = std::string(url); };
+    opts.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "auth-code";
+            auto pos = seen_url.find("state=");
+            if (pos != std::string::npos) {
+                auto end = seen_url.find('&', pos);
+                auto len = (end == std::string::npos)
+                    ? std::string::npos : end - pos - 6;
+                result.state = seen_url.substr(pos + 6, len);
+            }
+            return result;
+        };
+    OAuthClientProvider provider(opts);
+
+    EXPECT_FALSE(provider.Authenticate());
+    EXPECT_EQ(token_hits.load(), 0);
+    EXPECT_FALSE(provider.HasToken());
+    server.Stop();
+}
+
 TEST(OAuthTest, TokenResponseMatchingIssAccepted) {
     auto port = PickFreePort(kTestBasePort + 1122);
     std::string issuer = "http://127.0.0.1:" + std::to_string(port);

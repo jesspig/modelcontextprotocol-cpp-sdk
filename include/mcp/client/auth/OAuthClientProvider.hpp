@@ -40,6 +40,7 @@ struct OAuthClientOptions {
     std::string signing_algorithm{"ES256"};
     std::function<int64_t()> client_assertion_clock_seconds;
     std::vector<std::string> allowed_authorization_server_origins;
+    bool require_iss_when_advertised{false};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -125,6 +126,8 @@ private:
     RefreshOutcome RefreshTokensInternal();
 
     bool ValidateTokenIssuer(const JsonValue& response) const;
+
+    bool ValidateAuthorizationResponseIssuer(const std::optional<std::string>& iss) const;
 
     bool CodeChallengeS256Supported() const;
 

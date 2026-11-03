@@ -268,6 +268,8 @@ OAuthMetadata ParseMetadataJson(const JsonValue& json) {
     extract_vec("code_challenge_methods_supported", meta.code_challenge_methods_supported);
     extract_vec("token_endpoint_auth_methods_supported",
                 meta.token_endpoint_auth_methods_supported);
+    if (auto* v = json.Find("authorization_response_iss_parameter_supported"))
+        meta.authorization_response_iss_parameter_supported = v->IsBool() && v->GetBool();
 
     return meta;
 }
@@ -628,6 +630,31 @@ bool OAuthClientProvider::ValidateTokenIssuer(const JsonValue& response) const {
     return true;
 }
 
+bool OAuthClientProvider::ValidateAuthorizationResponseIssuer(
+    const std::optional<std::string>& iss) const
+{
+    auto meta = MetadataSnapshot();
+    if (!meta) return false;
+    if (iss) {
+        if (*iss == meta->issuer) return true;
+        MCP_LOG(Error, "OAuth authorization response issuer mismatch");
+        return false;
+    }
+    if (!meta->authorization_response_iss_parameter_supported) return true;
+    if (options_.require_iss_when_advertised) {
+        MCP_LOG(Error, "OAuth authorization response carries no 'iss' although the "
+            "authorization server advertises authorization_response_iss_parameter_supported; "
+            "rejected because require_iss_when_advertised is enabled (this becomes the default "
+            "from 0.4.0)");
+        return false;
+    }
+    MCP_LOG(Warning, "OAuth authorization response carries no 'iss' although the "
+        "authorization server advertises authorization_response_iss_parameter_supported; "
+        "accepted per local policy (set require_iss_when_advertised to enforce it; rejected by "
+        "default from 0.4.0)");
+    return true;
+}
+
 bool OAuthClientProvider::CodeChallengeS256Supported() const {
     auto meta = MetadataSnapshot();
     if (!meta) return true;
@@ -877,10 +904,7 @@ bool OAuthClientProvider::StartAuthorizationFlow() {
     auto callback_result = options_.authorization_code_callback();
     if (!callback_result) return false;
     if (callback_result->state != state) return false;
-    if (callback_result->iss && *callback_result->iss != meta->issuer) {
-        MCP_LOG(Error, "OAuth authorization response issuer mismatch");
-        return false;
-    }
+    if (!ValidateAuthorizationResponseIssuer(callback_result->iss)) return false;
 
     return ExchangeCodeForToken(callback_result->code, code_verifier);
 }
@@ -1207,6 +1231,8 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
                 meta.token_endpoint_auth_methods_supported.size() <= 128)
                 metadata_->token_endpoint_auth_methods_supported =
                     meta.token_endpoint_auth_methods_supported;
+            if (meta.authorization_response_iss_parameter_supported)
+                metadata_->authorization_response_iss_parameter_supported = true;
             EnforceIssuerBinding();
         }
         return true;
