@@ -1055,6 +1055,31 @@ void McpSessionHandler::AddSubscriptionEntry(SubscriptionEntry entry,
     subscriptions_[std::string(session_id)][entry.id] = std::move(entry);
 }
 
+SubscriptionAddOutcome McpSessionHandler::TryAddSubscriptionEntry(
+    SubscriptionEntry entry, std::string_view session_id) {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+    auto& bucket = subscriptions_[std::string(session_id)];
+    const bool replaces_existing = bucket.find(entry.id) != bucket.end();
+    if (!replaces_existing &&
+        bucket.size() >= kMaxSubscriptionEntriesPerSession) {
+        const auto expiry_cutoff =
+            std::chrono::steady_clock::now() - kSubscriptionEntryTtl;
+        auto victim = bucket.end();
+        for (auto it = bucket.begin(); it != bucket.end(); ++it) {
+            if (it->second.created_at > expiry_cutoff) continue;
+            if (victim == bucket.end() ||
+                it->second.created_at < victim->second.created_at) {
+                victim = it;
+            }
+        }
+        if (victim == bucket.end()) return SubscriptionAddOutcome::LimitExceeded;
+        bucket.erase(victim);
+    }
+    bucket[entry.id] = std::move(entry);
+    return replaces_existing ? SubscriptionAddOutcome::Overwrote
+                             : SubscriptionAddOutcome::Added;
+}
+
 void McpSessionHandler::RemoveSubscription(std::string_view id,
                                            std::string_view session_id) {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);

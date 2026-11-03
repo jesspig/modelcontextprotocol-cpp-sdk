@@ -172,7 +172,6 @@ TEST(Conformance, McpSpecificErrorCodes) {
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::MissingRequiredClientCapability), -32021);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::UnsupportedProtocolVersion), -32022);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::UrlElicitationRequired), -32042);
-    EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ResourceNotFound), -32002);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::ConnectionClosed), -32000);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::RequestTimeout), -32001);
     EXPECT_EQ(static_cast<int32_t>(McpErrorCode::RequestCancelled), -32800);
@@ -234,6 +233,16 @@ TEST(Conformance, WireCodec2025ErrorRemappingIsIdentity) {
     EXPECT_EQ(codec->EncodeErrorCode(-32003), -32003);
     EXPECT_EQ(codec->EncodeErrorCode(-32004), -32004);
     EXPECT_EQ(codec->EncodeErrorCode(-32022), -32022);
+}
+
+TEST(Conformance, ModernDoesNotEmitResourceNotFound) {
+    auto modern = MakeWireCodec("2026-07-28");
+    EXPECT_NE(modern->EncodeErrorCode(-32002), -32002);
+    EXPECT_EQ(modern->EncodeErrorCode(-32002),
+        static_cast<int32_t>(McpErrorCode::InvalidParams));
+
+    auto legacy = MakeWireCodec("2025-11-25");
+    EXPECT_EQ(legacy->EncodeErrorCode(-32002), -32002);
 }
 
 TEST(Conformance, ToolSerialization) {

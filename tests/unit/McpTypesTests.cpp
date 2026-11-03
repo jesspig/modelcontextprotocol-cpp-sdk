@@ -240,6 +240,32 @@ TEST(McpTypesTest, ClientCapabilitiesRoundTrip) {
     EXPECT_TRUE(caps2.elicitation.has_value());
 }
 
+TEST(McpTypesTest, CapabilitiesRejectNonObject) {
+    auto expect_deserialize_failed = [](auto&& deserialize) {
+        try {
+            deserialize();
+            ADD_FAILURE() << "expected DeserializeFailed";
+        } catch (const McpError& e) {
+            EXPECT_EQ(e.Code(), McpErrorCode::DeserializeFailed);
+        }
+    };
+
+    expect_deserialize_failed([] {
+        (void)DeserializeServerCapabilities(JsonValue("tools"));
+    });
+    expect_deserialize_failed([] {
+        (void)DeserializeServerCapabilities(JsonValue());
+    });
+    expect_deserialize_failed([] {
+        (void)DeserializeClientCapabilities(JsonValue(JsonValue::array_tag));
+    });
+
+    EXPECT_FALSE(DeserializeServerCapabilities(JsonValue(JsonValue::object_tag)).tools
+        .has_value());
+    EXPECT_FALSE(DeserializeClientCapabilities(JsonValue(JsonValue::object_tag)).roots
+        .has_value());
+}
+
 TEST(McpTypesTest, DiscoverResultRoundTrip) {
     DiscoverResult r;
     r.supported_versions = {"2025-11-25", "2026-07-28"};
@@ -1331,6 +1357,34 @@ TEST(McpTypesTest, ValidatorUniqueItems) {
         JsonValue::Parse(R"([1,2,3])"), schema, err));
     EXPECT_FALSE(detail::ValidateJsonSchema(
         JsonValue::Parse(R"([1,2,1])"), schema, err));
+}
+
+TEST(McpTypesTest, ConstMatchesNumericEquality) {
+    std::string err;
+
+    auto const_schema = JsonValue::Parse(R"({"const":1})");
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(1.0), const_schema, err));
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(int64_t(1)), const_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(2.0), const_schema, err));
+
+    auto enum_schema = JsonValue::Parse(R"({"enum":[1,"two"]})");
+    EXPECT_TRUE(detail::ValidateJsonSchema(JsonValue(1.0), enum_schema, err));
+    EXPECT_FALSE(detail::ValidateJsonSchema(JsonValue(2.0), enum_schema, err));
+
+    auto unique_schema = JsonValue::Parse(R"({"uniqueItems":true})");
+    JsonValue equal_pair(JsonValue::array_tag);
+    equal_pair.PushBack(JsonValue(int64_t(1)));
+    equal_pair.PushBack(JsonValue(1.0));
+    EXPECT_FALSE(detail::ValidateJsonSchema(equal_pair, unique_schema, err));
+
+    JsonValue distinct_pair(JsonValue::array_tag);
+    distinct_pair.PushBack(JsonValue(int64_t(1)));
+    distinct_pair.PushBack(JsonValue(2.0));
+    EXPECT_TRUE(detail::ValidateJsonSchema(distinct_pair, unique_schema, err));
+
+    auto nested_const = JsonValue::Parse(R"({"const":{"limit":1}})");
+    EXPECT_TRUE(detail::ValidateJsonSchema(
+        JsonValue::Parse(R"({"limit":1.0})"), nested_const, err));
 }
 
 TEST(McpTypesTest, ValidatorPrefixItems) {

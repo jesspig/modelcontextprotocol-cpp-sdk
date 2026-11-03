@@ -772,7 +772,7 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
                 "tool already registered: " + t.name);
         }
         tools_[t.name] = std::move(tool);
-        cached_tools_json_ = std::nullopt;
+        cached_tools_ = std::nullopt;
     }
     WireHandlers();
     DeriveCapabilities();
@@ -1491,6 +1491,7 @@ void McpServer::WireExtensionHandlers() {
     handler_->SetRequestHandler(methods::kListExtensions,
         [this](const JsonRpcRequest& req, std::promise<JsonValue> p) {
             if (!RequireInitialized(IsSessionInitialized(req.session_id), handler_->IsJuly2026OrLater(req.session_id), p)) return;
+            std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
             JsonValue j(JsonValue::object_tag);
             JsonValue ext_list(JsonValue::array_tag);
             if (capabilities_.extensions) {
@@ -1990,14 +1991,12 @@ void McpServer::DeriveCapabilities() {
     }
 }
 
-JsonValue McpServer::BuildToolsJson() {
+ListToolsResult McpServer::BuildToolsResult() {
     ListToolsResult result;
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
-    auto hint = ResolveCacheHint("tools/list");
-    return ApplyCacheHintAndSerialize(result, hint,
-        SerializeListToolsResult);
+    return result;
 }
 
 std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
@@ -2016,20 +2015,21 @@ void McpServer::HandleListTools(
 {
     if (!RequireInitialized(IsSessionInitialized(req.session_id), handler_->IsJuly2026OrLater(req.session_id), promise)) return;
     if (!options_.enable_progressive_discovery) {
+        std::optional<ListToolsResult> cached;
         {
             std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
-            if (cached_tools_json_) {
-                promise.set_value(*cached_tools_json_);
-                return;
-            }
+            cached = cached_tools_;
         }
-        {
+        if (!cached) {
             std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
-            if (!cached_tools_json_) {
-                cached_tools_json_ = BuildToolsJson();
+            if (!cached_tools_) {
+                cached_tools_ = BuildToolsResult();
             }
-            promise.set_value(*cached_tools_json_);
+            cached = cached_tools_;
         }
+        auto hint = ResolveCacheHint("tools/list", req.session_id);
+        promise.set_value(ApplyCacheHintAndSerialize(*cached, hint,
+            SerializeListToolsResult));
         return;
     }
     std::optional<std::string> cursor;
@@ -3279,18 +3279,25 @@ void McpServer::HandleSubscriptionsListen(
 
     auto meta = handler_->ExtractIncomingMeta(req);
 
+    const bool client_named = meta.subscription_id.has_value() &&
+        !meta.subscription_id->empty();
     SubscriptionEntry entry;
-    entry.id = std::to_string(next_subscription_id_++);
+    entry.id = client_named
+        ? *meta.subscription_id
+        : "srv-" + std::to_string(next_subscription_id_++);
+    entry.session_id = client_named ? *meta.subscription_id : std::string();
     entry.filter = params.notifications;
     entry.created_at = std::chrono::steady_clock::now();
 
-    if (meta.subscription_id) {
-        entry.session_id = *meta.subscription_id;
+    const std::string ack_subscription_id = entry.id;
+    auto outcome = handler_->TryAddSubscriptionEntry(std::move(entry), req.session_id);
+    if (outcome == SubscriptionAddOutcome::LimitExceeded) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                "subscription limit reached for this session: " +
+                    std::to_string(McpSessionHandler::kMaxSubscriptionEntriesPerSession))));
+        return;
     }
-
-    std::string ack_subscription_id =
-        entry.session_id.empty() ? entry.id : entry.session_id;
-    handler_->AddSubscriptionEntry(std::move(entry), req.session_id);
 
     SendSubscriptionsAcknowledged(params.notifications, ack_subscription_id,
                                   req.session_id);

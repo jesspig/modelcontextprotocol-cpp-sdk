@@ -10,6 +10,13 @@
 #include <cstdint>
 #include <unordered_set>
 
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#if defined(_MSC_VER)
+#pragma warning(disable : 4996)
+#endif
+
 namespace mcp {
 namespace {
 
@@ -270,6 +277,10 @@ public:
 
     int32_t EncodeErrorCode(int32_t code) const override {
         switch (code) {
+            case static_cast<int32_t>(McpErrorCode::ResourceNotFound):
+                MCP_LOG(Warning,
+                    "deprecated error code -32002 remapped to InvalidParams on the 2026 era");
+                return static_cast<int32_t>(McpErrorCode::InvalidParams);
             case static_cast<int32_t>(McpErrorCode::RequestTimeout):
             case static_cast<int32_t>(McpErrorCode::ConnectionRefused):
             case static_cast<int32_t>(McpErrorCode::TlsHandshakeFailed):
