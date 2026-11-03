@@ -1,0 +1,13 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  concurrency-*,
+  performance-*
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '(^|.*/)(include|src|tests|examples)/.*'
+ExcludeHeaderFilterRegex: '.*(third_party|build).*'
+FormatStyle: none
+UseColor: false
