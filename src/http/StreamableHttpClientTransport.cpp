@@ -1053,7 +1053,7 @@ private:
                     try {
                         auto req_body = JsonValue::Parse(current_body);
                         if (channel_) {
-                            channel_->Send(streamable_http_client_impl::
+                            (void)channel_->Send(streamable_http_client_impl::
                                 MakeSessionExpiredError(req_body));
                             delivered = true;
                         }
@@ -1150,7 +1150,7 @@ private:
                     stream_error.id = request_id;
                     stream_error.error.code = McpErrorCode::ConnectionClosed;
                     stream_error.error.message = "SSE stream ended without response";
-                    channel_->Send(JsonRpcMessage(std::move(stream_error)));
+                    (void)channel_->Send(JsonRpcMessage(std::move(stream_error)));
                     NotifyError("HTTP POST SSE stream ended without response");
                 }
                 ClearActivePost(post_key);
@@ -1992,7 +1992,7 @@ private:
                     try {
                         auto req_body = JsonValue::Parse(body);
                         if (channel_) {
-                            channel_->Send(streamable_http_client_impl::
+                            (void)channel_->Send(streamable_http_client_impl::
                                 MakeSessionExpiredError(req_body));
                             delivered = true;
                         }
@@ -2032,7 +2032,7 @@ private:
                     stream_error.id = post_request_id;
                     stream_error.error.code = McpErrorCode::ConnectionClosed;
                     stream_error.error.message = "SSE stream ended without response";
-                    channel_->Send(JsonRpcMessage(std::move(stream_error)));
+                    (void)channel_->Send(JsonRpcMessage(std::move(stream_error)));
                     NotifyError("HTTP POST SSE stream ended without response");
                 }
                 return;

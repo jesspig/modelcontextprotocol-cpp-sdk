@@ -81,7 +81,7 @@ struct MCP_API ClientOptions {
 
 };
 
-MCP_API std::optional<ClientCapabilities> DeriveClientCapabilities(
+[[nodiscard]] MCP_API std::optional<ClientCapabilities> DeriveClientCapabilities(
     const ClientOptions& options);
 
 } // namespace mcp

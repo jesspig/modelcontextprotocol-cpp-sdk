@@ -35,7 +35,7 @@ public:
 
     std::string_view Name() const override;
     std::shared_ptr<ITransport> Connect() override;
-    std::optional<int64_t> Pid() const;
+    [[nodiscard]] std::optional<int64_t> Pid() const;
 
 private:
     StdioClientTransportOptions options_;

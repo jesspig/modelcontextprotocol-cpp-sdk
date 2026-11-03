@@ -52,28 +52,28 @@ public:
                                   std::optional<int64_t> ttl_ms)
     {
         TaskState state = CreateTask(task_id);
-        if (!owner.empty()) SetTaskOwner(task_id, owner);
-        if (ttl_ms) SetTaskTtl(task_id, *ttl_ms);
+        if (!owner.empty()) (void)SetTaskOwner(task_id, owner);
+        if (ttl_ms) (void)SetTaskTtl(task_id, *ttl_ms);
         return state;
     }
-    virtual std::optional<TaskState> GetTask(const std::string& task_id) = 0;
-    virtual bool UpdateTask(const std::string& task_id,
-                            const std::optional<JsonValue>& result) = 0;
-    virtual bool CancelTask(const std::string& task_id,
-                            const std::optional<std::string>& reason) = 0;
-    virtual bool SetTaskStatus(const std::string& task_id, TaskStatus status) = 0;
-    virtual bool AdvanceTaskWithInput(const std::string&, const JsonValue&) { return false; }
-    virtual bool ParkTaskForInput(const std::string&, const InputRequests&) { return false; }
-    virtual bool BindTaskTool(const std::string&, const std::string&,
-                              const std::optional<JsonValue>&) { return false; }
+    [[nodiscard]] virtual std::optional<TaskState> GetTask(const std::string& task_id) = 0;
+    [[nodiscard]] virtual bool UpdateTask(const std::string& task_id,
+                                          const std::optional<JsonValue>& result) = 0;
+    [[nodiscard]] virtual bool CancelTask(const std::string& task_id,
+                                          const std::optional<std::string>& reason) = 0;
+    [[nodiscard]] virtual bool SetTaskStatus(const std::string& task_id, TaskStatus status) = 0;
+    [[nodiscard]] virtual bool AdvanceTaskWithInput(const std::string&, const JsonValue&) { return false; }
+    [[nodiscard]] virtual bool ParkTaskForInput(const std::string&, const InputRequests&) { return false; }
+    [[nodiscard]] virtual bool BindTaskTool(const std::string&, const std::string&,
+                                            const std::optional<JsonValue>&) { return false; }
     virtual std::vector<TaskState> GetAllTasks() = 0;
-    virtual bool FailTask(const std::string& task_id, const JsonValue& error_payload)
+    [[nodiscard]] virtual bool FailTask(const std::string& task_id, const JsonValue& error_payload)
     {
         (void)task_id;
         (void)error_payload;
         return false;
     }
-    virtual bool RemoveTask(const std::string& task_id)
+    [[nodiscard]] virtual bool RemoveTask(const std::string& task_id)
     {
         (void)task_id;
         return false;
@@ -83,13 +83,13 @@ public:
         (void)now_ms;
         return {};
     }
-    virtual bool SetTaskOwner(const std::string& task_id, const std::string& owner)
+    [[nodiscard]] virtual bool SetTaskOwner(const std::string& task_id, const std::string& owner)
     {
         (void)task_id;
         (void)owner;
         return false;
     }
-    virtual bool SetTaskTtl(const std::string& task_id, int64_t ttl_ms)
+    [[nodiscard]] virtual bool SetTaskTtl(const std::string& task_id, int64_t ttl_ms)
     {
         (void)task_id;
         (void)ttl_ms;

@@ -22,9 +22,9 @@ public:
     void Register(const std::string& id,
                   std::vector<std::string> types,
                   const std::string& webhook_url);
-    bool Unregister(const std::string& id);
-    bool Has(const std::string& id) const;
-    bool Empty() const;
+    [[nodiscard]] bool Unregister(const std::string& id);
+    [[nodiscard]] bool Has(const std::string& id) const;
+    [[nodiscard]] bool Empty() const;
     std::size_t Size() const;
     std::vector<std::pair<std::string, TriggerRegistration>> Match(
         const std::string& type) const;

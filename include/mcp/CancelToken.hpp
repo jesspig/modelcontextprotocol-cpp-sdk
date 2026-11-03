@@ -17,7 +17,7 @@ public:
     CancelToken();
 
     void Cancel(std::string_view reason = {});
-    bool IsCancelled() const;
+    [[nodiscard]] bool IsCancelled() const;
     std::string Reason() const;
 
     std::size_t AddCancelHandler(CancelHandler handler);

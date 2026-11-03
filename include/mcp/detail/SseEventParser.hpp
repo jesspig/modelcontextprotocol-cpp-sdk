@@ -27,7 +27,7 @@ struct SseFieldLine {
     bool has_payload = false;
 };
 
-inline bool ParseSseFieldLine(std::string_view line, SseFieldLine& out) {
+[[nodiscard]] inline bool ParseSseFieldLine(std::string_view line, SseFieldLine& out) {
     if (line.empty() || line.front() == ':') return false;
     std::size_t colon = line.find(':');
     if (colon == std::string_view::npos || colon == 0) return false;

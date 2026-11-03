@@ -66,15 +66,15 @@ public:
 
     void Start();
     void Close();
-    bool IsRunning() const { return running_; }
+    [[nodiscard]] bool IsRunning() const { return running_; }
 
-    std::future<JsonValue> SendRequest(
+    [[nodiscard]] std::future<JsonValue> SendRequest(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},
         std::chrono::milliseconds timeout = kDefaultRequestTimeout);
 
-    std::future<JsonValue> SendRequest(
+    [[nodiscard]] std::future<JsonValue> SendRequest(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta,
@@ -99,10 +99,10 @@ public:
     void SetRequestHandler(std::string_view method, RequestHandler handler);
     void SetNotificationHandler(std::string_view method, NotificationHandler handler);
 
-    static std::optional<std::string> RequiredClientCapability(std::string_view method);
+    [[nodiscard]] static std::optional<std::string> RequiredClientCapability(std::string_view method);
     void SetClientCapabilities(ClientCapabilities caps);
     void SetClientCapabilities(std::string_view session_id, ClientCapabilities caps);
-    std::optional<ClientCapabilities> GetClientCapabilities(
+    [[nodiscard]] std::optional<ClientCapabilities> GetClientCapabilities(
         std::string_view session_id) const;
     void SetServerInfo(const Implementation& info);
 
@@ -124,7 +124,7 @@ public:
 
     void HandleCancelled(const JsonRpcNotification& notif);
 
-    std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(
+    [[nodiscard]] std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(
         const RequestId& id, std::string_view session_id = {}) const;
 
     void ResetTimeoutByProgressToken(const std::string& pt_key);
@@ -149,10 +149,10 @@ public:
     std::string NegotiatedProtocolVersion() const;
     std::string NegotiatedProtocolVersion(std::string_view session_id) const;
     void SetSupportedProtocolVersions(std::vector<std::string> versions);
-    bool IsJuly2026OrLater() const {
+    [[nodiscard]] bool IsJuly2026OrLater() const {
         return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion());
     }
-    bool IsJuly2026OrLater(std::string_view session_id) const {
+    [[nodiscard]] bool IsJuly2026OrLater(std::string_view session_id) const {
         return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion(session_id));
     }
     ITransport& GetTransport() { return *transport_; }

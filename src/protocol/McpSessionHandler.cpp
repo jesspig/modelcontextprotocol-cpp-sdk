@@ -11,6 +11,7 @@
 #include <mcp/ProtocolVersion.hpp>
 
 #include <chrono>
+#include <cassert>
 #include <cstdint>
 #include <future>
 #include <stdexcept>
@@ -101,6 +102,7 @@ void DeliverOutcome(const std::shared_ptr<PendingRequest>& pending,
             pending->callback(SerializeErrorData(*error));
         }, label);
     } else {
+        assert(std::holds_alternative<JsonValue>(outcome));
         const JsonValue& result = std::get<JsonValue>(outcome);
         InvokeSafely([&pending, &result] {
             pending->callback(result);
@@ -361,6 +363,7 @@ void McpSessionHandler::SetMaxTotalTimeout(std::chrono::seconds total) {
 
 void McpSessionHandler::SetResponseQueueCapacity(
     std::optional<std::size_t> capacity) {
+    assert(!capacity || *capacity > 0);
     std::lock_guard<std::mutex> lock(response_queue_mutex_);
     response_queue_capacity_ = capacity.value_or(kDefaultResponseQueueCapacity);
 }
@@ -1076,6 +1079,7 @@ SubscriptionAddOutcome McpSessionHandler::TryAddSubscriptionEntry(
         bucket.erase(victim);
     }
     bucket[entry.id] = std::move(entry);
+    assert(bucket.size() <= kMaxSubscriptionEntriesPerSession);
     return replaces_existing ? SubscriptionAddOutcome::Overwrote
                              : SubscriptionAddOutcome::Added;
 }

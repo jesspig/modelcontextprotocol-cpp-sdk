@@ -15,7 +15,7 @@
 
 namespace mcp { namespace detail {
 
-inline bool IsParamHeaderTokenChar(unsigned char c) {
+[[nodiscard]] inline bool IsParamHeaderTokenChar(unsigned char c) {
     if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
         return true;
     switch (c) {
@@ -28,7 +28,7 @@ inline bool IsParamHeaderTokenChar(unsigned char c) {
     }
 }
 
-inline bool IsValidParamHeaderName(std::string_view name) {
+[[nodiscard]] inline bool IsValidParamHeaderName(std::string_view name) {
     if (name.empty()) return false;
     for (char ch : name) {
         if (!IsParamHeaderTokenChar(static_cast<unsigned char>(ch))) return false;
@@ -45,7 +45,7 @@ struct ToolParamAnnotations {
     std::vector<McpParamAnnotation> annotations;
     std::string invalid_reason;
 
-    bool IsValid() const { return invalid_reason.empty(); }
+    [[nodiscard]] bool IsValid() const { return invalid_reason.empty(); }
 };
 
 inline ToolParamAnnotations ParseToolParamAnnotations(const JsonValue& input_schema) {

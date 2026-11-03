@@ -52,22 +52,22 @@ public:
     explicit OAuthClientProvider(OAuthClientOptions options);
     ~OAuthClientProvider();
 
-    static bool IsSecureEndpoint(std::string_view url);
+    [[nodiscard]] static bool IsSecureEndpoint(std::string_view url);
 
-    static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
+    [[nodiscard]] static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
 
-    bool Authenticate();
+    [[nodiscard]] bool Authenticate();
 
-    bool AuthenticateClientCredentials();
+    [[nodiscard]] bool AuthenticateClientCredentials();
 
     std::string GetAccessToken();
 
-    bool RefreshTokens();
+    [[nodiscard]] bool RefreshTokens();
 
     void Revoke();
 
-    bool IsAuthenticated() const;
-    bool HasToken() const;
+    [[nodiscard]] bool IsAuthenticated() const;
+    [[nodiscard]] bool HasToken() const;
 
     std::string GetAuthorizationHeader() const;
 
@@ -82,9 +82,9 @@ public:
 
     void SetDPoPNonce(std::string nonce);
 
-    bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
+    [[nodiscard]] bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
 
-    bool HandleAuthChallenge(std::string_view www_authenticate);
+    [[nodiscard]] bool HandleAuthChallenge(std::string_view www_authenticate);
 
 private:
     enum class RefreshOutcome {

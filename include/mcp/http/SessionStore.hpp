@@ -2,6 +2,7 @@
 
 #include <mcp/transport/detail/Limits.hpp>
 
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 
@@ -25,10 +26,10 @@ public:
     virtual ~SessionStore() = default;
 
     virtual void Save(const std::string& session_id, const SessionRecord& record) = 0;
-    virtual std::optional<SessionRecord> Load(const std::string& session_id) = 0;
+    [[nodiscard]] virtual std::optional<SessionRecord> Load(const std::string& session_id) = 0;
     virtual void Remove(const std::string& session_id) = 0;
 
-    virtual bool TrySave(const std::string& session_id, const SessionRecord& record) {
+    [[nodiscard]] virtual bool TrySave(const std::string& session_id, const SessionRecord& record) {
         Save(session_id, record);
         return true;
     }
@@ -56,6 +57,7 @@ public:
         if (stored.last_seen_ms == 0)
             stored.last_seen_ms = now;
         records_[session_id] = stored;
+        assert(records_.size() <= detail::kMaxHttpSessions);
         return true;
     }
 

@@ -7,6 +7,7 @@
 #include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
 
+#include <cassert>
 #include <cstdint>
 #include <unordered_set>
 
@@ -325,9 +326,13 @@ void WireCodec::ValidateTaskHeaders(
 
 std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version) {
     if (protocol_version >= kLatestProtocolVersion) {
-        return std::make_unique<Rev2026Codec>();
+        auto codec = std::make_unique<Rev2026Codec>();
+        assert(codec->Era() == kModernProtocolVersion);
+        return codec;
     }
-    return std::make_unique<Rev2025Codec>();
+    auto codec = std::make_unique<Rev2025Codec>();
+    assert(codec->Era() != kModernProtocolVersion);
+    return codec;
 }
 
 } // namespace mcp
