@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <future>
 #include <memory>
@@ -45,6 +46,7 @@ class MCP_API McpSessionHandler : public std::enable_shared_from_this<McpSession
 public:
     inline static constexpr std::chrono::seconds kProgressTimeoutExtension{30};
     inline static constexpr std::chrono::milliseconds kTimeoutPollInterval{100};
+    inline static constexpr std::size_t kDefaultResponseQueueCapacity{1024};
 
     McpSessionHandler(
         std::shared_ptr<ITransport> transport,
@@ -119,6 +121,8 @@ public:
 
     void SetMaxTotalTimeout(std::chrono::seconds total);
 
+    void SetResponseQueueCapacity(std::optional<std::size_t> capacity);
+
     void SetSpanHandler(SpanHandler handler);
 
     void SetOnRequestCallback(std::function<void(std::string_view method, const JsonRpcRequest&)> cb);
@@ -166,6 +170,7 @@ private:
     void DeliverResponse(PendingResponse item);
     void DeliverCancellation(const PendingResponse& item);
     void EnqueueCancellation(std::shared_ptr<PendingRequest> request, ErrorData error);
+    void ReleaseResponseSlot();
     void ResponseWorkerLoop();
 
     static std::string GetRequestIdKey(const RequestId& rid);
@@ -188,9 +193,14 @@ private:
         OutcomeCallback on_outcome,
         bool cancel_on_timeout);
 
-    std::shared_ptr<PendingRequest> RemovePending(const std::string& id_key);
-    void CancelTransportRequest(const RequestId& id, std::string_view reason);
-    void SendCancelledNotification(const RequestId& id, std::string_view reason);
+    std::shared_ptr<PendingRequest> RemovePending(std::string_view session_id,
+                                                  const std::string& request_id);
+    std::shared_ptr<PendingRequest> RemovePendingByRequestId(
+        const std::string& request_id);
+    void CancelTransportRequest(const RequestId& id, std::string_view session_id,
+                                std::string_view reason);
+    void SendCancelledNotification(const RequestId& id, std::string_view session_id,
+                                   std::string_view reason);
 
     void CheckTimeouts();
     void EraseProgressTokens(const std::string& request_id);
@@ -235,6 +245,8 @@ private:
     std::deque<PendingResponse> response_queue_;
     std::mutex response_queue_mutex_;
     std::condition_variable response_cv_;
+    std::size_t response_queue_capacity_{kDefaultResponseQueueCapacity};
+    std::size_t outstanding_responses_{0};
 
     std::unordered_map<std::string,
         std::unordered_map<std::string, SubscriptionEntry>> subscriptions_;

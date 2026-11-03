@@ -1511,3 +1511,53 @@ TEST(SessionHandlerTest, CancelCallbackRunsOnJoinedThread) {
     EXPECT_EQ(settled["code"].GetInt(),
               static_cast<int64_t>(McpErrorCode::RequestCancelled));
 }
+
+TEST(SessionHandlerTest, ResponseQueueRejectsBeyondCapacity) {
+    HandlerPair hp;
+    hp.server->SetResponseQueueCapacity(1);
+
+    std::promise<RequestId> first_id_promise;
+    auto first_id_future = first_id_promise.get_future();
+    std::promise<RequestId> second_id_promise;
+    auto second_id_future = second_id_promise.get_future();
+    std::shared_ptr<std::promise<JsonValue>> first_held;
+
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&first_id_promise, &second_id_promise, &first_held](
+            const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            auto held = std::make_shared<std::promise<JsonValue>>(std::move(p));
+            if (!first_held) {
+                first_held = held;
+                first_id_promise.set_value(req.id);
+                return;
+            }
+            second_id_promise.set_value(req.id);
+        });
+
+    auto first = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+    ASSERT_EQ(first_id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+
+    auto second = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+    ASSERT_EQ(second_id_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_NE(first_held, nullptr);
+
+    ASSERT_EQ(second.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto rejected = second.get();
+    ASSERT_TRUE(rejected.Contains("code"));
+    EXPECT_EQ(rejected["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InternalError));
+    EXPECT_EQ(first.wait_for(std::chrono::milliseconds(300)),
+              std::future_status::timeout);
+
+    first_held->set_value(JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(first.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_FALSE(first.get().Contains("code"));
+}
