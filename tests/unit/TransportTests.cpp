@@ -539,6 +539,20 @@ std::string SseScriptMessageEvent(const std::string& method, const std::string& 
     return "data: {\"jsonrpc\":\"2.0\",\"method\":\"" + method + "\"}" + terminator;
 }
 
+std::string ChunkPrefix(std::size_t size) {
+    static const char kHexDigits[] = "0123456789abcdef";
+    std::string text;
+    do {
+        text.insert(text.begin(), kHexDigits[size & 0xF]);
+        size >>= 4;
+    } while (size != 0);
+    return text + "\r\n";
+}
+
+std::string ChunkedPayload(const std::string& payload) {
+    return ChunkPrefix(payload.size()) + payload + "\r\n";
+}
+
 class TransportMethodWaiter {
 public:
     TransportMethodWaiter(ITransport& transport, std::string method)
@@ -607,6 +621,38 @@ TEST(SseClientTransportTest, CrlfFramedStreamDispatchesEvents) {
     ASSERT_NE(session, nullptr);
     TransportMethodWaiter waiter(*session, "crlf-event");
     const bool received = waiter.WaitFor(15000);
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+    EXPECT_TRUE(received);
+}
+
+TEST(SseClientTransportTest, ChunkedStreamBeyondEightMiBKeepsEvents) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 282));
+    SseScriptStubState state;
+    std::thread server([port, &state]() {
+        SseScriptStubServe(port, &state, [](int) {
+            std::string script = SseScriptHead("Transfer-Encoding: chunked\r\n");
+            const std::string comment_chunk = ChunkedPayload(":" + std::string(4093, 'p') + "\n\n");
+            for (int index = 0; index < 2100; ++index) script += comment_chunk;
+            script += ChunkedPayload(SseScriptMessageEvent("late-event", "\n\n"));
+            script += "0\r\n\r\n";
+            return script;
+        });
+    });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    auto session = SseClientTransport("http://127.0.0.1:" + std::to_string(port) + "/sse").Connect();
+    ASSERT_NE(session, nullptr);
+    TransportMethodWaiter waiter(*session, "late-event");
+    const bool received = waiter.WaitFor(30000);
 
     session->Close();
     state.stop.store(true);

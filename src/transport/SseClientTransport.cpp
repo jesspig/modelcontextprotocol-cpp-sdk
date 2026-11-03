@@ -171,6 +171,7 @@ private:
             req.method = "GET";
             req.url = options_.server_url;
             req.timeout = kSseClientIdleTimeout;
+            req.max_response_bytes = std::nullopt;
             req.headers["Accept"] = "text/event-stream";
             req.redirect_policy = options_.redirect_policy;
             req.max_redirects = options_.max_redirects;
