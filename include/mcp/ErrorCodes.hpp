@@ -15,7 +15,7 @@ enum class McpErrorCode : int32_t {
     MissingRequiredClientCapability = -32021,
     UnsupportedProtocolVersion = -32022,
     UrlElicitationRequired = -32042,
-    ResourceNotFound = -32002,
+    ResourceNotFound [[deprecated("since 0.3.11, removed in 0.4.0; use InvalidParams")]] = -32002,
     ConnectionClosed = -32000,
     RequestTimeout = -32001,
     RequestCancelled = -32800,
@@ -39,6 +39,15 @@ namespace std {
 }
 
 namespace mcp {
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 
 class McpErrorCategory : public std::error_category {
 public:
@@ -90,6 +99,13 @@ public:
         }
     }
 };
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 inline const McpErrorCategory& GetMcpErrorCategory() {
     static const McpErrorCategory category;
