@@ -434,6 +434,46 @@ TEST(OAuthTest, ClientSecretSentOnRefresh) {
     server.Stop();
 }
 
+TEST(OAuthTest, ClientSecretBasicUsedWhenOnlyBasicAdvertised) {
+    auto port = PickFreePort(kTestBasePort + 1340);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::string seen_body;
+    std::string seen_authorization;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"token_endpoint_auth_methods_supported\":[\"client_secret_basic\"]}";
+        });
+    server.SetHandler("POST", "/token",
+        [&seen_body, &seen_authorization, issuer](
+            const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            seen_body = req.body;
+            auto it = req.headers.find("authorization");
+            if (it != req.headers.end()) seen_authorization = it->second;
+            resp.body = "{\"access_token\":\"basic-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "confidential-client";
+    opts.client_secret = "confidential-secret";
+    OAuthClientProvider provider(opts);
+
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+    EXPECT_EQ(seen_body.find("client_secret"), std::string::npos);
+    EXPECT_EQ(seen_authorization,
+        "Basic Y29uZmlkZW50aWFsLWNsaWVudDpjb25maWRlbnRpYWwtc2VjcmV0");
+    EXPECT_EQ(provider.GetAccessToken(), "basic-token");
+    server.Stop();
+}
+
 TEST(OAuthTest, PrivateKeyJwtUnsupportedAlgorithmRejectsBeforeTokenRequest) {
     auto port = PickFreePort(kTestBasePort + 1220);
     std::string issuer = "http://127.0.0.1:" + std::to_string(port);
