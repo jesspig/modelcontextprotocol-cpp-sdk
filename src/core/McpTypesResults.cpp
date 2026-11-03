@@ -1,4 +1,5 @@
 #include <mcp/McpTypes.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/detail/sha256.hpp>
 #include <detail/JsonFields.hpp>
@@ -481,7 +482,13 @@ InputRequiredResult DeserializeInputRequiredResult(const JsonValue& j) {
 
 JsonValue SerializeElicitResult(const ElicitResult& v) {
     JsonValue obj(JsonValue::object_tag);
-    if (!v.action.empty()) obj["action"] = JsonValue(v.action);
+    if (v.action.empty()) {
+        MCP_LOG(Warning,
+            "elicitation result without action serialized as cancel until 0.4.0");
+        obj["action"] = JsonValue("cancel");
+    } else {
+        obj["action"] = JsonValue(v.action);
+    }
     detail::SerializeOptional(obj, "content", v.content);
     obj[detail::kResultType] = SerializeResultType(v.result_type);
     detail::SerializeOptional(obj, detail::kMeta, v.meta);
