@@ -2,6 +2,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
 
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -40,9 +41,9 @@ int ToOpenSslFd(NativeFd fd) {
 
 bool IsIpLiteralHost(std::string_view host) {
     std::string text(host);
-    unsigned char address[16] = {};
-    if (inet_pton(AF_INET, text.c_str(), address) == 1) return true;
-    return inet_pton(AF_INET6, text.c_str(), address) == 1;
+    std::array<unsigned char, 16> address{};
+    if (inet_pton(AF_INET, text.c_str(), address.data()) == 1) return true;
+    return inet_pton(AF_INET6, text.c_str(), address.data()) == 1;
 }
 
 SSL_CTX* GetSharedCtx() {
@@ -60,10 +61,10 @@ SSL_CTX* GetSharedCtx() {
 
 std::string SslErrorText(int ssl_error) {
     unsigned long error = ERR_get_error();
-    char buf[256] = {0};
+    std::array<char, 256> buf{};
     if (error != 0) {
-        ERR_error_string_n(error, buf, sizeof(buf));
-        return std::string(buf);
+        ERR_error_string_n(error, buf.data(), buf.size());
+        return std::string(buf.data());
     }
     if (ssl_error == SSL_ERROR_SYSCALL)
         return std::string("SSL_ERROR_SYSCALL, errno=") + std::strerror(errno);

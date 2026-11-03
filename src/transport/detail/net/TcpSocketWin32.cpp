@@ -12,6 +12,7 @@
 #include <mcp/ErrorCodes.hpp>
 
 #include <windows.h>
+#include <array>
 #include <mutex>
 #include <shared_mutex>
 #include <cstring>
@@ -34,12 +35,12 @@ bool EnsureWinsock() {
 }
 
 std::string WinsockErrorText(int error) {
-    char buf[256] = {0};
+    std::array<char, 256> buf{};
     DWORD written = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                                    nullptr, static_cast<DWORD>(error), 0,
-                                   buf, static_cast<DWORD>(sizeof(buf)), nullptr);
+                                   buf.data(), static_cast<DWORD>(buf.size()), nullptr);
     if (written == 0) return "error " + std::to_string(error);
-    std::string text(buf, written);
+    std::string text(buf.data(), written);
     while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == ' '))
         text.pop_back();
     return text;
