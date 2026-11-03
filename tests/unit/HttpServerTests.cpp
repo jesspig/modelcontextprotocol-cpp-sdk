@@ -1794,3 +1794,38 @@ TEST(HttpServerTest, SlowHeadersRejectedWithinBudget) {
     EXPECT_LT(elapsed_ms, 5000);
     server.Stop();
 }
+
+TEST(HttpServerTest, SlowSseClientDoesNotBlockBroadcast) {
+    auto port = PickFreePort(kTestBasePort + 2440);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/sse", [](const MCP_Request&, MCP_Response& resp) {
+        resp.is_sse = true;
+        resp.headers["content-type"] = "text/event-stream";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    RawSocketClient slow_client;
+    ASSERT_TRUE(slow_client.Connect(port, 4096, 400));
+    ASSERT_TRUE(slow_client.Send(
+        "GET /sse HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n"));
+    ASSERT_TRUE(WaitForCondition([&] { return server.SseClientCount() == 1; }, 5000));
+
+    const std::string burst(512 * 1024, 's');
+    auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < 128 && server.SseClientCount() > 0; ++i)
+        server.BroadcastSse(burst);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_EQ(server.SseClientCount(), 0u);
+    EXPECT_LT(elapsed_ms, 20000);
+
+    std::string received;
+    auto fast_id = server.AddSseClient(
+        [&received](std::string_view data) { received.append(data); });
+    ASSERT_NE(fast_id, 0u);
+    server.BroadcastSse("event: message\ndata: fast\n\n");
+    EXPECT_NE(received.find("fast"), std::string::npos);
+    server.RemoveSseClient(fast_id);
+    server.Stop();
+}

@@ -44,6 +44,7 @@ inline constexpr std::size_t kMaxConnections = 256;
 inline constexpr std::chrono::milliseconds kKeepAliveIdleTimeout(30000);
 inline constexpr std::chrono::milliseconds kIoTimeout(30000);
 inline constexpr std::chrono::milliseconds kHeaderReadBudget(10000);
+inline constexpr std::chrono::milliseconds kSseWriteTimeout(2000);
 inline constexpr std::string_view kSsePingFrame = ": ping\r\n\r\n";
 
 namespace {
@@ -524,7 +525,7 @@ void Impl::HandleConnectionInner(const std::shared_ptr<net::TcpSocket>& conn,
             }
             auto buffer = std::make_shared<SseSendBuffer>(
                 [conn](std::string_view data) {
-                    conn->Write(data.data(), data.size());
+                    conn->Write(data.data(), data.size(), kSseWriteTimeout);
                 });
             auto id = AddSseClient([buffer](std::string_view data) {
                 buffer->Send(data);
