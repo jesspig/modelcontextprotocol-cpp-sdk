@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
+#include <mcp/test/McpTimeout.hpp>
 
 #include <atomic>
 #include <cctype>
@@ -1319,6 +1320,25 @@ TEST(HttpServerTest, OriginValidationRejectsForeignOrigin) {
     auto loopback_ok = HttpGet(base + "/ping", loopback);
     ASSERT_NE(loopback_ok, std::nullopt);
     EXPECT_EQ(loopback_ok->status_code, 200);
+    server.Stop();
+}
+
+TEST(HttpServerTest, HandlerCallingStopDoesNotDeadlock) {
+    auto port = PickFreePort(kTestBasePort + 2400);
+    mcp::HttpServer server(port);
+    MCP_RUN_WITH_TIMEOUT([&]() {
+        server.SetHandler("GET", "/stop",
+            [&server](const MCP_Request&, MCP_Response& resp) {
+                server.Stop();
+                resp.body = "stopped";
+            });
+        server.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+
+        auto r = HttpGet("http://127.0.0.1:" + std::to_string(port) + "/stop");
+        EXPECT_EQ(r, std::nullopt);
+        EXPECT_EQ(server.SseClientCount(), 0u);
+    });
     server.Stop();
 }
 

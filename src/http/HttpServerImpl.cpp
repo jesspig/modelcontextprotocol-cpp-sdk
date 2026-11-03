@@ -245,7 +245,7 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
     }
 }
 
-void Impl::Stop() {
+void Impl::Stop(std::thread::id origin) {
     if (!running_.exchange(false))
         return;
     keepalive_cv_.notify_all();
@@ -270,9 +270,17 @@ void Impl::Stop() {
         conn->Close();
     detail::JoinThreadSafely(keepalive_thread_);
     detail::JoinThreadSafely(accept_thread_);
-    for (auto& e : conn_threads_)
-        detail::JoinThreadSafely(e.thread);
-    conn_threads_.clear();
+    std::vector<ConnEntry> entries;
+    {
+        std::lock_guard<std::mutex> lock(conns_mutex_);
+        entries.swap(conn_threads_);
+    }
+    for (auto& e : entries) {
+        if (e.thread.joinable() && e.thread.get_id() == origin)
+            e.thread.detach();
+        else
+            detail::JoinThreadSafely(e.thread);
+    }
     {
         std::lock_guard<std::mutex> lock(conns_mutex_);
         conn_fds_.clear();
@@ -360,8 +368,11 @@ void Impl::AcceptLoop(HandlerMap handlers) {
         }
         try {
             auto done = std::make_shared<std::atomic<bool>>(false);
+            auto self = shared_from_this();
             conn_threads_.emplace_back(ConnEntry{
-                std::thread(&Impl::HandleConnection, this, conn_obj, handlers, done), done});
+                std::thread([self, conn_obj, handlers, done]() mutable {
+                    self->HandleConnection(conn_obj, std::move(handlers), done);
+                }), done});
         } catch (const std::exception&) {
             std::lock_guard<std::mutex> lock(conns_mutex_);
             auto it = std::find(conn_fds_.begin(), conn_fds_.end(), conn_obj);

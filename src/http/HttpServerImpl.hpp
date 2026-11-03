@@ -33,7 +33,7 @@ struct ConnEntry {
     std::shared_ptr<std::atomic<bool>> done;
 };
 
-class Impl {
+class Impl : public std::enable_shared_from_this<Impl> {
 public:
     Impl() = default;
     ~Impl();
@@ -43,7 +43,7 @@ public:
     void Start(uint16_t port,
                const std::map<std::pair<std::string, std::string>, HttpHandler>& handlers,
                const HttpServerOptions& options);
-    void Stop();
+    void Stop(std::thread::id origin = std::thread::id{});
 
     uint64_t AddSseClient(std::function<void(std::string_view)> send_fn);
     uint64_t AddSseClient(std::function<void(std::string_view)> send_fn,

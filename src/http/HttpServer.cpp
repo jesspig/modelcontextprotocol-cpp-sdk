@@ -40,8 +40,9 @@ void HttpServer::Stop() {
     if (!running_.exchange(false)) return;
     auto impl = std::atomic_load(&impl_);
     if (impl) {
-        std::thread stopper([impl]() {
-            impl->Stop();
+        auto origin = std::this_thread::get_id();
+        std::thread stopper([impl, origin]() {
+            impl->Stop(origin);
         });
         detail::JoinThreadSafely(stopper);
     }
