@@ -36,15 +36,17 @@ HttpClient::~HttpClient() {
 }
 
 void HttpClient::Close() {
-    if (closed_) return;
-    closed_ = true;
-    CloseConnection();
+    if (closed_.exchange(true)) return;
+    std::lock_guard<std::mutex> lock(socket_mutex_);
+    if (tls_ != nullptr) tls_->Close();
+    if (tcp_ != nullptr) tcp_->Close();
 }
 
 void HttpClient::CloseConnection() {
     connected_ = false;
     read_buffer_.clear();
     read_offset_ = 0;
+    std::lock_guard<std::mutex> lock(socket_mutex_);
     if (tls_ != nullptr) tls_->Close();
     if (tcp_ != nullptr) tcp_->Close();
 }
@@ -56,7 +58,7 @@ bool HttpClient::IsEof() const {
 
 HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
                                      const std::function<void(std::string_view)>& body_cb) {
-    if (closed_)
+    if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "HTTP client is closed");
 
     max_body_bytes_ = req.max_response_bytes.value_or(
@@ -77,11 +79,14 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
         host_ = url.host;
         port_ = url.port;
         auto connect_timeout = (std::min)(current.timeout, kMaxConnectTimeout);
+        {
+            std::lock_guard<std::mutex> lock(socket_mutex_);
+            if (use_tls_) tls_ = std::make_unique<TlsSocket>(current.verify_tls);
+            else tcp_ = std::make_unique<TcpSocket>();
+        }
         if (use_tls_) {
-            tls_ = std::make_unique<TlsSocket>(current.verify_tls);
             tls_->Connect(host_, port_, connect_timeout);
         } else {
-            tcp_ = std::make_unique<TcpSocket>();
             tcp_->Connect(host_, port_, connect_timeout);
         }
         connected_ = true;
@@ -394,7 +399,7 @@ void HttpClient::StreamBody(const std::function<void(std::string_view)>& body_cb
                             std::chrono::milliseconds idle_timeout) {
     char buffer[kReadChunk];
     for (;;) {
-        if (closed_)
+        if (closed_.load())
             throw McpError(McpErrorCode::ConnectionClosed, "HTTP client closed during streaming read");
         std::size_t n = DrainReadBuffer(buffer, sizeof(buffer));
         if (n == 0) {
