@@ -136,7 +136,7 @@ private:
     void DeriveCapabilities();
     void SendListChangedNotification(std::string_view method);
 
-    JsonValue BuildToolsJson();
+    ListToolsResult BuildToolsResult();
     std::vector<std::string> EffectiveSupportedVersions() const;
     Implementation ResolveServerInfo() const;
     CacheHint ResolveCacheHint(std::string_view method,
@@ -194,7 +194,7 @@ private:
 
     mutable std::shared_mutex registry_mutex_;
     std::map<std::string, std::shared_ptr<McpServerTool>, std::less<>> tools_;
-    std::optional<JsonValue> cached_tools_json_;
+    std::optional<ListToolsResult> cached_tools_;
     struct ResourceEntry {
         std::string name;
         std::string uri_pattern;

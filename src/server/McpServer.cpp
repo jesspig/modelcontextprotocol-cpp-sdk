@@ -772,7 +772,7 @@ void McpServer::RegisterTool(std::shared_ptr<McpServerTool> tool) {
                 "tool already registered: " + t.name);
         }
         tools_[t.name] = std::move(tool);
-        cached_tools_json_ = std::nullopt;
+        cached_tools_ = std::nullopt;
     }
     WireHandlers();
     DeriveCapabilities();
@@ -1991,14 +1991,12 @@ void McpServer::DeriveCapabilities() {
     }
 }
 
-JsonValue McpServer::BuildToolsJson() {
+ListToolsResult McpServer::BuildToolsResult() {
     ListToolsResult result;
     for (const auto& [name, tool_ptr] : tools_) {
         result.tools.push_back(tool_ptr->ProtocolTool());
     }
-    auto hint = ResolveCacheHint("tools/list");
-    return ApplyCacheHintAndSerialize(result, hint,
-        SerializeListToolsResult);
+    return result;
 }
 
 std::vector<detail::McpParamAnnotation> McpServer::ResolveToolParamAnnotations(
@@ -2017,20 +2015,21 @@ void McpServer::HandleListTools(
 {
     if (!RequireInitialized(IsSessionInitialized(req.session_id), handler_->IsJuly2026OrLater(req.session_id), promise)) return;
     if (!options_.enable_progressive_discovery) {
+        std::optional<ListToolsResult> cached;
         {
             std::shared_lock<std::shared_mutex> registry_lock(registry_mutex_);
-            if (cached_tools_json_) {
-                promise.set_value(*cached_tools_json_);
-                return;
-            }
+            cached = cached_tools_;
         }
-        {
+        if (!cached) {
             std::unique_lock<std::shared_mutex> registry_lock(registry_mutex_);
-            if (!cached_tools_json_) {
-                cached_tools_json_ = BuildToolsJson();
+            if (!cached_tools_) {
+                cached_tools_ = BuildToolsResult();
             }
-            promise.set_value(*cached_tools_json_);
+            cached = cached_tools_;
         }
+        auto hint = ResolveCacheHint("tools/list", req.session_id);
+        promise.set_value(ApplyCacheHintAndSerialize(*cached, hint,
+            SerializeListToolsResult));
         return;
     }
     std::optional<std::string> cursor;

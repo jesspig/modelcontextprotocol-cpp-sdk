@@ -5920,6 +5920,61 @@ TEST(McpServerTest, ModernInvalidCacheHintReturnsInvalidParams) {
     CloseCacheHintTestEnv(env);
 }
 
+TEST(McpServerTest, ListToolsCacheHintPerSession) {
+    auto ctx = MakeModernServerWithClient();
+    ctx.server->RegisterTool("per_session_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    NegotiateModernVersion(ctx.server);
+
+    auto resp = SendCacheProbe(ctx.client, methods::kListTools);
+    ASSERT_FALSE(resp.Contains("code"));
+    ASSERT_TRUE(resp.Contains("ttlMs"));
+    EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t{0});
+    ASSERT_TRUE(resp.Contains("cacheScope"));
+    EXPECT_EQ(resp["cacheScope"].GetString(), "private");
+    EXPECT_FALSE(resp.Contains("cacheHint"));
+    ASSERT_TRUE(resp["tools"].IsArray());
+    EXPECT_EQ(resp["tools"].GetArray().size(), size_t{1});
+
+    ctx.server->RegisterTool("per_session_tool_2", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+
+    auto refreshed = SendCacheProbe(ctx.client, methods::kListTools);
+    ASSERT_FALSE(refreshed.Contains("code"));
+    ASSERT_TRUE(refreshed["tools"].IsArray());
+    EXPECT_EQ(refreshed["tools"].GetArray().size(), size_t{2});
+    ASSERT_TRUE(refreshed.Contains("ttlMs"));
+    EXPECT_EQ(refreshed["ttlMs"].GetInt(), int64_t{0});
+    ASSERT_TRUE(refreshed.Contains("cacheScope"));
+    EXPECT_EQ(refreshed["cacheScope"].GetString(), "private");
+    EXPECT_FALSE(refreshed.Contains("cacheHint"));
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, ListToolsCacheHintValidatedPerSession) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    CacheHint negative_ttl;
+    negative_ttl.ttl_ms = int64_t{-1};
+    negative_ttl.cache_scope = std::string("private");
+    sopts.cache_hints = std::map<std::string, CacheHint, std::less<>>{
+        {"tools/list", negative_ttl}};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterTool("per_session_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    NegotiateModernVersion(server);
+
+    ExpectInvalidCacheHint(client, methods::kListTools, "-1");
+
+    server->Close();
+    client->Close();
+}
+
 TEST(McpServerTest, DiscoverRejectedWhenRequestDeclaresLegacyVersion) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
