@@ -299,6 +299,9 @@ bool FileTaskStore::UpdateTask(
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
         if (IsTerminalStatus(it->second.status)) return false;
+        if (it->second.status == TaskStatus::InputRequired && result) {
+            return false;
+        }
         original = it->second;
         updated = original;
         updated.result = result;

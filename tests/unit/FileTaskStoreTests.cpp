@@ -273,9 +273,47 @@ TEST_F(FileTaskStoreTest, ParkTaskForInput) {
 
     EXPECT_FALSE(store.ParkTaskForInput("missing", requests));
 
+    JsonValue responses(JsonValue::object_tag);
+    responses["first"] = JsonValue("one");
+    ASSERT_TRUE(store.AdvanceTaskWithInput("task-1", responses));
     JsonValue result(JsonValue::object_tag);
     ASSERT_TRUE(store.UpdateTask("task-1", result));
     EXPECT_FALSE(store.ParkTaskForInput("task-1", requests));
+}
+
+TEST_F(FileTaskStoreTest, UpdateTaskRejectedWhileInputRequired) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+
+    InputRequests requests;
+    ElicitRequestParams params;
+    params.message = "Need it";
+    requests["first"] = MakeInputRequestForElicitation(params);
+    ASSERT_TRUE(store.ParkTaskForInput("task-1", requests));
+
+    JsonValue result(JsonValue::object_tag);
+    result["answer"] = JsonValue(42);
+    EXPECT_FALSE(store.UpdateTask("task-1", result));
+
+    auto parked = store.GetTask("task-1");
+    ASSERT_TRUE(parked.has_value());
+    EXPECT_EQ(parked->status, TaskStatus::InputRequired);
+    EXPECT_FALSE(parked->result.has_value());
+
+    JsonValue responses(JsonValue::object_tag);
+    responses["first"] = JsonValue("one");
+    ASSERT_TRUE(store.AdvanceTaskWithInput("task-1", responses));
+
+    auto working = store.GetTask("task-1");
+    ASSERT_TRUE(working.has_value());
+    EXPECT_EQ(working->status, TaskStatus::Working);
+
+    ASSERT_TRUE(store.UpdateTask("task-1", result));
+    auto completed = store.GetTask("task-1");
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, TaskStatus::Completed);
+    ASSERT_TRUE(completed->result.has_value());
+    EXPECT_EQ(completed->result->At("answer").GetInt(), 42);
 }
 
 TEST_F(FileTaskStoreTest, AdvanceTaskWithInputMergesResponses) {
