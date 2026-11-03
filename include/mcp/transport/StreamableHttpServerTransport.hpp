@@ -12,6 +12,7 @@
 #include <mcp/ext/ServerCard.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -63,6 +64,7 @@ struct StreamableHttpServerOptions {
 
     std::optional<std::size_t> max_request_body_bytes = detail::kMaxHttpBodyBytes;
     std::optional<std::size_t> max_sse_event_bytes = detail::kMaxSseEventBytes;
+    std::optional<std::chrono::milliseconds> request_timeout;
     struct BearerAuthConfig {
         std::function<AuthResult(const std::string& token)> verify;
         std::string resource_metadata_url;

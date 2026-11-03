@@ -35,7 +35,7 @@
 namespace mcp {
 
 namespace {
-constexpr std::chrono::seconds kStatelessTimeout(30);
+constexpr std::chrono::milliseconds kDefaultHttpRequestTimeout(30000);
 constexpr std::chrono::milliseconds kSseListenerWaitStep(50);
 constexpr std::chrono::milliseconds kSseListenerWaitBudget(2000);
 const char* kMcpParamHeaderPrefix = "mcp-param-";
@@ -1316,8 +1316,14 @@ void StreamableHttpServerTransport::HandlePost(
             return;
         }
 
-        auto deadline = std::chrono::steady_clock::now() + kStatelessTimeout;
-        if (future.wait_until(deadline) != std::future_status::ready) {
+        const auto timeout = options_.request_timeout.value_or(kDefaultHttpRequestTimeout);
+        bool response_ready = true;
+        if (timeout.count() > 0)
+            response_ready = future.wait_until(
+                std::chrono::steady_clock::now() + timeout) == std::future_status::ready;
+        else
+            future.wait();
+        if (!response_ready) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_responses_.erase(pending_key);

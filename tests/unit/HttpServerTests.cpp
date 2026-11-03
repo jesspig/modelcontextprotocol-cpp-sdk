@@ -689,6 +689,79 @@ TEST(StreamableHttpTest, StatefulRequestTimeoutReturns504) {
     transport->Close();
 }
 
+TEST(StreamableHttpTest, RequestTimeoutConfigurable) {
+    auto port = PickFreePort(kTestBasePort + 721);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = false;
+    opts.request_timeout = std::chrono::milliseconds(300);
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            g_held_promises.push_back(std::move(p));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = "POST";
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.body = R"({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})";
+    req.headers["Content-Type"] = "application/json";
+    req.headers["Mcp-Method"] = "tools/call";
+    req.timeout = std::chrono::milliseconds(30000);
+    auto started = std::chrono::steady_clock::now();
+    auto resp = client.Request(req);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_EQ(resp.status_code, 504);
+    EXPECT_NE(resp.body.find("-32000"), std::string::npos);
+    EXPECT_LT(elapsed_ms, 5000);
+
+    handler->Close();
+    transport->Close();
+}
+
+TEST(StreamableHttpTest, RequestTimeoutDisabled) {
+    auto port = PickFreePort(kTestBasePort + 722);
+    mcp::StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.endpoint = "/mcp";
+    opts.stateless = false;
+    opts.enable_legacy_sse = false;
+    opts.request_timeout = std::chrono::milliseconds(0);
+    auto transport = std::make_shared<mcp::StreamableHttpServerTransport>(opts);
+    auto handler = std::make_shared<mcp::McpSessionHandler>(
+        transport, mcp::MakeWireCodec(std::string(mcp::kLatestProtocolVersion)));
+    handler->SetRequestHandler(mcp::methods::kCallTool,
+        [](const mcp::JsonRpcRequest&, std::promise<mcp::JsonValue> p) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(600));
+            mcp::JsonValue result(mcp::JsonValue::object_tag);
+            result["text"] = mcp::JsonValue("slow-ok");
+            p.set_value(std::move(result));
+        });
+    handler->Start();
+    transport->Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto r = HttpPost(
+        "http://127.0.0.1:" + std::to_string(port) + "/mcp",
+        R"({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})",
+        {{"Content-Type", "application/json"}, {"Mcp-Method", "tools/call"}});
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 200);
+    EXPECT_NE(r->body.find("slow-ok"), std::string::npos);
+
+    handler->Close();
+    transport->Close();
+}
+
 TEST(StreamableHttpTest, UnknownMethodMapsTo404) {
     auto port = PickFreePort(kTestBasePort + 750);
     mcp::StreamableHttpServerOptions opts;
