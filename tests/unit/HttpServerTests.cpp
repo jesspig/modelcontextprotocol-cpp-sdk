@@ -1482,17 +1482,19 @@ TEST(HttpServerTest, OriginValidationRejectsForeignOrigin) {
 TEST(HttpServerTest, HandlerCallingStopDoesNotDeadlock) {
     auto port = PickFreePort(kTestBasePort + 2400);
     mcp::HttpServer server(port);
+    std::atomic<bool> stop_returned{false};
     MCP_RUN_WITH_TIMEOUT([&]() {
         server.SetHandler("GET", "/stop",
-            [&server](const MCP_Request&, MCP_Response& resp) {
+            [&server, &stop_returned](const MCP_Request&, MCP_Response& resp) {
                 server.Stop();
+                stop_returned.store(true);
                 resp.body = "stopped";
             });
         server.Start();
         ASSERT_TRUE(WaitUntilReady(port));
 
-        auto r = HttpGet("http://127.0.0.1:" + std::to_string(port) + "/stop");
-        EXPECT_EQ(r, std::nullopt);
+        HttpGet("http://127.0.0.1:" + std::to_string(port) + "/stop");
+        EXPECT_TRUE(WaitForCondition([&] { return stop_returned.load(); }, 5000));
         EXPECT_EQ(server.SseClientCount(), 0u);
     });
     server.Stop();
