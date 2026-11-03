@@ -14,6 +14,8 @@
 #include <cstring>
 #include <cerrno>
 #include <limits>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 
@@ -87,13 +89,13 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     TcpSocket s;
     s.fd_.store(fd);
     s.closed_.store(false);
-    s.eof_ = false;
+    s.eof_.store(false);
     EnableNoSigpipe(fd);
     return s;
 }
 
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
-    : fd_(other.fd_.load()), eof_(other.eof_), closed_(other.closed_.load()) {
+    : fd_(other.fd_.load()), eof_(other.eof_.load()), closed_(other.closed_.load()) {
     other.fd_.store(kInvalidFd);
     other.closed_.store(true);
 }
@@ -102,7 +104,7 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
         Close();
         fd_.store(other.fd_.load());
-        eof_ = other.eof_;
+        eof_.store(other.eof_.load());
         closed_.store(other.closed_.load());
         other.fd_.store(kInvalidFd);
         other.closed_.store(true);
@@ -187,22 +189,23 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
     fd_.store(connected_fd);
     EnableNoSigpipe(connected_fd);
     closed_.store(false);
-    eof_ = false;
+    eof_.store(false);
 }
 
 std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::milliseconds timeout) {
     if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
-    int fd = fd_.load();
-    if (eof_ || fd < 0) return 0;
+    if (eof_.load() || fd_.load() < 0) return 0;
 
     if (!WaitForEvents(POLLIN, ClampTimeoutMs(timeout))) {
         if (closed_.load())
             throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
         return 0;
     }
-    fd = fd_.load();
-    if (closed_.load() || fd < 0)
+
+    std::shared_lock<std::shared_mutex> guard(io_mutex_);
+    int fd = fd_.load();
+    if (fd < 0)
         throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
 
     ssize_t n;
@@ -211,13 +214,13 @@ std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
     } while (n < 0 && errno == EINTR);
 
     if (n == 0) {
-        eof_ = true;
+        eof_.store(true);
         return 0;
     }
     if (n < 0) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
         if (errno == ECONNRESET) {
-            eof_ = true;
+            eof_.store(true);
             return 0;
         }
         throw McpError(McpErrorCode::ConnectionClosed,
@@ -229,8 +232,7 @@ std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
 void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::milliseconds timeout) {
     if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
-    int fd = fd_.load();
-    if (fd < 0)
+    if (fd_.load() < 0)
         throw McpError(McpErrorCode::ConnectionClosed, "write on unconnected socket");
 
     const char* data = static_cast<const char*>(buf);
@@ -246,24 +248,33 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
                 throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
             throw McpError(McpErrorCode::RequestTimeout, "socket write timed out");
         }
-        fd = fd_.load();
-        if (closed_.load() || fd < 0)
-            throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
 
-        ssize_t n;
-        do {
-            n = ::send(fd, data + total, len - total, kSendFlags);
-        } while (n < 0 && errno == EINTR);
+        ssize_t written = 0;
+        bool would_block = false;
+        {
+            std::shared_lock<std::shared_mutex> guard(io_mutex_);
+            int fd = fd_.load();
+            if (fd < 0)
+                throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
 
-        if (n < 0) {
-            if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+            do {
+                written = ::send(fd, data + total, len - total, kSendFlags);
+            } while (written < 0 && errno == EINTR);
+
+            if (written < 0) {
+                if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                    would_block = true;
+                } else {
+                    throw McpError(McpErrorCode::ConnectionClosed,
+                                   std::string("socket write failed: ") + std::strerror(errno));
+                }
             }
-            throw McpError(McpErrorCode::ConnectionClosed,
-                           std::string("socket write failed: ") + std::strerror(errno));
         }
-        total += static_cast<std::size_t>(n);
+        if (would_block) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        total += static_cast<std::size_t>(written);
     }
 }
 
@@ -278,12 +289,14 @@ bool TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
 }
 
 void TcpSocket::Close() {
-    closed_.store(true);
+    if (closed_.exchange(true)) return;
+    int pending = fd_.load();
+    if (pending >= 0)
+        ::shutdown(pending, SHUT_RDWR);
+
+    std::unique_lock<std::shared_mutex> guard(io_mutex_);
     int fd = fd_.exchange(kInvalidFd);
-    if (fd >= 0) {
-        ::shutdown(fd, SHUT_RDWR);
-        ::close(fd);
-    }
+    if (fd >= 0) ::close(fd);
 }
 
 }}} // namespace mcp::detail::net
