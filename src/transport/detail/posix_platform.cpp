@@ -8,6 +8,12 @@
 #include <signal.h>
 #include <poll.h>
 #include <pthread.h>
+#if defined(__linux__) && defined(__has_include)
+#if __has_include(<sys/syscall.h>)
+#include <sys/syscall.h>
+#define MCP_HAVE_CLOSE_RANGE 1
+#endif
+#endif
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
@@ -43,6 +49,17 @@ void SetCloseOnExec(int fd) {
     if (fd < 0) return;
     int flags = ::fcntl(fd, F_GETFD, 0);
     if (flags >= 0) ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+constexpr int kMaxDescriptorSweep = 65536;
+
+void CloseInheritedDescriptors() {
+#if defined(MCP_HAVE_CLOSE_RANGE) && defined(SYS_close_range)
+    if (::syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
+#endif
+    long limit = ::sysconf(_SC_OPEN_MAX);
+    if (limit < 0 || limit > kMaxDescriptorSweep) limit = kMaxDescriptorSweep;
+    for (long fd = 3; fd < limit; ++fd) ::close(static_cast<int>(fd));
 }
 
 constexpr int kPipeReadPollTimeoutMs = 100;
@@ -348,6 +365,8 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
         }
 
         if (info.terminate_process_tree) setpgid(0, 0);
+
+        CloseInheritedDescriptors();
 
         if (!info.working_directory.empty()) {
             if (chdir(info.working_directory.c_str()) != 0)

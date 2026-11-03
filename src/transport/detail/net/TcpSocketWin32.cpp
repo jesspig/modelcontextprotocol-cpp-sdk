@@ -65,6 +65,10 @@ bool WaitForSocket(SOCKET sock, short events, int timeout_ms) {
     return rc > 0;
 }
 
+void MarkNonInheritable(SOCKET sock) {
+    ::SetHandleInformation(reinterpret_cast<HANDLE>(sock), HANDLE_FLAG_INHERIT, 0);
+}
+
 } // anonymous namespace
 
 bool TcpSocket::WaitForEvents(short events, int timeout_ms) {
@@ -90,6 +94,7 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     s.fd_.store(fd);
     s.closed_.store(false);
     s.eof_.store(false);
+    MarkNonInheritable(fd);
     return s;
 }
 
@@ -138,6 +143,7 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
     for (struct addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
         SOCKET sock = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (sock == INVALID_SOCKET) continue;
+        MarkNonInheritable(sock);
 
         u_long nonblocking = 1;
         ::ioctlsocket(sock, FIONBIO, &nonblocking);

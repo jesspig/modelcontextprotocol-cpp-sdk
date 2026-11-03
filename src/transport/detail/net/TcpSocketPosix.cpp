@@ -36,6 +36,11 @@ void EnableNoSigpipe(int fd) {
 #endif
 }
 
+void MarkCloseOnExec(int fd) {
+    int flags = ::fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 template <typename Rep, typename Period>
 int ClampTimeoutMs(std::chrono::duration<Rep, Period> ms) {
     auto count = std::chrono::duration_cast<std::chrono::milliseconds>(ms).count();
@@ -91,6 +96,7 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     s.closed_.store(false);
     s.eof_.store(false);
     EnableNoSigpipe(fd);
+    MarkCloseOnExec(fd);
     return s;
 }
 
@@ -135,8 +141,13 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
     int connected_fd = -1;
 
     for (struct addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
+#ifdef SOCK_CLOEXEC
+        int fd = ::socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
+#else
         int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+#endif
         if (fd < 0) continue;
+        MarkCloseOnExec(fd);
 
         int flags = ::fcntl(fd, F_GETFL, 0);
         if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
