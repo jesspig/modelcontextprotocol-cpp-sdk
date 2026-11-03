@@ -23,4 +23,15 @@ inline constexpr size_t kChannelCapacity = 64;
 inline constexpr size_t kMaxHttpSessions = 10000;
 inline constexpr int64_t kSessionIdleTimeoutMs = 30LL * 60 * 1000;
 
+static_assert(kMaxStdioFrameBytes >= kReadBufferSize,
+    "a stdio frame must exceed one read buffer so frame accumulation stays meaningful");
+static_assert(kMaxSseEventBytes <= kMaxMessageSize,
+    "an SSE event carries one JSON-RPC message, so the event cap cannot exceed the message cap");
+static_assert(kMaxHttpBodyBytes <= kMaxMessageSize,
+    "an accepted HTTP body must fit the protocol message cap");
+static_assert(kMaxDcrBytes <= kMaxHttpResponseBytes,
+    "the DCR body cap must stay reachable below the HTTP response cap");
+static_assert(kChannelCapacity > 0,
+    "a blocking MessageChannel needs non-zero capacity");
+
 }} // namespace mcp::detail
