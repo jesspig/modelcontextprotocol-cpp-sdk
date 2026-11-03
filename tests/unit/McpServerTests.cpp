@@ -5437,6 +5437,8 @@ TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
         });
 
     env.store->CreateTask("task-stale", env.server->SessionId(), 1);
+    env.store->CreateTask("task-live", env.server->SessionId(), 1);
+    ASSERT_TRUE(env.store->SetTaskStatus("task-stale", TaskStatus::Completed));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(env.store->GetTask("task-stale").has_value());
 
@@ -5447,6 +5449,8 @@ TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
     ASSERT_FALSE(resp.Contains("code"));
 
     EXPECT_FALSE(env.store->GetTask("task-stale").has_value());
+    ASSERT_TRUE(env.store->GetTask("task-live").has_value());
+    EXPECT_EQ(env.store->GetTask("task-live")->status, TaskStatus::Pending);
     CloseTaskEraEnv(env);
 }
 

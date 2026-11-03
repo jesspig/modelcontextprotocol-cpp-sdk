@@ -408,11 +408,18 @@ TEST_F(FileTaskStoreTest, ExpiredTaskIdsAreEnumeratedAndRemovable) {
     ASSERT_TRUE(task.ttl_ms.has_value());
     EXPECT_EQ(*task.ttl_ms, 1000);
 
-    auto created_at = std::stoll(task.created_at);
-    EXPECT_TRUE(store.GetExpiredTaskIds(created_at).empty());
-    EXPECT_TRUE(store.GetExpiredTaskIds(created_at + 999).empty());
+    JsonValue result(JsonValue::object_tag);
+    result["answer"] = JsonValue(42);
+    ASSERT_TRUE(store.UpdateTask("task-ttl", result));
+    auto settled = store.GetTask("task-ttl");
+    ASSERT_TRUE(settled.has_value());
+    ASSERT_TRUE(settled->last_updated_at.has_value());
+    auto settled_at = std::stoll(*settled->last_updated_at);
 
-    auto expired = store.GetExpiredTaskIds(created_at + 1000);
+    EXPECT_TRUE(store.GetExpiredTaskIds(settled_at).empty());
+    EXPECT_TRUE(store.GetExpiredTaskIds(settled_at + 999).empty());
+
+    auto expired = store.GetExpiredTaskIds(settled_at + 1000);
     ASSERT_EQ(expired.size(), size_t{1});
     EXPECT_EQ(expired.front(), "task-ttl");
 
@@ -420,6 +427,36 @@ TEST_F(FileTaskStoreTest, ExpiredTaskIdsAreEnumeratedAndRemovable) {
     EXPECT_FALSE(store.GetTask("task-ttl").has_value());
     EXPECT_FALSE(store.RemoveTask("task-ttl"));
     EXPECT_TRUE(store.GetAllTasks().empty());
+}
+
+TEST_F(FileTaskStoreTest, WorkingTaskNotSweptByTtl) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-pending", "session-a", 1000);
+    store.CreateTask("task-working", "session-a", 1000);
+    store.CreateTask("task-input", "session-a", 1000);
+    ASSERT_TRUE(store.SetTaskStatus("task-working", TaskStatus::Working));
+
+    InputRequests requests;
+    ElicitRequestParams params;
+    params.message = "Need it";
+    requests["first"] = MakeInputRequestForElicitation(params);
+    ASSERT_TRUE(store.ParkTaskForInput("task-input", requests));
+
+    EXPECT_TRUE(store.GetExpiredTaskIds(9999999999999LL).empty());
+
+    JsonValue result(JsonValue::object_tag);
+    result["answer"] = JsonValue(42);
+    ASSERT_TRUE(store.UpdateTask("task-working", result));
+    auto completed = store.GetTask("task-working");
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, TaskStatus::Completed);
+    ASSERT_TRUE(completed->last_updated_at.has_value());
+    auto settled_at = std::stoll(*completed->last_updated_at);
+
+    EXPECT_TRUE(store.GetExpiredTaskIds(settled_at + 999).empty());
+    auto expired = store.GetExpiredTaskIds(settled_at + 1000);
+    ASSERT_EQ(expired.size(), size_t{1});
+    EXPECT_EQ(expired.front(), "task-working");
 }
 
 TEST_F(FileTaskStoreTest, TasksWithoutTtlNeverExpire) {
