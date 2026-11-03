@@ -102,7 +102,7 @@ cmake --build build/p3a --target mcp-doc-snippet-handle-server-initiated-request
 
 Expected: configure prints `[mcp-docs] syntax-checking 14 snippet(s) with '/Zs'`, and the build prints
 
-```
+```text
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-handle-server-initiated-requests.dir\__\__\docs\snippets\handle-server-initiated-requests.cpp.obj
 ```
 

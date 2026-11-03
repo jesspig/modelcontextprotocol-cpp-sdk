@@ -95,7 +95,7 @@ build/debug/examples/WeatherServer/WeatherServer
 
 Measured output (Windows, clang-cl):
 
-```
+```text
 WeatherServer starting on stdio...
 ```
 

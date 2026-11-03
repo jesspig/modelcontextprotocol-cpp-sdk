@@ -97,7 +97,7 @@ build/debug/examples/RequestCancellation/RequestCancellation
 
 Measured output (Windows, clang-cl, return code 0):
 
-```
+```text
 timeout handle id: 2
 error: request timed out (code -32001)
 cancel handle id: 3
