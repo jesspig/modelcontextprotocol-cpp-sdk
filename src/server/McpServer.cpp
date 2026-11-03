@@ -2483,11 +2483,32 @@ void McpServer::HandleCallTool(
                     std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
                     running_task_cancel_flags_.erase(task_id);
                 };
+                auto announce_stored_status = [&]() {
+                    std::optional<TaskState> stored;
+                    try {
+                        stored = store->GetTask(task_id);
+                    } catch (const std::exception& e) {
+                        MCP_LOG(Error, "task store: failed to read task " + task_id +
+                            " before status notification: " + e.what());
+                        return;
+                    }
+                    if (!stored) {
+                        MCP_LOG(Error, "task store: task " + task_id +
+                            " vanished before status notification");
+                        return;
+                    }
+                    SendTaskNotification(*handler_, notifications::kTaskStatus,
+                        task_id, stored->status, modern, task_owner);
+                };
                 auto finish = [&](TaskStatus status, bool notify) {
-                    store->SetTaskStatus(task_id, status);
+                    const bool applied = store->SetTaskStatus(task_id, status);
                     if (notify) {
-                        SendTaskNotification(*handler_, notifications::kTaskStatus,
-                            task_id, status, modern, task_owner);
+                        if (applied) {
+                            SendTaskNotification(*handler_, notifications::kTaskStatus,
+                                task_id, status, modern, task_owner);
+                        } else {
+                            announce_stored_status();
+                        }
                     }
                     retire_task();
                 };
@@ -2497,10 +2518,14 @@ void McpServer::HandleCallTool(
                     error_payload[detail::kCode] = JsonValue(code);
                     error_payload[detail::kMessage] = JsonValue(std::move(message));
                     if (data) error_payload[detail::kData] = std::move(*data);
-                    store->FailTask(task_id, error_payload);
+                    const bool applied = store->FailTask(task_id, error_payload);
+                    if (applied) {
+                        SendTaskNotification(*handler_, notifications::kTaskStatus,
+                            task_id, TaskStatus::Failed, modern, task_owner);
+                    } else {
+                        announce_stored_status();
+                    }
                     retire_task();
-                    SendTaskNotification(*handler_, notifications::kTaskStatus,
-                        task_id, TaskStatus::Failed, modern, task_owner);
                 };
                 auto result_promise = std::make_shared<std::promise<CallToolResult>>();
                 auto result_future = result_promise->get_future();

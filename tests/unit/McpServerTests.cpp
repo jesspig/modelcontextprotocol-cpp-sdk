@@ -2196,6 +2196,62 @@ TEST(McpServerTest, CallToolTaskModeKeepsCompletedWhenCancelArrivesLate) {
     CloseTaskEraEnv(env);
 }
 
+TEST(McpServerTest, FinishAfterCancelDoesNotAnnounceCompleted) {
+    auto env = MakeTaskEraEnv();
+
+    auto tool_started = std::make_shared<std::promise<void>>();
+    auto started_future = tool_started->get_future();
+    auto release_tool = std::make_shared<std::promise<void>>();
+
+    env.server->RegisterTool("gated_tool", MakeTaskToolOptions(),
+        [tool_started, release_tool](const Ctx&) {
+            tool_started->set_value();
+            release_tool->get_future().wait_for(std::chrono::seconds(5));
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "done"});
+            return r;
+        });
+
+    std::mutex notif_mutex;
+    std::vector<std::string> seen_statuses;
+    env.client->SetNotificationHandler(notifications::kTaskStatus,
+        [&](const JsonRpcNotification& n) {
+            std::lock_guard<std::mutex> lock(notif_mutex);
+            seen_statuses.push_back(NotificationField(n, "status"));
+        });
+
+    PerformLegacyHandshake(env.client);
+
+    CallToolRequestParams params;
+    params.name = "gated_tool";
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(resp);
+    EXPECT_EQ(created.status, "working");
+
+    ASSERT_EQ(started_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_TRUE(env.store->CancelTask(created.task_id, "cancelled outside tasks/cancel"));
+    release_tool->set_value();
+
+    EXPECT_TRUE(WaitForStatusNotification(notif_mutex, seen_statuses, "cancelled"));
+
+    auto statuses = CopyStatuses(notif_mutex, seen_statuses);
+    EXPECT_EQ(std::count(statuses.begin(), statuses.end(), "completed"), 0);
+
+    auto final_task = env.store->GetTask(created.task_id);
+    ASSERT_TRUE(final_task.has_value());
+    EXPECT_EQ(final_task->status, TaskStatus::Cancelled);
+    EXPECT_FALSE(final_task->result.has_value());
+
+    CloseTaskEraEnv(env);
+}
+
 TEST(McpServerTest, ElicitRequestParamsFormModeOmitsModeOnWire) {
     ElicitRequestParams params;
     params.message = "pick one";
@@ -5437,6 +5493,8 @@ TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
         });
 
     env.store->CreateTask("task-stale", env.server->SessionId(), 1);
+    env.store->CreateTask("task-live", env.server->SessionId(), 1);
+    ASSERT_TRUE(env.store->SetTaskStatus("task-stale", TaskStatus::Completed));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(env.store->GetTask("task-stale").has_value());
 
@@ -5447,6 +5505,8 @@ TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
     ASSERT_FALSE(resp.Contains("code"));
 
     EXPECT_FALSE(env.store->GetTask("task-stale").has_value());
+    ASSERT_TRUE(env.store->GetTask("task-live").has_value());
+    EXPECT_EQ(env.store->GetTask("task-live")->status, TaskStatus::Pending);
     CloseTaskEraEnv(env);
 }
 

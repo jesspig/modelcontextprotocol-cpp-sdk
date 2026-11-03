@@ -299,6 +299,9 @@ bool FileTaskStore::UpdateTask(
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
         if (IsTerminalStatus(it->second.status)) return false;
+        if (it->second.status == TaskStatus::InputRequired && result) {
+            return false;
+        }
         original = it->second;
         updated = original;
         updated.result = result;
@@ -472,10 +475,17 @@ std::vector<std::string> FileTaskStore::GetExpiredTaskIds(int64_t now_ms) {
     std::shared_lock<std::shared_mutex> lock(data_mutex_);
     std::vector<std::string> expired;
     for (const auto& [task_id, state] : tasks_) {
+        if (!IsTerminalStatus(state.status)) continue;
         if (!state.ttl_ms || *state.ttl_ms <= 0) continue;
-        auto created_at = ParseMillis(state.created_at);
-        if (!created_at) continue;
-        if (now_ms - *created_at >= *state.ttl_ms) expired.push_back(task_id);
+        auto baseline = ParseMillis(state.created_at);
+        if (state.last_updated_at) {
+            auto updated_at = ParseMillis(*state.last_updated_at);
+            if (updated_at && (!baseline || *updated_at > *baseline)) {
+                baseline = updated_at;
+            }
+        }
+        if (!baseline) continue;
+        if (now_ms - *baseline >= *state.ttl_ms) expired.push_back(task_id);
     }
     return expired;
 }
