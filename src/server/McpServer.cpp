@@ -3279,18 +3279,25 @@ void McpServer::HandleSubscriptionsListen(
 
     auto meta = handler_->ExtractIncomingMeta(req);
 
+    const bool client_named = meta.subscription_id.has_value() &&
+        !meta.subscription_id->empty();
     SubscriptionEntry entry;
-    entry.id = std::to_string(next_subscription_id_++);
+    entry.id = client_named
+        ? *meta.subscription_id
+        : "srv-" + std::to_string(next_subscription_id_++);
+    entry.session_id = client_named ? *meta.subscription_id : std::string();
     entry.filter = params.notifications;
     entry.created_at = std::chrono::steady_clock::now();
 
-    if (meta.subscription_id) {
-        entry.session_id = *meta.subscription_id;
+    const std::string ack_subscription_id = entry.id;
+    auto outcome = handler_->TryAddSubscriptionEntry(std::move(entry), req.session_id);
+    if (outcome == SubscriptionAddOutcome::LimitExceeded) {
+        promise.set_exception(std::make_exception_ptr(
+            McpError(McpErrorCode::InvalidParams,
+                "subscription limit reached for this session: " +
+                    std::to_string(McpSessionHandler::kMaxSubscriptionEntriesPerSession))));
+        return;
     }
-
-    std::string ack_subscription_id =
-        entry.session_id.empty() ? entry.id : entry.session_id;
-    handler_->AddSubscriptionEntry(std::move(entry), req.session_id);
 
     SendSubscriptionsAcknowledged(params.notifications, ack_subscription_id,
                                   req.session_id);

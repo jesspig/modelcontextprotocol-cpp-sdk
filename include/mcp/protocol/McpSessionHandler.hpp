@@ -42,11 +42,19 @@ struct SubscriptionEntry {
     std::chrono::steady_clock::time_point created_at;
 };
 
+enum class SubscriptionAddOutcome {
+    Added,
+    Overwrote,
+    LimitExceeded,
+};
+
 class MCP_API McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
 public:
     inline static constexpr std::chrono::seconds kProgressTimeoutExtension{30};
     inline static constexpr std::chrono::milliseconds kTimeoutPollInterval{100};
     inline static constexpr std::size_t kDefaultResponseQueueCapacity{1024};
+    inline static constexpr std::size_t kMaxSubscriptionEntriesPerSession{64};
+    inline static constexpr std::chrono::seconds kSubscriptionEntryTtl{3600};
 
     McpSessionHandler(
         std::shared_ptr<ITransport> transport,
@@ -103,6 +111,8 @@ public:
     void AddSubscription(Subscription sub, std::string_view session_id = {});
     void AddSubscriptionEntry(SubscriptionEntry entry,
                               std::string_view session_id = {});
+    SubscriptionAddOutcome TryAddSubscriptionEntry(SubscriptionEntry entry,
+                                                   std::string_view session_id = {});
     void RemoveSubscription(std::string_view id, std::string_view session_id = {});
     void NotifySubscribers(
         std::string_view notification_type,

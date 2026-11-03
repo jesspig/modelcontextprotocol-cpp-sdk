@@ -708,10 +708,85 @@ TEST(SessionHandlerTest, NotifySubscribersPrefersClientSubscriptionId) {
     EXPECT_EQ(sid_future.get(), std::string("client-sub-9"));
 }
 
+TEST(SessionHandlerTest, TryAddSubscriptionEntryOverwritesSameId) {
+    HandlerPair hp;
+
+    SubscriptionEntry first;
+    first.id = "dup-sub";
+    first.filter.tools_list_changed = true;
+    EXPECT_EQ(hp.server->TryAddSubscriptionEntry(std::move(first)),
+              SubscriptionAddOutcome::Added);
+
+    SubscriptionEntry second;
+    second.id = "dup-sub";
+    second.filter.prompts_list_changed = true;
+    EXPECT_EQ(hp.server->TryAddSubscriptionEntry(std::move(second)),
+              SubscriptionAddOutcome::Overwrote);
+
+    std::promise<std::string> sid_promise;
+    auto sid_future = sid_promise.get_future();
+    hp.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&sid_promise](const JsonRpcNotification& notif) {
+            if (notif.meta) {
+                if (auto* sid = notif.meta->Find(kMetaSubscriptionIdKeyLiteral)) {
+                    sid_promise.set_value(sid->GetString());
+                }
+            }
+        });
+    hp.server->NotifySubscribers(notifications::kPromptListChanged,
+        JsonValue(JsonValue::object_tag));
+    ASSERT_EQ(sid_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    EXPECT_EQ(sid_future.get(), std::string("dup-sub"));
+}
+
+TEST(SessionHandlerTest, TryAddSubscriptionEntryEnforcesPerSessionLimit) {
+    HandlerPair hp;
+    const std::size_t limit = McpSessionHandler::kMaxSubscriptionEntriesPerSession;
+
+    for (std::size_t i = 0; i < limit; ++i) {
+        SubscriptionEntry entry;
+        entry.id = "sub-" + std::to_string(i);
+        entry.filter.tools_list_changed = true;
+        entry.created_at = std::chrono::steady_clock::now();
+        EXPECT_EQ(hp.server->TryAddSubscriptionEntry(std::move(entry)),
+                  SubscriptionAddOutcome::Added);
+    }
+
+    SubscriptionEntry overflow;
+    overflow.id = "sub-overflow";
+    overflow.filter.tools_list_changed = true;
+    overflow.created_at = std::chrono::steady_clock::now();
+    EXPECT_EQ(hp.server->TryAddSubscriptionEntry(std::move(overflow)),
+              SubscriptionAddOutcome::LimitExceeded);
+}
+
+TEST(SessionHandlerTest, TryAddSubscriptionEntryEvictsExpiredEntryAtLimit) {
+    HandlerPair hp;
+    const std::size_t limit = McpSessionHandler::kMaxSubscriptionEntriesPerSession;
+    const auto stale = std::chrono::steady_clock::now() -
+        McpSessionHandler::kSubscriptionEntryTtl - std::chrono::minutes(1);
+
+    for (std::size_t i = 0; i < limit; ++i) {
+        SubscriptionEntry entry;
+        entry.id = "sub-" + std::to_string(i);
+        entry.filter.tools_list_changed = true;
+        entry.created_at = stale;
+        ASSERT_EQ(hp.server->TryAddSubscriptionEntry(std::move(entry)),
+                  SubscriptionAddOutcome::Added);
+    }
+
+    SubscriptionEntry fresh;
+    fresh.id = "sub-fresh";
+    fresh.filter.tools_list_changed = true;
+    fresh.created_at = std::chrono::steady_clock::now();
+    EXPECT_EQ(hp.server->TryAddSubscriptionEntry(std::move(fresh)),
+              SubscriptionAddOutcome::Added);
+}
+
 TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
     HandlerPair hp;
     hp.client->SetMaxTotalTimeout(std::chrono::seconds(2));
-
     std::shared_ptr<std::promise<JsonValue>> held_promise;
     hp.server->SetRequestHandler(methods::kCallTool,
         [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {

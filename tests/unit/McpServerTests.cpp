@@ -1669,6 +1669,80 @@ TEST(McpServerTest, SubscriptionsListenAcknowledgesHonoredFilter) {
     ctx.client->Close();
 }
 
+TEST(McpServerTest, SubscriptionsListenIsIdempotentPerClientId) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed_ids;
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&observed_mutex, &observed_ids](const JsonRpcNotification& n) {
+            std::string sid;
+            if (n.meta && n.meta->IsObject()) {
+                if (auto* v = n.meta->Find("io.modelcontextprotocol/subscriptionId");
+                    v && v->IsString()) {
+                    sid = v->GetString();
+                }
+            }
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed_ids.push_back(sid);
+        });
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        auto future = ctx.client->SendRequest(methods::kSubscribe,
+            SerializeSubscriptionsListenRequestParams(params),
+            MetaWithSubscriptionId("repeat-sub"),
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        EXPECT_FALSE(future.get().Contains("code"));
+    }
+
+    ctx.server->SendToolListChanged();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    std::lock_guard<std::mutex> lock(observed_mutex);
+    ASSERT_EQ(observed_ids.size(), size_t{1});
+    EXPECT_EQ(observed_ids[0], "repeat-sub");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, SubscriptionsListenRejectsBeyondEntryLimit) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    const std::size_t limit =
+        McpSessionHandler::kMaxSubscriptionEntriesPerSession;
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    const auto serialized = SerializeSubscriptionsListenRequestParams(params);
+    for (std::size_t i = 0; i < limit; ++i) {
+        auto future = ctx.client->SendRequest(methods::kSubscribe, serialized,
+            MetaWithSubscriptionId("limit-sub-" + std::to_string(i)),
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        EXPECT_FALSE(future.get().Contains("code"));
+    }
+
+    auto overflow = ctx.client->SendRequest(methods::kSubscribe, serialized,
+        MetaWithSubscriptionId("limit-sub-overflow"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(overflow.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto resp = overflow.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+        static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
 TEST(McpServerTest, ToolListChangedHonorsSubscriptionFilter) {
     auto ctx = MakeModernServerWithClient();
     NegotiateModernVersion(ctx.server);
