@@ -6,10 +6,10 @@
 
 | 依赖 | 最低版本 | 说明 |
 |---|---|---|
-| CMake | 3.28 | `cmake_minimum_required(VERSION 3.28...4.2)`，见 `CMakeLists.txt:1` |
+| CMake | 3.28 | `cmake_minimum_required(VERSION 3.28...4.2)`，见 `CMakeLists.txt` |
 | 生成器 | Ninja | 预设里 `generator: "Ninja"`（`CMakePresets.json`）；仓库只按 Ninja 验证 |
 | C++ 标准 | C++17 | 每个库都 `target_compile_features(... PUBLIC cxx_std_17)` |
-| 编译器 | MSVC / Clang / GCC / clang-cl | Windows 与 Linux 的 clang 会自动探测（`cmake/CompilerOptions.cmake:17`）；只有 MSVC 时需显式 `-DCMAKE_CXX_COMPILER=cl` |
+| 编译器 | MSVC / Clang / GCC / clang-cl | Windows 与 Linux 的 clang 会自动探测（`cmake/CompilerOptions.cmake`）；只有 MSVC 时需显式 `-DCMAKE_CXX_COMPILER=cl` |
 | 平台 | Windows、Linux、macOS | 三平台都在 CI 中构建 |
 | OpenSSL | 可选 | 由 `MCP_WITH_OPENSSL` 控制，见下节 |
 
@@ -73,7 +73,7 @@ target_link_libraries(your_target PRIVATE mcp::mcp-client)
 | `mcp-http` | HTTP 服务端底座与会话/事件存储 | `mcp-transport` |
 | `mcp-ext` | apps、server card、DPoP、triggers 扩展 | `mcp-core` |
 
-七个目标全部 `STATIC`（`CMakeLists.txt:90-97`、各 `add_library(mcp-* STATIC)`）。
+七个目标全部 `STATIC`（`CMakeLists.txt` 的七个 `add_library(mcp-* STATIC)`）。
 
 ## 构建开关
 
@@ -89,7 +89,7 @@ target_link_libraries(your_target PRIVATE mcp::mcp-client)
 
 ## OpenSSL 是可选依赖
 
-`MCP_WITH_OPENSSL` 三档，语义与 `find_package(OpenSSL)` 的结果共同决定（`cmake/FetchDependencies.cmake:7-27`）：
+`MCP_WITH_OPENSSL` 三档，语义与 `find_package(OpenSSL)` 的结果共同决定（`cmake/FetchDependencies.cmake`）：
 
 - `AUTO`：找到就启用，找不到就禁用。
 - `ON`：找不到直接 configure 失败，不会静默降级。
@@ -101,7 +101,7 @@ target_link_libraries(your_target PRIVATE mcp::mcp-client)
 
 ## 分发陷阱
 
-- **默认带 `-march=native`**：非 CI 且非 Apple 时生效（`cmake/CompilerOptions.cmake:23-24`、`55-56`），产物不可跨机分发。CI 由环境变量 `CI` 判定（`cmake/Platform.cmake:8-11`）关闭该标志。要发布二进制，请显式在 CI 环境构建或自行去掉该标志。
+- **默认带 `-march=native`**：非 CI 且非 Apple 时生效（`cmake/CompilerOptions.cmake`），产物不可跨机分发。CI 由环境变量 `CI` 判定（`cmake/Platform.cmake`）关闭该标志。要发布二进制，请显式在 CI 环境构建或自行去掉该标志。
 - **Release 自动开 LTO**（Clang ThinLTO、MSVC LTCG、GCC IPO），本地 Release 链接偏慢属正常。
 - **unity build 默认 ON**（core/server/client/http），protocol 与 transport 为 OFF。往这些目标里新增 `.cpp` 前先看目标的 `UNITY_BUILD` 设置——含匿名命名空间或同名静态符号会重复定义。
 

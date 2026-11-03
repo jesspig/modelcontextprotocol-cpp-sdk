@@ -6,21 +6,21 @@
 
 | 约定 | 含义 |
 |---|---|
-| 证据列 | `文件名:行号`，指向仓库当前内容；行号会随改动漂移，以符号名为准定位 |
+| 源码位置 | 各页页尾「本页对应源码」列出相关文件；不标行号——行号随改码漂移，请以符号名在文件内检索 |
 | 时代标记 | 某些能力只在某一协议时代可用，结论一律回链 [协议版本](/zh/learn/protocol-versions)，各页不重复维护矩阵 |
 | 废弃标记 | 标注「已废弃」的接口仍存在、仍可调用的，会写明「可调用但已废弃」与替代方案；只有真正删除的才写「已移除」 |
 | 内部符号 | `detail/` 下的类型与函数不属于用户 API，参考页只在解释行为时提及，不列入接口表 |
 
 ## 类型与所有权惯例
 
-| 惯例 | 事实 | 证据 |
-|---|---|---|
-| 工厂返回值 | `McpServer::Create` / `McpClient::Create` 返回 `std::unique_ptr` | `include/mcp/server/McpServer.hpp:34`、`include/mcp/client/McpClient.hpp:34` |
-| 传输所有权 | `IClientTransport::Connect()` 返回 `std::shared_ptr`；传给工厂的传输是 `std::shared_ptr<ITransport>` | `include/mcp/Transport.hpp:68-72` |
-| JSON 值类型 | `JsonValue` 是本仓库自研类，**不是 nlohmann/json**；取值用 `Find`/`IsString`/`IsNumber`/`GetInt`/`Dump` 等 | `include/mcp/JsonValue.hpp:19-22`，字段表见 [类型总表](/zh/reference/types) |
-| 可选字段 | 统一用 `std::optional`，不使用哨兵值 | 各 Options 页逐字段标注 |
-| 按值传参 | `JsonValue` 参数按值传递 | `include/mcp/JsonRpc.hpp:15-88` |
-| 错误抛出 | 一律抛 `McpError(McpErrorCode, message)`，继承 `std::runtime_error`；用户 handler 异常按各层收敛规则处理 | `include/mcp/McpError.hpp:13`，收敛规则见 [错误码](/zh/reference/errors) |
+| 惯例 | 事实 |
+|---|---|
+| 工厂返回值 | `McpServer::Create` / `McpClient::Create` 返回 `std::unique_ptr` |
+| 传输所有权 | `IClientTransport::Connect()` 返回 `std::shared_ptr`；传给工厂的传输是 `std::shared_ptr<ITransport>` |
+| JSON 值类型 | `JsonValue` 是本仓库自研类，**不是 nlohmann/json**；取值用 `Find`/`IsString`/`IsNumber`/`GetInt`/`Dump` 等，字段表见 [类型总表](/zh/reference/types) |
+| 可选字段 | 统一用 `std::optional`，不使用哨兵值 |
+| 按值传参 | `JsonValue` 参数按值传递 |
+| 错误抛出 | 一律抛 `McpError(McpErrorCode, message)`，继承 `std::runtime_error`；用户 handler 异常按各层收敛规则处理，见 [错误码](/zh/reference/errors) |
 
 ## 页面到源码的映射
 

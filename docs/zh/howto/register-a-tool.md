@@ -11,7 +11,7 @@
 
 ## 注册一个最小工具
 
-`RegisterTool(name, options, fn)` 的第三个形参是 `std::function<CallToolResult(const RequestContext<CallToolRequestParams>&)>`，直接传无捕获 lambda 即可。`ToolOptions{}` 什么都不给时，SDK 仍会补一个 `{"type":"object","properties":{}}` 的 `input_schema`（`McpServerTool.hpp:46-53`），所以零约束的工具也合法。
+`RegisterTool(name, options, fn)` 的第三个形参是 `std::function<CallToolResult(const RequestContext<CallToolRequestParams>&)>`，直接传无捕获 lambda 即可。`ToolOptions{}` 什么都不给时，SDK 仍会补一个 `{"type":"object","properties":{}}` 的 `input_schema`（`McpServerTool.hpp`），所以零约束的工具也合法。
 
 <<< @/snippets/register-a-tool.cpp#minimal
 
@@ -48,7 +48,7 @@ handler 只拿到一个 `RequestContext<CallToolRequestParams>`：`Params()` 取
 <<< @/snippets/register-a-tool.cpp#structured
 
 ::: danger
-结构化输出不匹配走的是**协议错误**而非 `is_error`：对外消息为 `tool output does not match outputSchema: <原因>`，错误码 `InvalidParams`（`McpServer.cpp:2673-2681`）。也就是说 schema 声明了就必须兑现，宁缺毋滥。
+结构化输出不匹配走的是**协议错误**而非 `is_error`：对外消息为 `tool output does not match outputSchema: <原因>`，错误码 `InvalidParams`（`McpServer.cpp`）。也就是说 schema 声明了就必须兑现，宁缺毋滥。
 :::
 
 ## 捕获注册期错误

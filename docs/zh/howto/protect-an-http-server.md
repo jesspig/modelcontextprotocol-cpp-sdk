@@ -11,7 +11,7 @@
 
 ## Bearer 校验：verify 是唯一必选项
 
-`StreamableHttpServerOptions::bearer_auth` 是 `std::optional<BearerAuthConfig>`（`include/mcp/transport/StreamableHttpServerTransport.hpp:66-77`）。`verify` 收到解析出的令牌串，返回 `AuthResult{ok, scopes, resource}`（`:31-35`）。其余字段决定挑战内容而不是校验强度：`required_scopes` 用于 403 提示，`scopes_supported`/`authorization_servers`/`resource_metadata_url` 用于元数据端点，`expected_resource` + `validate_token_resource`（默认开）做受众绑定。
+`StreamableHttpServerOptions::bearer_auth` 是 `std::optional<BearerAuthConfig>`（`include/mcp/transport/StreamableHttpServerTransport.hpp`）。`verify` 收到解析出的令牌串，返回 `AuthResult{ok, scopes, resource}`。其余字段决定挑战内容而不是校验强度：`required_scopes` 用于 403 提示，`scopes_supported`/`authorization_servers`/`resource_metadata_url` 用于元数据端点，`expected_resource` + `validate_token_resource`（默认开）做受众绑定。
 
 <<< @/snippets/protect-an-http-server.cpp#bearer-auth
 
@@ -21,13 +21,13 @@ SDK 不看令牌内容：`ok` 为假就 401，仅此而已。签名验证、过�
 
 ## 挑战帧与元数据端点
 
-未授权时服务端回 `401`，`WWW-Authenticate` 形如 `Bearer resource_metadata="<url>"`，令牌被判无效时追加 `error="invalid_token"`，有 scope 信息时追加 `scope="..."`，body 是 JSON-RPC 错误 `-32000` + `unauthorized`（`src/http/StreamableHttpServerTransport.cpp:228-241`）。scope 不足时回 `403` + `Bearer error="insufficient_scope", scope="..."`，body 为 `-32000` + `insufficient_scope`（`:243-252`）。
+未授权时服务端回 `401`，`WWW-Authenticate` 形如 `Bearer resource_metadata="<url>"`，令牌被判无效时追加 `error="invalid_token"`，有 scope 信息时追加 `scope="..."`，body 是 JSON-RPC 错误 `-32000` + `unauthorized`（`src/http/StreamableHttpServerTransport.cpp`）。scope 不足时回 `403` + `Bearer error="insufficient_scope", scope="..."`，body 为 `-32000` + `insufficient_scope`。
 
 `serve_metadata_endpoint = true`（默认）时服务端自己提供受保护资源元数据端点，供客户端做发现；把它关掉就得由你的网关提供同一个 URL，否则合规客户端会卡在发现阶段。
 
 ## DPoP：把令牌绑到本次连接
 
-`enable_dpop = true` 后服务端接受 `Authorization: DPoP <token>`（scheme 判定大小写不敏感，`src/http/StreamableHttpServerTransport.cpp:254-262`）并核对随请求附带的 DPoP 证明。`authorization_servers` 声明签发该令牌的授权服务器，用于跨服务器场景的信任判定。
+`enable_dpop = true` 后服务端接受 `Authorization: DPoP <token>`（scheme 判定大小写不敏感，`src/http/StreamableHttpServerTransport.cpp`）并核对随请求附带的 DPoP 证明。`authorization_servers` 声明签发该令牌的授权服务器，用于跨服务器场景的信任判定。
 
 <<< @/snippets/protect-an-http-server.cpp#dpop-server
 
@@ -35,7 +35,7 @@ SDK 不看令牌内容：`ok` 为假就 401，仅此而已。签名验证、过�
 
 ## Host 与 Origin：默认只放行回环
 
-这道检查在通用 HTTP 层，任何路径都受它管（`src/http/HttpServerImpl.cpp:766-795`，判定失败即 `403 Forbidden` 并记一条 Warning，`:470-475`）：
+这道检查在通用 HTTP 层，任何路径都受它管（`src/http/HttpServerImpl.cpp`，判定失败即 `403 Forbidden` 并记一条 Warning）：
 
 | 情况 | 行为 |
 |---|---|
@@ -56,18 +56,18 @@ SDK 不看令牌内容：`ok` 为假就 401，仅此而已。签名验证、过�
 
 <<< @/snippets/protect-an-http-server.cpp#size-limits
 
-- `max_request_body_bytes` 超出直接 `413`（`src/http/StreamableHttpServerTransport.cpp:1091-1093`），默认取 `kMaxHttpBodyBytes`；显式设小能挡住大 payload 打满内存。
+- `max_request_body_bytes` 超出直接 `413`（`src/http/StreamableHttpServerTransport.cpp`），默认取 `kMaxHttpBodyBytes`；显式设小能挡住大 payload 打满内存。
 - `max_sse_event_bytes` 限制单条 SSE 事件；`sse_keep_alive_ms`（默认 15000）决定注释帧的心跳间隔，用来穿过激进的中间层空闲超时。
 
 ## stateless 与 stateful 的防护差异
 
 <<< @/snippets/protect-an-http-server.cpp#stateless-mode
 
-`stateless` 默认 `true`：不建会话、`session_store` 传 `nullptr`，断线重放靠 `event_store`（`FileEventStore` 落盘可跨进程）。`stateless = false` 时才需要 `session_store`，此时**会话 ID 是能力凭证**——一旦泄漏，对端可以在**空闲窗口内**继续用同一个会话（内置常量 `kSessionIdleTimeoutMs` = 30 分钟无活动即失效，`include/mcp/transport/detail/Limits.hpp:24`，不可配置），因此必须与 Bearer 同时启用，并在登出或撤销时主动 `Remove` 会话。`listen_hold_open` 让 modern 的 `GET` 流保持打开，进度与日志会写进所属请求流（详见 [/zh/howto/report-progress](/zh/howto/report-progress)）。
+`stateless` 默认 `true`：不建会话、`session_store` 传 `nullptr`，断线重放靠 `event_store`（`FileEventStore` 落盘可跨进程）。`stateless = false` 时才需要 `session_store`，此时**会话 ID 是能力凭证**——一旦泄漏，对端可以在**空闲窗口内**继续用同一个会话（内置常量 `kSessionIdleTimeoutMs` = 30 分钟无活动即失效，`include/mcp/transport/detail/Limits.hpp`，不可配置），因此必须与 Bearer 同时启用，并在登出或撤销时主动 `Remove` 会话。`listen_hold_open` 让 modern 的 `GET` 流保持打开，进度与日志会写进所属请求流（详见 [/zh/howto/report-progress](/zh/howto/report-progress)）。
 
 ## 参数头一致性
 
-`Mcp-Param-*` 头用于把某些参数同时暴露在 header 与 body 里（如网关做路由与审计）。一致性校验在服务端完成，四种不一致各有其拒绝理由（`src/http/StreamableHttpServerTransport.cpp:1039-1069`）：
+`Mcp-Param-*` 头用于把某些参数同时暴露在 header 与 body 里（如网关做路由与审计）。一致性校验在服务端完成，四种不一致各有其拒绝理由（`src/http/StreamableHttpServerTransport.cpp`）：
 
 | 拒绝理由 | 含义 |
 |---|---|
@@ -76,7 +76,7 @@ SDK 不看令牌内容：`ok` 为假就 401，仅此而已。签名验证、过�
 | `Mcp-Param-<n> header value is malformed` | 头值解码失败 |
 | `Mcp-Param-<n> header value does not match the request body` | 头值与 body 值不等 |
 
-注解来自你的工具 `input_schema` 里的 `x-mcp-header`，经 `resolve_param_annotations` 回调向服务端解析（`include/mcp/transport/StreamableHttpServerTransport.hpp:79-81`）。回调需要 `McpServer` 实例，而传输对象先建——用「先声明空指针、建完服务端再赋值」的写法，注意别在服务端就绪前处理请求：
+注解来自你的工具 `input_schema` 里的 `x-mcp-header`，经 `resolve_param_annotations` 回调向服务端解析（`include/mcp/transport/StreamableHttpServerTransport.hpp`）。回调需要 `McpServer` 实例，而传输对象先建——用「先声明空指针、建完服务端再赋值」的写法，注意别在服务端就绪前处理请求：
 
 <<< @/snippets/protect-an-http-server.cpp#param-headers
 

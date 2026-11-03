@@ -11,7 +11,7 @@
 
 ## 第一层：让 SDK 按 input_schema 拒参数
 
-`HandleCallTool` 在把请求交给 handler 之前调 `ValidateToolCallArguments`，用 `Tool::input_schema` 校验 `arguments`（`McpServer.cpp:553-561`、`2616-2623`）；不通过就**不调用 handler**，直接回 `is_error` 结果，文本为 `invalid arguments: <原因>`。缺省 `arguments` 会以空对象参与校验，所以写了 `required` 就必须带字段；而 `McpServerTool` 补的默认 schema 含 `type: "object"`，非对象入参仍会被拒。
+`HandleCallTool` 在把请求交给 handler 之前调 `ValidateToolCallArguments`，用 `Tool::input_schema` 校验 `arguments`（`McpServer.cpp`）；不通过就**不调用 handler**，直接回 `is_error` 结果，文本为 `invalid arguments: <原因>`。缺省 `arguments` 会以空对象参与校验，所以写了 `required` 就必须带字段；而 `McpServerTool` 补的默认 schema 含 `type: "object"`，非对象入参仍会被拒。
 
 <<< @/snippets/validate-tool-input.cpp#builtin-validation
 
@@ -21,7 +21,7 @@
 
 ## 第二层：handler 内的类型防御
 
-schema 管形状，不管语义：未知账户、跨字段关系、已被枚举但当前不可用的取值都要在 handler 里判。`CallToolRequestParams::arguments` 是 `std::optional<JsonValue>`，先判空再 `Find`；数值必须 `IsDouble()` 与 `IsInt()` 分开取。`examples/WeatherServer/main.cpp:30-92` 就是这个写法。
+schema 管形状，不管语义：未知账户、跨字段关系、已被枚举但当前不可用的取值都要在 handler 里判。`CallToolRequestParams::arguments` 是 `std::optional<JsonValue>`，先判空再 `Find`；数值必须 `IsDouble()` 与 `IsInt()` 分开取。`examples/WeatherServer/main.cpp` 就是这个写法。
 
 <<< @/snippets/validate-tool-input.cpp#handler-defense
 
@@ -31,7 +31,7 @@ schema 管形状，不管语义：未知账户、跨字段关系、已被枚举�
 
 ## 第三层：限制参数元素数
 
-`ServerOptions::max_tool_input_elements` 统计的是**一层**元素数：对象按键数、数组按长度、标量按 1 计（`McpServer.cpp:563-568`）。超限时回 `is_error` + `tool arguments exceed maximum input element count`（`2323-2328`），同样不进 handler。
+`ServerOptions::max_tool_input_elements` 统计的是**一层**元素数：对象按键数、数组按长度、标量按 1 计（`McpServer.cpp`）。超限时回 `is_error` + `tool arguments exceed maximum input element count`，同样不进 handler。
 
 <<< @/snippets/validate-tool-input.cpp#element-limit
 
@@ -54,7 +54,7 @@ schema 管形状，不管语义：未知账户、跨字段关系、已被枚举�
 <<< @/snippets/validate-tool-input.cpp#local-ref
 
 ::: danger
-三个坑：`pattern` 非锚定，写 `^[a-z]+` 会放过尾随垃圾，要自己写全 `^...$`；正则编译失败时该值被直接放行，别用查表式正则兜安全；循环 `$ref` 不回 `is_error` 而是抛 `McpError(InvalidParams)`，此时响应根本不会发出，只能等客户端超时（`src/detail/JsonSchemaValidator.hpp:205-209`）。
+三个坑：`pattern` 非锚定，写 `^[a-z]+` 会放过尾随垃圾，要自己写全 `^...$`；正则编译失败时该值被直接放行，别用查表式正则兜安全；循环 `$ref` 不回 `is_error` 而是抛 `McpError(InvalidParams)`，此时响应根本不会发出，只能等客户端超时（`src/detail/JsonSchemaValidator.hpp`）。
 :::
 
 ## 区分 is_error 与协议错误
@@ -64,10 +64,10 @@ schema 管形状，不管语义：未知账户、跨字段关系、已被枚举�
 | SDK 内置 schema 校验 | 工具结果 `is_error` | `invalid arguments: <原因>` |
 | 元素数超 `max_tool_input_elements` | 工具结果 `is_error` | `tool arguments exceed maximum input element count` |
 | handler 主动返回失败 | 工具结果 `is_error` | 你写的 `content` 文本 |
-| handler 抛 `McpError` | 工具结果 `is_error` | 仅 `ErrorMessage()`，错误码与 `data` 被丢弃（`McpServer.cpp:2633-2636`） |
-| handler 抛其它异常 | 工具结果 `is_error` | 泛化为 `Error executing tool <name>`，原始 `what()` 只进内部日志（`2637-2650`） |
+| handler 抛 `McpError` | 工具结果 `is_error` | 仅 `ErrorMessage()`，错误码与 `data` 被丢弃（`McpServer.cpp`） |
+| handler 抛其它异常 | 工具结果 `is_error` | 泛化为 `Error executing tool <name>`，原始 `what()` 只进内部日志 |
 | 工具名未注册 | JSON-RPC 协议错误 `InvalidParams` | `tool not found: <name>` |
-| 任务化路径的 handler 异常 | 任务失败而非 `is_error` | `McpError` 保留 code/message/data，其它异常归 `InternalError`（`2524-2552`） |
+| 任务化路径的 handler 异常 | 任务失败而非 `is_error` | `McpError` 保留 code/message/data，其它异常归 `InternalError` |
 
 <<< @/snippets/validate-tool-input.cpp#failure-modes
 

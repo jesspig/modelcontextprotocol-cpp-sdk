@@ -20,13 +20,13 @@
 | `ListToolsAll()` | loops `ListTools(cursor)` | yes | no |
 | `SearchTools(query, page_size)` | sends `tools/list` page by page directly | no | only when `enable_progressive_discovery` is set |
 
-Calling `ListTools()` without a cursor already merges the pages (`src/client/McpClient.cpp:124-172`, `1215-1235`), which makes `ListToolsAll()` equivalent to it (`McpClientTest.ListToolsAutoPaginates` returns 3 tools, `McpClientTest.ListToolsAllSinglePageEqualsPlainList` compares both shapes). Pagination that never converges past 64 pages throws `ProtocolViolation` with the message `list pagination did not converge within 64 pages` (`src/client/McpClient.cpp:52`, `1237-1250`). The `Tool` fields (`name`／`title`／`description`／`input_schema`／`output_schema`／`annotations`／`icons`) are in [/en/reference/types](/en/reference/types).
+Calling `ListTools()` without a cursor already merges the pages (`src/client/McpClient.cpp`), which makes `ListToolsAll()` equivalent to it (`McpClientTest.ListToolsAutoPaginates` returns 3 tools, `McpClientTest.ListToolsAllSinglePageEqualsPlainList` compares both shapes). Pagination that never converges past 64 pages throws `ProtocolViolation` with the message `list pagination did not converge within 64 pages` (`src/client/McpClient.cpp`). The `Tool` fields (`name`／`title`／`description`／`input_schema`／`output_schema`／`annotations`／`icons`) are in [/en/reference/types](/en/reference/types).
 
 ## Step 2: Build `arguments` from `inputSchema`
 
 <<< @/snippets/call-tools-and-read-resources.cpp#required-arguments
 
-The client never validates inputs: `CallTool` only packs `name` and `arguments` into the request (`src/client/McpClient.cpp:1331-1333`). Validation happens on the server, and a missing required key or a type mismatch comes back as `isError` inside a **normal result**, with text prefixed `invalid arguments: ` (`src/server/McpServer.cpp:2616-2623`). A misspelled tool name is a different animal: a JSON-RPC error `InvalidParams` whose message is `tool not found: <name>` (`src/server/McpServer.cpp:2144-2151`).
+The client never validates inputs: `CallTool` only packs `name` and `arguments` into the request (`src/client/McpClient.cpp`). Validation happens on the server, and a missing required key or a type mismatch comes back as `isError` inside a **normal result**, with text prefixed `invalid arguments: ` (`src/server/McpServer.cpp`). A misspelled tool name is a different animal: a JSON-RPC error `InvalidParams` whose message is `tool not found: <name>` (`src/server/McpServer.cpp`).
 
 ## Step 3: Call the Tool, and Separate the Two Failure Channels
 
@@ -34,10 +34,10 @@ The client never validates inputs: `CallTool` only packs `name` and `arguments` 
 
 | Channel | Triggered by | What you write |
 |---|---|---|
-| `result.is_error == true` | arguments off-schema, or the tool handler throws (`McpError` keeps its message, any other exception yields fixed text) (`src/server/McpServer.cpp:2633-2650`) | read the text out of `content`; do not catch |
-| `McpError` thrown | the peer returned a JSON-RPC error: unknown tool name, `structuredContent` not matching `outputSchema`, MRTR rounds or budget exhausted | `try`／`catch`; the MRTR path keeps `data` (`src/client/McpClient.cpp:1101-1108`) |
+| `result.is_error == true` | arguments off-schema, or the tool handler throws (`McpError` keeps its message, any other exception yields fixed text) (`src/server/McpServer.cpp`) | read the text out of `content`; do not catch |
+| `McpError` thrown | the peer returned a JSON-RPC error: unknown tool name, `structuredContent` not matching `outputSchema`, MRTR rounds or budget exhausted | `try`／`catch`; the MRTR path keeps `data` (`src/client/McpClient.cpp`) |
 
-`isError` is just a result field, deserialized straight into `CallToolResult::is_error` (`src/core/McpTypesResults.cpp:199-215`). When the server finds `structuredContent` incompatible with the declared `outputSchema` it converts that into `InvalidParams` (`src/server/McpServer.cpp:2671-2681`), so on the client `CallTool` throws `McpError` (`McpClientTest.ToolOutputSchemaValidation`). The timeout does not come from `RequestOptions::timeout`: `CallTool` uses `input_required_config->round_timeout` (600s by default, `src/client/McpClient.cpp:1335-1337`), and on `HeaderMismatch` the client clears its cache, re-fetches `tools/list` and retries once verbatim (`:1343-1349`).
+`isError` is just a result field, deserialized straight into `CallToolResult::is_error` (`src/core/McpTypesResults.cpp`). When the server finds `structuredContent` incompatible with the declared `outputSchema` it converts that into `InvalidParams` (`src/server/McpServer.cpp`), so on the client `CallTool` throws `McpError` (`McpClientTest.ToolOutputSchemaValidation`). The timeout does not come from `RequestOptions::timeout`: `CallTool` uses `input_required_config->round_timeout` (600s by default, `src/client/McpClient.cpp`), and on `HeaderMismatch` the client clears its cache, re-fetches `tools/list` and retries once verbatim.
 
 ## Step 4: Read the Five Content Variants
 
@@ -51,20 +51,20 @@ The client never validates inputs: `CallTool` only packs `name` and `arguments` 
 | `EmbeddedResource` | `resource` | `resource` (again discriminated by `text`／`blob`) | resource contents inlined |
 | `ResourceLink` | `resource_link` | `uri`, `name` | a reference only — follow up with `resources/read` |
 
-Dispatch is by the `type` string and an unknown value throws `DeserializeFailed` (`src/core/Content.cpp:282-291`); `ResourceContents` is discriminated by the presence of a `text` or `blob` field, and neither present throws `DeserializeFailed` too (`src/core/Content.cpp:120-126`). Pull values with `std::get_if<T>(&item)`. `structured_content` is a raw `JsonValue` the client never validates — use `Find(...)` or `Dump()` as needed.
+Dispatch is by the `type` string and an unknown value throws `DeserializeFailed` (`src/core/Content.cpp`); `ResourceContents` is discriminated by the presence of a `text` or `blob` field, and neither present throws `DeserializeFailed` too (`src/core/Content.cpp`). Pull values with `std::get_if<T>(&item)`. `structured_content` is a raw `JsonValue` the client never validates — use `Find(...)` or `Dump()` as needed.
 
 ## Step 5: List Resources and Read One
 
 <<< @/snippets/call-tools-and-read-resources.cpp#list-resources
 <<< @/snippets/call-tools-and-read-resources.cpp#read-resource
 
-`ListResources`／`ListResourcesAll` mirror the tool side; template entries expose the `uri_template` field (`ResourceTemplate`). The client offers **no** template expansion: the RFC 6570 matching in `src/detail/UriTemplate.hpp` runs only on the server, so you must turn `docs://users/{userId}/profile` into a literal URI yourself before calling `ReadResource` (`include/mcp/McpTypes.hpp:74-82`; nothing in `src/client/` expands templates). Every `contents` entry carries its own `uri`; text arrives in `TextResourceContents::text` and binary in `BlobResourceContents::blob` — base64 as sent, which the SDK neither decodes nor validates.
+`ListResources`／`ListResourcesAll` mirror the tool side; template entries expose the `uri_template` field (`ResourceTemplate`). The client offers **no** template expansion: the RFC 6570 matching in `src/detail/UriTemplate.hpp` runs only on the server, so you must turn `docs://users/{userId}/profile` into a literal URI yourself before calling `ReadResource` (`include/mcp/McpTypes.hpp`; nothing in `src/client/` expands templates). Every `contents` entry carries its own `uri`; text arrives in `TextResourceContents::text` and binary in `BlobResourceContents::blob` — base64 as sent, which the SDK neither decodes nor validates.
 
 ## Step 6: Cache, Freshness and etag
 
 <<< @/snippets/call-tools-and-read-resources.cpp#cache-modes
 
-`ReadResource` is the only resource method that accepts `CacheableRequestOptions`; `ListTools`／`ListResources`／`ListPrompts` always use the default read path (`src/client/McpClient.cpp:1441-1468`, `1215-1235`):
+`ReadResource` is the only resource method that accepts `CacheableRequestOptions`; `ListTools`／`ListResources`／`ListPrompts` always use the default read path (`src/client/McpClient.cpp`):
 
 | `cache_mode` | Reads cache | Writes cache | Use for |
 |---|---|---|---|
@@ -72,15 +72,15 @@ Dispatch is by the `type` string and an unknown value throws `DeserializeFailed`
 | `"bypass"` | no | no | one absolutely fresh value |
 | `"refresh"` | no | yes | contents changed: force a fetch and update the cache |
 
-An entry is only stored when the server put `cacheHint.ttlMs > 0` in the response (`src/client/McpClient.cpp:1145-1163`), and the TTL is capped at 24 hours (`src/detail/ResponseCache.hpp:23`, `:42`). With `cacheScope` equal to `"private"` entries are partitioned by the value `cache_auth_context()` returns, and a change clears every private entry (`src/client/McpClient.cpp:1155-1174`, `McpClientTest.PrivateCachePartitionedByAuthContext`). etag reuse is additionally gated by a **process-wide** switch, which an `McpServer` in the same process overwrites from its own `ServerOptions::enable_etag_cache` (`src/core/McpTypesResults.cpp:50`, `src/server/McpServer.cpp:661`, `src/client/McpClient.cpp:1178`).
+An entry is only stored when the server put `cacheHint.ttlMs > 0` in the response (`src/client/McpClient.cpp`), and the TTL is capped at 24 hours (`src/detail/ResponseCache.hpp`). With `cacheScope` equal to `"private"` entries are partitioned by the value `cache_auth_context()` returns, and a change clears every private entry (`src/client/McpClient.cpp`, `McpClientTest.PrivateCachePartitionedByAuthContext`). etag reuse is additionally gated by a **process-wide** switch, which an `McpServer` in the same process overwrites from its own `ServerOptions::enable_etag_cache` (`src/core/McpTypesResults.cpp`, `src/server/McpServer.cpp`, `src/client/McpClient.cpp`).
 
 ## Step 7: Subscribe to Resource Updates
 
 <<< @/snippets/call-tools-and-read-resources.cpp#subscribe-updates
 
-Each era has its own entry point. Legacy: `SubscribeResource(uri)` sends `resources/subscribe` with a fixed 60s timeout through `DoSendRequest`, so errors throw `McpError` with `data` dropped (`src/client/McpClient.cpp:1472-1479`). Modern: `SubscribeAsync(params)` sends `subscriptions/listen` and waits for the acknowledged frame carrying the same subscription id in `_meta` — if the response arrives first and is an error it is rethrown as-is, and if no frame arrives within 5000ms it throws `InternalError` (`src/client/McpClient.cpp:1927-1990`). Calling the wrong era's method gets rejected by the peer's era gate with `MethodNotFound` (`src/protocol/WireCodec.cpp:24-39`, `src/protocol/McpSessionHandler.cpp:414-417`).
+Each era has its own entry point. Legacy: `SubscribeResource(uri)` sends `resources/subscribe` with a fixed 60s timeout through `DoSendRequest`, so errors throw `McpError` with `data` dropped (`src/client/McpClient.cpp`). Modern: `SubscribeAsync(params)` sends `subscriptions/listen` and waits for the acknowledged frame carrying the same subscription id in `_meta` — if the response arrives first and is an error it is rethrown as-is, and if no frame arrives within 5000ms it throws `InternalError` (`src/client/McpClient.cpp`). Calling the wrong era's method gets rejected by the peer's era gate with `MethodNotFound` (`src/protocol/WireCodec.cpp`, `src/protocol/McpSessionHandler.cpp`).
 
-Once an update arrives, the built-in handler invalidates the cache entry for exactly that URI (`src/client/McpClient.cpp:757-766`) and `*_list_changed` clears the whole table (`:751-756`) — provided you did not replace those handlers with your own `SetNotificationHandler()`, because that table holds one slot per method (`src/protocol/McpSessionHandler.cpp:1193-1196`).
+Once an update arrives, the built-in handler invalidates the cache entry for exactly that URI (`src/client/McpClient.cpp`) and `*_list_changed` clears the whole table — provided you did not replace those handlers with your own `SetNotificationHandler()`, because that table holds one slot per method (`src/protocol/McpSessionHandler.cpp`).
 
 ## Progress callback
 
@@ -90,7 +90,7 @@ To see movement before a slow call returns, attach a handler to `RequestOptions:
 
 ## Complete code
 
-The compilable file is `docs/snippets/call-tools-and-read-resources.cpp`, with regions `list-tools`, `read-content`, `required-arguments`, `call-tool`, `progress`, `list-resources`, `read-resource`, `cache-modes` and `subscribe-updates`. The `progress` region demonstrates `RequestOptions::on_progress`: a non-empty callback registers a progress token and detaches it when the call returns, and each progress frame re-extends that request's timeout (`src/client/McpClient.cpp:937-973`, `1323-1329`).
+The compilable file is `docs/snippets/call-tools-and-read-resources.cpp`, with regions `list-tools`, `read-content`, `required-arguments`, `call-tool`, `progress`, `list-resources`, `read-resource`, `cache-modes` and `subscribe-updates`. The `progress` region demonstrates `RequestOptions::on_progress`: a non-empty callback registers a progress token and detaches it when the call returns, and each progress frame re-extends that request's timeout (`src/client/McpClient.cpp`).
 
 ## Verification
 
@@ -124,10 +124,10 @@ This table covers only the differences that matter to calling and reading; the f
 
 | Aspect | Legacy (before 2026-07-28) | Modern (2026-07-28 and later) |
 |---|---|---|
-| `tools/list`, `resources/list`, `resources/templates/list`, `resources/read`, `tools/call` | available in both eras with the same shape | same methods, but responses must carry `resultType` and list results must say `complete` (`src/protocol/WireCodec.cpp:205-221`) |
-| `cacheHint` shape | object `cacheHint{ttlMs,cacheScope}` | flattened to top-level `ttlMs`／`cacheScope` with `cacheHint` erased; the client reads both shapes (`src/protocol/WireCodec.cpp:255-269`, `src/client/McpClient.cpp:92-104`) |
-| Resource subscription | `resources/subscribe`／`unsubscribe` | `subscriptions/listen` plus the acknowledged frame; the legacy methods are not in the method set (`src/protocol/WireCodec.cpp:24-39`) |
-| Internal error codes | passed through unchanged | `RequestTimeout`／`ConnectionRefused`／`TlsHandshakeFailed` are rewritten to `InternalError` (`src/protocol/WireCodec.cpp:271-283`) |
+| `tools/list`, `resources/list`, `resources/templates/list`, `resources/read`, `tools/call` | available in both eras with the same shape | same methods, but responses must carry `resultType` and list results must say `complete` (`src/protocol/WireCodec.cpp`) |
+| `cacheHint` shape | object `cacheHint{ttlMs,cacheScope}` | flattened to top-level `ttlMs`／`cacheScope` with `cacheHint` erased; the client reads both shapes (`src/protocol/WireCodec.cpp`, `src/client/McpClient.cpp`) |
+| Resource subscription | `resources/subscribe`／`unsubscribe` | `subscriptions/listen` plus the acknowledged frame; the legacy methods are not in the method set (`src/protocol/WireCodec.cpp`) |
+| Internal error codes | passed through unchanged | `RequestTimeout`／`ConnectionRefused`／`TlsHandshakeFailed` are rewritten to `InternalError` (`src/protocol/WireCodec.cpp`) |
 
 ## Common mistakes
 

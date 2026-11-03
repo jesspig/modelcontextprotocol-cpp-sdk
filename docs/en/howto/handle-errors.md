@@ -5,8 +5,8 @@ A single "failure" has three completely different exits in the SDK: a thrown `Mc
 ## Prerequisites
 
 - Headers: `mcp/McpError.hpp`, `mcp/ErrorCodes.hpp`, `mcp/McpTypes.hpp`, `mcp/protocol/IncomingRequestMeta.hpp`, `mcp/client/McpClient.hpp`, `mcp/client/RequestHandle.hpp`, `mcp/server/RequestContext.hpp`; include paths must carry the subdirectory.
-- Type testing needs `<variant>`: `RequestOutcome` is `std::variant<JsonValue, ErrorData>` (`include/mcp/protocol/IncomingRequestMeta.hpp:29`).
-- Grouping by semantics needs `<system_error>` (already pulled in by the public headers): `McpErrorCode` is registered as a `std::error_code` enum (`include/mcp/ErrorCodes.hpp:32-39`).
+- Type testing needs `<variant>`: `RequestOutcome` is `std::variant<JsonValue, ErrorData>` (`include/mcp/protocol/IncomingRequestMeta.hpp`).
+- Grouping by semantics needs `<system_error>` (already pulled in by the public headers): `McpErrorCode` is registered as a `std::error_code` enum (`include/mcp/ErrorCodes.hpp`).
 - One division of labour has to be understood first: tool-call failures surface as `is_error` results, protocol-method failures as error frames — the two are tested differently, and this page covers each.
 
 ## Fix the decision order first
@@ -18,11 +18,11 @@ A single "failure" has three completely different exits in the SDK: a thrown `Mc
 | `SendRequest(method, params, RequestOptions)` | `RequestOutcome = std::variant<JsonValue, ErrorData>` | `std::get_if<ErrorData>` |
 | Tool handlers (server side) | a `CallToolResult` with `is_error = true`, or an exception the SDK catches | look at `is_error` and `content` |
 
-`McpError` derives from `std::runtime_error` and carries `Code()`, `ErrorMessage()`, `Data()` (`include/mcp/McpError.hpp:13-35`); `Data()` is a `std::optional<JsonValue>` holding the protocol error's `data` field.
+`McpError` derives from `std::runtime_error` and carries `Code()`, `ErrorMessage()`, `Data()` (`include/mcp/McpError.hpp`); `Data()` is a `std::optional<JsonValue>` holding the protocol error's `data` field.
 
 ## Full code table and its semantic groups
 
-Values are defined in `include/mcp/ErrorCodes.hpp:8-30` (reference table in [/en/reference/errors](/en/reference/errors)):
+Values are defined in `include/mcp/ErrorCodes.hpp` (reference table in [/en/reference/errors](/en/reference/errors)):
 
 | Code | Name | Typical source |
 |---|---|---|
@@ -46,7 +46,7 @@ Values are defined in `include/mcp/ErrorCodes.hpp:8-30` (reference table in [/en
 | `-32008` | `DeserializeFailed` | deserialization failure |
 | `-32009` | `SessionExpired` | unknown or expired session |
 
-`McpErrorCode` is also a `std::error_code` enum (`include/mcp/ErrorCodes.hpp:32-39`), so you can branch on semantic groups instead of matching codes one by one (`include/mcp/ErrorCodes.hpp:71-91`):
+`McpErrorCode` is also a `std::error_code` enum (`include/mcp/ErrorCodes.hpp`), so you can branch on semantic groups instead of matching codes one by one (`include/mcp/ErrorCodes.hpp`):
 
 <<< @/snippets/handle-errors.cpp#classify-outcome
 
@@ -54,7 +54,7 @@ Values are defined in `include/mcp/ErrorCodes.hpp:8-30` (reference table in [/en
 
 ## Era remapping happens only on egress
 
-In the modern era `-32001`, `-32003` and `-32004` are downgraded to `-32603` during wire encoding (`src/protocol/WireCodec.cpp:271-283`); legacy passes them through unchanged (`:158-160`). Two unavoidable consequences:
+In the modern era `-32001`, `-32003` and `-32004` are downgraded to `-32603` during wire encoding (`src/protocol/WireCodec.cpp`); legacy passes them through unchanged. Two unavoidable consequences:
 
 - A client-**local** timeout stays `-32001` regardless of era; the same error arriving from the peer only ever appears as `-32603` in the modern era.
 - To tell "internal error" from "timeout / refused / TLS failure" on the modern era you must rely on `message` text or `data`, never on the code.
@@ -63,19 +63,19 @@ In the modern era `-32001`, `-32003` and `-32004` are downgraded to `-32603` dur
 
 <<< @/snippets/handle-errors.cpp#tool-error-surface
 
-1. **Return `is_error = true`**: the protocol call succeeded, the model sees a failure text and can continue. This is what the SDK does when arguments violate `input_schema`, with text prefixed `invalid arguments: ` (`src/server/McpServer.cpp:553-559`, `:2359`, `:2507`, `:2616`).
-2. **Throw `McpError`**: `Code()` is **discarded**, only the `message` reaches the tool result text (`src/server/McpServer.cpp:2633-2643`) — you cannot convey a code from a tool.
+1. **Return `is_error = true`**: the protocol call succeeded, the model sees a failure text and can continue. This is what the SDK does when arguments violate `input_schema`, with text prefixed `invalid arguments: ` (`src/server/McpServer.cpp`).
+2. **Throw `McpError`**: `Code()` is **discarded**, only the `message` reaches the tool result text (`src/server/McpServer.cpp`) — you cannot convey a code from a tool.
 3. **Throw anything else**: the text is generalised to `Error executing tool <name>`, your message never reaches the peer and lives only in server logs (same location).
 
 ::: warning a structured-output mismatch is not is_error
-`structured_content` failing `output_schema` is a protocol error `InvalidParams` with the outbound message `tool output does not match outputSchema: <reason>` (`src/server/McpServer.cpp:2673-2681`). If you declare a schema you must honour it — declare less instead.
+`structured_content` failing `output_schema` is a protocol error `InvalidParams` with the outbound message `tool output does not match outputSchema: <reason>` (`src/server/McpServer.cpp`). If you declare a schema you must honour it — declare less instead.
 :::
 
-Protocol-method handlers (resources, prompts, completion, …) **keep the code**: `McpError`'s `Code()` and message go into the error frame verbatim (`src/protocol/McpSessionHandler.cpp:576-586`), while any non-`McpError` exception becomes `InternalError` + `"internal error"`, with the real cause only in server logs (`:587-614`).
+Protocol-method handlers (resources, prompts, completion, …) **keep the code**: `McpError`'s `Code()` and message go into the error frame verbatim (`src/protocol/McpSessionHandler.cpp`), while any non-`McpError` exception becomes `InternalError` + `"internal error"`, with the real cause only in server logs.
 
 ## Registration errors: explode at startup, not on first call
 
-Every registration check throws `McpError(InvalidParams)` at the `RegisterTool`/`RegisterResource`/`RegisterPrompt` call site: duplicate names, invalid tool names, malformed resource templates, empty handlers (`src/server/McpServer.cpp:93`, `:287`, `:329`). Funnel registration into one function and let the caller decide between crashing and skipping:
+Every registration check throws `McpError(InvalidParams)` at the `RegisterTool`/`RegisterResource`/`RegisterPrompt` call site: duplicate names, invalid tool names, malformed resource templates, empty handlers (`src/server/McpServer.cpp`). Funnel registration into one function and let the caller decide between crashing and skipping:
 
 <<< @/snippets/handle-errors.cpp#registration-errors
 
@@ -85,13 +85,13 @@ The `-32022` candidate list and request-state rejections both convey structured 
 
 <<< @/snippets/handle-errors.cpp#version-rejection
 
-The key is fixed as `"supported"` (`src/protocol/McpSessionHandler.cpp:35`); a failed `requestState` check answers `InvalidParams` + `data.reason = "invalid_request_state"`. The typed channel exposes it the same way via `ErrorData::data` (`include/mcp/protocol/IncomingRequestMeta.hpp`).
+The key is fixed as `"supported"` (`src/protocol/McpSessionHandler.cpp`); a failed `requestState` check answers `InvalidParams` + `data.reason = "invalid_request_state"`. The typed channel exposes it the same way via `ErrorData::data` (`include/mcp/protocol/IncomingRequestMeta.hpp`).
 
 ## Retry policy: branch on codes, never on messages
 
 <<< @/snippets/handle-errors.cpp#retry-policy
 
-- `SessionExpired` → rebuild the session and retry once; the client already performs its own "re-initialize and retry once" inside MRTR (`src/client/McpClient.cpp:1057-1066`), so do not stack an unbounded loop on top.
+- `SessionExpired` → rebuild the session and retry once; the client already performs its own "re-initialize and retry once" inside MRTR (`src/client/McpClient.cpp`), so do not stack an unbounded loop on top.
 - `RequestTimeout` → retry **only idempotent** operations; leave write-shaped tools to the caller.
 - `UnsupportedProtocolVersion` → do not retry; read `data.supported` and decide whether to downgrade. Stdio-style auto fallback is in [/en/learn/protocol-versions](/en/learn/protocol-versions).
 - `ConnectionClosed` / `ConnectionRefused` / `TlsHandshakeFailed` → recreate the transport; retrying on the same client instance is pointless.
@@ -101,7 +101,7 @@ The key is fixed as `"supported"` (`src/protocol/McpSessionHandler.cpp:35`); a f
 
 <<< @/snippets/handle-errors.cpp#raw-channel
 
-The raw channel never throws: the error is a **value**. The test is a negative `code` in the serialised object (`src/client/McpClient.cpp:62-72`); miss it and you parse an error object as business data. Convenience methods can throw precisely because they perform this check internally.
+The raw channel never throws: the error is a **value**. The test is a negative `code` in the serialised object (`src/client/McpClient.cpp`); miss it and you parse an error object as business data. Convenience methods can throw precisely because they perform this check internally.
 
 ## Complete code
 

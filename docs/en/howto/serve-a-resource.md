@@ -15,10 +15,10 @@ A resource is read-only data a client fetches by URI — closest in shape to a R
 | Few entries, each URI a full literal | `McpServer::RegisterResource` | `resources/list` | None, only the requested URI |
 | Homogeneous, sharded by id or path | `McpServer::RegisterResourceTemplate` | `resources/templates/list` | The decoded variable map |
 
-Both kinds land in one registry and share its conflict check: a duplicate name, or a duplicate URI / URI-template string, makes the later registration throw `McpError` with `InvalidParams` (`src/server/McpServer.cpp:805-814`, `:854-863`).
+Both kinds land in one registry and share its conflict check: a duplicate name, or a duplicate URI / URI-template string, makes the later registration throw `McpError` with `InvalidParams` (`src/server/McpServer.cpp`).
 
 ::: info
-Any successful registration declares the `resources` capability and sets both `subscribe` and `list_changed` to true (`src/server/McpServer.cpp:1950-1954`). There is no way to turn either off on its own.
+Any successful registration declares the `resources` capability and sets both `subscribe` and `list_changed` to true (`src/server/McpServer.cpp`). There is no way to turn either off on its own.
 :::
 
 ## Step 2: Register a Static Resource
@@ -26,7 +26,7 @@ Any successful registration declares the `resources` capability and sets both `s
 <<< @/snippets/serve-a-resource.cpp#register-static
 
 - Every variant in `contents` needs its `uri` filled in by you — the SDK does not backfill it. One response may carry several entries.
-- Text goes into `TextResourceContents::text`, binary into `BlobResourceContents::blob` as base64 per the protocol. The SDK neither decodes nor validates it (`src/core/Content.cpp:92-104`), so `mime_type` has to be correct on its own.
+- Text goes into `TextResourceContents::text`, binary into `BlobResourceContents::blob` as base64 per the protocol. The SDK neither decodes nor validates it (`src/core/Content.cpp`), so `mime_type` has to be correct on its own.
 - `ResourceOptions` covers only `title` / `description` / `mime_type` / `icons`. The protocol fields `size` and `annotations` have no registration entry point, so a static list entry cannot carry them.
 
 ## Step 3: Write the URI Template and Read Its Variables
@@ -43,16 +43,16 @@ Template syntax is a subset of RFC 6570, and every rule below is enforced at reg
 | Size limits | 2048 characters per template, 32 variables |
 | Structural rejections | Unbalanced braces, more than one multi-segment variable, two adjacent variables with no literal separator |
 
-Anything illegal throws `McpError` with a message shaped like `invalid resource template '<uri>': <reason>` (`src/server/McpServer.cpp:836-841`).
+Anything illegal throws `McpError` with a message shaped like `invalid resource template '<uri>': <reason>` (`src/server/McpServer.cpp`).
 
 Variable values handed to the handler are **percent-decoded**: a request for `docs://users/a%20b/profile` gives `vars.at("userId")` equal to `a b`. A simple variable accepts only unreserved characters and `%XX`, so a bare `/`, `?` or `#` makes the whole template miss; use `{+var}` when one segment must carry reserved characters.
 
 ## Step 4: Understand Match Order and the Miss Shape
 
-`resources/read` matches in two passes (`src/server/McpServer.cpp:2789-2809`): first every **non-template** entry is compared for exact URI equality in registration order, and only if none hits does it walk the templates in registration order.
+`resources/read` matches in two passes (`src/server/McpServer.cpp`): first every **non-template** entry is compared for exact URI equality in registration order, and only if none hits does it walk the templates in registration order.
 
 - Static preference is independent of registration order: with a template registered first and a static entry second, a request for `test://x` still runs the static handler (`McpServerTest.ReadResourcePrefersStaticOverTemplate`).
-- Total miss: `InvalidParams`, message `resource not found: <uri>`, with `data` echoing `{"uri":"<uri>"}` (`src/server/McpServer.cpp:2812-2819`).
+- Total miss: `InvalidParams`, message `resource not found: <uri>`, with `data` echoing `{"uri":"<uri>"}` (`src/server/McpServer.cpp`).
 - `McpErrorCode::ResourceNotFound` (`-32002`) appears only in the known-code table; the server's miss path never throws it, so the peer always receives `-32602`.
 
 ::: warning
@@ -63,15 +63,15 @@ A `McpError` thrown from your handler is encoded verbatim as a JSON-RPC error re
 
 <<< @/snippets/serve-a-resource.cpp#notify-subscribers
 
-- `SendResourceUpdated(uri)` is subscription-routed only: it reaches subscribers whose filter lists that URI. With an empty subscription table it returns immediately and sends nothing (`src/protocol/McpSessionHandler.cpp:979-988`).
-- While the instance is running, registration emits a `list_changed` on its own (`src/server/McpServer.cpp:819-821`); call it by hand only after you add or drop entries yourself.
-- Legacy `resources/subscribe` and the modern `resourceSubscriptions` of `subscriptions/listen` write into the same table, so `SendResourceUpdated` matches by URI in both eras. The delivery scope of `list_changed` splits by era (`src/server/McpServer.cpp:953-959`).
+- `SendResourceUpdated(uri)` is subscription-routed only: it reaches subscribers whose filter lists that URI. With an empty subscription table it returns immediately and sends nothing (`src/protocol/McpSessionHandler.cpp`).
+- While the instance is running, registration emits a `list_changed` on its own (`src/server/McpServer.cpp`); call it by hand only after you add or drop entries yourself.
+- Legacy `resources/subscribe` and the modern `resourceSubscriptions` of `subscriptions/listen` write into the same table, so `SendResourceUpdated` matches by URI in both eras. The delivery scope of `list_changed` splits by era (`src/server/McpServer.cpp`).
 
 ## Step 6: Reference Resources as Links and Slices
 
-Use `ResourceLink` to hand back a reference instead of the contents: missing, non-string or empty `name` and `uri` make the parsing side throw `InvalidParams`, and a negative `size` is rejected the same way (`src/core/Content.cpp:237-264`). The name and URI you registered must be non-empty — the same constraints apply when the peer parses your link.
+Use `ResourceLink` to hand back a reference instead of the contents: missing, non-string or empty `name` and `uri` make the parsing side throw `InvalidParams`, and a negative `size` is rejected the same way (`src/core/Content.cpp`). The name and URI you registered must be non-empty — the same constraints apply when the peer parses your link.
 
-When a client only wants part of a file, it sends a `FileRef`: with `enable_file_input` on, a tool argument holding `{"uri","offset","length"}` is resolved through the very same two-pass match, the full resource is read, and then sliced. `offset` / `length` default to 0, and once present they must be integral (integer, or a double with an integral value) inside the int64 range, otherwise `DeserializeFailed` (`include/mcp/McpTypes.hpp:162-189`).
+When a client only wants part of a file, it sends a `FileRef`: with `enable_file_input` on, a tool argument holding `{"uri","offset","length"}` is resolved through the very same two-pass match, the full resource is read, and then sliced. `offset` / `length` default to 0, and once present they must be integral (integer, or a double with an integral value) inside the int64 range, otherwise `DeserializeFailed` (`include/mcp/McpTypes.hpp`).
 
 ## Complete code
 

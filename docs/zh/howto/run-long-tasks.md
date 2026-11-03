@@ -17,25 +17,25 @@
 
 <<< @/snippets/run-long-tasks.cpp#task-declaration
 
-判据在 `src/server/McpServer.cpp:2331-2333`：`tool_def.execution && mode == Task` 才进任务分支，`Auto`/`Manual` 只影响 `tools/list` 里的 `execution` 声明，不改变服务端执行方式。
+判据在 `src/server/McpServer.cpp`：`tool_def.execution && mode == Task` 才进任务分支，`Auto`/`Manual` 只影响 `tools/list` 里的 `execution` 声明，不改变服务端执行方式。
 
 ## 打开扩展开关并注入 store
 
-`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` 的入口处理器**只在 `options_.task_store` 非空时才注册**，而每个处理器第一件事是检查 `enable_tasks_extension`。也就是说：只塞 `task_store` 而不打开关，任务方法照样回 `MethodNotFound: tasks extension is disabled`（`McpServer.cpp:1511` 的 `if (store)`、`1514-1517`、`1556-1559`、`1796-1799` 三处门控）；只打开关不给 store，`tools/call` 走不进任务分支，工具仍以同步方式执行。
+`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/result`、`tasks/list` 的入口处理器**只在 `options_.task_store` 非空时才注册**，而每个处理器第一件事是检查 `enable_tasks_extension`。也就是说：只塞 `task_store` 而不打开关，任务方法照样回 `MethodNotFound: tasks extension is disabled`（`McpServer.cpp` 的 `if (store)` 与三处门控）；只打开关不给 store，`tools/call` 走不进任务分支，工具仍以同步方式执行。
 
-内置实现是 `FileTaskStore`（JSON 落盘，追加写 + 压实）；`IMcpTaskStore` 也允许自研，需要落地的只有 `CreateTask/GetTask/UpdateTask/CancelTask/SetTaskStatus/GetAllTasks` 六个纯虚函数，其余带默认实现（`include/mcp/server/McpTaskStore.hpp:45-97`）。
+内置实现是 `FileTaskStore`（JSON 落盘，追加写 + 压实）；`IMcpTaskStore` 也允许自研，需要落地的只有 `CreateTask/GetTask/UpdateTask/CancelTask/SetTaskStatus/GetAllTasks` 六个纯虚函数，其余带默认实现（`include/mcp/server/McpTaskStore.hpp`）。
 
 <<< @/snippets/run-long-tasks.cpp#task-enable
 
-任务 ID 形如 `task-<session_id>-<16 字节随机 hex>`（`McpServer.cpp:1016`），owner 锚定发起 `tools/call` 的那个会话；`ttl_ms` 固定取默认值 300000（`McpServer.cpp:352`），每次新建任务前顺带清扫过期任务（`McpServer.cpp:2415-2416`、`SweepExpiredTasks` 1070-1089）。
+任务 ID 形如 `task-<session_id>-<16 字节随机 hex>`（`McpServer.cpp`），owner 锚定发起 `tools/call` 的那个会话；`ttl_ms` 固定取默认值 300000（`McpServer.cpp`），每次新建任务前顺带清扫过期任务（`McpServer.cpp`、`SweepExpiredTasks`）。
 
 ## 在 handler 内做协作取消
 
-handler 拿到的还是同一个 `RequestContext`，只需在循环边界查一次 `IsCancellationRequested()`。这个标志是 `std::atomic<bool>` 的共享指针：普通（非任务）工具挂的是协议级 `notifications/cancelled` 对应的请求标志（`McpServer.cpp:2313-2317`），任务工具挂的是 `tasks/cancel` 写入的 `running_task_cancel_flags_[taskId]`（`McpServer.cpp:2418-2421`），两条路径都走同一个判定。
+handler 拿到的还是同一个 `RequestContext`，只需在循环边界查一次 `IsCancellationRequested()`。这个标志是 `std::atomic<bool>` 的共享指针：普通（非任务）工具挂的是协议级 `notifications/cancelled` 对应的请求标志（`McpServer.cpp`），任务工具挂的是 `tasks/cancel` 写入的 `running_task_cancel_flags_[taskId]`（`McpServer.cpp`），两条路径都走同一个判定。
 
 <<< @/snippets/run-long-tasks.cpp#task-cancellation
 
-取消是协作式的：handler 不查标志就一直跑到底。已进终态（`completed`/`failed`/`cancelled`）的任务不会因 `tasks/cancel` 再迁移状态，服务端只回一个空 ack（`McpServer.cpp:1841-1851`）；尚未落地的取消在任务收尾时优先判成 `cancelled`，再判 `failed`（`McpServer.cpp:2429-2434`）。
+取消是协作式的：handler 不查标志就一直跑到底。已进终态（`completed`/`failed`/`cancelled`）的任务不会因 `tasks/cancel` 再迁移状态，服务端只回一个空 ack（`McpServer.cpp`）；尚未落地的取消在任务收尾时优先判成 `cancelled`，再判 `failed`（`McpServer.cpp`）。
 
 ## 客户端轮询到完成
 
@@ -45,15 +45,15 @@ handler 拿到的还是同一个 `RequestContext`，只需在循环边界查一�
 
 三处要注意：
 
-- 判定终态用 wire 字符串 `completed`/`failed`/`cancelled`（`McpClient.cpp:1789-1794`），`working` 与 `input_required` 都不是终态。
-- `PollTaskToCompletion` 只等终态，`input_required` 会一路轮到超时抛 `InternalError`（`McpClient.cpp:1811-1813`），所以可能停在 `input_required` 的任务要自己 `GetTask` 分支处理。
-- 若服务端其实同步跑完了（例如 modern 下客户端没声明 tasks 扩展、`Optional` 工具退化为同步），`CallToolAsTask` 回一个 `task_id == "<none>"`、`status == "completed"` 的降级句柄，结果体在 `result` 里（`McpClient.cpp:1730-1735`）——别拿它去 `tasks/get`。
+- 判定终态用 wire 字符串 `completed`/`failed`/`cancelled`（`McpClient.cpp`），`working` 与 `input_required` 都不是终态。
+- `PollTaskToCompletion` 只等终态，`input_required` 会一路轮到超时抛 `InternalError`（`McpClient.cpp`），所以可能停在 `input_required` 的任务要自己 `GetTask` 分支处理。
+- 若服务端其实同步跑完了（例如 modern 下客户端没声明 tasks 扩展、`Optional` 工具退化为同步），`CallToolAsTask` 回一个 `task_id == "<none>"`、`status == "completed"` 的降级句柄，结果体在 `result` 里（`McpClient.cpp`）——别拿它去 `tasks/get`。
 
 ## 主动取消一个任务
 
 <<< @/snippets/run-long-tasks.cpp#task-cancel
 
-`CancelTask` 置位共享标志后立刻返回 ack，不等执行体真的停下来；要确认落点就再 `GetTask` 或 `PollTaskToCompletion` 一次。`tasks/cancel` 只认 owner 会话，跨会话取别人的任务与取一个不存在的任务返回完全相同的错误：`InvalidParams: task not found: <taskId>`（`McpServer.cpp:1545-1550`、`1826-1831`）。
+`CancelTask` 置位共享标志后立刻返回 ack，不等执行体真的停下来；要确认落点就再 `GetTask` 或 `PollTaskToCompletion` 一次。`tasks/cancel` 只认 owner 会话，跨会话取别人的任务与取一个不存在的任务返回完全相同的错误：`InvalidParams: task not found: <taskId>`（`McpServer.cpp`）。
 
 ## 用 input_required 让任务续跑
 
@@ -63,7 +63,7 @@ handler 返回 `CallToolResult::input_required` 时，服务端把任务停在 `
 
 `input_responses` 的形状是以 `input_requests` 的键为下标的对象，每项是 `ElicitResult` 形态：`{"action":"accept","content":{...}}`。handler 每次被唤醒都要自己重新判断「还缺哪几项」——上一轮已收到的响应会原样带回来，所以判定顺序必须是「先查已有、缺什么再要什么」，否则就死循环停在同一处。
 
-三条硬约束（`McpServer.cpp:1586-1605`）：`result` 与 `inputResponses` 互斥，同时给回 `InvalidParams`；任务不在 `input_required` 时回 `InvalidParams: task is not waiting for input`；modern 时代续跑由服务端**就地重跑工具**并把最终结果放进本次 `tasks/update` 的响应，legacy 时代只回 ack，最终结果仍靠 `tasks/get`/`tasks/result` 取。
+三条硬约束（`McpServer.cpp`）：`result` 与 `inputResponses` 互斥，同时给回 `InvalidParams`；任务不在 `input_required` 时回 `InvalidParams: task is not waiting for input`；modern 时代续跑由服务端**就地重跑工具**并把最终结果放进本次 `tasks/update` 的响应，legacy 时代只回 ack，最终结果仍靠 `tasks/get`/`tasks/result` 取。
 
 ## 完整代码
 
@@ -96,13 +96,13 @@ cmake --build build/p2d --target mcp-doc-snippet-run-long-tasks
 | 项目 | legacy（≤ 2025-06-18） | modern（2026-07-28） |
 |---|---|---|
 | `tasks/get`/`tasks/update`/`tasks/cancel` | 可用 | 可用，但客户端必须声明 `io.modelcontextprotocol/tasks`，否则回 `MissingRequiredClientCapability`（`-32021`） |
-| `tasks/result`、`tasks/list` | 可用 | **无此方法**，回 `MethodNotFound`（`McpServer.cpp:1876-1881`、`1894-1901`） |
-| `tools/call` 任务回执形状 | 顶层 `taskId/status/createdAt` 之外再保留嵌套 `task` 对象 | 只留顶层扁平字段，`task` 嵌套被删除（`McpServer.cpp:2450-2451`、`2475-2476`） |
-| 任务状态通知路由 | `SendNotification` 广播 | `NotifySubscribers` 按订阅投递，`_meta.subscriptionId` 必填（`McpServer.cpp:297-302`、`McpSessionHandler.cpp:1029-1035`） |
-| `Optional` 任务工具 + 客户端未声明扩展 | 照常成任务 | 退化为同步执行（`McpServer.cpp:2342-2349`） |
+| `tasks/result`、`tasks/list` | 可用 | **无此方法**，回 `MethodNotFound`（`McpServer.cpp`） |
+| `tools/call` 任务回执形状 | 顶层 `taskId/status/createdAt` 之外再保留嵌套 `task` 对象 | 只留顶层扁平字段，`task` 嵌套被删除（`McpServer.cpp`） |
+| 任务状态通知路由 | `SendNotification` 广播 | `NotifySubscribers` 按订阅投递，`_meta.subscriptionId` 必填（`McpServer.cpp`、`McpSessionHandler.cpp`） |
+| `Optional` 任务工具 + 客户端未声明扩展 | 照常成任务 | 退化为同步执行（`McpServer.cpp`） |
 | `Required` 任务工具 + 客户端未声明扩展 | 照常成任务 | 回能力错误，且先做入参校验 |
 
-wire 状态字符串两个时代一致：`working`、`input_required`、`completed`、`failed`、`cancelled`；C++ 侧的 `TaskStatus::Pending` 不出现在线上，一律映射成 `working`（`McpServer.cpp:226-241`）。
+wire 状态字符串两个时代一致：`working`、`input_required`、`completed`、`failed`、`cancelled`；C++ 侧的 `TaskStatus::Pending` 不出现在线上，一律映射成 `working`（`McpServer.cpp`）。
 
 ## 常见错误
 
@@ -110,7 +110,7 @@ wire 状态字符串两个时代一致：`working`、`input_required`、`complet
 |---|---|---|
 | `tasks/*` 全部回 `MethodNotFound: tasks extension is disabled` | 只给了 `task_store` 没打 `enable_tasks_extension` | 两个都设；store 与开关是并列必要条件 |
 | `tools/call` 直接同步跑完，没有 `taskId` | 开关打了但 `task_store` 为空，或工具没设 `execution.mode = Task` | 补齐 store，并确认 `execution` 是整体赋值而非只改了局部变量 |
-| 客户端调 `PollTaskToCompletion`/`UpdateTask` 立刻抛 `MethodNotFound` | `ClientOptions::enable_tasks_extension` 未设（客户端在本地就拦，见 `McpClient.cpp:1751`、`1782`） | 客户端也打开开关；注意 `GetTask`/`CancelTask` 不做这项检查，别把它们当判据 |
+| 客户端调 `PollTaskToCompletion`/`UpdateTask` 立刻抛 `MethodNotFound` | `ClientOptions::enable_tasks_extension` 未设（客户端在本地就拦，见 `McpClient.cpp`） | 客户端也打开开关；注意 `GetTask`/`CancelTask` 不做这项检查，别把它们当判据 |
 | modern 下调用回 `-32021`，`data.requiredCapabilities.extensions` 带 `io.modelcontextprotocol/tasks` | 客户端没声明 tasks 扩展而工具是 `Required` | 在 `ClientOptions::capabilities`/`extensions` 里声明该扩展 |
 | `GetTask` 回 `InvalidParams: task not found: <id>` | 任务不是本会话创建的，或已过 `ttl_ms` 被清扫 | 用同一会话轮询；需要更长存活就自己实现 `SetTaskTtl` |
 | 取消后状态仍是 `completed` | 取消到达时执行体已越过最后一个检查点 | 属预期：终态不迁移；把取消检查点放在真正耗时的边界前 |

@@ -5,13 +5,13 @@
 ## 前置条件
 
 - 头文件：`mcp/server/McpServer.hpp`、`mcp/server/ServerOptions.hpp`、`mcp/server/RequestContext.hpp`、`mcp/client/McpClient.hpp`、`mcp/client/ClientOptions.hpp`、`mcp/Log.hpp`（仅在需要区分内部日志时）、`mcp/McpTypes.hpp`、`mcp/JsonValue.hpp`、`mcp/Content.hpp`、`mcp/Implementation.hpp`、`mcp/transport/InMemoryTransport.hpp`；include 必须写全子目录路径。
-- 级别枚举：`LoggingLevel{Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency}`（`include/mcp/Meta.hpp:17-19`），线上是官方字符串 `debug`/`info`/`notice`/`warning`/`error`/`critical`/`alert`/`emergency`（`src/core/Content.cpp:328-330`），越界值直接抛 `InvalidParams`。
+- 级别枚举：`LoggingLevel{Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency}`（`include/mcp/Meta.hpp`），线上是官方字符串 `debug`/`info`/`notice`/`warning`/`error`/`critical`/`alert`/`emergency`（`src/core/Content.cpp`），越界值直接抛 `InvalidParams`。
 - 能力：协议日志要求服务端在 `initialize` 里声明 `logging` 能力，由 `ServerOptions::declare_logging` 控制，**默认 `false`**。
 - 协议时代：级别协商方式在两时代完全不同，见「时代差异」。
 
 ## 声明 logging 能力
 
-`declare_logging` 是唯一开关：置真后 `capabilities_.logging` 才被写入 `initialize` 响应（`src/server/McpServer.cpp:1959-1961`）。不声明也能发帧——SDK 不做发送前的能力检查——但客户端没有义务监听，且不符合协议对能力协商的要求。
+`declare_logging` 是唯一开关：置真后 `capabilities_.logging` 才被写入 `initialize` 响应（`src/server/McpServer.cpp`）。不声明也能发帧——SDK 不做发送前的能力检查——但客户端没有义务监听，且不符合协议对能力协商的要求。
 
 <<< @/snippets/send-log-notifications.cpp#log-capability
 
@@ -21,7 +21,7 @@
 
 <<< @/snippets/send-log-notifications.cpp#log-in-handler
 
-三条判定顺序（`include/mcp/server/RequestContext.hpp:64-70`）：modern 时代下请求若没带 `_meta` 日志级别，直接丢弃；带了就丢低于它的行；最后才交给 `McpServer::SendLoggingMessage(level, data, 请求级别)`。
+三条判定顺序（`include/mcp/server/RequestContext.hpp`）：modern 时代下请求若没带 `_meta` 日志级别，直接丢弃；带了就丢低于它的行；最后才交给 `McpServer::SendLoggingMessage(level, data, 请求级别)`。
 
 ## 在 handler 之外发日志
 
@@ -29,7 +29,7 @@
 
 <<< @/snippets/send-log-notifications.cpp#log-outside-handler
 
-两者的实际含义差别很大（`src/server/McpServer.cpp:961-982`）：
+两者的实际含义差别很大（`src/server/McpServer.cpp`）：
 
 - 二参版 `SendLoggingMessage(level, data)` 在 **modern 时代直接 return，什么都不发**；legacy 时代才按 `logging/setLevel` 记录的级别过滤后发送。
 - 三参版给了 `min_level` 就**只按 `min_level` 过滤并发送，可越过 `setLevel` 记录**，且不受时代限制；`min_level` 传 `std::nullopt` 时行为回落到二参版。
@@ -40,13 +40,13 @@
 
 ## 客户端接收与级别过滤
 
-注册 `SetLoggingHandler` 收 `LoggingMessageNotificationParams{level, logger, data}`（`include/mcp/client/McpClient.hpp:126`、`include/mcp/McpTypes.hpp:344-348`）。`logger` 恒为字符串 `"mcp-server"`（`src/server/McpServer.cpp:107`、`988`），`data` 在线上是**一个 JSON 字符串**，不是对象——想传结构化内容就自己序列化后塞进去。
+注册 `SetLoggingHandler` 收 `LoggingMessageNotificationParams{level, logger, data}`（`include/mcp/client/McpClient.hpp`、`include/mcp/McpTypes.hpp`）。`logger` 恒为字符串 `"mcp-server"`（`src/server/McpServer.cpp`），`data` 在线上是**一个 JSON 字符串**，不是对象——想传结构化内容就自己序列化后塞进去。
 
 legacy 时代用 `SetLoggingLevel` 做一次性全局协商；modern 时代改为**每次请求**在 `_meta` 里带级别：
 
 <<< @/snippets/send-log-notifications.cpp#log-client-receive
 
-modern 下 `SetLoggingLevel` 会直接抛 `ProtocolViolation("logging/setLevel is not available …; use a per-request logLevel instead")`（`src/client/McpClient.cpp:1913-1919`）。`_meta` 里的键固定是 `io.modelcontextprotocol/logLevel`，且**必须是字符串**（`src/protocol/McpSessionHandler.cpp:58-59`），写整数会让整个请求被拒。
+modern 下 `SetLoggingLevel` 会直接抛 `ProtocolViolation("logging/setLevel is not available …; use a per-request logLevel instead")`（`src/client/McpClient.cpp`）。`_meta` 里的键固定是 `io.modelcontextprotocol/logLevel`，且**必须是字符串**（`src/protocol/McpSessionHandler.cpp`），写整数会让整个请求被拒。
 
 ## 与 SDK 内部日志的分工
 

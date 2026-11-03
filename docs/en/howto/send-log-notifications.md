@@ -5,13 +5,13 @@ Stream log lines produced while the server works to the connected MCP client via
 ## Prerequisites
 
 - Headers: `mcp/server/McpServer.hpp`, `mcp/server/ServerOptions.hpp`, `mcp/server/RequestContext.hpp`, `mcp/client/McpClient.hpp`, `mcp/client/ClientOptions.hpp`, `mcp/Log.hpp` (only when the internal log needs distinguishing), `mcp/McpTypes.hpp`, `mcp/JsonValue.hpp`, `mcp/Content.hpp`, `mcp/Implementation.hpp`, `mcp/transport/InMemoryTransport.hpp`; always write the full subdirectory path.
-- Level enum: `LoggingLevel{Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency}` (`include/mcp/Meta.hpp:17-19`); on the wire these are the official strings `debug`/`info`/`notice`/`warning`/`error`/`critical`/`alert`/`emergency` (`src/core/Content.cpp:328-330`), and an out-of-range value throws `InvalidParams`.
+- Level enum: `LoggingLevel{Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency}` (`include/mcp/Meta.hpp`); on the wire these are the official strings `debug`/`info`/`notice`/`warning`/`error`/`critical`/`alert`/`emergency` (`src/core/Content.cpp`), and an out-of-range value throws `InvalidParams`.
 - Capability: protocol logging expects the server to declare the `logging` capability in `initialize`, controlled by `ServerOptions::declare_logging`, **default `false`**.
 - Protocol era: level negotiation works completely differently in the two eras — see "Era differences".
 
 ## Declare the logging capability
 
-`declare_logging` is the only switch: `capabilities_.logging` is written into the `initialize` response once it is true (`src/server/McpServer.cpp:1959-1961`). Frames can still be sent without it — the SDK performs no capability check before sending — but the client is under no obligation to listen, and it violates the protocol's capability negotiation.
+`declare_logging` is the only switch: `capabilities_.logging` is written into the `initialize` response once it is true (`src/server/McpServer.cpp`). Frames can still be sent without it — the SDK performs no capability check before sending — but the client is under no obligation to listen, and it violates the protocol's capability negotiation.
 
 <<< @/snippets/send-log-notifications.cpp#log-capability
 
@@ -21,7 +21,7 @@ Prefer `RequestContext::Log(level, data)`. It filters against **the current requ
 
 <<< @/snippets/send-log-notifications.cpp#log-in-handler
 
-The three checks run in this order (`include/mcp/server/RequestContext.hpp:64-70`): in the modern era a request without a `_meta` log level drops everything outright; with a level present, lines below it are dropped; only then is the line handed to `McpServer::SendLoggingMessage(level, data, request level)`.
+The three checks run in this order (`include/mcp/server/RequestContext.hpp`): in the modern era a request without a `_meta` log level drops everything outright; with a level present, lines below it are dropped; only then is the line handed to `McpServer::SendLoggingMessage(level, data, request level)`.
 
 ## Log from outside a handler
 
@@ -29,7 +29,7 @@ To add a frame from a background thread, a timer or elsewhere, use the two overl
 
 <<< @/snippets/send-log-notifications.cpp#log-outside-handler
 
-Their real meanings differ a lot (`src/server/McpServer.cpp:961-982`):
+Their real meanings differ a lot (`src/server/McpServer.cpp`):
 
 - The two-argument `SendLoggingMessage(level, data)` **returns immediately in the modern era and sends nothing**; only the legacy era filters against the level recorded by `logging/setLevel` and sends.
 - The three-argument version, given a `min_level`, **filters by `min_level` alone and sends, overriding the `setLevel` record**, and it is not era-gated; passing `std::nullopt` makes it fall back to the two-argument behaviour.
@@ -40,13 +40,13 @@ Their real meanings differ a lot (`src/server/McpServer.cpp:961-982`):
 
 ## Receive and filter on the client
 
-Register `SetLoggingHandler` to consume `LoggingMessageNotificationParams{level, logger, data}` (`include/mcp/client/McpClient.hpp:126`, `include/mcp/McpTypes.hpp:344-348`). `logger` is always the string `"mcp-server"` (`src/server/McpServer.cpp:107`, `988`), and `data` is a **JSON string** on the wire, not an object — serialise structured payloads yourself before putting them in.
+Register `SetLoggingHandler` to consume `LoggingMessageNotificationParams{level, logger, data}` (`include/mcp/client/McpClient.hpp`, `include/mcp/McpTypes.hpp`). `logger` is always the string `"mcp-server"` (`src/server/McpServer.cpp`), and `data` is a **JSON string** on the wire, not an object — serialise structured payloads yourself before putting them in.
 
 The legacy era negotiates once with `SetLoggingLevel`; the modern era carries the level **per request** in `_meta`:
 
 <<< @/snippets/send-log-notifications.cpp#log-client-receive
 
-In the modern era `SetLoggingLevel` throws `ProtocolViolation("logging/setLevel is not available …; use a per-request logLevel instead")` right away (`src/client/McpClient.cpp:1913-1919`). The `_meta` key is fixed as `io.modelcontextprotocol/logLevel` and **must be a string** (`src/protocol/McpSessionHandler.cpp:58-59`); an integer gets the whole request rejected.
+In the modern era `SetLoggingLevel` throws `ProtocolViolation("logging/setLevel is not available …; use a per-request logLevel instead")` right away (`src/client/McpClient.cpp`). The `_meta` key is fixed as `io.modelcontextprotocol/logLevel` and **must be a string** (`src/protocol/McpSessionHandler.cpp`); an integer gets the whole request rejected.
 
 ## Division of labour with the SDK's internal log
 

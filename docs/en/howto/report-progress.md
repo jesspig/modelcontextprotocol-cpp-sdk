@@ -9,7 +9,7 @@ Progress is a **transient heartbeat inside one request**: the token stops meanin
 ## Prerequisites
 
 - Headers: `mcp/server/McpServer.hpp`, `mcp/server/RequestContext.hpp`, `mcp/server/ServerOptions.hpp`, `mcp/client/McpClient.hpp`, `mcp/client/ClientOptions.hpp`, `mcp/McpTypes.hpp`, `mcp/JsonValue.hpp`, `mcp/Content.hpp`, `mcp/Implementation.hpp`, `mcp/transport/InMemoryTransport.hpp`; always write the full subdirectory path.
-- Token type: `ProgressToken = std::variant<std::string, int64_t>` (`include/mcp/Meta.hpp:15`). Only strings and integers are legal on the wire; anything else makes the whole request get rejected (`src/protocol/McpSessionHandler.cpp:52-53`).
+- Token type: `ProgressToken = std::variant<std::string, int64_t>` (`include/mcp/Meta.hpp`). Only strings and integers are legal on the wire; anything else makes the whole request get rejected (`src/protocol/McpSessionHandler.cpp`).
 - Flags: progress needs no extension flag and no declared server capability — it is a built-in protocol notification.
 - No extra CMake option required.
 
@@ -19,7 +19,7 @@ The token is not a business field of `CallToolRequestParams`; the SDK normalises
 
 <<< @/snippets/report-progress.cpp#progress-server
 
-The decision point is `src/server/McpServer.cpp:2093-2108`: the modern era deserialises from the envelope-level `_meta`, the legacy era reads `params._meta`, and both end up in the same `params.meta->progress_token`, so business code needs no branching.
+The decision point is `src/server/McpServer.cpp`: the modern era deserialises from the envelope-level `_meta`, the legacy era reads `params._meta`, and both end up in the same `params.meta->progress_token`, so business code needs no branching.
 
 ## Report from the server
 
@@ -27,13 +27,13 @@ The decision point is `src/server/McpServer.cpp:2093-2108`: the modern era deser
 
 - `progress` is a **raw monotonically increasing counter**; the SDK neither normalises it nor checks it against `total`, so the client computes the ratio itself.
 - `total` may be omitted; omitting it means the total is unknown.
-- The token is **passed through verbatim with no ownership check**: reporting request B's progress under request A's token routes the frame into A's stream (`src/server/McpServer.cpp:1091-1109` contains no ownership validation at all). Cross-request token reuse is on you.
+- The token is **passed through verbatim with no ownership check**: reporting request B's progress under request A's token routes the frame into A's stream (`src/server/McpServer.cpp` contains no ownership validation at all). Cross-request token reuse is on you.
 
 <<< @/snippets/report-progress.cpp#progress-total-less
 
 ## Receive progress on the client
 
-Attach `on_progress` to `RequestOptions`; its type is `std::function<void(const ProgressNotificationParams&)>` (`include/mcp/McpTypes.hpp:402`). Without an explicit token the client mints an auto-incrementing integer token and writes it into `_meta.progressToken`; an explicit one is used as given (`src/client/McpClient.cpp:937-967`). The callback is detached automatically when the request finishes, so there is nothing to clean up by hand.
+Attach `on_progress` to `RequestOptions`; its type is `std::function<void(const ProgressNotificationParams&)>` (`include/mcp/McpTypes.hpp`). Without an explicit token the client mints an auto-incrementing integer token and writes it into `_meta.progressToken`; an explicit one is used as given (`src/client/McpClient.cpp`). The callback is detached automatically when the request finishes, so there is nothing to clean up by hand.
 
 <<< @/snippets/report-progress.cpp#progress-client
 
@@ -46,7 +46,7 @@ The callback fires only for frames whose token matches **that request**, so a st
 - Progress notifications **never affect the request result**: dropping a frame, sending one early or late changes neither the response body nor the success of the call.
 
 ::: tip Progress renews long requests
-Progress frames reset the timeout guard of the matching request: on receiving a client-directed `notifications/progress` the server calls `ResetTimeoutByProgressToken` (`src/server/McpServer.cpp:1437-1455`), and the client-side behaviour is covered by `SessionHandlerTest.ProgressNotificationExtendsDeadline`. Steady reporting therefore extends the life of a slow request by itself.
+Progress frames reset the timeout guard of the matching request: on receiving a client-directed `notifications/progress` the server calls `ResetTimeoutByProgressToken` (`src/server/McpServer.cpp`), and the client-side behaviour is covered by `SessionHandlerTest.ProgressNotificationExtendsDeadline`. Steady reporting therefore extends the life of a slow request by itself.
 :::
 
 ## Complete code

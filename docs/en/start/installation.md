@@ -6,10 +6,10 @@ How to build this repository from scratch and how to consume the SDK from your o
 
 | Dependency | Minimum | Notes |
 |---|---|---|
-| CMake | 3.28 | `cmake_minimum_required(VERSION 3.28...4.2)`, see `CMakeLists.txt:1` |
+| CMake | 3.28 | `cmake_minimum_required(VERSION 3.28...4.2)`, see `CMakeLists.txt` |
 | Generator | Ninja | The presets declare `generator: "Ninja"` (`CMakePresets.json`); only Ninja is validated by this repository |
 | C++ standard | C++17 | Every library sets `target_compile_features(... PUBLIC cxx_std_17)` |
-| Compiler | MSVC / Clang / GCC / clang-cl | Clang is auto-detected on Windows and Linux (`cmake/CompilerOptions.cmake:17`); with MSVC only, pass `-DCMAKE_CXX_COMPILER=cl` explicitly |
+| Compiler | MSVC / Clang / GCC / clang-cl | Clang is auto-detected on Windows and Linux (`cmake/CompilerOptions.cmake`); with MSVC only, pass `-DCMAKE_CXX_COMPILER=cl` explicitly |
 | Platforms | Windows, Linux, macOS | All three build in CI |
 | OpenSSL | Optional | Controlled by `MCP_WITH_OPENSSL`, see below |
 
@@ -59,7 +59,7 @@ find_package(mcp CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE mcp::mcp-client)
 ```
 
-Installation exports `mcpTargets.cmake` with the package version file (`COMPATIBILITY SameMajorVersion`; the version comes from `kSdkVersion` in `include/mcp/McpVersion.hpp`) and a pkg-config description. `find_package` calls `find_dependency(Threads)` for you and `find_dependency(OpenSSL)` when the library was built with OpenSSL (`cmake/mcpConfig.cmake.in`). Exported targets carry the `mcp::` namespace (`CMakeLists.txt:323`).
+Installation exports `mcpTargets.cmake` with the package version file (`COMPATIBILITY SameMajorVersion`; the version comes from `kSdkVersion` in `include/mcp/McpVersion.hpp`) and a pkg-config description. `find_package` calls `find_dependency(Threads)` for you and `find_dependency(OpenSSL)` when the library was built with OpenSSL (`cmake/mcpConfig.cmake.in`). Exported targets carry the `mcp::` namespace (`CMakeLists.txt`).
 
 ## Static library inventory
 
@@ -73,7 +73,7 @@ Installation exports `mcpTargets.cmake` with the package version file (`COMPATIB
 | `mcp-http` | HTTP server substrate, session and event stores | `mcp-transport` |
 | `mcp-ext` | apps, server card, DPoP, triggers extensions | `mcp-core` |
 
-All seven targets are `STATIC` (`CMakeLists.txt:90-97` and the `add_library(mcp-* STATIC)` lines).
+All seven targets are `STATIC` (`CMakeLists.txt` and the `add_library(mcp-* STATIC)` lines).
 
 ## Build switches
 
@@ -89,7 +89,7 @@ All seven targets are `STATIC` (`CMakeLists.txt:90-97` and the `add_library(mcp-
 
 ## OpenSSL is optional
 
-`MCP_WITH_OPENSSL` has three modes and interacts with `find_package(OpenSSL)` (`cmake/FetchDependencies.cmake:7-27`):
+`MCP_WITH_OPENSSL` has three modes and interacts with `find_package(OpenSSL)` (`cmake/FetchDependencies.cmake`):
 
 - `AUTO`: enabled when found, disabled otherwise.
 - `ON`: configure fails when OpenSSL is missing; no silent downgrade.
@@ -101,7 +101,7 @@ System installation examples: `vcpkg install openssl`, `apt install libssl-dev`,
 
 ## Distribution pitfalls
 
-- **`-march=native` is on by default**: it applies when not in CI and not on Apple (flags at `cmake/CompilerOptions.cmake:23-24` and `55-56`), so binaries are not portable across machines. CI mode is decided by the `CI` environment variable (`cmake/Platform.cmake:8-11`). Build release artifacts in CI, or remove the flag yourself.
+- **`-march=native` is on by default**: it applies when not in CI and not on Apple (flags at `cmake/CompilerOptions.cmake`), so binaries are not portable across machines. CI mode is decided by the `CI` environment variable (`cmake/Platform.cmake`). Build release artifacts in CI, or remove the flag yourself.
 - **Release enables LTO automatically** (Clang ThinLTO, MSVC LTCG, GCC IPO); slow local Release links are expected.
 - **Unity build defaults to ON** for core/server/client/http but OFF for protocol and transport. Check a target's `UNITY_BUILD` before adding a `.cpp` — anonymous namespaces or duplicate static symbols will collide.
 

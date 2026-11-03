@@ -9,21 +9,21 @@ In the legacy era (≤ 2025-11-25) a question is a **standalone JSON-RPC request
 ## Prerequisites
 
 - Headers: `mcp/client/ClientOptions.hpp`, `mcp/client/McpClient.hpp`, `mcp/McpTypes.hpp`, `mcp/Capabilities.hpp`, `mcp/Content.hpp`, `mcp/JsonValue.hpp`, `mcp/client/RequestHandle.hpp`, `mcp/protocol/IncomingRequestMeta.hpp`, `mcp/transport/InMemoryTransport.hpp` — include paths must carry the subdirectory.
-- All four handler slots live on `ClientOptions` (`include/mcp/client/ClientOptions.hpp:42-45`): `elicitation_handler`, `url_elicitation_handler`, `sampling_handler`, `roots_handler`; after the client exists you can still attach them with `SetElicitationHandler` / `SetUrlElicitationHandler` (`include/mcp/client/McpClient.hpp:117-121`).
+- All four handler slots live on `ClientOptions` (`include/mcp/client/ClientOptions.hpp`): `elicitation_handler`, `url_elicitation_handler`, `sampling_handler`, `roots_handler`; after the client exists you can still attach them with `SetElicitationHandler` / `SetUrlElicitationHandler` (`include/mcp/client/McpClient.hpp`).
 - Handlers must **return quickly**: they run on the protocol dispatch path, so blocking one blocks the connection. To ask a human, hand the question to your own UI thread and let the handler only deliver the answer.
 - No CMake switch required.
 
 ## Form elicitation
 
-The handler receives `ElicitRequestParams` (`message`, `requested_schema`, `mode="form"`) and returns `ElicitResult{action, content}` (`include/mcp/McpTypes.hpp:350-361`). The three states are simply three `action` strings: `accept` (with `content`), `decline`, `cancel`.
+The handler receives `ElicitRequestParams` (`message`, `requested_schema`, `mode="form"`) and returns `ElicitResult{action, content}` (`include/mcp/McpTypes.hpp`). The three states are simply three `action` strings: `accept` (with `content`), `decline`, `cancel`.
 
 <<< @/snippets/handle-server-initiated-requests.cpp#form-handler
 
 ::: warning "No handler" does not mean "no answer"
-In form mode a missing handler makes the client reply with `MethodNotFound` + `elicitation not supported` (`src/client/McpClient.cpp:735-738`) — the server treats that question as failed, not as "the user hasn't answered yet".
+In form mode a missing handler makes the client reply with `MethodNotFound` + `elicitation not supported` (`src/client/McpClient.cpp`) — the server treats that question as failed, not as "the user hasn't answered yet".
 :::
 
-Before the answer goes back, one **optional** default-filling step runs: only if you explicitly declare `"applyDefaults": true` inside `capabilities->elicitation->form` does the SDK fill the fields you left out from the `requested_schema` defaults (`src/client/McpClient.cpp:239-265`). Without that declaration nothing is filled in for you.
+Before the answer goes back, one **optional** default-filling step runs: only if you explicitly declare `"applyDefaults": true` inside `capabilities->elicitation->form` does the SDK fill the fields you left out from the `requested_schema` defaults (`src/client/McpClient.cpp`). Without that declaration nothing is filled in for you.
 
 ## URL mode: hand the user off externally
 
@@ -33,13 +33,13 @@ With `mode == "url"` the `url_elicitation_handler` is invoked and the params car
 
 Three implementation details worth knowing:
 
-- With no URL handler attached the answer is automatically **`decline`**, never an error (`src/client/McpClient.cpp:296-305`).
-- In the legacy era a URL question must carry `elicitationId`; without it the client rejects with `InvalidParams` (`:710-715`).
-- Also in the legacy era, after answering, the client **sends `notifications/elicitation/complete`** itself (`{"elicitationId": ...}`) to wake the waiting server (`:722-733`); the modern era has no such step and settles through the follow-up round.
+- With no URL handler attached the answer is automatically **`decline`**, never an error (`src/client/McpClient.cpp`).
+- In the legacy era a URL question must carry `elicitationId`; without it the client rejects with `InvalidParams`.
+- Also in the legacy era, after answering, the client **sends `notifications/elicitation/complete`** itself (`{"elicitationId": ...}`) to wake the waiting server; the modern era has no such step and settles through the follow-up round.
 
 ## The capability table is derived from handlers
 
-`DeriveClientCapabilities` (`src/client/McpClient.cpp:360-392`) builds the capability table from what is present: form handler → `elicitation.form`, URL handler → `elicitation.url`, sampling → `sampling`, roots → `roots` plus `list_changed = true`. If none is set and no explicit `capabilities` are given, it returns nothing — i.e. **no capabilities declared at all**. Capabilities you wrote yourself are never overwritten; the SDK only fills gaps.
+`DeriveClientCapabilities` (`src/client/McpClient.cpp`) builds the capability table from what is present: form handler → `elicitation.form`, URL handler → `elicitation.url`, sampling → `sampling`, roots → `roots` plus `list_changed = true`. If none is set and no explicit `capabilities` are given, it returns nothing — i.e. **no capabilities declared at all**. Capabilities you wrote yourself are never overwritten; the SDK only fills gaps.
 
 <<< @/snippets/handle-server-initiated-requests.cpp#capability-derivation
 
@@ -47,23 +47,23 @@ That means "attach a handler" ≈ "declare the capability", and neither declarin
 
 ## Deprecated sampling and roots
 
-`SetSamplingHandler` and `SetRootsHandler` carry `[[deprecated("... SEP-2577")]]` (`include/mcp/client/McpClient.hpp:113-116`); from 2026-07-28 onward the server no longer raises either request type. `Ping()` is deprecated the same way (`:108-109`). The migration shape is to keep receiving legacy peers' requests through the plain **member fields** on `ClientOptions`, and to express the same need as an MRTR question instead:
+`SetSamplingHandler` and `SetRootsHandler` carry `[[deprecated("... SEP-2577")]]` (`include/mcp/client/McpClient.hpp`); from 2026-07-28 onward the server no longer raises either request type. `Ping()` is deprecated the same way. The migration shape is to keep receiving legacy peers' requests through the plain **member fields** on `ClientOptions`, and to express the same need as an MRTR question instead:
 
 <<< @/snippets/handle-server-initiated-requests.cpp#sampling-roots
 
-`CreateMessageResult` and `ListRootsResult` remain perfectly usable result types (`include/mcp/McpTypes.hpp:378-392`) — you just shouldn't rely on the server asking. `MakeInputRequestForSampling` / `MakeInputRequestForRoots` (`:371-373`) are constructors for **you** to request the equivalent input in a follow-up round.
+`CreateMessageResult` and `ListRootsResult` remain perfectly usable result types (`include/mcp/McpTypes.hpp`) — you just shouldn't rely on the server asking. `MakeInputRequestForSampling` / `MakeInputRequestForRoots` are constructors for **you** to request the equivalent input in a follow-up round.
 
 ## Automatic rounds
 
-In the modern era, when a tool result carries `resultType == "input_required"`, `SendRequestWithMrtr` fills the answer in and re-sends on the spot until it gets a complete result or hits a limit (`src/client/McpClient.cpp:1069-1135`). The defaults are `auto_fulfill = true`, `max_rounds = 10`, `round_timeout = 600s` (`include/mcp/client/ClientOptions.hpp:55-63`).
+In the modern era, when a tool result carries `resultType == "input_required"`, `SendRequestWithMrtr` fills the answer in and re-sends on the spot until it gets a complete result or hits a limit (`src/client/McpClient.cpp`). The defaults are `auto_fulfill = true`, `max_rounds = 10`, `round_timeout = 600s` (`include/mcp/client/ClientOptions.hpp`).
 
 Rules that matter:
 
-- **A missing required handler is not an error**: the `input_required` result is handed back to you as-is (`src/client/McpClient.cpp:997-1009`) — the one silent-degradation shape of automatic mode, so always inspect the result before treating it as success.
-- Each round's timeout is the smaller of `round_timeout` and the caller's timeout; `max_total_timeout` is the whole-flow budget and throws `RequestTimeout` + `MRTR: exceeded max_total_timeout` when exceeded (`:1077-1097`).
-- Running out of rounds throws `InternalError` + `MRTR: exceeded max_rounds (N)` (`:1133-1134`).
-- A round that only refreshes `requestState` **backs off exponentially** and retries without filling `inputResponses` (`:1116-1121`).
-- On `SessionExpired` with `reinit_on_expired_session = true` the client re-runs `initialize` and retries once (`:1057-1066`).
+- **A missing required handler is not an error**: the `input_required` result is handed back to you as-is (`src/client/McpClient.cpp`) — the one silent-degradation shape of automatic mode, so always inspect the result before treating it as success.
+- Each round's timeout is the smaller of `round_timeout` and the caller's timeout; `max_total_timeout` is the whole-flow budget and throws `RequestTimeout` + `MRTR: exceeded max_total_timeout` when exceeded.
+- Running out of rounds throws `InternalError` + `MRTR: exceeded max_rounds (N)`.
+- A round that only refreshes `requestState` **backs off exponentially** and retries without filling `inputResponses`.
+- On `SessionExpired` with `reinit_on_expired_session = true` the client re-runs `initialize` and retries once.
 
 To take the exchange over yourself, turn automatic fulfilment off:
 
@@ -71,19 +71,19 @@ To take the exchange over yourself, turn automatic fulfilment off:
 
 ## Manual rounds: replying to input_required yourself
 
-`CallToolResult` exposes `result_type` and `input_required` (`include/mcp/McpTypes.hpp:109-117`, `:268-273`). Note that `CallTool()` **does not** pass `RequestOptions::input_responses` / `request_state` into the outgoing params (`src/client/McpClient.cpp:1312-1356`), so a follow-up round must go through `SendRequest` with both keys placed directly in `params`: `inputResponses` and `requestState` (`src/detail/JsonFields.hpp:21`, `:33`).
+`CallToolResult` exposes `result_type` and `input_required` (`include/mcp/McpTypes.hpp`). Note that `CallTool()` **does not** pass `RequestOptions::input_responses` / `request_state` into the outgoing params (`src/client/McpClient.cpp`), so a follow-up round must go through `SendRequest` with both keys placed directly in `params`: `inputResponses` and `requestState` (`src/detail/JsonFields.hpp`).
 
 <<< @/snippets/handle-server-initiated-requests.cpp#manual-round
 
-Build every answer with the official constructors — `MakeInputResponseFromElicitResult` / `MakeInputResponseFromCreateMessageResult` / `MakeInputResponseFromListRootsResult` (`include/mcp/McpTypes.hpp:374`, `:394-395`) — rather than hand-assembling the shape, and **reuse the keys of `input_requests` verbatim** (`src/client/McpClient.cpp:1019-1047`). A `method` the SDK does not recognise throws `HandlerError` + `unsupported input request method: ...` (`:1041-1043`).
+Build every answer with the official constructors — `MakeInputResponseFromElicitResult` / `MakeInputResponseFromCreateMessageResult` / `MakeInputResponseFromListRootsResult` (`include/mcp/McpTypes.hpp`) — rather than hand-assembling the shape, and **reuse the keys of `input_requests` verbatim** (`src/client/McpClient.cpp`). A `method` the SDK does not recognise throws `HandlerError` + `unsupported input request method: ...`.
 
 ## Other passive entry points
 
 <<< @/snippets/handle-server-initiated-requests.cpp#passive-notifications
 
-- `SetNotificationHandler(method, handler)` accepts any notification; the callback signature is `std::function<void(const JsonRpcNotification&)>` (`include/mcp/client/McpClient.hpp:29-30`, `:122-124`).
-- `SetLoggingHandler` receives protocol log frames only (`:126`).
-- The three `*_list_changed` notifications and `resources_updated` are handled **internally**: they invalidate the local response cache (`src/client/McpClient.cpp:748-760`), so no handler is needed from you.
+- `SetNotificationHandler(method, handler)` accepts any notification; the callback signature is `std::function<void(const JsonRpcNotification&)>` (`include/mcp/client/McpClient.hpp`).
+- `SetLoggingHandler` receives protocol log frames only.
+- The three `*_list_changed` notifications and `resources_updated` are handled **internally**: they invalidate the local response cache (`src/client/McpClient.cpp`), so no handler is needed from you.
 - `SubscribeAsync` merely registers a subscription (modern `subscriptions/listen`), see [/en/howto/serve-a-resource](/en/howto/serve-a-resource).
 
 ## Complete code

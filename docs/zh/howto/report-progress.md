@@ -9,7 +9,7 @@
 ## 前置条件
 
 - 头文件：`mcp/server/McpServer.hpp`、`mcp/server/RequestContext.hpp`、`mcp/server/ServerOptions.hpp`、`mcp/client/McpClient.hpp`、`mcp/client/ClientOptions.hpp`、`mcp/McpTypes.hpp`、`mcp/JsonValue.hpp`、`mcp/Content.hpp`、`mcp/Implementation.hpp`、`mcp/transport/InMemoryTransport.hpp`；include 必须写全子目录路径。
-- 令牌类型：`ProgressToken = std::variant<std::string, int64_t>`（`include/mcp/Meta.hpp:15`），线上只允许字符串或整数，别的类型会让整个请求被拒（`src/protocol/McpSessionHandler.cpp:52-53`）。
+- 令牌类型：`ProgressToken = std::variant<std::string, int64_t>`（`include/mcp/Meta.hpp`），线上只允许字符串或整数，别的类型会让整个请求被拒（`src/protocol/McpSessionHandler.cpp`）。
 - 开关：进度不需要任何扩展开关，也不要求服务端声明能力——它是协议内建通知。
 - 无需额外 CMake 选项。
 
@@ -19,7 +19,7 @@
 
 <<< @/snippets/report-progress.cpp#progress-server
 
-判据在 `src/server/McpServer.cpp:2093-2108`：modern 从信封级 `_meta` 反序列化、legacy 从 `params._meta` 读，两时代最终都落到同一个 `params.meta->progress_token`，业务代码无需分支。
+判据在 `src/server/McpServer.cpp`：modern 从信封级 `_meta` 反序列化、legacy 从 `params._meta` 读，两时代最终都落到同一个 `params.meta->progress_token`，业务代码无需分支。
 
 ## 在服务端上报
 
@@ -27,13 +27,13 @@
 
 - `progress` 是**单调递增的裸计数**，SDK 不做归一化、不检查是否超过 `total`，客户端自己算比例。
 - `total` 可省；省略表示总量未知。
-- 令牌**原样透传，SDK 不校验归属**：把 A 请求的 token 用于 B 请求的进度，帧就会被投到 A 的流里（`src/server/McpServer.cpp:1091-1109` 里没有任何归属判定）。跨请求复用 token 请自己保证。
+- 令牌**原样透传，SDK 不校验归属**：把 A 请求的 token 用于 B 请求的进度，帧就会被投到 A 的流里（`src/server/McpServer.cpp` 里没有任何归属判定）。跨请求复用 token 请自己保证。
 
 <<< @/snippets/report-progress.cpp#progress-total-less
 
 ## 客户端接收进度
 
-在 `RequestOptions` 上挂 `on_progress`，类型是 `std::function<void(const ProgressNotificationParams&)>`（`include/mcp/McpTypes.hpp:402`）。不显式给令牌时，客户端会自动分配一个自增整数令牌并写进 `_meta.progressToken`；显式给就用你给的（`src/client/McpClient.cpp:937-967`）。回调在请求结束时自动摘除，不需要手动清理。
+在 `RequestOptions` 上挂 `on_progress`，类型是 `std::function<void(const ProgressNotificationParams&)>`（`include/mcp/McpTypes.hpp`）。不显式给令牌时，客户端会自动分配一个自增整数令牌并写进 `_meta.progressToken`；显式给就用你给的（`src/client/McpClient.cpp`）。回调在请求结束时自动摘除，不需要手动清理。
 
 <<< @/snippets/report-progress.cpp#progress-client
 
@@ -46,7 +46,7 @@
 - 进度通知**不影响请求结果**：任何一帧丢了、发早了、发晚了，都不会改变响应体，也不会让请求失败。
 
 ::: tip 进度可给长请求续期
-进度帧会重置对应请求的超时护栏：服务端收到客户端方向的 `notifications/progress` 后调 `ResetTimeoutByProgressToken`（`src/server/McpServer.cpp:1437-1455`），客户端方向的实现见 `SessionHandlerTest.ProgressNotificationExtendsDeadline`。所以持续上报本身就能给慢请求延长寿命。
+进度帧会重置对应请求的超时护栏：服务端收到客户端方向的 `notifications/progress` 后调 `ResetTimeoutByProgressToken`（`src/server/McpServer.cpp`），客户端方向的实现见 `SessionHandlerTest.ProgressNotificationExtendsDeadline`。所以持续上报本身就能给慢请求延长寿命。
 :::
 
 ## 完整代码

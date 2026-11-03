@@ -11,7 +11,7 @@
 
 ## Register a minimal tool
 
-The third argument of `RegisterTool(name, options, fn)` is a `std::function<CallToolResult(const RequestContext<CallToolRequestParams>&)>`, so a capture-less lambda works directly. With `ToolOptions{}` the SDK still synthesizes an `input_schema` of `{"type":"object","properties":{}}` (`McpServerTool.hpp:46-53`), so a tool with no constraints is still valid.
+The third argument of `RegisterTool(name, options, fn)` is a `std::function<CallToolResult(const RequestContext<CallToolRequestParams>&)>`, so a capture-less lambda works directly. With `ToolOptions{}` the SDK still synthesizes an `input_schema` of `{"type":"object","properties":{}}` (`McpServerTool.hpp`), so a tool with no constraints is still valid.
 
 <<< @/snippets/register-a-tool.cpp#minimal
 
@@ -48,7 +48,7 @@ Declare `ToolOptions::output_schema` (or set `use_structured_content = true` and
 <<< @/snippets/register-a-tool.cpp#structured
 
 ::: danger
-A structured-output mismatch is a **protocol error**, not `is_error`: the wire message is `tool output does not match outputSchema: <reason>` with code `InvalidParams` (`McpServer.cpp:2673-2681`). If you declare a schema, you must honour it.
+A structured-output mismatch is a **protocol error**, not `is_error`: the wire message is `tool output does not match outputSchema: <reason>` with code `InvalidParams` (`McpServer.cpp`). If you declare a schema, you must honour it.
 :::
 
 ## Catch registration-time errors

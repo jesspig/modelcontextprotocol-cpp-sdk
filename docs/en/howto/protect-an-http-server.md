@@ -11,7 +11,7 @@ Turn a `StreamableHttpServerTransport` from "runs on my machine" into "survives 
 
 ## Bearer verification: `verify` is the only mandatory piece
 
-`StreamableHttpServerOptions::bearer_auth` is a `std::optional<BearerAuthConfig>` (`include/mcp/transport/StreamableHttpServerTransport.hpp:66-77`). `verify` receives the extracted token string and returns `AuthResult{ok, scopes, resource}` (`:31-35`). The remaining fields shape the challenge rather than the strength of validation: `required_scopes` feeds the 403 hint, `scopes_supported`/`authorization_servers`/`resource_metadata_url` feed the metadata endpoint, and `expected_resource` plus `validate_token_resource` (on by default) enforce audience binding.
+`StreamableHttpServerOptions::bearer_auth` is a `std::optional<BearerAuthConfig>` (`include/mcp/transport/StreamableHttpServerTransport.hpp`). `verify` receives the extracted token string and returns `AuthResult{ok, scopes, resource}`. The remaining fields shape the challenge rather than the strength of validation: `required_scopes` feeds the 403 hint, `scopes_supported`/`authorization_servers`/`resource_metadata_url` feed the metadata endpoint, and `expected_resource` plus `validate_token_resource` (on by default) enforce audience binding.
 
 <<< @/snippets/protect-an-http-server.cpp#bearer-auth
 
@@ -21,13 +21,13 @@ The SDK never inspects the token: a false `ok` yields 401, nothing more. Signatu
 
 ## Challenge frames and the metadata endpoint
 
-On missing or bad authorization the server answers `401` with `WWW-Authenticate` shaped like `Bearer resource_metadata="<url>"`, appending `error="invalid_token"` when the token was judged invalid and `scope="..."` when scope information exists; the body is a JSON-RPC error `-32000` + `unauthorized` (`src/http/StreamableHttpServerTransport.cpp:228-241`). Insufficient scope yields `403` + `Bearer error="insufficient_scope", scope="..."` with body `-32000` + `insufficient_scope` (`:243-252`).
+On missing or bad authorization the server answers `401` with `WWW-Authenticate` shaped like `Bearer resource_metadata="<url>"`, appending `error="invalid_token"` when the token was judged invalid and `scope="..."` when scope information exists; the body is a JSON-RPC error `-32000` + `unauthorized` (`src/http/StreamableHttpServerTransport.cpp`). Insufficient scope yields `403` + `Bearer error="insufficient_scope", scope="..."` with body `-32000` + `insufficient_scope`.
 
 With `serve_metadata_endpoint = true` (the default) the server publishes the protected-resource metadata endpoint itself for client discovery; turn it off and your gateway must serve the same URL, otherwise conformant clients stall during discovery.
 
 ## DPoP: bind the token to this connection
 
-With `enable_dpop = true` the server accepts `Authorization: DPoP <token>` (scheme matching is case-insensitive, `src/http/StreamableHttpServerTransport.cpp:254-262`) and validates the proof that accompanies each request. `authorization_servers` declares which authorization servers issued the tokens, which matters when they differ from the resource origin.
+With `enable_dpop = true` the server accepts `Authorization: DPoP <token>` (scheme matching is case-insensitive, `src/http/StreamableHttpServerTransport.cpp`) and validates the proof that accompanies each request. `authorization_servers` declares which authorization servers issued the tokens, which matters when they differ from the resource origin.
 
 <<< @/snippets/protect-an-http-server.cpp#dpop-server
 
@@ -35,7 +35,7 @@ The matching client shape (`apply_per_request_headers` + `observe_response_chall
 
 ## Host and Origin: loopback-only by default
 
-This check lives in the generic HTTP layer and gates every path (`src/http/HttpServerImpl.cpp:766-795`; a failure returns `403 Forbidden` and logs a Warning, `:470-475`):
+This check lives in the generic HTTP layer and gates every path (`src/http/HttpServerImpl.cpp`; a failure returns `403 Forbidden` and logs a Warning):
 
 | Situation | Behaviour |
 |---|---|
@@ -56,18 +56,18 @@ This check lives in the generic HTTP layer and gates every path (`src/http/HttpS
 
 <<< @/snippets/protect-an-http-server.cpp#size-limits
 
-- Exceeding `max_request_body_bytes` answers `413` immediately (`src/http/StreamableHttpServerTransport.cpp:1091-1093`); the default is `kMaxHttpBodyBytes`, and setting it lower is what stops large payloads from exhausting memory.
+- Exceeding `max_request_body_bytes` answers `413` immediately (`src/http/StreamableHttpServerTransport.cpp`); the default is `kMaxHttpBodyBytes`, and setting it lower is what stops large payloads from exhausting memory.
 - `max_sse_event_bytes` caps one SSE event; `sse_keep_alive_ms` (default 15000) sets the comment-frame heartbeat interval used to survive aggressive intermediary idle timeouts.
 
 ## Stateless versus stateful protection
 
 <<< @/snippets/protect-an-http-server.cpp#stateless-mode
 
-`stateless` defaults to `true`: no sessions are created, `session_store` is passed `nullptr`, and replay after a disconnect relies on `event_store` (`FileEventStore` persists to disk and survives processes). Only with `stateless = false` do you need `session_store` — and then **the session ID is a capability bearer**: once leaked, the peer can keep using that session **within the idle window** (the built-in constant `kSessionIdleTimeoutMs` expires a session after 30 inactive minutes, `include/mcp/transport/detail/Limits.hpp:24`, not configurable), so it must be combined with Bearer auth, and you should `Remove` the session explicitly on logout or revocation. `listen_hold_open` keeps the modern `GET` stream open so progress and logging are routed into the owning request stream (details in [/en/howto/report-progress](/en/howto/report-progress)).
+`stateless` defaults to `true`: no sessions are created, `session_store` is passed `nullptr`, and replay after a disconnect relies on `event_store` (`FileEventStore` persists to disk and survives processes). Only with `stateless = false` do you need `session_store` — and then **the session ID is a capability bearer**: once leaked, the peer can keep using that session **within the idle window** (the built-in constant `kSessionIdleTimeoutMs` expires a session after 30 inactive minutes, `include/mcp/transport/detail/Limits.hpp`, not configurable), so it must be combined with Bearer auth, and you should `Remove` the session explicitly on logout or revocation. `listen_hold_open` keeps the modern `GET` stream open so progress and logging are routed into the owning request stream (details in [/en/howto/report-progress](/en/howto/report-progress)).
 
 ## Header/body parameter consistency
 
-`Mcp-Param-*` headers expose certain parameters in both header and body (useful for gateway routing and auditing). Consistency is validated server-side, and each mismatch shape has its own rejection reason (`src/http/StreamableHttpServerTransport.cpp:1039-1069`):
+`Mcp-Param-*` headers expose certain parameters in both header and body (useful for gateway routing and auditing). Consistency is validated server-side, and each mismatch shape has its own rejection reason (`src/http/StreamableHttpServerTransport.cpp`):
 
 | Rejection reason | Meaning |
 |---|---|
@@ -76,7 +76,7 @@ This check lives in the generic HTTP layer and gates every path (`src/http/HttpS
 | `Mcp-Param-<n> header value is malformed` | header value could not be decoded |
 | `Mcp-Param-<n> header value does not match the request body` | header and body disagree |
 
-The annotations come from `x-mcp-header` inside your tool `input_schema`, resolved through the `resolve_param_annotations` callback (`include/mcp/transport/StreamableHttpServerTransport.hpp:79-81`). The callback needs the `McpServer` instance while the transport is created first — use the "declare a null pointer, assign it after the server exists" shape, and make sure nothing is served before that assignment:
+The annotations come from `x-mcp-header` inside your tool `input_schema`, resolved through the `resolve_param_annotations` callback (`include/mcp/transport/StreamableHttpServerTransport.hpp`). The callback needs the `McpServer` instance while the transport is created first — use the "declare a null pointer, assign it after the server exists" shape, and make sure nothing is served before that assignment:
 
 <<< @/snippets/protect-an-http-server.cpp#param-headers
 

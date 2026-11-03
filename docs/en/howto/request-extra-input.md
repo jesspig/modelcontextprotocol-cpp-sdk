@@ -5,18 +5,18 @@ When a tool discovers mid-flight that it still needs input, do not block the ser
 ## Prerequisites
 
 - Headers (full subdirectory paths): `mcp/server/McpServer.hpp`, `mcp/server/RequestContext.hpp`, `mcp/server/ServerOptions.hpp`, `mcp/server/RequestState.hpp`, `mcp/client/McpClient.hpp`, `mcp/client/ClientOptions.hpp`, `mcp/Methods.hpp`, `mcp/McpTypes.hpp`, `mcp/JsonValue.hpp`, `mcp/Implementation.hpp`.
-- Result types in `include/mcp/McpTypes.hpp`: `InputRequest{method, params}` (`:245-248`), `InputRequests` (key → request, `:250`), `InputRequiredResult{input_requests, request_state}` (`:252-255`), `CallToolResult::input_required` (`:272`); the equivalent fields for resources and prompts are at `:296` and `:308`.
-- Read-back fields on the request side: `CallToolRequestParams::input_responses` and `::request_state` (`:138-144`), reachable through `RequestContext::Params()`.
-- Knobs: server `ServerOptions::request_state_key`/`request_state_ttl`/`request_state_verifier`/`input_required_config` (`include/mcp/server/ServerOptions.hpp:39-49`); client `ClientOptions::input_required_config` (present by default with `auto_fulfill=true`, `max_rounds=10`, `round_timeout=600s`, `include/mcp/client/ClientOptions.hpp:55-63`).
+- Result types in `include/mcp/McpTypes.hpp`: `InputRequest{method, params}`, `InputRequests` (key → request), `InputRequiredResult{input_requests, request_state}`, `CallToolResult::input_required`; the equivalent fields for resources and prompts are at `include/mcp/McpTypes.hpp`.
+- Read-back fields on the request side: `CallToolRequestParams::input_responses` and `::request_state`, reachable through `RequestContext::Params()`.
+- Knobs: server `ServerOptions::request_state_key`/`request_state_ttl`/`request_state_verifier`/`input_required_config` (`include/mcp/server/ServerOptions.hpp`); client `ClientOptions::input_required_config` (present by default with `auto_fulfill=true`, `max_rounds=10`, `round_timeout=600s`, `include/mcp/client/ClientOptions.hpp`).
 
 ## Step 1: Choose the route before writing code
 
 | Scenario | Choice | Reason |
 |---|---|---|
 | One input, done as soon as it arrives, server-side blocking acceptable | Direct `Elicit`/`ElicitUrl` | Shortest code, and the only shape available in the legacy era |
-| Several inputs in one round | Hand-built MRTR with multiple keys | `Elicit`/`ElicitUrl` both write to the fixed key `"elicitation"` (`src/server/McpServer.cpp:97-98`), so the second overwrites the first |
+| Several inputs in one round | Hand-built MRTR with multiple keys | `Elicit`/`ElicitUrl` both write to the fixed key `"elicitation"` (`src/server/McpServer.cpp`), so the second overwrites the first |
 | You must remember what was already answered, or which phase you are in | MRTR + `requestState` | The direct route has no carrier for state |
-| Stateless deployment | MRTR only | `McpServer::IsMrtrSupported()` returns `false` when stateless (`src/server/McpServer.cpp:3351-3355`), and the modern direct call already becomes MRTR anyway |
+| Stateless deployment | MRTR only | `McpServer::IsMrtrSupported()` returns `false` when stateless (`src/server/McpServer.cpp`), and the modern direct call already becomes MRTR anyway |
 | Waiting on the user may take long | MRTR | No server thread parks; the deadline is the client's `round_timeout`/`max_rounds` |
 
 The form's `requestedSchema` is plain JSON Schema; this snippet builds it with a single-field helper (the helper and the request assembly below are separate regions):
@@ -28,26 +28,26 @@ The form's `requestedSchema` is plain JSON Schema; this snippet builds it with a
 <<< @/snippets/request-extra-input.cpp#input-request
 <<< @/snippets/request-extra-input.cpp#input-required-result
 
-Keys in `input_requests` are yours to name and must stay stable across rounds (`src/client/McpClient.cpp:1021-1031` echoes the very same keys back), so use readable, deterministic names. On the wire `resultType` becomes `"input_required"` and `inputRequests` plus `requestState` are emitted alongside (`src/core/McpTypesResults.cpp:179-196`); `content`/`isError` are serialized regardless, so do not put meaningful payload in that branch.
+Keys in `input_requests` are yours to name and must stay stable across rounds (`src/client/McpClient.cpp` echoes the very same keys back), so use readable, deterministic names. On the wire `resultType` becomes `"input_required"` and `inputRequests` plus `requestState` are emitted alongside (`src/core/McpTypesResults.cpp`); `content`/`isError` are serialized regardless, so do not put meaningful payload in that branch.
 
-`ReadResourceResult` and `GetPromptResult` carry the same `input_required` field, and `HandleReadResource`/`HandleGetPrompt` apply the identical signing logic (`src/server/McpServer.cpp:2829-2838`, `:2921-2930`).
+`ReadResourceResult` and `GetPromptResult` carry the same `input_required` field, and `HandleReadResource`/`HandleGetPrompt` apply the identical signing logic (`src/server/McpServer.cpp`).
 
 ## Step 3: Read `inputResponses` back on the next round
 
 <<< @/snippets/request-extra-input.cpp#read-back
 
-Values are **bare results**: elicitation is `{action, content}` (`src/core/McpTypesParams.cpp:277-282`), sampling `{role, content, model, stopReason}`, roots `{roots}` — never wrapped in a `resultType`/`meta` envelope. Because the handler re-runs from the top every round, "read back → decide → figure out what is still missing" must be the first thing in the function; side effects (writing files, charging money) either move to the final round or have to be idempotent.
+Values are **bare results**: elicitation is `{action, content}` (`src/core/McpTypesParams.cpp`), sampling `{role, content, model, stopReason}`, roots `{roots}` — never wrapped in a `resultType`/`meta` envelope. Because the handler re-runs from the top every round, "read back → decide → figure out what is still missing" must be the first thing in the function; side effects (writing files, charging money) either move to the final round or have to be idempotent.
 
 ## Step 4: Mint and verify `requestState`
 
 <<< @/snippets/request-extra-input.cpp#state-payload
 
-What the handler puts in `request_state` is only an **unsigned payload** (a JSON string): with `request_state_key` configured, the server decodes that payload, adds `iat`, then HMAC-SHA256-signs it before sending (`src/server/McpServer.cpp:2403-2410`, `src/server/McpServer.cpp:410-421`) — so "the handler signs it itself" is wrong, one server-side mint is enough. Inside the tool, read it back with `detail::DecodeRequestStatePayload` (`include/mcp/server/RequestState.hpp:83-98`), which recovers the payload whether or not it is signed.
+What the handler puts in `request_state` is only an **unsigned payload** (a JSON string): with `request_state_key` configured, the server decodes that payload, adds `iat`, then HMAC-SHA256-signs it before sending (`src/server/McpServer.cpp`) — so "the handler signs it itself" is wrong, one server-side mint is enough. Inside the tool, read it back with `detail::DecodeRequestStatePayload` (`include/mcp/server/RequestState.hpp`), which recovers the payload whether or not it is signed.
 
 <<< @/snippets/request-extra-input.cpp#server-signing
 <<< @/snippets/request-extra-input.cpp#custom-verifier
 
-`request_state_ttl` bounds the age of `iat`, with `0` meaning no expiry check (`include/mcp/server/RequestState.hpp:74-79`); supplying `request_state_verifier` replaces the built-in HMAC verification outright (`src/server/McpServer.cpp:686-695`). Verification happens before your handler is entered: a failure replies `InvalidParams` with `data.reason = "invalid_request_state"` (`src/protocol/McpSessionHandler.cpp:466-475`) and no tool side effect runs.
+`request_state_ttl` bounds the age of `iat`, with `0` meaning no expiry check (`include/mcp/server/RequestState.hpp`); supplying `request_state_verifier` replaces the built-in HMAC verification outright (`src/server/McpServer.cpp`). Verification happens before your handler is entered: a failure replies `InvalidParams` with `data.reason = "invalid_request_state"` (`src/protocol/McpSessionHandler.cpp`) and no tool side effect runs.
 
 > [!danger]
 > With neither `request_state_key` nor `request_state_verifier` configured, `requestState` is never verified — it is a free-form string coming back from the client. Any handler that derives phase, amounts or permissions from it must configure at least one of the two.
@@ -59,15 +59,15 @@ What the handler puts in `request_state` is only an **unsigned payload** (a JSON
 
 <<< @/snippets/request-extra-input.cpp#client-auto
 
-The default configuration suffices: with `auto_fulfill=true`, once the client sees `resultType=="input_required"` it fulfils each key through the matching handler and re-sends `tools/call` with `inputResponses` + `requestState`, up to `max_rounds` rounds (`src/client/McpClient.cpp:1113-1131`). If a matching handler is missing nothing is filled in and the intermediate `input_required` result is returned to the caller as-is (`:1000-1003` — that existence check only applies to `form` mode, since `url` mode synthesizes `decline`).
+The default configuration suffices: with `auto_fulfill=true`, once the client sees `resultType=="input_required"` it fulfils each key through the matching handler and re-sends `tools/call` with `inputResponses` + `requestState`, up to `max_rounds` rounds (`src/client/McpClient.cpp`). If a matching handler is missing nothing is filled in and the intermediate `input_required` result is returned to the caller as-is (that existence check only applies to `form` mode, since `url` mode synthesizes `decline`).
 
 <<< @/snippets/request-extra-input.cpp#manual-round
 
-In manual mode (`input_required_config = std::nullopt` or `auto_fulfill=false`) the result stops in `CallToolResult::input_required`, and **you cannot send the second round through `CallTool()`**: that overload only consumes `name`/`arguments`/`meta`/progress, and `RequestOptions::input_responses` and `::request_state` are never written into the request (`src/client/McpClient.cpp:1312-1356`). The working path is to assemble `CallToolRequestParams` yourself (with `input_responses`/`request_state`) and call `SendRequest(methods::kCallTool, SerializeCallToolRequestParams(params))` (`src/core/McpTypesParams.cpp:45-53`).
+In manual mode (`input_required_config = std::nullopt` or `auto_fulfill=false`) the result stops in `CallToolResult::input_required`, and **you cannot send the second round through `CallTool()`**: that overload only consumes `name`/`arguments`/`meta`/progress, and `RequestOptions::input_responses` and `::request_state` are never written into the request (`src/client/McpClient.cpp`). The working path is to assemble `CallToolRequestParams` yourself (with `input_responses`/`request_state`) and call `SendRequest(methods::kCallTool, SerializeCallToolRequestParams(params))` (`src/core/McpTypesParams.cpp`).
 
 ## Complete code
 
-`docs/snippets/request-extra-input.cpp` is the compilable file, with regions `form-schema`, `input-request`, `read-back`, `state-payload`, `input-required-result`, `full-tool`, `server-signing`, `custom-verifier`, `tool-registration`, `client-auto`, `manual-round`. The in-repo reference implementation on the same topic is `examples/conformance/server/MrtrTools.cpp:123-295` (one tool each for single key, multiple keys, signed state and multi-round).
+`docs/snippets/request-extra-input.cpp` is the compilable file, with regions `form-schema`, `input-request`, `read-back`, `state-payload`, `input-required-result`, `full-tool`, `server-signing`, `custom-verifier`, `tool-registration`, `client-auto`, `manual-round`. The in-repo reference implementation on the same topic is `examples/conformance/server/MrtrTools.cpp` (one tool each for single key, multiple keys, signed state and multi-round).
 
 ## Verification
 
@@ -93,12 +93,12 @@ You should see all four cases `Passed` and a final `100% tests passed, 0 tests f
 
 | Aspect | Legacy (before 2026-07-28) | Modern (2026-07-28 and later) |
 |---|---|---|
-| Hand-written `input_required` | Usable: serialization and read-back are not era-gated (`src/core/McpTypesResults.cpp:179-196`) | Usable, and the only shape that can obtain user input |
+| Hand-written `input_required` | Usable: serialization and read-back are not era-gated (`src/core/McpTypesResults.cpp`) | Usable, and the only shape that can obtain user input |
 | `Elicit`/`ElicitUrl` | Sends `elicitation/create` directly, gated by client capabilities | No direct send: throws `ElicitationInputRequired`, converted into `input_required` under the fixed key `"elicitation"` |
 | `elicitationId` | Present in URL-mode requests | Never serialized |
 | Server waiting | Parks on the future with `round_timeout` (600s when unset) | Does not wait; rounds and deadlines belong to the client |
 | State carrier | None (only in-call blocking) | `requestState`, with signing and lifetime controlled by server options |
-| Retry closure | Not applicable | The retried `tools/call` carries both `inputResponses` and `requestState`, mirroring task resumption (`tasks/update` rejects both fields together, `src/server/McpServer.cpp:1586-1591`) |
+| Retry closure | Not applicable | The retried `tools/call` carries both `inputResponses` and `requestState`, mirroring task resumption (`tasks/update` rejects both fields together, `src/server/McpServer.cpp`) |
 
 ## Common mistakes
 

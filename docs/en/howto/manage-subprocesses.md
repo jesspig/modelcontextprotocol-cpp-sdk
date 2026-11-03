@@ -15,7 +15,7 @@ The stdio transport creates its process through the internal platform layer and 
 
 ## Start a protocol-independent child process
 
-Eight fields on `SpawnOptions` plus five methods on `SpawnedProcess` (`include/mcp/process/Process.hpp:14-37`): `Pid()`, `IsRunning()`, `Wait(timeout_ms)`, `ExitCode()`, `Terminate(grace_ms)`. An empty `command` throws immediately.
+Eight fields on `SpawnOptions` plus five methods on `SpawnedProcess` (`include/mcp/process/Process.hpp`): `Pid()`, `IsRunning()`, `Wait(timeout_ms)`, `ExitCode()`, `Terminate(grace_ms)`. An empty `command` throws immediately.
 
 <<< @/snippets/manage-subprocesses.cpp#spawn-plain
 
@@ -23,7 +23,7 @@ Eight fields on `SpawnOptions` plus five methods on `SpawnedProcess` (`include/m
 
 ## The full stdio transport option set
 
-Actual fields of `StdioClientTransportOptions` (`include/mcp/transport/StdioClientTransport.hpp:17-29`):
+Actual fields of `StdioClientTransportOptions` (`include/mcp/transport/StdioClientTransport.hpp`):
 
 | Field | Type / default | Purpose |
 |---|---|---|
@@ -41,22 +41,22 @@ Actual fields of `StdioClientTransportOptions` (`include/mcp/transport/StdioClie
 
 <<< @/snippets/manage-subprocesses.cpp#stdio-options
 
-A frame exceeding `max_frame_bytes` is **dropped and reported as an error** (the buffer is cleared, then the error notification fires — `src/transport/StdioClientTransport.cpp:138-140`) instead of growing memory without bound.
+A frame exceeding `max_frame_bytes` is **dropped and reported as an error** (the buffer is cleared, then the error notification fires — `src/transport/StdioClientTransport.cpp`) instead of growing memory without bound.
 
 ## Capturing stderr: callback or file, never both
 
 ::: danger Giving both throws
-`stderr_path` and `on_stderr` are mutually exclusive; setting both makes `Connect()` throw `McpError(InvalidParams)` with the message `stderr_path and on_stderr are mutually exclusive` (`src/transport/StdioClientTransport.cpp:189-191`).
+`stderr_path` and `on_stderr` are mutually exclusive; setting both makes `Connect()` throw `McpError(InvalidParams)` with the message `stderr_path and on_stderr are mutually exclusive` (`src/transport/StdioClientTransport.cpp`).
 :::
 
 <<< @/snippets/manage-subprocesses.cpp#stderr-drain
 
 <<< @/snippets/manage-subprocesses.cpp#stderr-file
 
-Draining runs on a **dedicated thread** (named `mcp-stderr`, `:56-57`), and two implementation details matter:
+Draining runs on a **dedicated thread** (named `mcp-stderr`), and two implementation details matter:
 
-- Reading 0 bytes does not necessarily mean the end: the POSIX `Read` polls with a 100 ms timeout and returns 0 when nothing arrived, so real EOF is decided by `IsEof()` (`:103-105`, `include/mcp/transport/detail/PlatformIO.hpp:20-24`). Idle periods are not mistaken for disconnection.
-- **Exceptions from your callback never propagate**: both `std::exception` and unknown exceptions are caught and logged at Error level (`:108-114`). A throwing callback loses that chunk of output but does not take the reader thread down with it.
+- Reading 0 bytes does not necessarily mean the end: the POSIX `Read` polls with a 100 ms timeout and returns 0 when nothing arrived, so real EOF is decided by `IsEof()` (`include/mcp/transport/detail/PlatformIO.hpp`). Idle periods are not mistaken for disconnection.
+- **Exceptions from your callback never propagate**: both `std::exception` and unknown exceptions are caught and logged at Error level. A throwing callback loses that chunk of output but does not take the reader thread down with it.
 
 The callback is invoked directly from the draining thread, so it must be **fast**: push into your own queue, do not perform blocking IO or call `Close()` inside it.
 
@@ -64,17 +64,17 @@ The callback is invoked directly from the draining thread, so it must be **fast*
 
 With `terminate_process_tree = true`:
 
-- Windows: the child is assigned to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and termination calls `TerminateJobObject` (`src/process/detail/WindowsProcessSupport.cpp:109-129`), so grandchildren go too.
+- Windows: the child is assigned to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and termination calls `TerminateJobObject` (`src/process/detail/WindowsProcessSupport.cpp`), so grandchildren go too.
 - POSIX: the child leads its own process group; termination signals the group and reaps blocking, leaving no zombie (`src/transport/detail/posix_platform.cpp` and `src/process/ProcessPosix.cpp`, guarded by `SpawnTest.PosixChildLeadsOwnProcessGroupAndIsReaped` and `TransportTest.StdioProcessReapedWithoutZombie`).
 
-`shutdown_timeout` is precisely that polite-exit window: the close path hands it straight to the process termination call (`src/transport/StdioClientTransport.cpp:68-69`). **The POSIX grace period is measured on a real clock**, not by counting loop iterations — on macOS a 10 ms sleep measured roughly 5x its nominal value, so an iteration-based grace turned 300 ms into about 1.7 s (`src/transport/detail/posix_platform.cpp:179-194`).
+`shutdown_timeout` is precisely that polite-exit window: the close path hands it straight to the process termination call (`src/transport/StdioClientTransport.cpp`). **The POSIX grace period is measured on a real clock**, not by counting loop iterations — on macOS a 10 ms sleep measured roughly 5x its nominal value, so an iteration-based grace turned 300 ms into about 1.7 s (`src/transport/detail/posix_platform.cpp`).
 
 ## Shutdown order and threading traps
 
 <<< @/snippets/manage-subprocesses.cpp#shutdown-order
 
-- `client->Close()` first, then release the transport object; the `StdioClientTransport` object must outlive both the session it produced via `Connect()` and the client built on it, and `Pid()` is read from that same object (`include/mcp/transport/StdioClientTransport.hpp:38`).
-- **Never call `Close()` from inside a transport callback**: stdio runs user callbacks directly on its read thread, so `Close()` there joins the calling thread. Every `Close()` belongs on a different thread; inside the SDK this is handled by `detail::JoinThreadSafely` (`src/transport/StdioClientTransport.cpp:73-74`).
+- `client->Close()` first, then release the transport object; the `StdioClientTransport` object must outlive both the session it produced via `Connect()` and the client built on it, and `Pid()` is read from that same object (`include/mcp/transport/StdioClientTransport.hpp`).
+- **Never call `Close()` from inside a transport callback**: stdio runs user callbacks directly on its read thread, so `Close()` there joins the calling thread. Every `Close()` belongs on a different thread; inside the SDK this is handled by `detail::JoinThreadSafely` (`src/transport/StdioClientTransport.cpp`).
 
 ## Health checks and restarts
 

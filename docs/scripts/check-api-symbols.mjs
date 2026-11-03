@@ -375,6 +375,101 @@ for (const file of docFiles) {
   })
 }
 bareFenceProblems.sort()
+
+// 源码引用门禁：行号只允许出现在 examples/ 走读页（那里是「跟我读这段代码」，发版时可与 tag 对齐）；
+// 其余页面写行号会随源码改动静默失真。引用到的文件名还必须真实存在，防止改名后继续留在文档里
+const citedExtensions = 'cpp|hpp|hh|cc|cmake|sh|json|yaml|mts|txt'
+const citationPattern = new RegExp(
+  `([A-Za-z0-9_./-]+\\.(?:${citedExtensions})(?:\\.in)?)(:(\\d+)(?:-\\d+)?)?`,
+  'g'
+)
+const strayRefPattern = /`:\d+(?:-\d+)?`|(?:[、，,]\s*)`(?<![\d-])\d{1,5}-\d{1,5}(?![-\d])`/g
+// 安装期才生成的导出物，仓库里没有同名文件但文档必须提到
+const generatedCitations = new Set(['mcpTargets.cmake', 'mcpConfig.cmake', 'mcp.pc'])
+const indexableRoots = ['src', 'include', 'tests', 'examples', 'scripts', 'cmake', 'docs', '.github']
+const knownFileNames = new Set(
+  fs
+    .readdirSync(repoRoot, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+)
+for (const root of indexableRoots) {
+  for (const candidate of walk(path.join(repoRoot, root), () => true)) {
+    knownFileNames.add(path.basename(candidate))
+  }
+}
+const lineRefProblems = []
+const citationProblems = []
+for (const file of docFiles) {
+  if (!file.endsWith('.md')) {
+    continue
+  }
+  const isWalkthrough = /(^|[\\/])(?:zh|en)[\\/]examples[\\/]/.test(file)
+  fs
+    .readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .forEach((rawLine, index) => {
+      const line = rawLine.replace(/https?:\/\/\S+/g, '')
+      if (!isWalkthrough) {
+        for (const match of line.matchAll(strayRefPattern)) {
+          lineRefProblems.push(
+            `${relative(file)}:${index + 1} 非示例页不得引用源码行号（源码一改即失真）：${match[0].trim()}`
+          )
+        }
+      }
+      for (const match of line.matchAll(citationPattern)) {
+        const target = match[1]
+        if (match[2] && !isWalkthrough) {
+          lineRefProblems.push(
+            `${relative(file)}:${index + 1} 非示例页不得引用源码行号（源码一改即失真）：${target}${match[2]}`
+          )
+        }
+        if (target.startsWith('.') || generatedCitations.has(target)) {
+          continue
+        }
+        if (target.startsWith('@/')) {
+          if (!fs.existsSync(path.join(docsDir, target.slice(2)))) {
+            citationProblems.push(
+              `${relative(file)}:${index + 1} 引用的片段不存在：${target}`
+            )
+          }
+          continue
+        }
+        if (target.startsWith('/')) {
+          // `<<< @/snippets/x.cpp` 捕获时丢了前导 @，剩下的斜杠按 docs 根解析
+          if (!fs.existsSync(path.join(docsDir, target.slice(1)))) {
+            citationProblems.push(
+              `${relative(file)}:${index + 1} 引用的片段不存在：${target}`
+            )
+          }
+          continue
+        }
+        if (target.startsWith('mcp/')) {
+          if (!fs.existsSync(path.join(includeDir, target))) {
+            citationProblems.push(
+              `${relative(file)}:${index + 1} 引用的公共头不存在：${target}`
+            )
+          }
+          continue
+        }
+        if (target.includes('/')) {
+          if (!fs.existsSync(path.join(repoRoot, target))) {
+            citationProblems.push(
+              `${relative(file)}:${index + 1} 引用的路径不存在：${target}`
+            )
+          }
+          continue
+        }
+        if (!knownFileNames.has(target)) {
+          citationProblems.push(
+            `${relative(file)}:${index + 1} 引用的文件名在仓库中找不到：${target}`
+          )
+        }
+      }
+    })
+}
+lineRefProblems.sort()
+citationProblems.sort()
 for (const [key, occurrences] of usedRegions) {
   if (!declaredRegions.has(key)) {
     const where = occurrences.map((item) => `${item.file}:${item.line}`).join(', ')
@@ -397,6 +492,9 @@ console.log(
 console.log(
   `围栏标注：缺语言标注的开围栏 ${bareFenceProblems.length} 处`
 )
+console.log(
+  `源码引用：非示例页行号引用 ${lineRefProblems.length} 处，无法定位的文件引用 ${citationProblems.length} 处`
+)
 for (const problem of regionProblems) {
   console.log(`  REGION ${problem}`)
 }
@@ -409,6 +507,18 @@ for (const problem of howtoFenceProblems) {
 for (const problem of bareFenceProblems) {
   console.log(`  LANG ${problem}`)
 }
+for (const problem of lineRefProblems.slice(0, 40)) {
+  console.log(`  LINEREF ${problem}`)
+}
+if (lineRefProblems.length > 40) {
+  console.log(`  LINEREF …另有 ${lineRefProblems.length - 40} 处同类`)
+}
+for (const problem of citationProblems.slice(0, 40)) {
+  console.log(`  CITE ${problem}`)
+}
+if (citationProblems.length > 40) {
+  console.log(`  CITE …另有 ${citationProblems.length - 40} 处同类`)
+}
 
 console.log(
   `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}`
@@ -419,7 +529,9 @@ if (
   regionProblems.length > 0 ||
   markerProblems.length > 0 ||
   howtoFenceProblems.length > 0 ||
-  bareFenceProblems.length > 0
+  bareFenceProblems.length > 0 ||
+  lineRefProblems.length > 0 ||
+  citationProblems.length > 0
 ) {
   process.exit(1)
 }

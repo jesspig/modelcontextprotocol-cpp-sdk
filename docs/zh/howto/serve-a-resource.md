@@ -15,10 +15,10 @@
 | 数量有限、URI 是完整字面量 | `McpServer::RegisterResource` | `resources/list` | 无，只给请求 URI |
 | 同构、按 id 或路径分片 | `McpServer::RegisterResourceTemplate` | `resources/templates/list` | 解码后的变量表 |
 
-两类条目进同一张注册表，冲突判定也共用：名字相同，或 URI／URI 模式字符串相同，后一次注册抛 `McpError`（`InvalidParams`，`src/server/McpServer.cpp:805-814`、`:854-863`）。
+两类条目进同一张注册表，冲突判定也共用：名字相同，或 URI／URI 模式字符串相同，后一次注册抛 `McpError`（`InvalidParams`，`src/server/McpServer.cpp`）。
 
 ::: info
-任一注册成功即自动声明 `resources` 能力，并把 `subscribe` 与 `list_changed` 一并置真（`src/server/McpServer.cpp:1950-1954`），没有单独关闭的入口。
+任一注册成功即自动声明 `resources` 能力，并把 `subscribe` 与 `list_changed` 一并置真（`src/server/McpServer.cpp`），没有单独关闭的入口。
 :::
 
 ## 第二步：注册静态资源
@@ -26,7 +26,7 @@
 <<< @/snippets/serve-a-resource.cpp#register-static
 
 - `contents` 的每个变体都要自己填 `uri`，SDK 不回填；一次响应可以给多条。
-- 文本走 `TextResourceContents::text`，二进制走 `BlobResourceContents::blob`，按协议放 base64 文本——SDK 既不解码也不校验（`src/core/Content.cpp:92-104`），`mime_type` 必须写对。
+- 文本走 `TextResourceContents::text`，二进制走 `BlobResourceContents::blob`，按协议放 base64 文本——SDK 既不解码也不校验（`src/core/Content.cpp`），`mime_type` 必须写对。
 - `ResourceOptions` 只覆盖 `title`／`description`／`mime_type`／`icons`；协议字段 `size` 与 `annotations` 没有注册入口，静态列表条目也就带不出它们。
 
 ## 第三步：写 URI 模板并读懂变量
@@ -43,16 +43,16 @@
 | 规模上限 | 模板 2048 字符、变量 32 个 |
 | 结构拒绝 | 花括号不配对、两个以上多段变量、相邻且无字面量分隔的两个变量 |
 
-不合法即抛 `McpError`，消息形如 `invalid resource template '<uri>': <原因>`（`src/server/McpServer.cpp:836-841`）。
+不合法即抛 `McpError`，消息形如 `invalid resource template '<uri>': <原因>`（`src/server/McpServer.cpp`）。
 
 命中后交给 handler 的变量值是**百分号解码**之后的结果：请求 `docs://users/a%20b/profile`，`vars.at("userId")` 得到 `a b`。简单变量只接受 unreserved 字符与 `%XX`，出现裸的 `/`、`?`、`#` 就判为整条不匹配；要在一个段里容纳保留字符，用 `{+var}`。
 
 ## 第四步：确认读取匹配顺序与未命中形态
 
-`resources/read` 是两段匹配（`src/server/McpServer.cpp:2789-2809`）：先按注册顺序把所有**非模板**条目与请求 URI 做精确等值比较，一条都没中才按注册顺序逐个做模板匹配。
+`resources/read` 是两段匹配（`src/server/McpServer.cpp`）：先按注册顺序把所有**非模板**条目与请求 URI 做精确等值比较，一条都没中才按注册顺序逐个做模板匹配。
 
 - 静态优先与注册先后无关：模板先注册、静态后注册，请求 `test://x` 仍然走静态 handler（`McpServerTest.ReadResourcePrefersStaticOverTemplate`）。
-- 全未命中：`InvalidParams`，消息 `resource not found: <uri>`，`data` 里回显 `{"uri":"<uri>"}`（`src/server/McpServer.cpp:2812-2819`）。
+- 全未命中：`InvalidParams`，消息 `resource not found: <uri>`，`data` 里回显 `{"uri":"<uri>"}`（`src/server/McpServer.cpp`）。
 - `McpErrorCode::ResourceNotFound`（`-32002`）只出现在已知码表里，服务端未命中路径没有任何抛出点——对端拿到的永远是 `-32602`。
 
 ::: warning
@@ -63,15 +63,15 @@ handler 里抛 `McpError` 会原样编码成 JSON-RPC 错误响应；抛其它�
 
 <<< @/snippets/serve-a-resource.cpp#notify-subscribers
 
-- `SendResourceUpdated(uri)` 只走订阅路由，仅投递给过滤器里列了该 URI 的订阅者；订阅表为空时直接返回，什么都不发（`src/protocol/McpSessionHandler.cpp:979-988`）。
-- 实例已 `Run()` 时，注册动作会自己补发一次 `list_changed`（`src/server/McpServer.cpp:819-821`），手写调用只在你主动增删条目之后才需要。
-- 旧时代的 `resources/subscribe` 与现代 `subscriptions/listen` 的 `resourceSubscriptions` 写进同一张订阅表，所以 `SendResourceUpdated` 在两个时代都能按 URI 命中；`list_changed` 的投递范围按时代分流（`src/server/McpServer.cpp:953-959`）。
+- `SendResourceUpdated(uri)` 只走订阅路由，仅投递给过滤器里列了该 URI 的订阅者；订阅表为空时直接返回，什么都不发（`src/protocol/McpSessionHandler.cpp`）。
+- 实例已 `Run()` 时，注册动作会自己补发一次 `list_changed`（`src/server/McpServer.cpp`），手写调用只在你主动增删条目之后才需要。
+- 旧时代的 `resources/subscribe` 与现代 `subscriptions/listen` 的 `resourceSubscriptions` 写进同一张订阅表，所以 `SendResourceUpdated` 在两个时代都能按 URI 命中；`list_changed` 的投递范围按时代分流（`src/server/McpServer.cpp`）。
 
 ## 第六步：按链接与片段引用资源
 
-把资源以链接形式回给客户端时用 `ResourceLink`：`name` 与 `uri` 缺失、非字符串或空串都会让解析侧抛 `InvalidParams`，`size` 为负同样拒收（`src/core/Content.cpp:237-264`）——注册资源时用的名字与 URI 必须非空，同一套约束会在对端解析你的链接时生效。
+把资源以链接形式回给客户端时用 `ResourceLink`：`name` 与 `uri` 缺失、非字符串或空串都会让解析侧抛 `InvalidParams`，`size` 为负同样拒收（`src/core/Content.cpp`）——注册资源时用的名字与 URI 必须非空，同一套约束会在对端解析你的链接时生效。
 
-客户端只想读一个文件的某一段时用 `FileRef`：`enable_file_input` 打开后，工具参数里的 `{"uri","offset","length"}` 会先按同一条两段匹配规则读整份资源再切片。`offset`／`length` 缺省为 0，一旦给了就必须是整数或整数值浮点且落在 int64 范围内，否则 `DeserializeFailed`（`include/mcp/McpTypes.hpp:162-189`）。
+客户端只想读一个文件的某一段时用 `FileRef`：`enable_file_input` 打开后，工具参数里的 `{"uri","offset","length"}` 会先按同一条两段匹配规则读整份资源再切片。`offset`／`length` 缺省为 0，一旦给了就必须是整数或整数值浮点且落在 int64 范围内，否则 `DeserializeFailed`（`include/mcp/McpTypes.hpp`）。
 
 ## 完整代码
 

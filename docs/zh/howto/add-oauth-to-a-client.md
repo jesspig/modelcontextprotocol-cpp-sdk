@@ -11,11 +11,11 @@ OAuth、PKCE、DPoP 全在 HTTP 传输层，双时代（legacy / modern）行为
 - 头文件：`mcp/client/auth/OAuthClientProvider.hpp`、`mcp/client/auth/TokenCache.hpp`、`mcp/transport/StreamableHttpClientTransport.hpp`、`mcp/client/ClientOptions.hpp`、`mcp/Implementation.hpp`；DPoP 类型来自 `mcp/ext/DPoP.hpp`（被 provider 头文件带入）。
 - 认证代码在 `mcp-client` 与 `mcp-ext` 两个目标里，按需链接（库清单见 [/zh/start/installation](/zh/start/installation)）。
 - **TLS 需要 OpenSSL**：`-DMCP_WITH_OPENSSL=ON` 未找到会直接 configure 失败；`AUTO`（默认）按 `find_package(OpenSSL)` 结果决定，未启用则整条 HTTPS 不可用（PKCE 随机源会回退，见下文）。
-- 端点必须是 `https`，回环地址例外；否则相关调用抛 `McpError(InvalidParams)`，消息形如 `OAuth <kind> endpoint must use https (loopback hosts excepted)`（`src/client/auth/OAuthClientProvider.cpp:151-157` 与其后的 `RequireSecureEndpoint`）。
+- 端点必须是 `https`，回环地址例外；否则相关调用抛 `McpError(InvalidParams)`，消息形如 `OAuth <kind> endpoint must use https (loopback hosts excepted)`（`src/client/auth/OAuthClientProvider.cpp` 与其后的 `RequireSecureEndpoint`）。
 
 ## 建 provider 与选流
 
-`OAuthClientProvider` 是**独立于 MCP 客户端**的对象：它负责取 token，传输层负责用它。最小配置只有三项——`server_url`、`redirect_uri`、`token_cache`（`include/mcp/client/auth/OAuthClientProvider.hpp:28-47`）。
+`OAuthClientProvider` 是**独立于 MCP 客户端**的对象：它负责取 token，传输层负责用它。最小配置只有三项——`server_url`、`redirect_uri`、`token_cache`（`include/mcp/client/auth/OAuthClientProvider.hpp`）。
 
 <<< @/snippets/add-oauth-to-a-client.cpp#provider-options
 
@@ -26,11 +26,11 @@ OAuth、PKCE、DPoP 全在 HTTP 传输层，双时代（legacy / modern）行为
 
 <<< @/snippets/add-oauth-to-a-client.cpp#client-credentials
 
-`client_id` 留空且元数据里有 `registration_endpoint` 时走**动态注册**（`include/mcp/client/auth/TokenCache.hpp:72-84`）；需要 `private_key_jwt` 一类的客户端断言时给 `private_key_pem` + `client_assertion_clock_seconds`（时钟注入点，便于测试）。
+`client_id` 留空且元数据里有 `registration_endpoint` 时走**动态注册**（`include/mcp/client/auth/TokenCache.hpp`）；需要 `private_key_jwt` 一类的客户端断言时给 `private_key_pem` + `client_assertion_clock_seconds`（时钟注入点，便于测试）。
 
 ## 把它接到传输层
 
-传输层只暴露三个钩子（`include/mcp/transport/StreamableHttpClientTransport.hpp:50-55`）：
+传输层只暴露三个钩子（`include/mcp/transport/StreamableHttpClientTransport.hpp`）：
 
 | 钩子 | 时机 | 你要返回/做什么 |
 |---|---|---|
@@ -40,7 +40,7 @@ OAuth、PKCE、DPoP 全在 HTTP 传输层，双时代（legacy / modern）行为
 
 <<< @/snippets/add-oauth-to-a-client.cpp#wire-transport
 
-重试策略是硬编码的，值得逐条知道（`src/http/StreamableHttpClientTransport.cpp:1007-1042`）：
+重试策略是硬编码的，值得逐条知道（`src/http/StreamableHttpClientTransport.cpp`）：
 
 - 只在**第一次尝试**上做认证重试——补齐后仍失败就直接把错误交回上层，不会无限循环。
 - `401` 一律 eligible；`403` 只有当 `WWW-Authenticate` 是 `insufficient_scope` 挑战才 eligible。
@@ -48,7 +48,7 @@ OAuth、PKCE、DPoP 全在 HTTP 传输层，双时代（legacy / modern）行为
 
 ## token 的取用与自动续期
 
-`GetAccessToken()` 不只是读缓存：命中且**临近过期且有 refresh_token** 时它会先合并式刷新（同一时刻只跑一次刷新，其余调用等待）再返回（`src/client/auth/OAuthClientProvider.cpp:987-996`）。两种情况它会返回**空串**：缓存里没有 token，或 token 的 `resource` 与你配置的 `resource` 不一致（RFC 8707 受众绑定，`TokenResourceMatches`）。
+`GetAccessToken()` 不只是读缓存：命中且**临近过期且有 refresh_token** 时它会先合并式刷新（同一时刻只跑一次刷新，其余调用等待）再返回（`src/client/auth/OAuthClientProvider.cpp`）。两种情况它会返回**空串**：缓存里没有 token，或 token 的 `resource` 与你配置的 `resource` 不一致（RFC 8707 受众绑定，`TokenResourceMatches`）。
 
 <<< @/snippets/add-oauth-to-a-client.cpp#step-up
 
@@ -74,7 +74,7 @@ OAuth、PKCE、DPoP 全在 HTTP 传输层，双时代（legacy / modern）行为
 
 ## 缓存由你实现
 
-`ITokenCache` 只有四个必选方法 + 两个可选（绑定 issuer 的持久化，用于跨进程复用同一发行方），另给一个 `InMemoryTokenCache` 做默认（`include/mcp/client/auth/TokenCache.hpp:23-45`）。`TokenContainer` 含 `access_token`、`refresh_token`、`scopes`、`expires_at`（**绝对秒数**，不是剩余秒）、`token_type`、`resource`，以及 `IsExpired()` / `WillExpireSoon(margin_ms = 60000)`。
+`ITokenCache` 只有四个必选方法 + 两个可选（绑定 issuer 的持久化，用于跨进程复用同一发行方），另给一个 `InMemoryTokenCache` 做默认（`include/mcp/client/auth/TokenCache.hpp`）。`TokenContainer` 含 `access_token`、`refresh_token`、`scopes`、`expires_at`（**绝对秒数**，不是剩余秒）、`token_type`、`resource`，以及 `IsExpired()` / `WillExpireSoon(margin_ms = 60000)`。
 
 ::: warning 别把 token 落进日志
 `access_token`、`refresh_token`、`client_secret`、`private_key_pem` 全属机密：`MCP_LOG_LEVEL=4` 下排查时也不要打印它们；实现 `ITokenCache` 时持久化位置要按你自己项目的密钥管理规则来。
@@ -102,7 +102,7 @@ cmake --build build/p3a --target mcp-doc-snippet-add-oauth-to-a-client
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-add-oauth-to-a-client.dir\__\__\docs\snippets\add-oauth-to-a-client.cpp.obj
 ```
 
-返回码 0 且无 `error:` 行。端到端行为请跑仓库里的 conformance 客户端（需 `-DMCP_BUILD_CONFORMANCE=ON`），它同时演示 Bearer 与 DPoP 两条链路：`examples/conformance/client/main.cpp:1265-1281`（Bearer）与 `:1283-1307`（DPoP），配套 `scripts/run-conformance.sh`。
+返回码 0 且无 `error:` 行。端到端行为请跑仓库里的 conformance 客户端（需 `-DMCP_BUILD_CONFORMANCE=ON`），它同时演示 Bearer 与 DPoP 两条链路：`examples/conformance/client/main.cpp`（Bearer 段，与靠后的 DPoP 段），配套 `scripts/run-conformance.sh`。
 
 ## 时代差异
 

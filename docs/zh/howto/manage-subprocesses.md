@@ -15,7 +15,7 @@ stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者
 
 ## 起一个与协议无关的子进程
 
-`SpawnOptions` 八个字段 + `SpawnedProcess` 五个方法（`include/mcp/process/Process.hpp:14-37`）：`Pid()`、`IsRunning()`、`Wait(timeout_ms)`、`ExitCode()`、`Terminate(grace_ms)`。`command` 为空直接抛。
+`SpawnOptions` 八个字段 + `SpawnedProcess` 五个方法（`include/mcp/process/Process.hpp`）：`Pid()`、`IsRunning()`、`Wait(timeout_ms)`、`ExitCode()`、`Terminate(grace_ms)`。`command` 为空直接抛。
 
 <<< @/snippets/manage-subprocesses.cpp#spawn-plain
 
@@ -23,7 +23,7 @@ stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者
 
 ## stdio 传输的完整选项
 
-`StdioClientTransportOptions` 的实际字段（`include/mcp/transport/StdioClientTransport.hpp:17-29`）：
+`StdioClientTransportOptions` 的实际字段（`include/mcp/transport/StdioClientTransport.hpp`）：
 
 | 字段 | 类型 / 默认 | 作用 |
 |---|---|---|
@@ -41,22 +41,22 @@ stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者
 
 <<< @/snippets/manage-subprocesses.cpp#stdio-options
 
-超过 `max_frame_bytes` 的帧会被**丢弃并报错**（缓冲区直接清空后触发错误通知，`src/transport/StdioClientTransport.cpp:138-140`），而不是无限增长内存。
+超过 `max_frame_bytes` 的帧会被**丢弃并报错**（缓冲区直接清空后触发错误通知，`src/transport/StdioClientTransport.cpp`），而不是无限增长内存。
 
 ## 收 stderr：回调或落盘，二选一
 
 ::: danger 同时给会抛
-`stderr_path` 与 `on_stderr` 互斥，两个都给时 `Connect()` 直接抛 `McpError(InvalidParams)`，消息是 `stderr_path and on_stderr are mutually exclusive`（`src/transport/StdioClientTransport.cpp:189-191`）。
+`stderr_path` 与 `on_stderr` 互斥，两个都给时 `Connect()` 直接抛 `McpError(InvalidParams)`，消息是 `stderr_path and on_stderr are mutually exclusive`（`src/transport/StdioClientTransport.cpp`）。
 :::
 
 <<< @/snippets/manage-subprocesses.cpp#stderr-drain
 
 <<< @/snippets/manage-subprocesses.cpp#stderr-file
 
-排空跑在**专用线程**上（线程名 `mcp-stderr`，`:56-57`），两条实现细节值得知道：
+排空跑在**专用线程**上（线程名 `mcp-stderr`），两条实现细节值得知道：
 
-- 读到 0 字节不一定结束：POSIX 侧 `Read` 用 100ms poll 轮询，无数据就返回 0，是否真 EOF 由 `IsEof()` 判定（`:103-105`、`include/mcp/transport/detail/PlatformIO.hpp:20-24`）。空闲期不会误判断连。
-- **回调里的异常不会穿透**：`std::exception` 与未知异常都被捕获并记 Error 日志（`:108-114`）。你的回调炸了只会丢那一段输出，不会带走读线程。
+- 读到 0 字节不一定结束：POSIX 侧 `Read` 用 100ms poll 轮询，无数据就返回 0，是否真 EOF 由 `IsEof()` 判定（`include/mcp/transport/detail/PlatformIO.hpp`）。空闲期不会误判断连。
+- **回调里的异常不会穿透**：`std::exception` 与未知异常都被捕获并记 Error 日志。你的回调炸了只会丢那一段输出，不会带走读线程。
 
 回调是排空线程直接调用的，因此必须**快**：把内容塞进你自己的队列，别在里面做阻塞 IO 或调 `Close()`。
 
@@ -64,17 +64,17 @@ stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者
 
 `terminate_process_tree = true` 时：
 
-- Windows：子进程被挂进 Job Object 并设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，终止走 `TerminateJobObject`（`src/process/detail/WindowsProcessSupport.cpp:109-129`），因此孙进程也一起没。
+- Windows：子进程被挂进 Job Object 并设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，终止走 `TerminateJobObject`（`src/process/detail/WindowsProcessSupport.cpp`），因此孙进程也一起没。
 - POSIX：子进程自领一个进程组，终止按进程组发信号并阻塞回收，不留僵尸（`src/transport/detail/posix_platform.cpp` 与 `src/process/ProcessPosix.cpp`，行为由 `SpawnTest.PosixChildLeadsOwnProcessGroupAndIsReaped`、`TransportTest.StdioProcessReapedWithoutZombie` 守护）。
 
-`shutdown_timeout` 就是那个「温和退出窗口」：关闭路径直接把它交给进程终止接口（`src/transport/StdioClientTransport.cpp:68-69`）。**POSIX 的宽限计时用真实时钟截止**，不是循环次数——macOS 上 10ms 级 sleep 实测约为标称 5 倍，按次数算会把 300ms 拖成约 1.7s（`src/transport/detail/posix_platform.cpp:179-194`）。
+`shutdown_timeout` 就是那个「温和退出窗口」：关闭路径直接把它交给进程终止接口（`src/transport/StdioClientTransport.cpp`）。**POSIX 的宽限计时用真实时钟截止**，不是循环次数——macOS 上 10ms 级 sleep 实测约为标称 5 倍，按次数算会把 300ms 拖成约 1.7s（`src/transport/detail/posix_platform.cpp`）。
 
 ## 关闭顺序与线程陷阱
 
 <<< @/snippets/manage-subprocesses.cpp#shutdown-order
 
-- 先 `client->Close()` 再释放传输对象；`StdioClientTransport` 对象必须比它 `Connect()` 出来的会话与客户端活得久，`Pid()` 也是从它上面取的（`include/mcp/transport/StdioClientTransport.hpp:38`）。
-- **不要在传输回调里调 `Close()`**：stdio 的读线程直接执行用户回调，回调里 `Close()` 会 join 自己所在的线程。所有 `Close()` 都应发生在别的线程；SDK 内部用 `detail::JoinThreadSafely` 兜底（`src/transport/StdioClientTransport.cpp:73-74`）。
+- 先 `client->Close()` 再释放传输对象；`StdioClientTransport` 对象必须比它 `Connect()` 出来的会话与客户端活得久，`Pid()` 也是从它上面取的（`include/mcp/transport/StdioClientTransport.hpp`）。
+- **不要在传输回调里调 `Close()`**：stdio 的读线程直接执行用户回调，回调里 `Close()` 会 join 自己所在的线程。所有 `Close()` 都应发生在别的线程；SDK 内部用 `detail::JoinThreadSafely` 兜底（`src/transport/StdioClientTransport.cpp`）。
 
 ## 健康检查与重启
 

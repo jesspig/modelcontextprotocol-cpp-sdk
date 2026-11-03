@@ -11,11 +11,11 @@ OAuth, PKCE and DPoP all live in the HTTP transport layer and behave identically
 - Headers: `mcp/client/auth/OAuthClientProvider.hpp`, `mcp/client/auth/TokenCache.hpp`, `mcp/transport/StreamableHttpClientTransport.hpp`, `mcp/client/ClientOptions.hpp`, `mcp/Implementation.hpp`; DPoP types come from `mcp/ext/DPoP.hpp` (pulled in by the provider header).
 - The authentication code sits in the `mcp-client` and `mcp-ext` targets — link accordingly (library list in [/en/start/installation](/en/start/installation)).
 - **TLS needs OpenSSL**: `-DMCP_WITH_OPENSSL=ON` fails configure outright when OpenSSL is missing; `AUTO` (the default) follows `find_package(OpenSSL)`, and without it the whole HTTPS path is unavailable (the PKCE entropy source falls back, see below).
-- Endpoints must be `https`, loopback excepted; otherwise the relevant calls throw `McpError(InvalidParams)` with a message shaped like `OAuth <kind> endpoint must use https (loopback hosts excepted)` (`src/client/auth/OAuthClientProvider.cpp:151-157` and the `RequireSecureEndpoint` helper after it).
+- Endpoints must be `https`, loopback excepted; otherwise the relevant calls throw `McpError(InvalidParams)` with a message shaped like `OAuth <kind> endpoint must use https (loopback hosts excepted)` (`src/client/auth/OAuthClientProvider.cpp` and the `RequireSecureEndpoint` helper after it).
 
 ## Build the provider and pick a flow
 
-`OAuthClientProvider` is an object **independent of the MCP client**: it obtains tokens, the transport uses them. The minimal configuration is three fields — `server_url`, `redirect_uri`, `token_cache` (`include/mcp/client/auth/OAuthClientProvider.hpp:28-47`).
+`OAuthClientProvider` is an object **independent of the MCP client**: it obtains tokens, the transport uses them. The minimal configuration is three fields — `server_url`, `redirect_uri`, `token_cache` (`include/mcp/client/auth/OAuthClientProvider.hpp`).
 
 <<< @/snippets/add-oauth-to-a-client.cpp#provider-options
 
@@ -26,11 +26,11 @@ The two main flows:
 
 <<< @/snippets/add-oauth-to-a-client.cpp#client-credentials
 
-Leaving `client_id` empty while the metadata advertises a `registration_endpoint` triggers **dynamic client registration** (`include/mcp/client/auth/TokenCache.hpp:72-84`); for `private_key_jwt`-style client assertions give `private_key_pem` plus `client_assertion_clock_seconds` (an injectable clock, handy in tests).
+Leaving `client_id` empty while the metadata advertises a `registration_endpoint` triggers **dynamic client registration** (`include/mcp/client/auth/TokenCache.hpp`); for `private_key_jwt`-style client assertions give `private_key_pem` plus `client_assertion_clock_seconds` (an injectable clock, handy in tests).
 
 ## Wire it into the transport
 
-The transport exposes exactly three hooks (`include/mcp/transport/StreamableHttpClientTransport.hpp:50-55`):
+The transport exposes exactly three hooks (`include/mcp/transport/StreamableHttpClientTransport.hpp`):
 
 | Hook | When | What you return or do |
 |---|---|---|
@@ -40,7 +40,7 @@ The transport exposes exactly three hooks (`include/mcp/transport/StreamableHttp
 
 <<< @/snippets/add-oauth-to-a-client.cpp#wire-transport
 
-The retry policy is hard-coded and worth knowing line by line (`src/http/StreamableHttpClientTransport.cpp:1007-1042`):
+The retry policy is hard-coded and worth knowing line by line (`src/http/StreamableHttpClientTransport.cpp`):
 
 - Authentication retry happens only on the **first attempt** — if the repaired request fails again the error goes straight back to the caller, with no loop.
 - `401` is always eligible; a `403` is eligible only when `WWW-Authenticate` is an `insufficient_scope` challenge.
@@ -48,7 +48,7 @@ The retry policy is hard-coded and worth knowing line by line (`src/http/Streama
 
 ## Token retrieval and automatic renewal
 
-`GetAccessToken()` does more than read the cache: when the token is present, **close to expiry, and a refresh token exists**, it first performs a coalesced refresh (only one refresh runs at a time, other callers wait) and then returns (`src/client/auth/OAuthClientProvider.cpp:987-996`). It returns an **empty string** in two cases: no token in the cache, or the token's `resource` does not match the `resource` you configured (RFC 8707 audience binding, `TokenResourceMatches`).
+`GetAccessToken()` does more than read the cache: when the token is present, **close to expiry, and a refresh token exists**, it first performs a coalesced refresh (only one refresh runs at a time, other callers wait) and then returns (`src/client/auth/OAuthClientProvider.cpp`). It returns an **empty string** in two cases: no token in the cache, or the token's `resource` does not match the `resource` you configured (RFC 8707 audience binding, `TokenResourceMatches`).
 
 <<< @/snippets/add-oauth-to-a-client.cpp#step-up
 
@@ -74,7 +74,7 @@ A missing `iss` in the token response only logs **a Warning** and is accepted pe
 
 ## The cache is yours to implement
 
-`ITokenCache` has four required methods plus two optional ones (persisting the bound issuer, so the same issuer can be reused across processes), and `InMemoryTokenCache` is provided as the default (`include/mcp/client/auth/TokenCache.hpp:23-45`). `TokenContainer` holds `access_token`, `refresh_token`, `scopes`, `expires_at` (an **absolute second count**, not seconds remaining), `token_type`, `resource`, plus `IsExpired()` / `WillExpireSoon(margin_ms = 60000)`.
+`ITokenCache` has four required methods plus two optional ones (persisting the bound issuer, so the same issuer can be reused across processes), and `InMemoryTokenCache` is provided as the default (`include/mcp/client/auth/TokenCache.hpp`). `TokenContainer` holds `access_token`, `refresh_token`, `scopes`, `expires_at` (an **absolute second count**, not seconds remaining), `token_type`, `resource`, plus `IsExpired()` / `WillExpireSoon(margin_ms = 60000)`.
 
 ::: warning Never let a token reach the logs
 `access_token`, `refresh_token`, `client_secret` and `private_key_pem` are all secrets: do not print them even while debugging with `MCP_LOG_LEVEL=4`, and choose the persistence location of your `ITokenCache` implementation according to your project's key-management rules.
@@ -102,7 +102,7 @@ Expected: configure prints `[mcp-docs] syntax-checking 15 snippet(s) with '/Zs'`
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-add-oauth-to-a-client.dir\__\__\docs\snippets\add-oauth-to-a-client.cpp.obj
 ```
 
-Return code 0 with no `error:` lines. For end-to-end behaviour run the shipped conformance client (needs `-DMCP_BUILD_CONFORMANCE=ON`), which exercises both Bearer and DPoP chains: `examples/conformance/client/main.cpp:1265-1281` (Bearer) and `:1283-1307` (DPoP), with `scripts/run-conformance.sh`.
+Return code 0 with no `error:` lines. For end-to-end behaviour run the shipped conformance client (needs `-DMCP_BUILD_CONFORMANCE=ON`), which exercises both Bearer and DPoP chains: `examples/conformance/client/main.cpp` (the Bearer chain, plus the DPoP chain further down), with `scripts/run-conformance.sh`.
 
 ## Era differences
 

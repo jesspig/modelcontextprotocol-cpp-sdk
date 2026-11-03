@@ -15,9 +15,9 @@ A prompt is a reusable message template: the client fetches it by name and fills
 Handing `prompt_options` to `McpServer::RegisterPrompt("code-review", prompt_options, handler)` completes the registration.
 
 - The registered name comes only from the `name` argument of `RegisterPrompt`; the `name` member of `PromptOptions` has no consumer at all and setting it changes nothing.
-- The list passed to `Arguments()` goes into `prompts/list` verbatim; `required` is a `std::optional<bool>`, and leaving it empty drops the field from the wire (`src/core/McpTypesTools.cpp:192-198`).
-- A duplicate name throws `McpError` (`InvalidParams`, `prompt already registered: <name>`), and an empty handler is rejected too (`src/server/McpServer.cpp:880-883`, `:893-898`).
-- A successful registration declares the `prompts` capability with `list_changed` set to true, and emits one `list_changed` automatically while the instance is running (`src/server/McpServer.cpp:901-905`, `:1955-1958`).
+- The list passed to `Arguments()` goes into `prompts/list` verbatim; `required` is a `std::optional<bool>`, and leaving it empty drops the field from the wire (`src/core/McpTypesTools.cpp`).
+- A duplicate name throws `McpError` (`InvalidParams`, `prompt already registered: <name>`), and an empty handler is rejected too (`src/server/McpServer.cpp`).
+- A successful registration declares the `prompts` capability with `list_changed` set to true, and emits one `list_changed` automatically while the instance is running (`src/server/McpServer.cpp`).
 
 ## Step 2: Build the Messages in the Handler
 
@@ -51,9 +51,9 @@ The completion capability is decided by `ServerOptions::declare_completions`, wh
 <<< @/snippets/serve-a-prompt.cpp#completion-handler
 
 - One instance holds a single global completion callback, so you dispatch on `params.ref`: it is an unparsed `JsonValue` shaped like `{"type":"ref/prompt","name":"code-review"}`, and you must read `type` / `name` yourself.
-- `params.argument_name` is the key being typed and `params.argument_value` the text entered so far; `params.context_arguments` carries the other arguments already fixed in the same request (values must be strings, otherwise the whole request is rejected as `InvalidParams` — `src/core/McpTypesParams.cpp:113-126`).
+- `params.argument_name` is the key being typed and `params.argument_value` the text entered so far; `params.context_arguments` carries the other arguments already fixed in the same request (values must be strings, otherwise the whole request is rejected as `InvalidParams` — `src/core/McpTypesParams.cpp`).
 - `CompleteResult::completion` is a raw `JsonValue` too, and the SDK validates no shape. The convention is `values` / `total` / `hasMore`, and `total` has to be computed before `values` is moved out.
-- Without `SetCompletionHandler`, `completion/complete` returns `MethodNotFound` with the message `No completion handler registered` (`src/server/McpServer.cpp:3111-3114`); passing an empty callback throws `InvalidParams` at registration time.
+- Without `SetCompletionHandler`, `completion/complete` returns `MethodNotFound` with the message `No completion handler registered` (`src/server/McpServer.cpp`); passing an empty callback throws `InvalidParams` at registration time.
 
 ## Complete code
 

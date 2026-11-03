@@ -5,8 +5,8 @@
 ## 前置条件
 
 - 头文件：`mcp/McpError.hpp`、`mcp/ErrorCodes.hpp`、`mcp/McpTypes.hpp`、`mcp/protocol/IncomingRequestMeta.hpp`、`mcp/client/McpClient.hpp`、`mcp/client/RequestHandle.hpp`、`mcp/server/RequestContext.hpp`；include 必须写全子目录路径。
-- 判型要 `<variant>`：`RequestOutcome` 是 `std::variant<JsonValue, ErrorData>`（`include/mcp/protocol/IncomingRequestMeta.hpp:29`）。
-- 按语义分组判错要 `<system_error>`（公共头已带）：`McpErrorCode` 注册为 `std::error_code` 枚举（`include/mcp/ErrorCodes.hpp:32-39`）。
+- 判型要 `<variant>`：`RequestOutcome` 是 `std::variant<JsonValue, ErrorData>`（`include/mcp/protocol/IncomingRequestMeta.hpp`）。
+- 按语义分组判错要 `<system_error>`（公共头已带）：`McpErrorCode` 注册为 `std::error_code` 枚举（`include/mcp/ErrorCodes.hpp`）。
 - 需要先理解一层分工：工具调用的失败走 `is_error` 结果，协议方法的失败走错误帧——两者判定方式不同，本页逐条给出。
 
 ## 先定判定顺序
@@ -18,11 +18,11 @@
 | `SendRequest(method, params, RequestOptions)` | `RequestOutcome = std::variant<JsonValue, ErrorData>` | `std::get_if<ErrorData>` |
 | 工具 handler（服务端） | `is_error = true` 的 `CallToolResult`，或抛异常后由 SDK 兜住 | 看 `is_error` 与 `content` |
 
-`McpError` 继承 `std::runtime_error`，带 `Code()`、`ErrorMessage()`、`Data()`（`include/mcp/McpError.hpp:13-35`）；`Data()` 是 `std::optional<JsonValue>`，装协议错误的 `data` 字段。
+`McpError` 继承 `std::runtime_error`，带 `Code()`、`ErrorMessage()`、`Data()`（`include/mcp/McpError.hpp`）；`Data()` 是 `std::optional<JsonValue>`，装协议错误的 `data` 字段。
 
 ## 错误码全表与它们的语义分组
 
-值定义在 `include/mcp/ErrorCodes.hpp:8-30`（参考全表见 [/zh/reference/errors](/zh/reference/errors)）：
+值定义在 `include/mcp/ErrorCodes.hpp`（参考全表见 [/zh/reference/errors](/zh/reference/errors)）：
 
 | 码 | 名称 | 典型来源 |
 |---|---|---|
@@ -46,7 +46,7 @@
 | `-32008` | `DeserializeFailed` | 反序列化失败 |
 | `-32009` | `SessionExpired` | 未知/过期会话 |
 
-`McpErrorCode` 还是 `std::error_code` 枚举（`include/mcp/ErrorCodes.hpp:32-39`），因此可以按语义分组判，而不是逐个码硬对（`include/mcp/ErrorCodes.hpp:71-91`）：
+`McpErrorCode` 还是 `std::error_code` 枚举（`include/mcp/ErrorCodes.hpp`），因此可以按语义分组判，而不是逐个码硬对（`include/mcp/ErrorCodes.hpp`）：
 
 <<< @/snippets/handle-errors.cpp#classify-outcome
 
@@ -54,7 +54,7 @@
 
 ## 时代重映射只发生在出站
 
-`-32001`、`-32003`、`-32004` 在 modern 时代经 wire 编码时被降级为 `-32603`（`src/protocol/WireCodec.cpp:271-283`），legacy 原样透传（`:158-160`）。由此得两条必然后果：
+`-32001`、`-32003`、`-32004` 在 modern 时代经 wire 编码时被降级为 `-32603`（`src/protocol/WireCodec.cpp`），legacy 原样透传。由此得两条必然后果：
 
 - 客户端**本地**产生的超时仍是 `-32001`，与时代无关；对端发来的同类错误在 modern 下只会以 `-32603` 出现。
 - 想在 modern 下区分「内部错误」与「超时/拒绝连接/TLS 失败」，只能靠 `message` 文本或 `data`，不能靠码。
@@ -63,19 +63,19 @@
 
 <<< @/snippets/handle-errors.cpp#tool-error-surface
 
-1. **返回 `is_error = true`**：协议层成功，模型侧看到失败文本，可继续对话。入参不符合 `input_schema` 时 SDK 就是这么做的，消息以 `invalid arguments: ` 开头（`src/server/McpServer.cpp:553-559`、`:2359`、`:2507`、`:2616`）。
-2. **抛 `McpError`**：`Code()` **被丢弃**，只有 `message` 进入工具结果的错误文本（`src/server/McpServer.cpp:2633-2643`）——想在工具里传码是传不出去的。
+1. **返回 `is_error = true`**：协议层成功，模型侧看到失败文本，可继续对话。入参不符合 `input_schema` 时 SDK 就是这么做的，消息以 `invalid arguments: ` 开头（`src/server/McpServer.cpp`）。
+2. **抛 `McpError`**：`Code()` **被丢弃**，只有 `message` 进入工具结果的错误文本（`src/server/McpServer.cpp`）——想在工具里传码是传不出去的。
 3. **抛其它异常**：文本被泛化成 `Error executing tool <name>`，你的异常信息不回给对端，只在服务端日志里（同上）。
 
 ::: warning 结构化输出不符不是 `is_error`
-`structured_content` 不合 `output_schema` 走协议错误 `InvalidParams`，对外消息 `tool output does not match outputSchema: <原因>`（`src/server/McpServer.cpp:2673-2681`）。声明了 schema 就必须兑现，宁缺毋滥。
+`structured_content` 不合 `output_schema` 走协议错误 `InvalidParams`，对外消息 `tool output does not match outputSchema: <原因>`（`src/server/McpServer.cpp`）。声明了 schema 就必须兑现，宁缺毋滥。
 :::
 
-协议方法层（资源、提示词、补全等）则**保留错误码**：`McpError` 的 `Code()` 与 `message` 原样进错误帧（`src/protocol/McpSessionHandler.cpp:576-586`），非 `McpError` 的异常一律 `InternalError` + `"internal error"`，真实原因只进服务端日志（`:587-614`）。
+协议方法层（资源、提示词、补全等）则**保留错误码**：`McpError` 的 `Code()` 与 `message` 原样进错误帧（`src/protocol/McpSessionHandler.cpp`），非 `McpError` 的异常一律 `InternalError` + `"internal error"`，真实原因只进服务端日志。
 
 ## 注册期错误：启动就炸，别等第一次调用
 
-所有注册期校验都在 `RegisterTool`/`RegisterResource`/`RegisterPrompt` 调用点抛 `McpError(InvalidParams)`：重名、非法工具名、非法资源模板、空 handler 都属此类（`src/server/McpServer.cpp:93`、`:287`、`:329`）。把注册收敛成一个函数、由上层决定崩溃还是跳过：
+所有注册期校验都在 `RegisterTool`/`RegisterResource`/`RegisterPrompt` 调用点抛 `McpError(InvalidParams)`：重名、非法工具名、非法资源模板、空 handler 都属此类（`src/server/McpServer.cpp`）。把注册收敛成一个函数、由上层决定崩溃还是跳过：
 
 <<< @/snippets/handle-errors.cpp#registration-errors
 
@@ -85,13 +85,13 @@
 
 <<< @/snippets/handle-errors.cpp#version-rejection
 
-`data.supported` 的键名固定为 `"supported"`（`src/protocol/McpSessionHandler.cpp:35`）；`requestState` 校验失败回 `InvalidParams` + `data.reason = "invalid_request_state"`。typed 通道里同样能取到：`ErrorData::data`（`include/mcp/protocol/IncomingRequestMeta.hpp`）。
+`data.supported` 的键名固定为 `"supported"`（`src/protocol/McpSessionHandler.cpp`）；`requestState` 校验失败回 `InvalidParams` + `data.reason = "invalid_request_state"`。typed 通道里同样能取到：`ErrorData::data`（`include/mcp/protocol/IncomingRequestMeta.hpp`）。
 
 ## 重试策略：按码分派，不按 message
 
 <<< @/snippets/handle-errors.cpp#retry-policy
 
-- `SessionExpired` → 重建会话再试一次；客户端在 MRTR 流程里也自带一次「重新 initialize 再试」（`src/client/McpClient.cpp:1057-1066`），别在它之上叠无限循环。
+- `SessionExpired` → 重建会话再试一次；客户端在 MRTR 流程里也自带一次「重新 initialize 再试」（`src/client/McpClient.cpp`），别在它之上叠无限循环。
 - `RequestTimeout` → **只有幂等操作**才自动重试；写型工具交给调用方决定。
 - `UnsupportedProtocolVersion` → 不要重试，读 `data.supported` 决定是否降级；stdio 类传输的自动回退规则见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
 - `ConnectionClosed` / `ConnectionRefused` / `TlsHandshakeFailed` → 重建传输对象，重试同一客户端实例上的请求没有意义。
@@ -101,7 +101,7 @@
 
 <<< @/snippets/handle-errors.cpp#raw-channel
 
-raw 通道不抛异常：错误是**值**。判据是序列化后对象里 `code` 为负数（`src/client/McpClient.cpp:62-72`），漏判就会把错误对象当业务结果解析。便捷方法之所以能抛，正是因为它们在内部做了这一步判定。
+raw 通道不抛异常：错误是**值**。判据是序列化后对象里 `code` 为负数（`src/client/McpClient.cpp`），漏判就会把错误对象当业务结果解析。便捷方法之所以能抛，正是因为它们在内部做了这一步判定。
 
 ## 完整代码
 

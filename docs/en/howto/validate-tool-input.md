@@ -11,7 +11,7 @@ Put three layers of defence around a tool: let the SDK reject bad arguments agai
 
 ## Layer one: let the SDK reject arguments against input_schema
 
-`HandleCallTool` calls `ValidateToolCallArguments` with `Tool::input_schema` before handing the request to your handler (`McpServer.cpp:553-561`, `2616-2623`). On failure the handler is **not called**; the server returns an `is_error` result whose text is `invalid arguments: <reason>`. A missing `arguments` participates as an empty object, so anything listed in `required` must actually be sent; and because the synthesized default schema carries `type: "object"`, non-object input is rejected too.
+`HandleCallTool` calls `ValidateToolCallArguments` with `Tool::input_schema` before handing the request to your handler (`McpServer.cpp`). On failure the handler is **not called**; the server returns an `is_error` result whose text is `invalid arguments: <reason>`. A missing `arguments` participates as an empty object, so anything listed in `required` must actually be sent; and because the synthesized default schema carries `type: "object"`, non-object input is rejected too.
 
 <<< @/snippets/validate-tool-input.cpp#builtin-validation
 
@@ -21,7 +21,7 @@ Constraints such as `enum`, `minimum`, `maxLength` and `additionalProperties: fa
 
 ## Layer two: type defence inside the handler
 
-A schema constrains shape, not meaning: unknown accounts, cross-field relationships, and enumerated values that are currently unavailable all need handler-side checks. `CallToolRequestParams::arguments` is a `std::optional<JsonValue>`, so test it before `Find`; and read numbers by checking `IsDouble()` versus `IsInt()` separately. `examples/WeatherServer/main.cpp:30-92` shows exactly this pattern.
+A schema constrains shape, not meaning: unknown accounts, cross-field relationships, and enumerated values that are currently unavailable all need handler-side checks. `CallToolRequestParams::arguments` is a `std::optional<JsonValue>`, so test it before `Find`; and read numbers by checking `IsDouble()` versus `IsInt()` separately. `examples/WeatherServer/main.cpp` shows exactly this pattern.
 
 <<< @/snippets/validate-tool-input.cpp#handler-defense
 
@@ -31,7 +31,7 @@ Every `JsonValue` accessor throws (`McpError(McpErrorCode::DeserializeFailed, "J
 
 ## Layer three: cap the number of argument elements
 
-`ServerOptions::max_tool_input_elements` counts **one level deep**: object keys, array length, and 1 for a scalar (`McpServer.cpp:563-568`). Exceeding it returns `is_error` + `tool arguments exceed maximum input element count` (`2323-2328`), again without entering the handler.
+`ServerOptions::max_tool_input_elements` counts **one level deep**: object keys, array length, and 1 for a scalar (`McpServer.cpp`). Exceeding it returns `is_error` + `tool arguments exceed maximum input element count`, again without entering the handler.
 
 <<< @/snippets/validate-tool-input.cpp#element-limit
 
@@ -54,7 +54,7 @@ Unrecognised keywords are **silently ignored** (fail-open): `format`, `contentEn
 <<< @/snippets/validate-tool-input.cpp#local-ref
 
 ::: danger
-Three traps: `pattern` is unanchored, so `^[a-z]+` lets trailing garbage through — write the full `^...$`; when a regex fails to compile the value is simply accepted, so never lean on a pattern for safety; a circular `$ref` throws `McpError(InvalidParams)` instead of returning `is_error`, and no response is ever emitted, leaving the client to time out (`src/detail/JsonSchemaValidator.hpp:205-209`).
+Three traps: `pattern` is unanchored, so `^[a-z]+` lets trailing garbage through — write the full `^...$`; when a regex fails to compile the value is simply accepted, so never lean on a pattern for safety; a circular `$ref` throws `McpError(InvalidParams)` instead of returning `is_error`, and no response is ever emitted, leaving the client to time out (`src/detail/JsonSchemaValidator.hpp`).
 :::
 
 ## Telling is_error apart from a protocol error
@@ -64,10 +64,10 @@ Three traps: `pattern` is unanchored, so `^[a-z]+` lets trailing garbage through
 | Built-in schema validation | Tool result with `is_error` | `invalid arguments: <reason>` |
 | Element count above `max_tool_input_elements` | Tool result with `is_error` | `tool arguments exceed maximum input element count` |
 | Handler returning failure | Tool result with `is_error` | The `content` text you wrote |
-| Handler throwing `McpError` | Tool result with `is_error` | Only `ErrorMessage()`; the code and `data` are dropped (`McpServer.cpp:2633-2636`) |
-| Handler throwing anything else | Tool result with `is_error` | Generic `Error executing tool <name>`; the original `what()` only reaches internal logs (`2637-2650`) |
+| Handler throwing `McpError` | Tool result with `is_error` | Only `ErrorMessage()`; the code and `data` are dropped (`McpServer.cpp`) |
+| Handler throwing anything else | Tool result with `is_error` | Generic `Error executing tool <name>`; the original `what()` only reaches internal logs |
 | Tool name not registered | JSON-RPC protocol error `InvalidParams` | `tool not found: <name>` |
-| Handler exception on the task-backed path | Task failure, not `is_error` | `McpError` keeps code/message/data, other exceptions become `InternalError` (`2524-2552`) |
+| Handler exception on the task-backed path | Task failure, not `is_error` | `McpError` keeps code/message/data, other exceptions become `InternalError` |
 
 <<< @/snippets/validate-tool-input.cpp#failure-modes
 

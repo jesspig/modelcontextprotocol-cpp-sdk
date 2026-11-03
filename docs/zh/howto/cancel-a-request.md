@@ -9,17 +9,17 @@
 ## 前置条件
 
 - 头文件：`mcp/client/McpClient.hpp`、`mcp/client/RequestHandle.hpp`、`mcp/CancelToken.hpp`、`mcp/McpTypes.hpp`、`mcp/protocol/IncomingRequestMeta.hpp`、`mcp/Content.hpp`、`mcp/JsonValue.hpp`、`mcp/server/McpServer.hpp`、`mcp/server/RequestContext.hpp`、`mcp/transport/InMemoryTransport.hpp`；include 必须写全子目录路径。
-- 只有走 `RequestOptions` 的 `SendRequest` 才返回带取消能力的 `RequestHandle`（`include/mcp/client/McpClient.hpp:130-133`）；三参重载里它是必填，**没有默认实参**。
+- 只有走 `RequestOptions` 的 `SendRequest` 才返回带取消能力的 `RequestHandle`（`include/mcp/client/McpClient.hpp`）；三参重载里它是必填，**没有默认实参**。
 - 不需要任何扩展开关，也不看服务端能力——取消是协议内建的 `notifications/cancelled`。
-- `RequestHandle` 只可移动、不可拷贝（`include/mcp/client/RequestHandle.hpp:29-32`），别把它塞进容器再拷贝。
+- `RequestHandle` 只可移动、不可拷贝（`include/mcp/client/RequestHandle.hpp`），别把它塞进容器再拷贝。
 
 ## 取消一个在途请求
 
-`RequestHandle::Cancel(reason)` 的 `reason` 可省。SDK 的结算顺序是固定的三步（`src/protocol/McpSessionHandler.cpp:1121-1138`）：先从 pending 表里**取走**该 ID（取不到就直接返回，所以重复取消是 no-op，取消一个已完成的请求也是 no-op），再按时代与传输决定怎么通知对端，最后本地投递 `RequestCancelled(-32800)`。
+`RequestHandle::Cancel(reason)` 的 `reason` 可省。SDK 的结算顺序是固定的三步（`src/protocol/McpSessionHandler.cpp`）：先从 pending 表里**取走**该 ID（取不到就直接返回，所以重复取消是 no-op，取消一个已完成的请求也是 no-op），再按时代与传输决定怎么通知对端，最后本地投递 `RequestCancelled(-32800)`。
 
 <<< @/snippets/cancel-a-request.cpp#typed-handle
 
-`reason` 非空时会被塞进 `ErrorData::data` 的 `{"reason": ...}`，同时在出站通知里带上（`:1129-1133`、`:1153-1164`）。`RequestOutcome` 是 `std::variant<JsonValue, ErrorData>`（`include/mcp/protocol/IncomingRequestMeta.hpp:29`），用 `std::get_if<JsonValue>` 分流成功与失败。
+`reason` 非空时会被塞进 `ErrorData::data` 的 `{"reason": ...}`，同时在出站通知里带上。`RequestOutcome` 是 `std::variant<JsonValue, ErrorData>`（`include/mcp/protocol/IncomingRequestMeta.hpp`），用 `std::get_if<JsonValue>` 分流成功与失败。
 
 ::: warning 取消即本地终局
 一旦 pending 被取走，服务端后面真的把结果发回来也**无人认领**——响应查不到对应条目就被丢弃。不要把「取消后可能仍会完成」当成可以慢慢等的理由。
@@ -27,18 +27,18 @@
 
 ## 超时、续期与是否顺发取消
 
-`RequestOptions::timeout` 是这一条请求的截止线；`ClientOptions::max_total_timeout` 另给整个客户端设一条绝对截止线，默认 `0` 即不启用（`include/mcp/client/ClientOptions.hpp:53`），启用后每条出站请求都会登记绝对截止（`src/client/McpClient.cpp:627`、`src/protocol/McpSessionHandler.cpp:848-851`），与单次截止**先到者触发**（`:310-340`）。到期时：
+`RequestOptions::timeout` 是这一条请求的截止线；`ClientOptions::max_total_timeout` 另给整个客户端设一条绝对截止线，默认 `0` 即不启用（`include/mcp/client/ClientOptions.hpp`），启用后每条出站请求都会登记绝对截止（`src/client/McpClient.cpp`、`src/protocol/McpSessionHandler.cpp`），与单次截止**先到者触发**。到期时：
 
-- `cancel_on_timeout` 为真（**默认值**，`include/mcp/McpTypes.hpp:404`）会顺带走一遍传输级取消，`reason` 固定写成 `"timeout"`；
+- `cancel_on_timeout` 为真（**默认值**，`include/mcp/McpTypes.hpp`）会顺带走一遍传输级取消，`reason` 固定写成 `"timeout"`；
 - 本地结算码**恒为 `RequestTimeout(-32001)`**，不是 `-32800`——想区分「我取消的」和「到点的」，看码别看 reason。
 
 <<< @/snippets/cancel-a-request.cpp#timeout-only
 
-带 `progressToken` 的请求收到进度帧时，剩余时间会被夹到不少于续期步长（`ResetTimeoutByProgressToken`，`:343-354`），所以持续上报本身就在续命，见 [/zh/howto/report-progress](/zh/howto/report-progress)。
+带 `progressToken` 的请求收到进度帧时，剩余时间会被夹到不少于续期步长（`ResetTimeoutByProgressToken`），所以持续上报本身就在续命，见 [/zh/howto/report-progress](/zh/howto/report-progress)。
 
 ## 一个令牌取消整批请求
 
-`CancelToken` 是可拷贝的共享状态句柄：把它放进 `RequestOptions::cancel_token`，多个请求就挂在同一次取消上，一次 `token.Cancel(reason)` 全部出局（`src/client/McpClient.cpp:1867-1872`）。回调在请求结束时自动摘除（订阅登记与摘除见 `src/client/McpClient.cpp:321-357`），不需要你清理。
+`CancelToken` 是可拷贝的共享状态句柄：把它放进 `RequestOptions::cancel_token`，多个请求就挂在同一次取消上，一次 `token.Cancel(reason)` 全部出局（`src/client/McpClient.cpp`）。回调在请求结束时自动摘除（订阅登记与摘除见 `src/client/McpClient.cpp`），不需要你清理。
 
 <<< @/snippets/cancel-a-request.cpp#cancel-token-fanout
 
@@ -46,7 +46,7 @@
 
 ## 只有请求 ID 时
 
-拿不到句柄（例如你自己实现了出站队列）时走 `McpClient::CancelRequest(id, reason)`，语义与 `RequestHandle::Cancel` 完全一致——两者都只是转调 `McpSessionHandler::CancelRequest`（`src/client/McpClient.cpp:1909-1911`）。
+拿不到句柄（例如你自己实现了出站队列）时走 `McpClient::CancelRequest(id, reason)`，语义与 `RequestHandle::Cancel` 完全一致——两者都只是转调 `McpSessionHandler::CancelRequest`（`src/client/McpClient.cpp`）。
 
 <<< @/snippets/cancel-a-request.cpp#cancel-by-id
 
@@ -54,11 +54,11 @@
 
 同一个「失败」在三条 API 上长相完全不同，这是最常见的踩坑点：
 
-| 调用形态 | 失败时的表现 | 证据 |
+| 调用形态 | 失败时的表现 | 源码位置 |
 |---|---|---|
-| 便捷方法（`CallTool`、`ListTools`、`ReadResource`……） | **抛 `McpError`**，码与消息可用 `Code()`/`what()` 读 | `src/client/McpClient.cpp:81-89` |
-| `SendRequestRaw`（以及四参 `SendRequest`，它只是转调前者） | future **正常 resolve**，值是序列化后的错误对象 `{"code": <负数>, "message": ...}`，不抛 | `src/protocol/McpSessionHandler.cpp:99-102`、`src/client/McpClient.cpp:62-72`、`:1884-1902` |
-| `SendRequest(method, params, RequestOptions)` | 返回 `RequestOutcome` variant，`std::get_if<ErrorData>` 取错 | `include/mcp/client/RequestHandle.hpp:14-16` |
+| 便捷方法（`CallTool`、`ListTools`、`ReadResource`……） | **抛 `McpError`**，码与消息可用 `Code()`/`what()` 读 | `src/client/McpClient.cpp` |
+| `SendRequestRaw`（以及四参 `SendRequest`，它只是转调前者） | future **正常 resolve**，值是序列化后的错误对象 `{"code": <负数>, "message": ...}`，不抛 | `src/protocol/McpSessionHandler.cpp`、`src/client/McpClient.cpp` |
+| `SendRequest(method, params, RequestOptions)` | 返回 `RequestOutcome` variant，`std::get_if<ErrorData>` 取错 | `include/mcp/client/RequestHandle.hpp` |
 
 <<< @/snippets/cancel-a-request.cpp#three-channels
 
@@ -66,14 +66,14 @@
 
 ## 服务端只能协作式感知
 
-对端的取消到达时，SDK 只做一件事：把该 (会话, 请求 ID) 的原子标志置真（`src/protocol/McpSessionHandler.cpp:1086-1096`）。**它不会打断你的 handler**，也不会替你回错误——`RequestContext::IsCancellationRequested()` 只是读那个标志（`include/mcp/server/RequestContext.hpp:72-74`），要早点收摊必须自己轮询。
+对端的取消到达时，SDK 只做一件事：把该 (会话, 请求 ID) 的原子标志置真（`src/protocol/McpSessionHandler.cpp`）。**它不会打断你的 handler**，也不会替你回错误——`RequestContext::IsCancellationRequested()` 只是读那个标志（`include/mcp/server/RequestContext.hpp`），要早点收摊必须自己轮询。
 
 <<< @/snippets/cancel-a-request.cpp#server-side-poll
 
-标志在请求结束时擦除、连接关闭时清空（`src/protocol/McpSessionHandler.cpp:1175`、`:265`），所以轮询只在该请求还活着期间有意义。长循环里还建议顺带上报进度，见 [/zh/howto/report-progress](/zh/howto/report-progress)。
+标志在请求结束时擦除、连接关闭时清空（`src/protocol/McpSessionHandler.cpp`），所以轮询只在该请求还活着期间有意义。长循环里还建议顺带上报进度，见 [/zh/howto/report-progress](/zh/howto/report-progress)。
 
 ::: warning 命中标志需要同一会话
-入站取消用 `SessionRequestKey(session_id, request_id)` 定位标志，而 pending 表用裸请求 ID 定位（`:1088`、`:1098`）。stateful HTTP 下若通知的 `sessionId` 与请求不属于同一会话，标志就命中不了。
+入站取消用 `SessionRequestKey(session_id, request_id)` 定位标志，而 pending 表用裸请求 ID 定位。stateful HTTP 下若通知的 `sessionId` 与请求不属于同一会话，标志就命中不了。
 :::
 
 ## 完整代码
@@ -123,13 +123,13 @@ error: request cancelled (code -32800)
 | 项目 | legacy（≤ 2025-11-25） | modern（2026-07-28） |
 |---|---|---|
 | 通知方式 | 一律发 `notifications/cancelled` | 传输实现 `IRequestCanceller` 时**只关该请求的 SSE 流**，不发通知；未实现则回落到通知 |
-| 判定位置 | — | `src/protocol/McpSessionHandler.cpp:1141-1151`（`dynamic_cast` 探测） |
-| 接口 | — | `include/mcp/transport/IRequestCanceller.hpp:10-14` |
+| 判定位置 | — | `src/protocol/McpSessionHandler.cpp`（`dynamic_cast` 探测） |
+| 接口 | — | `include/mcp/transport/IRequestCanceller.hpp` |
 | 本地终局码 | `-32800` / `-32001` / `-32000` | 同上，本地结算**不过** `EncodeErrorCode`，码不变 |
-| 对端传来的这些码 | 原样 | `-32001`/`-32003`/`-32004` 被降级为 `-32603`（`src/protocol/WireCodec.cpp:271-283`） |
+| 对端传来的这些码 | 原样 | `-32001`/`-32003`/`-32004` 被降级为 `-32603`（`src/protocol/WireCodec.cpp`） |
 
 ::: tip 关流不是万能
-现代 HTTP 的「关掉请求流」只到 handler/canceller 一层：`InMemoryTransport` 与 stdio 传输不实现 `IRequestCanceller`，即使在 modern 时代也仍走 `notifications/cancelled`（`:1144-1150` 的回落分支）。
+现代 HTTP 的「关掉请求流」只到 handler/canceller 一层：`InMemoryTransport` 与 stdio 传输不实现 `IRequestCanceller`，即使在 modern 时代也仍走 `notifications/cancelled`（`src/protocol/McpSessionHandler.cpp` 的回落分支）。
 :::
 
 ## 常见错误

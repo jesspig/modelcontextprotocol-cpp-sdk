@@ -15,9 +15,9 @@
 把 `prompt_options` 交给 `McpServer::RegisterPrompt("code-review", prompt_options, handler)` 即完成注册。
 
 - 注册名只取 `RegisterPrompt` 的 `name` 参数；`PromptOptions` 里的 `name` 成员没有任何消费点，写了也不生效。
-- `Arguments()` 给的列表原样进 `prompts/list` 的 `arguments`；`required` 是 `std::optional<bool>`，留空则该字段不上线（`src/core/McpTypesTools.cpp:192-198`）。
-- 重名注册抛 `McpError`（`InvalidParams`，`prompt already registered: <name>`），空 handler 同样拒收（`src/server/McpServer.cpp:880-883`、`:893-898`）。
-- 注册成功即声明 `prompts` 能力并把 `list_changed` 置真；实例已在 `Run()` 时会自动补发一次 `list_changed`（`src/server/McpServer.cpp:901-905`、`:1955-1958`）。
+- `Arguments()` 给的列表原样进 `prompts/list` 的 `arguments`；`required` 是 `std::optional<bool>`，留空则该字段不上线（`src/core/McpTypesTools.cpp`）。
+- 重名注册抛 `McpError`（`InvalidParams`，`prompt already registered: <name>`），空 handler 同样拒收（`src/server/McpServer.cpp`）。
+- 注册成功即声明 `prompts` 能力并把 `list_changed` 置真；实例已在 `Run()` 时会自动补发一次 `list_changed`（`src/server/McpServer.cpp`）。
 
 ## 第二步：在 handler 里构造消息
 
@@ -51,9 +51,9 @@
 <<< @/snippets/serve-a-prompt.cpp#completion-handler
 
 - 一个实例只有一个全局补全回调，靠 `params.ref` 分流：`ref` 是未经解析的原始 `JsonValue`，形如 `{"type":"ref/prompt","name":"code-review"}`，`type`／`name` 都得自己读。
-- `params.argument_name` 是正在输入的参数的键名，`params.argument_value` 是已输入的片段；`params.context_arguments` 带上同一请求里其它已确定的参数值（值必须是字符串，否则整条请求按 `InvalidParams` 拒收，`src/core/McpTypesParams.cpp:113-126`）。
+- `params.argument_name` 是正在输入的参数的键名，`params.argument_value` 是已输入的片段；`params.context_arguments` 带上同一请求里其它已确定的参数值（值必须是字符串，否则整条请求按 `InvalidParams` 拒收，`src/core/McpTypesParams.cpp`）。
 - `CompleteResult::completion` 也是裸 `JsonValue`，SDK 不校验形状；惯例是 `values` / `total` / `hasMore` 三项，`total` 要在 `values` 被移走之前算好。
-- 没调 `SetCompletionHandler` 时 `completion/complete` 回 `MethodNotFound`，消息 `No completion handler registered`（`src/server/McpServer.cpp:3111-3114`）；传空回调则注册期就抛 `InvalidParams`。
+- 没调 `SetCompletionHandler` 时 `completion/complete` 回 `MethodNotFound`，消息 `No completion handler registered`（`src/server/McpServer.cpp`）；传空回调则注册期就抛 `InvalidParams`。
 
 ## 完整代码
 

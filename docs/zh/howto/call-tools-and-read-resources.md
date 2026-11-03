@@ -20,13 +20,13 @@
 | `ListToolsAll()` | 逐页调 `ListTools(cursor)` | 是 | 否 |
 | `SearchTools(query, page_size)` | 逐页直发 `tools/list` | 否 | 仅 `enable_progressive_discovery` 为真时 |
 
-`ListTools()` 不传 cursor 时已经把分页合并完（`src/client/McpClient.cpp:124-172`、`1215-1235`），所以 `ListToolsAll()` 与它等价（`McpClientTest.ListToolsAutoPaginates` 取到 3 个工具、`ListToolsAllSinglePageEqualsPlainList` 两者同结果）。超过 64 页仍不收敛抛 `ProtocolViolation`，消息 `list pagination did not converge within 64 pages`（`src/client/McpClient.cpp:52`、`1237-1250`）。`Tool` 的字段（`name`／`title`／`description`／`input_schema`／`output_schema`／`annotations`／`icons`）见 [/zh/reference/types](/zh/reference/types)。
+`ListTools()` 不传 cursor 时已经把分页合并完（`src/client/McpClient.cpp`），所以 `ListToolsAll()` 与它等价（`McpClientTest.ListToolsAutoPaginates` 取到 3 个工具、`ListToolsAllSinglePageEqualsPlainList` 两者同结果）。超过 64 页仍不收敛抛 `ProtocolViolation`，消息 `list pagination did not converge within 64 pages`（`src/client/McpClient.cpp`）。`Tool` 的字段（`name`／`title`／`description`／`input_schema`／`output_schema`／`annotations`／`icons`）见 [/zh/reference/types](/zh/reference/types)。
 
 ## 第二步：按 `inputSchema` 组装 arguments
 
 <<< @/snippets/call-tools-and-read-resources.cpp#required-arguments
 
-客户端不校验入参：`CallTool` 只把 `name` 与 `arguments` 原样拼进请求（`src/client/McpClient.cpp:1331-1333`）。校验发生在服务端，缺必填或类型不符回的是**正常结果**里的 `isError`，文本以 `invalid arguments: ` 开头（`src/server/McpServer.cpp:2616-2623`）。名字拼错则完全不同——那是 JSON-RPC 错误 `InvalidParams`，消息 `tool not found: <name>`（`src/server/McpServer.cpp:2144-2151`）。
+客户端不校验入参：`CallTool` 只把 `name` 与 `arguments` 原样拼进请求（`src/client/McpClient.cpp`）。校验发生在服务端，缺必填或类型不符回的是**正常结果**里的 `isError`，文本以 `invalid arguments: ` 开头（`src/server/McpServer.cpp`）。名字拼错则完全不同——那是 JSON-RPC 错误 `InvalidParams`，消息 `tool not found: <name>`（`src/server/McpServer.cpp`）。
 
 ## 第三步：调用工具，并分清两条失败通道
 
@@ -34,10 +34,10 @@
 
 | 通道 | 触发 | 你要写的代码 |
 |---|---|---|
-| `result.is_error == true` | 参数不合 schema、工具 handler 抛异常（`McpError` 回原文、其它异常回固定文案）（`src/server/McpServer.cpp:2633-2650`） | 读 `content` 里的文本，别 catch 异常 |
-| 抛 `McpError` | 对端返回 JSON-RPC 错误：工具名不存在、`outputSchema` 与 `structuredContent` 不匹配、MRTR 轮数或预算耗尽 | `try`／`catch`；MRTR 路径保留 `data`（`src/client/McpClient.cpp:1101-1108`） |
+| `result.is_error == true` | 参数不合 schema、工具 handler 抛异常（`McpError` 回原文、其它异常回固定文案）（`src/server/McpServer.cpp`） | 读 `content` 里的文本，别 catch 异常 |
+| 抛 `McpError` | 对端返回 JSON-RPC 错误：工具名不存在、`outputSchema` 与 `structuredContent` 不匹配、MRTR 轮数或预算耗尽 | `try`／`catch`；MRTR 路径保留 `data`（`src/client/McpClient.cpp`） |
 
-`isError` 只是结果字段，反序列化时原样落到 `CallToolResult::is_error`（`src/core/McpTypesResults.cpp:199-215`）。服务端把 `structuredContent` 与工具声明的 `outputSchema` 对不上时直接转成 `InvalidParams`（`src/server/McpServer.cpp:2671-2681`），客户端侧表现为 `CallTool` 抛 `McpError`（`McpClientTest.ToolOutputSchemaValidation`）。超时不看 `RequestOptions::timeout`，`CallTool` 用 `input_required_config->round_timeout`（默认 600s，`src/client/McpClient.cpp:1335-1337`）；收到 `HeaderMismatch` 时清缓存、重取一次 `tools/list` 再原样重试（`:1343-1349`）。
+`isError` 只是结果字段，反序列化时原样落到 `CallToolResult::is_error`（`src/core/McpTypesResults.cpp`）。服务端把 `structuredContent` 与工具声明的 `outputSchema` 对不上时直接转成 `InvalidParams`（`src/server/McpServer.cpp`），客户端侧表现为 `CallTool` 抛 `McpError`（`McpClientTest.ToolOutputSchemaValidation`）。超时不看 `RequestOptions::timeout`，`CallTool` 用 `input_required_config->round_timeout`（默认 600s，`src/client/McpClient.cpp`）；收到 `HeaderMismatch` 时清缓存、重取一次 `tools/list` 再原样重试。
 
 ## 第四步：读五种内容变体
 
@@ -51,20 +51,20 @@
 | `EmbeddedResource` | `resource` | `resource`（再按 `text`／`blob` 判别） | 内联的资源内容 |
 | `ResourceLink` | `resource_link` | `uri`、`name` | 只是引用，要再发 `resources/read` |
 
-分派靠 `type` 字符串，认不出即抛 `DeserializeFailed`（`src/core/Content.cpp:282-291`）；`ResourceContents` 靠 `text`／`blob` 字段是否存在判别，两者都缺同样抛 `DeserializeFailed`（`src/core/Content.cpp:120-126`）。用 `std::get_if<T>(&item)` 取，`structured_content` 是裸 `JsonValue`，客户端不做任何校验，按需 `Find(...)` 或 `Dump()`。
+分派靠 `type` 字符串，认不出即抛 `DeserializeFailed`（`src/core/Content.cpp`）；`ResourceContents` 靠 `text`／`blob` 字段是否存在判别，两者都缺同样抛 `DeserializeFailed`（`src/core/Content.cpp`）。用 `std::get_if<T>(&item)` 取，`structured_content` 是裸 `JsonValue`，客户端不做任何校验，按需 `Find(...)` 或 `Dump()`。
 
 ## 第五步：列资源与读资源
 
 <<< @/snippets/call-tools-and-read-resources.cpp#list-resources
 <<< @/snippets/call-tools-and-read-resources.cpp#read-resource
 
-`ListResources`／`ListResourcesAll` 与工具侧同构；模板列表条目给的是 `uri_template` 字段（`ResourceTemplate`）。客户端**没有**模板展开：`src/detail/UriTemplate.hpp` 的 RFC 6570 匹配只在服务端跑，你得自己把 `docs://users/{userId}/profile` 拼成字面 URI 再 `ReadResource`（`include/mcp/McpTypes.hpp:74-82`、`src/client/` 内无任何模板展开调用）。读取结果的每个 `contents` 条目都带自己的 `uri`，文本走 `TextResourceContents::text`，二进制走 `BlobResourceContents::blob`——base64 原样给你，SDK 既不解码也不校验。
+`ListResources`／`ListResourcesAll` 与工具侧同构；模板列表条目给的是 `uri_template` 字段（`ResourceTemplate`）。客户端**没有**模板展开：`src/detail/UriTemplate.hpp` 的 RFC 6570 匹配只在服务端跑，你得自己把 `docs://users/{userId}/profile` 拼成字面 URI 再 `ReadResource`（`include/mcp/McpTypes.hpp`、`src/client/` 内无任何模板展开调用）。读取结果的每个 `contents` 条目都带自己的 `uri`，文本走 `TextResourceContents::text`，二进制走 `BlobResourceContents::blob`——base64 原样给你，SDK 既不解码也不校验。
 
 ## 第六步：缓存、新鲜度与 etag
 
 <<< @/snippets/call-tools-and-read-resources.cpp#cache-modes
 
-`ReadResource` 是唯一吃 `CacheableRequestOptions` 的资源方法，`ListTools`／`ListResources`／`ListPrompts` 只能走默认读取（`src/client/McpClient.cpp:1441-1468`、`1215-1235`）：
+`ReadResource` 是唯一吃 `CacheableRequestOptions` 的资源方法，`ListTools`／`ListResources`／`ListPrompts` 只能走默认读取（`src/client/McpClient.cpp`）：
 
 | `cache_mode` | 读缓存 | 写缓存 | 用途 |
 |---|---|---|---|
@@ -72,15 +72,15 @@
 | `"bypass"` | 不读 | 不写 | 拿一次绝对真值 |
 | `"refresh"` | 不读 | 写 | 内容已变，强制回源并更新缓存 |
 
-只有服务端在响应里给了 `cacheHint.ttlMs > 0` 才真的写入缓存（`src/client/McpClient.cpp:1145-1163`），TTL 上限 24 小时（`src/detail/ResponseCache.hpp:23`、`:42`）；`cacheScope` 为 `"private"` 时条目按 `cache_auth_context` 的返回值分区，上下文一变就清空全部私有条目（`src/client/McpClient.cpp:1155-1174`、`McpClientTest.PrivateCachePartitionedByAuthContext`）。etag 复用还额外受一个**进程级**开关约束，而同进程里 `McpServer` 会按自己的 `ServerOptions::enable_etag_cache` 改写它（`src/core/McpTypesResults.cpp:50`、`src/server/McpServer.cpp:661`、`src/client/McpClient.cpp:1178`）。
+只有服务端在响应里给了 `cacheHint.ttlMs > 0` 才真的写入缓存（`src/client/McpClient.cpp`），TTL 上限 24 小时（`src/detail/ResponseCache.hpp`）；`cacheScope` 为 `"private"` 时条目按 `cache_auth_context` 的返回值分区，上下文一变就清空全部私有条目（`src/client/McpClient.cpp`、`McpClientTest.PrivateCachePartitionedByAuthContext`）。etag 复用还额外受一个**进程级**开关约束，而同进程里 `McpServer` 会按自己的 `ServerOptions::enable_etag_cache` 改写它（`src/core/McpTypesResults.cpp`、`src/server/McpServer.cpp`、`src/client/McpClient.cpp`）。
 
 ## 第七步：订阅资源更新
 
 <<< @/snippets/call-tools-and-read-resources.cpp#subscribe-updates
 
-两个时代的入口不同：legacy 用 `SubscribeResource(uri)` 发 `resources/subscribe`（60s 超时，走 `DoSendRequest`，错误抛 `McpError` 且丢 `data`，`src/client/McpClient.cpp:1472-1479`）；modern 用 `SubscribeAsync(params)` 发 `subscriptions/listen`，并等 `_meta` 里带同一订阅 id 的 acknowledged 帧——响应先到且是错误就原样抛，5000ms 内等不到帧抛 `InternalError`（`src/client/McpClient.cpp:1927-1990`）。跨时代调用会被对端的 era 校验挡下并回 `MethodNotFound`（`src/protocol/WireCodec.cpp:24-39`、`src/protocol/McpSessionHandler.cpp:414-417`）。
+两个时代的入口不同：legacy 用 `SubscribeResource(uri)` 发 `resources/subscribe`（60s 超时，走 `DoSendRequest`，错误抛 `McpError` 且丢 `data`，`src/client/McpClient.cpp`）；modern 用 `SubscribeAsync(params)` 发 `subscriptions/listen`，并等 `_meta` 里带同一订阅 id 的 acknowledged 帧——响应先到且是错误就原样抛，5000ms 内等不到帧抛 `InternalError`（`src/client/McpClient.cpp`）。跨时代调用会被对端的 era 校验挡下并回 `MethodNotFound`（`src/protocol/WireCodec.cpp`、`src/protocol/McpSessionHandler.cpp`）。
 
-更新到达后，内置处理器会把 `resources/updated` 里那个 URI 的缓存条目失效（`src/client/McpClient.cpp:757-766`），`*_list_changed` 则清全表（`:751-756`）。前提是你没有用同名 `SetNotificationHandler()` 顶掉它们——那张表每个方法只有一个槽位（`src/protocol/McpSessionHandler.cpp:1193-1196`）。
+更新到达后，内置处理器会把 `resources/updated` 里那个 URI 的缓存条目失效（`src/client/McpClient.cpp`），`*_list_changed` 则清全表。前提是你没有用同名 `SetNotificationHandler()` 顶掉它们——那张表每个方法只有一个槽位（`src/protocol/McpSessionHandler.cpp`）。
 
 ## 进度回调
 
@@ -90,7 +90,7 @@
 
 ## 完整代码
 
-可编译的完整文件是 `docs/snippets/call-tools-and-read-resources.cpp`，区域名依次为 `list-tools`、`read-content`、`required-arguments`、`call-tool`、`progress`、`list-resources`、`read-resource`、`cache-modes`、`subscribe-updates`；`progress` 区域演示 `RequestOptions::on_progress`（非空即自动登记进度 token 并在返回时摘除，同时续期该请求的超时，`src/client/McpClient.cpp:937-973`、`1323-1329`）。
+可编译的完整文件是 `docs/snippets/call-tools-and-read-resources.cpp`，区域名依次为 `list-tools`、`read-content`、`required-arguments`、`call-tool`、`progress`、`list-resources`、`read-resource`、`cache-modes`、`subscribe-updates`；`progress` 区域演示 `RequestOptions::on_progress`（非空即自动登记进度 token 并在返回时摘除，同时续期该请求的超时，`src/client/McpClient.cpp`）。
 
 ## 验证
 
@@ -124,10 +124,10 @@ ctest --preset debug -R 'McpClientTest\.(ListToolsAutoPaginates|ListToolsAllAggr
 
 | 维度 | legacy（早于 2026-07-28） | modern（2026-07-28 及以后） |
 |---|---|---|
-| `tools/list`、`resources/list`、`resources/templates/list`、`resources/read`、`tools/call` | 双时代同名同形 | 同左，但响应必须带 `resultType`，列表类必须为 `complete`（`src/protocol/WireCodec.cpp:205-221`） |
-| `cacheHint` 形状 | 对象 `cacheHint{ttlMs,cacheScope}` | 编码时摊平成顶层 `ttlMs`／`cacheScope` 并删掉 `cacheHint`；客户端两种形状都读（`src/protocol/WireCodec.cpp:255-269`、`src/client/McpClient.cpp:92-104`） |
-| 资源订阅 | `resources/subscribe`／`unsubscribe` | `subscriptions/listen` + acknowledged 帧，旧方法不在方法集（`src/protocol/WireCodec.cpp:24-39`） |
-| 内部错误码 | 原样透出 | `RequestTimeout`／`ConnectionRefused`／`TlsHandshakeFailed` 被改写为 `InternalError`（`src/protocol/WireCodec.cpp:271-283`） |
+| `tools/list`、`resources/list`、`resources/templates/list`、`resources/read`、`tools/call` | 双时代同名同形 | 同左，但响应必须带 `resultType`，列表类必须为 `complete`（`src/protocol/WireCodec.cpp`） |
+| `cacheHint` 形状 | 对象 `cacheHint{ttlMs,cacheScope}` | 编码时摊平成顶层 `ttlMs`／`cacheScope` 并删掉 `cacheHint`；客户端两种形状都读（`src/protocol/WireCodec.cpp`、`src/client/McpClient.cpp`） |
+| 资源订阅 | `resources/subscribe`／`unsubscribe` | `subscriptions/listen` + acknowledged 帧，旧方法不在方法集（`src/protocol/WireCodec.cpp`） |
+| 内部错误码 | 原样透出 | `RequestTimeout`／`ConnectionRefused`／`TlsHandshakeFailed` 被改写为 `InternalError`（`src/protocol/WireCodec.cpp`） |
 
 ## 常见错误
 
