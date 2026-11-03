@@ -2,6 +2,7 @@
 #include <mcp/McpError.hpp>
 #include <detail/JsonSerializer.hpp>
 
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -19,17 +20,17 @@ JsonValue ParseDocument(std::string_view json);
 namespace {
 
 std::string JsonValueFormatDoubleFallback(double d) {
-    char buf[64];
-    int len = std::snprintf(buf, sizeof(buf), "%.*g",
+    std::array<char, 64> buf;
+    int len = std::snprintf(buf.data(), buf.size(), "%.*g",
         std::numeric_limits<double>::max_digits10, d);
-    return std::string(buf, static_cast<size_t>(len));
+    return std::string(buf.data(), static_cast<size_t>(len));
 }
 
 std::string JsonValueFormatDouble(double d) {
 #if defined(_MSC_VER) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11) || defined(__cpp_lib_to_chars)
-    char buf[64];
-    auto res = std::to_chars(buf, buf + sizeof(buf), d, std::chars_format::general);
-    if (res.ec == std::errc()) return std::string(buf, res.ptr);
+    std::array<char, 64> buf;
+    auto res = std::to_chars(buf.data(), buf.data() + buf.size(), d, std::chars_format::general);
+    if (res.ec == std::errc()) return std::string(buf.data(), res.ptr);
 #endif
     return JsonValueFormatDoubleFallback(d);
 }
