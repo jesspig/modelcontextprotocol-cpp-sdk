@@ -95,6 +95,9 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     s.fd_.store(fd);
     s.closed_.store(false);
     s.eof_.store(false);
+    int status_flags = ::fcntl(fd, F_GETFL, 0);
+    if (status_flags >= 0)
+        ::fcntl(fd, F_SETFL, status_flags | O_NONBLOCK);
     EnableNoSigpipe(fd);
     MarkCloseOnExec(fd);
     return s;
