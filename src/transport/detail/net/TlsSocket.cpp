@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <string>
 
@@ -52,6 +53,9 @@ SSL_CTX* GetSharedCtx() {
         SSL_CTX* created = SSL_CTX_new(TLS_client_method());
         if (created != nullptr) {
             SSL_CTX_set_default_verify_paths(created);
+            const char* cert_file = std::getenv("SSL_CERT_FILE");
+            if (cert_file != nullptr && *cert_file != '\0')
+                SSL_CTX_load_verify_locations(created, cert_file, nullptr);
             SSL_CTX_set_min_proto_version(created, TLS1_2_VERSION);
         }
         return created;
