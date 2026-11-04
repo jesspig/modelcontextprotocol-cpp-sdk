@@ -46,7 +46,7 @@ resource: tests/CMakeLists.txt
 - [previous_public_api.cpp](../tests/compat/previous_public_api.cpp) 的 baseline 翻译单元必须编译通过，覆盖 0.3.9 新写法、接口默认虚函数与主要公共类型。
 - 文件内每个 `MCP_COMPAT_PROBE_*` 探针由 [run_compat_smoke.cmake](../tests/compat/run_compat_smoke.cmake) 单独以编译器语法检查模式编译；[expected_breaks.txt](../tests/compat/expected_breaks.txt) 列出的已知破坏必须失败。
 - allowlist 外的探针编译失败、已知探针意外编译通过、allowlist 条目找不到对应探针，都会使目标失败。`FileRef` 严格反序列化与 `ResourceLink` 必填 `name` 由 `mcp-compat-runtime` 运行时检查。
-- 命令：`cmake --build --preset debug --target mcp-compat-smoke`。2026-10-31 实测 baseline 编译通过、12 个已知破坏全部按预期失败、运行时检查通过；移除 allowlist 中 `GET_CAPABILITIES_SIGNATURE` 的负向对照以退出码 1 失败，证明非 allowlist 失败会拦截。集成分支全量 `ctest` 结果见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)。
+- 命令：`cmake --build --preset debug --target mcp-compat-smoke`。2026-10-31 实测 baseline 编译通过、12 个已知破坏全部按预期失败、运行时检查通过；移除 allowlist 中 `GET_CAPABILITIES_SIGNATURE` 的负向对照以退出码 1 失败，证明非 allowlist 失败会拦截。集成分支全量 `ctest` 结果见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)。CI 中该门禁改由 ubuntu debug 的 gcc 档执行：clang 18 对 `std::optional` 内嵌套且带默认成员初始化的配置类型存在 `is_constructible` 误判，会把基线 TU 的无参 `emplace()` 误拒；clang 21/22 与 gcc 14 均能编译基线 TU，详见 [/changelog/2026-11-04-log.md](/changelog/2026-11-04-log.md)。
 
 ## 测试注意点
 

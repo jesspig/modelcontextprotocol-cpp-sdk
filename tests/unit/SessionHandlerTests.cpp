@@ -12,8 +12,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -43,6 +45,26 @@ struct HandlerPair {
         client->Close();
         server->Close();
     }
+};
+
+class DeferredResponse {
+public:
+    void Capture(std::promise<JsonValue> response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        response_ = std::make_shared<std::promise<JsonValue>>(std::move(response));
+        captured_.notify_all();
+    }
+
+    std::shared_ptr<std::promise<JsonValue>> Await(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        captured_.wait_for(lock, timeout, [this] { return response_ != nullptr; });
+        return response_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable captured_;
+    std::shared_ptr<std::promise<JsonValue>> response_;
 };
 
 RequestMeta ModernMeta() {
@@ -286,11 +308,10 @@ TEST(SessionHandlerTest, ErrorResponseSatisfiesFutureContract) {
 TEST(SessionHandlerTest, ProgressNotificationExtendsDeadline) {
     HandlerPair hp;
 
-    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    DeferredResponse held;
     hp.server->SetRequestHandler(methods::kCallTool,
-        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            held_promise =
-                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        [&held](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held.Capture(std::move(p));
         });
 
     hp.client->SetNotificationHandler(notifications::kProgress,
@@ -317,7 +338,9 @@ TEST(SessionHandlerTest, ProgressNotificationExtendsDeadline) {
     EXPECT_EQ(future.wait_for(std::chrono::milliseconds(1500)),
               std::future_status::timeout);
 
-    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    auto response = held.Await(std::chrono::seconds(3));
+    ASSERT_NE(response, nullptr);
+    response->set_value(JsonValue(JsonValue::object_tag));
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     auto result = future.get();
     EXPECT_FALSE(result.Contains("code"));
@@ -532,10 +555,10 @@ TEST(SessionHandlerTest, CloseCompletesHeldRequestsAndJoinsWorker) {
 TEST(SessionHandlerTest, IntProgressTokenExtendsDeadline) {
     HandlerPair hp;
 
-    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    DeferredResponse held;
     hp.server->SetRequestHandler(methods::kCallTool,
-        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            held_promise = std::make_shared<std::promise<JsonValue>>(std::move(p));
+        [&held](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held.Capture(std::move(p));
         });
 
     hp.client->SetNotificationHandler(notifications::kProgress,
@@ -562,7 +585,9 @@ TEST(SessionHandlerTest, IntProgressTokenExtendsDeadline) {
     EXPECT_EQ(future.wait_for(std::chrono::milliseconds(800)),
               std::future_status::timeout);
 
-    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    auto response = held.Await(std::chrono::seconds(3));
+    ASSERT_NE(response, nullptr);
+    response->set_value(JsonValue(JsonValue::object_tag));
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     EXPECT_FALSE(future.get().Contains("code"));
 }
@@ -837,11 +862,10 @@ TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
 TEST(SessionHandlerTest, TotalTimeoutDisabledAllowsProgressExtension) {
     HandlerPair hp;
 
-    std::shared_ptr<std::promise<JsonValue>> held_promise;
+    DeferredResponse held;
     hp.server->SetRequestHandler(methods::kCallTool,
-        [&held_promise](const JsonRpcRequest&, std::promise<JsonValue> p) {
-            held_promise =
-                std::make_shared<std::promise<JsonValue>>(std::move(p));
+        [&held](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            held.Capture(std::move(p));
         });
 
     hp.client->SetNotificationHandler(notifications::kProgress,
@@ -871,7 +895,9 @@ TEST(SessionHandlerTest, TotalTimeoutDisabledAllowsProgressExtension) {
     EXPECT_EQ(future.wait_for(std::chrono::milliseconds(300)),
               std::future_status::timeout);
 
-    held_promise->set_value(JsonValue(JsonValue::object_tag));
+    auto response = held.Await(std::chrono::seconds(3));
+    ASSERT_NE(response, nullptr);
+    response->set_value(JsonValue(JsonValue::object_tag));
     ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     EXPECT_FALSE(future.get().Contains("code"));
 }

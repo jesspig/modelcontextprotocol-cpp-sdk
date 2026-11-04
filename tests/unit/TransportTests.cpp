@@ -1387,16 +1387,19 @@ X509* CreateIpSanCertificate(EVP_PKEY* key) {
     X509_gmtime_adj(X509_getm_notBefore(cert), 0);
     X509_gmtime_adj(X509_getm_notAfter(cert), 3600);
 
-    X509_NAME* name = X509_get_subject_name(cert);
+    X509_NAME* name = X509_NAME_new();
     if (name == nullptr ||
         X509_NAME_add_entry_by_txt(
             name, "CN", MBSTRING_ASC,
             reinterpret_cast<const unsigned char*>("localhost"), -1, -1, 0) != 1 ||
+        X509_set_subject_name(cert, name) != 1 ||
         X509_set_issuer_name(cert, name) != 1 ||
         X509_set_pubkey(cert, key) != 1) {
+        X509_NAME_free(name);
         X509_free(cert);
         return nullptr;
     }
+    X509_NAME_free(name);
 
     X509V3_CTX context{};
     X509V3_set_ctx_nodb(&context);
