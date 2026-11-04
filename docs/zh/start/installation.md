@@ -37,14 +37,14 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/jesspig/modelcontextprotocol-cpp-sdk.git
-    GIT_TAG        0.3.10
+    GIT_TAG        0.3.11
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-`GIT_TAG` 建议锁 tag（`0.3.10`）而非分支，取最新开发线才用 `master`。库之间是 PUBLIC 传递依赖，链 `mcp-client` 或 `mcp-server` 就够了，不必手写整条链。
+`GIT_TAG` 建议锁 tag（`0.3.11`）而非分支，取最新开发线才用 `master`。库之间是 PUBLIC 传递依赖，链 `mcp-client` 或 `mcp-server` 就够了，不必手写整条链。
 
 ### 方式二：安装后 find_package
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-期望：configure 打印 `[mcp] SDK version: 0.3.10` 与 OpenSSL 档位结论；构建零错误；`ctest` 全量通过（当前规模 18 个测试目标、Windows 本机注册 982 例）。只想验证库能链上，就写一个只 `#include <mcp/client/McpClient.hpp>` 并 `target_link_libraries(... mcp-client)` 的最小可执行文件构建一次。
+期望：configure 打印 `[mcp] SDK version: 0.3.11` 与 OpenSSL 档位结论；构建零错误；`ctest` 全量通过（当前规模 18 个测试目标、Windows 本机注册 1019 例）。只想验证库能链上，就写一个只 `#include <mcp/client/McpClient.hpp>` 并 `target_link_libraries(... mcp-client)` 的最小可执行文件构建一次。
 
 ## 下一步
 

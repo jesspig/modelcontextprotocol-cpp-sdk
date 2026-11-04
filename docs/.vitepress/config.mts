@@ -28,6 +28,7 @@ const en = {
       { text: 'Transports', link: '/en/learn/transports' },
       { text: 'Protocol Versions', link: '/en/learn/protocol-versions' },
       { text: 'Extensions', link: '/en/learn/extensions' },
+      { text: 'Deprecation Registry', link: '/en/learn/compatibility' },
     ]},
     { text: 'How-to · Server', items: [
       { text: 'Register a tool', link: '/en/howto/register-a-tool' },
@@ -73,6 +74,7 @@ const en = {
     { text: 'Migration', items: [
       { text: '0.3.9 Migration Guide', link: '/en/migration/0.3.9' },
       { text: '0.3.10 Release Notes', link: '/en/migration/0.3.10' },
+      { text: '0.3.11 Release Notes', link: '/en/migration/0.3.11' },
     ]},
   ],
 }
@@ -96,6 +98,7 @@ const zh = {
       { text: '传输层', link: '/zh/learn/transports' },
       { text: '协议版本', link: '/zh/learn/protocol-versions' },
       { text: '扩展', link: '/zh/learn/extensions' },
+      { text: '弃用登记表', link: '/zh/learn/compatibility' },
     ]},
     { text: '任务手册 · 服务端', items: [
       { text: '注册一个工具', link: '/zh/howto/register-a-tool' },
@@ -141,6 +144,7 @@ const zh = {
     { text: '迁移', items: [
       { text: '0.3.9 迁移指南', link: '/zh/migration/0.3.9' },
       { text: '0.3.10 发布说明', link: '/zh/migration/0.3.10' },
+      { text: '0.3.11 发布说明', link: '/zh/migration/0.3.11' },
     ]},
   ],
 }
