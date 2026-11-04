@@ -147,8 +147,8 @@ jobs:
           cmake --preset debug -DMCP_BUILD_EXAMPLES=ON
           cmake --build --preset debug --target EchoServer WeatherServer SimpleClient
 
-      - name: Compat smoke
-        if: runner.os == 'Linux' && matrix.build_type == 'debug' && matrix.compiler != 'gcc'
+      - name: Compat smoke (gcc)
+        if: runner.os == 'Linux' && matrix.build_type == 'debug' && matrix.compiler == 'gcc'
         run: cmake --build --preset debug --target mcp-compat-smoke
 
   sanitize:
