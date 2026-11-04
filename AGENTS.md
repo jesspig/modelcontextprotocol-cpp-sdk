@@ -15,7 +15,7 @@ ctest --preset debug --output-on-failure
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`。
 - `-DMCP_WERROR=ON` 才开警告即错误（CI 自动加，本地默认关）。
 - configure 无第三方拉取；唯一可选系统依赖是 OpenSSL，由 `-DMCP_WITH_OPENSSL=AUTO|ON|OFF`（默认 `AUTO`）控制——`AUTO` 按 `find_package(OpenSSL)` 结果启用，`ON` 未找到即 configure 失败，`OFF` 强制禁用（未启用则禁用 TLS；PKCE 随机源回退 `BCryptGenRandom`/`random_device`，SHA-256 恒为内置实现）。支持 OpenSSL 3.x/4.x；不支持的主版本 configure 失败，不静默关闭 TLS。
-- 验证全量：`ctest --test-dir build/debug -N` 看实际用例数。本机 Windows、`MCP_WITH_OPENSSL=AUTO` 未探到 OpenSSL（TLS 关闭）这一档实测 **18 目标 / 982 用例**；静态行首 `TEST/TEST_F/TEST_P` **992**，差的 10 个是条件编译用例——9 个 `#ifndef _WIN32` 的 POSIX 专属（`FileTokenCacheTest` 4、`SpawnTest.Posix*` 3、`TransportTest.Stdio*` 2）+ 1 个 `#ifdef MCP_HAVE_OPENSSL` 的 `TlsSocketTest.HandshakeAndReadFirstFrame`；静态断言 token **4654**（口径 `tests/**/*.cpp` 逐匹配）。明细见 [wiki/tests.md](wiki/tests.md)。
+- 验证全量：`ctest --test-dir build/debug -N` 看实际用例数。本机 Windows、`MCP_WITH_OPENSSL=AUTO` 未探到 OpenSSL（TLS 关闭）这一档实测 **18 目标 / 1019 用例**；静态行首 `TEST/TEST_F/TEST_P` **1030**，差的 11 个是条件编译用例——9 个 `#ifndef _WIN32` 的 POSIX 专属（`FileTokenCacheTest` 4、`SpawnTest.Posix*` 3、`TransportTest.Stdio*` 2）+ 2 个 `#ifdef MCP_HAVE_OPENSSL` 的 TLS 专属（`TlsSocketTest.HandshakeAndReadFirstFrame`、`TlsSocketTest.IpSanCertificateVerifies`）；静态断言 token **4873**（口径 `tests/**/*.cpp` 逐匹配）。明细见 [wiki/tests.md](wiki/tests.md)。
 - 测试栈为 googletest（子模块 `third_party/googletest`）：套件 `TEST(XxxTest, CaseName)`，断言 `EXPECT_*/ASSERT_*`，测试目标链 `mcp-test-support` + `GTest::gtest_main`，注册统一走 `mcp_discover_tests`。
 - `WireCodec::ValidateResponse`/`StampOutgoingRequest` 生产代码无调用者但**有测试守护**——不是死代码，勿删。
 - 集成测试超时护栏：`MCP_RUN_WITH_TIMEOUT`（`tests/support/include/mcp/test/McpTimeout.hpp`，默认 10s）——超时打印 Failure 并以 `std::_Exit(EXIT_FAILURE)` 硬退出（整进程终止，非"跳过该用例继续跑"），勿改回永久阻塞。
@@ -66,7 +66,7 @@ ctest --preset debug --output-on-failure
 
 ## 项目知识库
 
-源码知识库在 `wiki/`（面向源码理解，与 `docs/zh`、`docs/en` 在线文档分离），入口 [wiki/index.md](wiki/index.md)。当前基线为 18 个测试目标、982 个 ctest 用例（本机 Windows 且 OpenSSL 未启用这一档；静态 992，差 10 = 9 个 POSIX 专属 + 1 个 TLS 专属）、4654 个源码断言 token。改动落地后及时更新对应页面并记 changelog，不推迟到提交前统一处理。
+源码知识库在 `wiki/`（面向源码理解，与 `docs/zh`、`docs/en` 在线文档分离），入口 [wiki/index.md](wiki/index.md)。当前基线为 18 个测试目标、1019 个 ctest 用例（本机 Windows 且 OpenSSL 未启用这一档；静态 1030，差 11 = 9 个 POSIX 专属 + 2 个 TLS 专属）、4873 个源码断言 token。改动落地后及时更新对应页面并记 changelog，不推迟到提交前统一处理。
 
 - **核查**：更新前 `git status` 与 `git diff HEAD` 对照全部实际变更（含用户手动修改），禁止凭对话记忆；无法核实处标 `> [!todo] 待补充`。彻底清除过时描述，不留废弃标记。
 - **frontmatter**：概念页（modules/classes/transports/concepts）必须含 YAML frontmatter——`type` 必填（同类一致），推荐 `title`/`description`/`tags`/`timestamp`（ISO 8601 真实时间，`Get-Date` 获取，仅内容实际变更时更新）；对应源码资产加 `resource`。`index.md` 与 `log.md` 为保留文件，无 frontmatter。

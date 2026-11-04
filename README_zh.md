@@ -222,8 +222,9 @@ auth.Authenticate();
 
 - [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)——0.3.8 → 0.3.9 公共头文件破坏性变更，逐项给出旧写法、新写法与影响。
 - [0.3.10 发布说明](docs/zh/migration/0.3.10.md)——新增 API、行为修复与限制；0.3.9 的破坏项保持，不恢复已删除字段。
+- [0.3.11 发布说明](docs/zh/migration/0.3.11.md)——契约属性、行为收紧项与弃用登记；`ResourceNotFound` 自 0.3.11 起弃用，0.4.0 移除。
 
-`mcp-compat-smoke` 目标会编译上一版公共 API，并按 `tests/compat/expected_breaks.txt` 允许已知破坏。运行 `cmake --build --preset debug --target mcp-compat-smoke`。
+`mcp-compat-smoke` 目标会编译上一版公共 API，并按 `tests/compat/expected_breaks.txt` 允许已知破坏。运行 `cmake --build --preset debug --target mcp-compat-smoke`。弃用项登记在 [弃用登记表](docs/zh/learn/compatibility.md)。
 
 ## 一致性测试
 
@@ -311,7 +312,7 @@ build/debug/examples/EchoServer/EchoServer
 
 ### 本轮破坏性变更
 
-按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)；下一 patch 的变化见 [0.3.10 发布说明](docs/zh/migration/0.3.10.md)。
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)；下一 patch 的变化见 [0.3.11 发布说明](docs/zh/migration/0.3.11.md)。
 
 - **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
 - **`_meta` 省略**——空的每请求 `_meta` 改为线上了省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。

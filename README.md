@@ -221,8 +221,9 @@ All C++ samples come from [`docs/snippets`](docs/snippets), which is compiled by
 
 - [0.3.9 migration guide](docs/en/migration/0.3.9.md) — 0.3.8 → 0.3.9 breaking changes with old/new forms and impact.
 - [0.3.10 release notes](docs/en/migration/0.3.10.md) — new APIs, behavior fixes, limits; the 0.3.9 breaks remain and are not restored.
+- [0.3.11 release notes](docs/en/migration/0.3.11.md) — contract attributes, stricter behavior, and deprecations; `ResourceNotFound` is deprecated since 0.3.11 and removed in 0.4.0.
 
-The `mcp-compat-smoke` target compiles the previous public API and allowlists known breaks in `tests/compat/expected_breaks.txt`. Run `cmake --build --preset debug --target mcp-compat-smoke`.
+The `mcp-compat-smoke` target compiles the previous public API and allowlists known breaks in `tests/compat/expected_breaks.txt`. Run `cmake --build --preset debug --target mcp-compat-smoke`. Deprecated items are registered in the [deprecation registry](docs/en/learn/compatibility.md).
 
 ## Conformance Tests
 
@@ -313,7 +314,7 @@ The following items are explicitly declared unsupported in this round; when a pe
 
 ### Breaking changes in this round
 
-Per the 2026-07-28 spec revision, each change is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](docs/en/migration/0.3.9.md) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.10 release notes](docs/en/migration/0.3.10.md) track the next patch.
+Per the 2026-07-28 spec revision, each change is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](docs/en/migration/0.3.9.md) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.11 release notes](docs/en/migration/0.3.11.md) track the next patch.
 
 - **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
 - **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.

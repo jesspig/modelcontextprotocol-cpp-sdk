@@ -37,14 +37,14 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/jesspig/modelcontextprotocol-cpp-sdk.git
-    GIT_TAG        0.3.10
+    GIT_TAG        0.3.11
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Prefer a tag (`0.3.10`) over a branch in `GIT_TAG`; use `master` only when you want the development line. Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
+Prefer a tag (`0.3.11`) over a branch in `GIT_TAG`; use `master` only when you want the development line. Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
 
 ### Option 2: install, then find_package
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect: configure prints `[mcp] SDK version: 0.3.10` plus the OpenSSL decision; the build completes without errors; `ctest` passes in full (currently 18 test targets, 982 registered cases on Windows). To verify linking only, build a minimal executable that just includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
+Expect: configure prints `[mcp] SDK version: 0.3.11` plus the OpenSSL decision; the build completes without errors; `ctest` passes in full (currently 18 test targets, 1019 registered cases on Windows). To verify linking only, build a minimal executable that just includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
 
 ## Next steps
 
