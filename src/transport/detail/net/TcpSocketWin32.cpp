@@ -95,6 +95,8 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     s.fd_.store(fd);
     s.closed_.store(false);
     s.eof_.store(false);
+    u_long nonblocking = 1;
+    ::ioctlsocket(fd, FIONBIO, &nonblocking);
     MarkNonInheritable(fd);
     return s;
 }
