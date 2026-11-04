@@ -3,11 +3,13 @@
 #include <transport/detail/net/TcpSocket.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -74,7 +76,8 @@ private:
     std::string host_;
     uint16_t port_ = 0;
     bool connected_ = false;
-    bool closed_ = false;
+    std::atomic<bool> closed_{false};
+    std::mutex socket_mutex_;
     std::size_t max_body_bytes_ = kMaxHttpResponseBytes;
 };
 

@@ -1,4 +1,5 @@
 #include <mcp/Capabilities.hpp>
+#include <mcp/McpError.hpp>
 #include <detail/JsonFields.hpp>
 #include <detail/JsonSerializer.hpp>
 
@@ -138,6 +139,10 @@ JsonValue SerializeServerCapabilities(const ServerCapabilities& v) {
 }
 
 ServerCapabilities DeserializeServerCapabilities(const JsonValue& j) {
+    if (!j.IsObject()) {
+        throw McpError(McpErrorCode::DeserializeFailed,
+            "server capabilities must be a JSON object");
+    }
     ServerCapabilities v;
     auto* t = j.Find(detail::kTools);
     if (t && t->IsObject()) v.tools = DeserializeToolsCapability(*t);
@@ -174,6 +179,10 @@ JsonValue SerializeClientCapabilities(const ClientCapabilities& v) {
 }
 
 ClientCapabilities DeserializeClientCapabilities(const JsonValue& j) {
+    if (!j.IsObject()) {
+        throw McpError(McpErrorCode::DeserializeFailed,
+            "client capabilities must be a JSON object");
+    }
     ClientCapabilities v;
     auto* rt = j.Find(detail::kRoots);
     if (rt && rt->IsObject()) v.roots = DeserializeRootsCapability(*rt);

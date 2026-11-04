@@ -67,6 +67,33 @@ inline bool SchemaCountValue(const JsonValue& v, size_t& out) {
     return false;
 }
 
+inline bool JsonSchemaValuesEqual(const JsonValue& a, const JsonValue& b) {
+    double an = 0.0;
+    double bn = 0.0;
+    if (SchemaNumberValue(a, an) && SchemaNumberValue(b, bn)) {
+        return an == bn;
+    }
+    if (a.IsArray() && b.IsArray()) {
+        const auto& a_items = a.GetArray();
+        const auto& b_items = b.GetArray();
+        if (a_items.size() != b_items.size()) return false;
+        for (size_t i = 0; i < a_items.size(); ++i) {
+            if (!JsonSchemaValuesEqual(a_items[i], b_items[i])) return false;
+        }
+        return true;
+    }
+    if (a.IsObject() && b.IsObject()) {
+        const auto& a_members = a.GetObject();
+        if (a_members.size() != b.GetObject().size()) return false;
+        for (const auto& [key, value] : a_members) {
+            const JsonValue* other = b.Find(key);
+            if (!other || !JsonSchemaValuesEqual(value, *other)) return false;
+        }
+        return true;
+    }
+    return a == b;
+}
+
 inline size_t Utf8CodePointLength(std::string_view text) {
     size_t count = 0;
     for (size_t i = 0; i < text.size();) {
@@ -215,7 +242,7 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
         if (!ref_ok) return false;
     }
     if (auto* c = schema.Find("const")) {
-        if (*c != instance) {
+        if (!JsonSchemaValuesEqual(*c, instance)) {
             error_out = "value does not match const";
             return false;
         }
@@ -223,7 +250,7 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
     if (auto* e = schema.Find("enum"); e && e->IsArray()) {
         bool found = false;
         for (const auto& opt : e->GetArray()) {
-            if (opt == instance) { found = true; break; }
+            if (JsonSchemaValuesEqual(opt, instance)) { found = true; break; }
         }
         if (!found) { error_out = "value not in enum"; return false; }
     }
@@ -431,7 +458,10 @@ inline bool ValidateJsonSchemaWithRoot(const JsonValue& instance, const JsonValu
         if (auto* u = schema.Find("uniqueItems"); u && u->IsBool() && u->GetBool()) {
             for (size_t i = 0; i < arr.size(); ++i) {
                 for (size_t j = i + 1; j < arr.size(); ++j) {
-                    if (arr[i] == arr[j]) { error_out = "array items not unique"; return false; }
+                    if (JsonSchemaValuesEqual(arr[i], arr[j])) {
+                        error_out = "array items not unique";
+                        return false;
+                    }
                 }
             }
         }

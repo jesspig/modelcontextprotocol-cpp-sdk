@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <shared_mutex>
 #include <string_view>
 
 #ifdef _WIN32
@@ -40,8 +41,8 @@ public:
     std::size_t Read(void* buf, std::size_t len, std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
     void Write(const void* buf, std::size_t len, std::chrono::milliseconds timeout = std::chrono::milliseconds(30000));
     void Close();
-    bool IsEof() const { return closed_.load() || eof_; }
-    bool IsConnected() const { return !closed_.load() && !eof_ && fd_.load() != kInvalidFd; }
+    bool IsEof() const { return closed_.load() || eof_.load(); }
+    bool IsConnected() const { return !closed_.load() && !eof_.load() && fd_.load() != kInvalidFd; }
 
     NativeFd NativeHandle() const { return fd_.load(); }
 
@@ -60,8 +61,9 @@ private:
     static constexpr int kInvalidFd = -1;
     std::atomic<int> fd_{-1};
 #endif
-    bool eof_ = false;
+    std::atomic<bool> eof_{false};
     std::atomic<bool> closed_{false};
+    mutable std::shared_mutex io_mutex_;
 };
 
 }}} // namespace mcp::detail::net

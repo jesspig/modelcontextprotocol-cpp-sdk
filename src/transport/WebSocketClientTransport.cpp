@@ -67,8 +67,8 @@ void WebSocketSessionTransport::Start() {
 
 void WebSocketSessionTransport::Close() {
     running_ = false;
-    ws_.SetCallbacks(nullptr, nullptr, nullptr);
     ws_.Close();
+    ws_.SetCallbacks(nullptr, nullptr, nullptr);
     if (channel_)
         channel_->Close();
     SetDisconnected();

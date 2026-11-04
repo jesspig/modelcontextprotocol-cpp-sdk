@@ -1,15 +1,15 @@
 ---
 type: Test Suite
 title: 测试体系
-description: 18 个测试目标（16 unit + integration/conformance），992 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，googletest v1.18.0 子模块；Windows 本机 ctest 注册 982——FileTokenCache 4 个 POSIX-only、TransportTests 1 个 TLS-only、ProcessTests 3 个 POSIX-only 与 stdio 进程测试 2 个 POSIX-only 条件用例不参与编译）；静态断言统计 4655；另有非 ctest 的 `mcp-compat-smoke` 兼容构建目标；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
+description: 18 个测试目标（16 unit + integration/conformance），1030 个测试用例（静态 `TEST/TEST_F/TEST_P` 口径，googletest v1.18.0 子模块；Windows 本机 ctest 注册 1019——FileTokenCache 4 个 POSIX-only、TransportTests 2 个 TLS-only、ProcessTests 3 个 POSIX-only 与 stdio 进程测试 2 个 POSIX-only 条件用例不参与编译）；静态断言统计 4873；另有非 ctest 的 `mcp-compat-smoke` 兼容构建目标；保留 MCP_RUN_WITH_TIMEOUT 超时护栏（超时硬退出）与 CurrentTestName 辅助。
 tags: [test, googletest, ctest, conformance, compat]
-timestamp: 2026-10-31T18:05:56+08:00
+timestamp: 2026-11-02T04:57:30+08:00
 resource: tests/CMakeLists.txt
 ---
 
 # 测试体系
 
-全部测试经 `mcp_discover_tests()`（[cmake/McpDiscoverTests.cmake](../cmake/McpDiscoverTests.cmake)，对 CMake `gtest_discover_tests` 的薄封装，逐用例 `TIMEOUT 120`）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(`/`TEST_P(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F|TEST_P)\('`，口径为 `tests/**/*.cpp`），现为 **992**；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，口径 `tests/**/*.cpp`），现为 **4655**。837 → 905 增量来自审计修复批次（批次 1 data-codec/io-lifecycle/delivery 归并后注册 851；wire-era +14 → 865、server-core +15 → 880、auth-security +14 → 894；收口项 +6 → 注册 900，含新增 `ResponseCacheTests.cpp` 并入 `mcp-core-tests`），全量 `ctest --preset debug` **900/900 全绿**（Windows 本机）；其后 905 → 950（+45 用例、+347 断言）来自 2026 协议修复批次（T-01..T-13），`ctest -N` 注册同步 900 → 945，静态 950 与 Windows 注册 945 之差仍为 5 个条件编译用例（见下表注）；最终 T-15/T-17 传输修复再 +2 用例（950 → 952、`ctest -N` 注册 945 → 947，断言 4399 → 4419），listen 生命周期修复再 +2 用例（952 → 954、注册 947 → 949、断言 4419 → 4429，其中 `mcp-server-tests` 删 2 个 result 断言、`mcp-client-tests` +1 用例/+3 断言、`mcp-streamable-http-tests` +1 用例/+9 断言），条件编译差仍为 5。T-04 请求取消批次再 +8 用例（`mcp-wire-codec-tests` 中 `SessionHandlerTests` +4、`mcp-client-tests` +4）；T-05 请求会话上下文批次再 +8 用例（`mcp-server-tests` +3、`mcp-streamable-http-tests` 中 `SessionStoreTests` +5）；T-02 进程 API 批新增第 18 个目标 `mcp-process-tests`（14 用例 / 57 断言）；T-03 stdio 进程生命周期批再 +7 用例 / +24 断言（`mcp-transport-tests` 中 `TransportTest::Stdio*`：stderr 文件/回调、Pid、树终止、并发连接、POSIX shutdown timeout 与无僵尸回收；其中 2 个 POSIX-only）。CI/conformance 修复批再 +1 用例 / +10 断言（`mcp-server-tests` 的 `McpServerTest.LegacyElicitResolvesCapabilitiesForSingleStatefulSession`，覆盖单一 stateful 会话下 legacy elicitation 的能力与协商版本回退解析）。集成分支静态 992、Windows 注册 982、断言 4655，覆盖取消/超时投递、raw 错误语义、stateful 多会话路由/并发 pending 隔离/DELETE/过期/SSE 与 EventStore 隔离/stateless 空会话 id、按会话协议状态与任务归属隔离、公共子进程 Spawn（参数/环境/重定向/Wait/Terminate/树终止/detached/回收）、stdio stderr/Pid/shutdown timeout/树终止与 POSIX 无僵尸回收。
+全部测试经 `mcp_discover_tests()`（[cmake/McpDiscoverTests.cmake](../cmake/McpDiscoverTests.cmake)，对 CMake `gtest_discover_tests` 的薄封装，逐用例 `TIMEOUT 120`）逐用例注册进 ctest。用例数为**静态口径**：逐文件行首 `TEST(`/`TEST_F(`/`TEST_P(` 计数（`git grep -c -E '^[[:space:]]*(TEST|TEST_F|TEST_P)\('`，口径为 `tests/**/*.cpp`），现为 **1030**；断言数同为静态统计（`\b(EXPECT|ASSERT)_[A-Z0-9_]+` 宏 token 计数，口径 `tests/**/*.cpp`），现为 **4873**。837 → 905 增量来自审计修复批次（批次 1 data-codec/io-lifecycle/delivery 归并后注册 851；wire-era +14 → 865、server-core +15 → 880、auth-security +14 → 894；收口项 +6 → 注册 900，含新增 `ResponseCacheTests.cpp` 并入 `mcp-core-tests`），全量 `ctest --preset debug` **900/900 全绿**（Windows 本机）；其后 905 → 950（+45 用例、+347 断言）来自 2026 协议修复批次（T-01..T-13），`ctest -N` 注册同步 900 → 945，静态 950 与 Windows 注册 945 之差仍为 5 个条件编译用例（见下表注）；最终 T-15/T-17 传输修复再 +2 用例（950 → 952、`ctest -N` 注册 945 → 947，断言 4399 → 4419），listen 生命周期修复再 +2 用例（952 → 954、注册 947 → 949、断言 4419 → 4429，其中 `mcp-server-tests` 删 2 个 result 断言、`mcp-client-tests` +1 用例/+3 断言、`mcp-streamable-http-tests` +1 用例/+9 断言），条件编译差仍为 5。T-04 请求取消批次再 +8 用例（`mcp-wire-codec-tests` 中 `SessionHandlerTests` +4、`mcp-client-tests` +4）；T-05 请求会话上下文批次再 +8 用例（`mcp-server-tests` +3、`mcp-streamable-http-tests` 中 `SessionStoreTests` +5）；T-02 进程 API 批新增第 18 个目标 `mcp-process-tests`（14 用例 / 57 断言）；T-03 stdio 进程生命周期批再 +7 用例 / +24 断言（`mcp-transport-tests` 中 `TransportTest::Stdio*`：stderr 文件/回调、Pid、树终止、并发连接、POSIX shutdown timeout 与无僵尸回收；其中 2 个 POSIX-only）。CI/conformance 修复批再 +1 用例 / +10 断言（`mcp-server-tests` 的 `McpServerTest.LegacyElicitResolvesCapabilitiesForSingleStatefulSession`，覆盖单一 stateful 会话下 legacy elicitation 的能力与协商版本回退解析）。0.3.11 审查修复批（ST-01..ST-02 共 9 条分支）后，静态 **1030** 用例 / **4873** 断言、Windows 注册 **1019**，全量 `ctest --preset debug` **1019/1019 全绿**（261.88s）；新增覆盖回调异常守卫、取消不污染出站、会话键隔离、响应队列上限、HTTP 停止/超时/SSE 帧完整/头部预算/重复头、socket 两级关闭、TLS IP SAN、CLOEXEC、SSE CRLF 分帧与长流、任务 TTL 与终态守卫、机密客户端认证、错误码弃用映射、缓存提示按会话、listen 幂等与上限、类型与等值语义、事件存储常数时间追加、`[[nodiscard]]` 与断言。
 
 目标数 18 → 17（本轮迁移删除 `mcp-framework-self-tests`）：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本轮 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）；其后 748 → 769（前瞻六开关批，见下）→ 874（+105，后续批次，同样全部并入既有目标，目标数仍 18，分布见上表；715 → 748 起始基线见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)）。
 
@@ -17,36 +17,36 @@ resource: tests/CMakeLists.txt
 
 | 目标 | 文件 | 用例 | 断言 |
 |------|------|------|------|
-| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests、ResponseCacheTests | 208 | 592 |
-| mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 83 | 409 |
-| mcp-server-tests | McpServerTests | 122 | 1009 |
+| mcp-core-tests | JsonRpcTests、McpTypesTests、JsonParserTests、LogTests、ResponseCacheTests | 210 | 603 |
+| mcp-wire-codec-tests | WireCodecTests、SessionHandlerTests、SpanHookTests | 90 | 443 |
+| mcp-server-tests | McpServerTests | 128 | 1049 |
 | mcp-client-tests | McpClientTests | 102 | 544 |
-| mcp-oauth-tests | OAuthTests | 63 | 283 |
-| mcp-transport-tests | TransportTests、MessageChannelTests | 20 | 86 |
+| mcp-oauth-tests | OAuthTests | 68 | 306 |
+| mcp-transport-tests | TransportTests、MessageChannelTests | 33 | 140 |
 | mcp-process-tests | ProcessTests | 14 | 57 |
 | mcp-net-tests | NetStackTests、WebSocketClientTests | 26 | 55 |
-| mcp-http-tests | HttpServerTests | 42 | 192 |
+| mcp-http-tests | HttpServerTests | 49 | 235 |
 | mcp-message-filter-tests | MessageFilterTests | 5 | 12 |
 | mcp-token-cache-tests | FileTokenCacheTests | 11 | 34 |
-| mcp-task-store-tests | FileTaskStoreTests | 22 | 161 |
-| mcp-event-store-tests | FileEventStoreTests | 11 | 48 |
+| mcp-task-store-tests | FileTaskStoreTests | 24 | 188 |
+| mcp-event-store-tests | FileEventStoreTests | 13 | 56 |
 | mcp-streamable-http-tests | StreamableHttpTransportTests、SessionStoreTests | 91 | 512 |
 | mcp-websocket-tests | WebSocketTransportTests | 2 | 5 |
 | mcp-uri-template-tests | UriTemplateTests | 21 | 133 |
 | mcp-integration-tests | ClientServerRoundTrip、Phase1InteropTests、Phase2ClosureTests | 19 | 113 |
-| mcp-conformance-tests | ProtocolConformance | 123 | 386 |
-| **合计** | | **992** | **4655** |
+| mcp-conformance-tests | ProtocolConformance | 124 | 388 |
+| **合计** | | **1030** | **4873** |
 
-注：`FileTokenCacheTests` 4 个 POSIX-only 用例（`#ifndef _WIN32`）、`TransportTests` 1 个 TLS-only 用例（`#ifdef MCP_HAVE_OPENSSL`）、`ProcessTests` 3 个 POSIX-only 用例（`#ifndef _WIN32`）与 stdio 进程测试 2 个 POSIX-only 用例（`StdioShutdownTimeoutHonored`、`StdioProcessReapedWithoutZombie`）在 Windows 本机不参与编译——静态 992 与 Windows `ctest -N` 注册 982 之差即此 10 个。
+注：`FileTokenCacheTests` 4 个 POSIX-only 用例（`#ifndef _WIN32`）、`TransportTests` 2 个 TLS-only 用例（`#ifdef MCP_HAVE_OPENSSL`：`HandshakeAndReadFirstFrame`、`IpSanCertificateVerifies`）、`ProcessTests` 3 个 POSIX-only 用例（`#ifndef _WIN32`）与 stdio 进程测试 2 个 POSIX-only 用例（`StdioShutdownTimeoutHonored`、`StdioProcessReapedWithoutZombie`）在 Windows 本机不参与编译——静态 **1030** 与 Windows `ctest -N` 注册 **1019** 之差即此 **11** 个。
 
 ## 兼容 smoke（非 ctest）
 
-`mcp-compat-smoke` 是构建目标而非 ctest 测试，不改变上述 18 个测试目标与 992 个静态用例计数。实现位于 [tests/compat/](../tests/compat/)：
+`mcp-compat-smoke` 是构建目标而非 ctest 测试，不改变上述 18 个测试目标与 1030 个静态用例计数。实现位于 [tests/compat/](../tests/compat/)：
 
 - [previous_public_api.cpp](../tests/compat/previous_public_api.cpp) 的 baseline 翻译单元必须编译通过，覆盖 0.3.9 新写法、接口默认虚函数与主要公共类型。
 - 文件内每个 `MCP_COMPAT_PROBE_*` 探针由 [run_compat_smoke.cmake](../tests/compat/run_compat_smoke.cmake) 单独以编译器语法检查模式编译；[expected_breaks.txt](../tests/compat/expected_breaks.txt) 列出的已知破坏必须失败。
 - allowlist 外的探针编译失败、已知探针意外编译通过、allowlist 条目找不到对应探针，都会使目标失败。`FileRef` 严格反序列化与 `ResourceLink` 必填 `name` 由 `mcp-compat-runtime` 运行时检查。
-- 命令：`cmake --build --preset debug --target mcp-compat-smoke`。2026-10-31 实测 baseline 编译通过、12 个已知破坏全部按预期失败、运行时检查通过；移除 allowlist 中 `GET_CAPABILITIES_SIGNATURE` 的负向对照以退出码 1 失败，证明非 allowlist 失败会拦截。集成分支全量 `ctest` 结果见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)。
+- 命令：`cmake --build --preset debug --target mcp-compat-smoke`。2026-10-31 实测 baseline 编译通过、12 个已知破坏全部按预期失败、运行时检查通过；移除 allowlist 中 `GET_CAPABILITIES_SIGNATURE` 的负向对照以退出码 1 失败，证明非 allowlist 失败会拦截。集成分支全量 `ctest` 结果见 [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md)。CI 中该门禁改由 ubuntu debug 的 gcc 档执行：clang 18 对 `std::optional` 内嵌套且带默认成员初始化的配置类型存在 `is_constructible` 误判，会把基线 TU 的无参 `emplace()` 误拒；clang 21/22 与 gcc 14 均能编译基线 TU，详见 [/changelog/2026-11-04-log.md](/changelog/2026-11-04-log.md)。
 
 ## 测试注意点
 
@@ -64,8 +64,10 @@ resource: tests/CMakeLists.txt
 - SEP-2243 参数头测试覆盖 `x-mcp-header` 的嵌套属性路径、非法 schema、标准 Base64 哨兵编码、服务端与 body 一致性校验、服务端结果响应头镜像，以及客户端只镜像已注解参数；`ClientOmitsMcpParamHeaders` 仅验证未注解参数不生成头
 - Span hook 测试覆盖未注入回归、服务端请求/传输边界、trace context 传递和拒绝请求的 Begin/End 配对，详见 [/concepts/span-hooks.md](/concepts/span-hooks.md)
 - 期三关键守护测试：Bearer 鉴权 9 用例（无头/非 Bearer 挑战、invalid_token、insufficient_scope、有效 token 透传、元数据端点匿名、未配置零回归、客户端 `auth_challenge_handler` 闭环成功与 scope 不足）；FileEventStore 10 用例（双实例共享、重启恢复、并发写、trim、净化文件名等）；SessionStore 5 用例（外部接管、未知 id 404 `-32009`）；MRTR 端到端 3 用例（`MrtrToolInputRequiredElicitationRoundTrip`、`MrtrMintedRequestStateRoundTrip`、`MrtrForgedRequestStateRejectedWithReason`）；`SendLoggingMessageEncodesLevelAsString`（wire 真 bug 回归）；`ListPromptsIncludesArguments`；`CompleteRequestParamsStandardShape`/`CompleteRequestParamsFlatShapeCompat`；显式能力声明 2 用例
-- 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 18 个测试目标和 992 个用例
-- 平台差异：Windows 本机注册 982，与静态 992 之差为 10 个条件编译用例（`FileTokenCacheTests` 4 个 POSIX-only + `TransportTests` 1 个 TLS-only + `ProcessTests` 3 个 POSIX-only + stdio 进程测试 2 个 POSIX-only，见上表注）；`_WIN32` 专属用例（如 `StreamableHttpTransportTest.PostSseStreamEofDeliversConnectionClosedError`，[StreamableHttpTransportTests.cpp:717-718](../tests/unit/StreamableHttpTransportTests.cpp)）只在 Windows 编译，Linux 注册总数随 `MCP_WITH_OPENSSL` 档位变化，属平台条件编译的正常结果
+- 非 ctest 基准：`tests/bench/TransportBench.cpp` 构建 `mcp-transport-bench`，覆盖 HTTP 头解析、body 吞吐、并发、延迟响应和连接复用；基准不计入上述 18 个测试目标和 1030 个用例
+- 并发端口抢占（`ba1c9b8`）：`PickFreePort` 先扫 `preferred..preferred+2000` 判空闲、再由传输层绑定，属 TOCTOU；同目标的两个 HTTP 用例并发时可选到同一端口，后绑者失败，表现为 `SetUp` 里 5 秒等不到 `initialized` 后断言失败（[Phase1InteropTests.cpp:187](../tests/integration/Phase1InteropTests.cpp)），**不是** `MCP_RUN_WITH_TIMEOUT` 触发——按超时护栏加宽预算的初版修法无效，已回退。现 `mcp_discover_tests` 支持向 `gtest_discover_tests` 追加属性，6 个会绑端口的目标（integration、oauth、transport、net、http、streamable-http，共 265 个用例）统一挂 `RESOURCE_LOCK mcp_bind_ports` 串行执行：Windows `-j 8` 单轮由 42.98s 增至 105.54s，改前 4 次并发跑 3 次失败且失败用例在 851/852 间移动，改后单轮与三轮重复均 982/982
+
+- 平台差异：Windows 本机注册 1019，与静态 1030 之差为 11 个条件编译用例（`FileTokenCacheTests` 4 个 POSIX-only + `TransportTests` 2 个 TLS-only + `ProcessTests` 3 个 POSIX-only + stdio 进程测试 2 个 POSIX-only，见上表注）；`_WIN32` 专属用例（如 `StreamableHttpTransportTest.PostSseStreamEofDeliversConnectionClosedError`，[StreamableHttpTransportTests.cpp:717-718](../tests/unit/StreamableHttpTransportTests.cpp)）只在 Windows 编译，Linux 注册总数随 `MCP_WITH_OPENSSL` 档位变化，属平台条件编译的正常结果
 - 本分支新增守护测试（均并入既有目标）：任务扩展——`WireCodec` 双时代集合与 `ValidateTaskHeaders` 缺 taskId/头失配、`McpServer` modern 头校验与通知抑制/`tasks/update` inputResponses 分支（互斥/状态门）/`tasks/result|list` 现代拒绝、任务存储新字段 roundtrip 与 `AdvanceTaskWithInput` 状态门、`McpClient` 未声明扩展收 task 抛 `HandlerError`/`UpdateTask` 第三参、`CreateTaskResult` 顶层/嵌套双形态；技能扩展——`Skill/SkillResources` 序列化 roundtrip、`RegisterSkill` 非法 uri 拒绝、目录视图派生与 `directoryRead` 门、客户端技能缓存（`use/bypass/refresh` + `max_age_ms`）；HTTP 加固——未知版本头 400 `-32022`、任务头 400、`initialize` 满存 503、会话闲置过期与 `SweepExpired`、EventStore 扫描追加与 10000 上限、监听流 5xx `GivenUp` 与 `retry:` 钳制（450–1000ms）、SSE `FlushSseBuffer` 尾块补派发；OAuth——`application_type` 注册透传、token `resource` 持久化与失配门、issuer 变更清注册/令牌、challenge 加固（超长/非法 URL 拒绝不抛）；服务端 audience 失配 401、客户端 403 仅 `insufficient_scope` 重试
 - 本批（G 系列冻结批）新增守护测试（均并入既有目标，无新目标）：服务端——`CreateTaskResultFlatNoNested`（2026 扁平无嵌套）/`TaskTimestampsPopulated`（创建即置双时间戳）/`ToolErrorMapsToCompleted`（`is_error` 结果入库落 Completed）/`ProtocolErrorMapsToFailedWithError`（`McpError` 按原码内联 error 落 Failed）/`PromptsGetInputRequired`/`ResourceReadInputRequired`（非工具 input_required + 自动签名）/`MetaReachesHandler`（顶层 `_meta` 合并进 params）；客户端——`FlatTaskResultPreferredOverNested`（双形态反序列化顶层优先）/`ElicitationApplyDefaults*`（`applyDefaults` 缺省回填：五字段/禁用透传/保留既有/拒绝忽略/嵌套与变体递归）/`MrtrElicitationApplyDefaultsFillsInputResponses`；传输——`RequestStreamHoldOpenDeliversProgressBeforeResult`/`RequestStreamHoldOpenDeliversMessageBeforeResult`（modern POST 常开按 token 路由缓冲）/`PlainRequestKeepsSingleWriteAndClose`（普通请求仍单写即关）
 - 实验开关门控矩阵（`ad547f9`，服务端 10 开关 / 客户端 3 开关默认全关，基线 748/3145 不动；详见 [/concepts/experimental-flags.md](/concepts/experimental-flags.md)；其后 769 → 874 桥接见下节，目标数始终 18）：

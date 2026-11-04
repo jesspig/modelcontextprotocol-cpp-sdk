@@ -31,7 +31,7 @@ namespace mcp {
 
 class MCP_API McpServer {
 public:
-    static std::unique_ptr<McpServer> Create(
+    [[nodiscard]] static std::unique_ptr<McpServer> Create(
         std::shared_ptr<ITransport> transport,
         const ServerOptions& options = {});
 
@@ -75,9 +75,9 @@ public:
     void RegisterSkill(Skill skill);
     void SetSkillsDirectoryRead(bool enabled);
 
-    std::future<ElicitResult> Elicit(const ElicitRequestParams& params,
+    [[nodiscard]] std::future<ElicitResult> Elicit(const ElicitRequestParams& params,
         std::string_view session_id = {});
-    std::future<ElicitResult> ElicitUrl(const std::string& url,
+    [[nodiscard]] std::future<ElicitResult> ElicitUrl(const std::string& url,
         const std::string& message,
         std::chrono::seconds timeout = std::chrono::seconds(600),
         std::string_view session_id = {});
@@ -100,21 +100,21 @@ public:
     void RegisterTrigger(const std::string& id,
                          std::vector<std::string> types,
                          const std::string& webhook_url);
-    bool UnregisterTrigger(const std::string& id);
+    [[nodiscard]] bool UnregisterTrigger(const std::string& id);
     void EmitTriggerEvent(const std::string& type, JsonValue data = {});
 
-    std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
-    std::shared_ptr<const ClientCapabilities> GetClientCapabilities(
+    [[nodiscard]] std::shared_ptr<const ClientCapabilities> GetClientCapabilities() const;
+    [[nodiscard]] std::shared_ptr<const ClientCapabilities> GetClientCapabilities(
         std::string_view session_id) const;
-    std::shared_ptr<const Implementation> GetClientInfo() const;
-    std::shared_ptr<const Implementation> GetClientInfo(
+    [[nodiscard]] std::shared_ptr<const Implementation> GetClientInfo() const;
+    [[nodiscard]] std::shared_ptr<const Implementation> GetClientInfo(
         std::string_view session_id) const;
     std::string GetNegotiatedProtocolVersion() const;
     std::string GetNegotiatedProtocolVersion(std::string_view session_id) const;
     ServerCapabilities GetCapabilities() const;
     ext::ServerCard GetServerCard() const;
-    bool IsMrtrSupported() const;
-    bool IsRunning() const;
+    [[nodiscard]] bool IsMrtrSupported() const;
+    [[nodiscard]] bool IsRunning() const;
     const std::string& SessionId() const { return session_id_; }
 
     McpSessionHandler& GetSessionHandler() { return *handler_; }
@@ -136,7 +136,7 @@ private:
     void DeriveCapabilities();
     void SendListChangedNotification(std::string_view method);
 
-    JsonValue BuildToolsJson();
+    ListToolsResult BuildToolsResult();
     std::vector<std::string> EffectiveSupportedVersions() const;
     Implementation ResolveServerInfo() const;
     CacheHint ResolveCacheHint(std::string_view method,
@@ -194,7 +194,7 @@ private:
 
     mutable std::shared_mutex registry_mutex_;
     std::map<std::string, std::shared_ptr<McpServerTool>, std::less<>> tools_;
-    std::optional<JsonValue> cached_tools_json_;
+    std::optional<ListToolsResult> cached_tools_;
     struct ResourceEntry {
         std::string name;
         std::string uri_pattern;

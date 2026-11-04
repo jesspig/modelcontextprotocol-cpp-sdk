@@ -1563,6 +1563,38 @@ RequestMeta MetaWithSubscriptionId(std::string_view subscription_id) {
 
 } // namespace
 
+TEST(McpServerTest, ExtensionsListConcurrentWithRegistration) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::atomic<bool> stop{false};
+    std::thread reader([&ctx, &stop] {
+        while (!stop.load()) {
+            auto future = ctx.client->SendRequest(methods::kListExtensions,
+                JsonValue(JsonValue::object_tag), {},
+                std::chrono::milliseconds(5000));
+            if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+                ADD_FAILURE() << "extensions/list timed out";
+                return;
+            }
+            auto resp = future.get();
+            EXPECT_FALSE(resp.Contains("code"));
+            EXPECT_TRUE(resp.Contains("extensions"));
+        }
+    });
+
+    for (int i = 0; i < 20; ++i) {
+        ctx.server->RegisterTool("concurrent_tool_" + std::to_string(i),
+            ToolOptions{},
+            [](const Ctx&) { return CallToolResult{}; });
+    }
+    stop.store(true);
+    reader.join();
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
 TEST(McpServerTest, SubscriptionsListenSendsAcknowledgedFirstFrame) {
     auto ctx = MakeModernServerWithClient();
     NegotiateModernVersion(ctx.server);
@@ -1632,6 +1664,80 @@ TEST(McpServerTest, SubscriptionsListenAcknowledgesHonoredFilter) {
     EXPECT_EQ(honored.notifications.resources_list_changed.value_or(false), true);
     ASSERT_EQ(honored.notifications.resource_subscriptions.size(), 1u);
     EXPECT_EQ(honored.notifications.resource_subscriptions[0], "resource://sub/1");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, SubscriptionsListenIsIdempotentPerClientId) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed_ids;
+    ctx.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&observed_mutex, &observed_ids](const JsonRpcNotification& n) {
+            std::string sid;
+            if (n.meta && n.meta->IsObject()) {
+                if (auto* v = n.meta->Find("io.modelcontextprotocol/subscriptionId");
+                    v && v->IsString()) {
+                    sid = v->GetString();
+                }
+            }
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed_ids.push_back(sid);
+        });
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        auto future = ctx.client->SendRequest(methods::kSubscribe,
+            SerializeSubscriptionsListenRequestParams(params),
+            MetaWithSubscriptionId("repeat-sub"),
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        EXPECT_FALSE(future.get().Contains("code"));
+    }
+
+    ctx.server->SendToolListChanged();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    std::lock_guard<std::mutex> lock(observed_mutex);
+    ASSERT_EQ(observed_ids.size(), size_t{1});
+    EXPECT_EQ(observed_ids[0], "repeat-sub");
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, SubscriptionsListenRejectsBeyondEntryLimit) {
+    auto ctx = MakeModernServerWithClient();
+    NegotiateModernVersion(ctx.server);
+
+    const std::size_t limit =
+        McpSessionHandler::kMaxSubscriptionEntriesPerSession;
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+    const auto serialized = SerializeSubscriptionsListenRequestParams(params);
+    for (std::size_t i = 0; i < limit; ++i) {
+        auto future = ctx.client->SendRequest(methods::kSubscribe, serialized,
+            MetaWithSubscriptionId("limit-sub-" + std::to_string(i)),
+            std::chrono::milliseconds(2000));
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(3)),
+                  std::future_status::ready);
+        EXPECT_FALSE(future.get().Contains("code"));
+    }
+
+    auto overflow = ctx.client->SendRequest(methods::kSubscribe, serialized,
+        MetaWithSubscriptionId("limit-sub-overflow"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(overflow.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    auto resp = overflow.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+        static_cast<int64_t>(McpErrorCode::InvalidParams));
 
     ctx.server->Close();
     ctx.client->Close();
@@ -2192,6 +2298,62 @@ TEST(McpServerTest, CallToolTaskModeKeepsCompletedWhenCancelArrivesLate) {
         std::lock_guard<std::mutex> lock(notif_mutex);
         EXPECT_EQ(cancelled_notifications, 0);
     }
+
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, FinishAfterCancelDoesNotAnnounceCompleted) {
+    auto env = MakeTaskEraEnv();
+
+    auto tool_started = std::make_shared<std::promise<void>>();
+    auto started_future = tool_started->get_future();
+    auto release_tool = std::make_shared<std::promise<void>>();
+
+    env.server->RegisterTool("gated_tool", MakeTaskToolOptions(),
+        [tool_started, release_tool](const Ctx&) {
+            tool_started->set_value();
+            release_tool->get_future().wait_for(std::chrono::seconds(5));
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "done"});
+            return r;
+        });
+
+    std::mutex notif_mutex;
+    std::vector<std::string> seen_statuses;
+    env.client->SetNotificationHandler(notifications::kTaskStatus,
+        [&](const JsonRpcNotification& n) {
+            std::lock_guard<std::mutex> lock(notif_mutex);
+            seen_statuses.push_back(NotificationField(n, "status"));
+        });
+
+    PerformLegacyHandshake(env.client);
+
+    CallToolRequestParams params;
+    params.name = "gated_tool";
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), {},
+        std::chrono::milliseconds(2000));
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto created = DeserializeCreateTaskResult(resp);
+    EXPECT_EQ(created.status, "working");
+
+    ASSERT_EQ(started_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    ASSERT_TRUE(env.store->CancelTask(created.task_id, "cancelled outside tasks/cancel"));
+    release_tool->set_value();
+
+    EXPECT_TRUE(WaitForStatusNotification(notif_mutex, seen_statuses, "cancelled"));
+
+    auto statuses = CopyStatuses(notif_mutex, seen_statuses);
+    EXPECT_EQ(std::count(statuses.begin(), statuses.end(), "completed"), 0);
+
+    auto final_task = env.store->GetTask(created.task_id);
+    ASSERT_TRUE(final_task.has_value());
+    EXPECT_EQ(final_task->status, TaskStatus::Cancelled);
+    EXPECT_FALSE(final_task->result.has_value());
 
     CloseTaskEraEnv(env);
 }
@@ -5437,6 +5599,8 @@ TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
         });
 
     env.store->CreateTask("task-stale", env.server->SessionId(), 1);
+    env.store->CreateTask("task-live", env.server->SessionId(), 1);
+    ASSERT_TRUE(env.store->SetTaskStatus("task-stale", TaskStatus::Completed));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(env.store->GetTask("task-stale").has_value());
 
@@ -5447,6 +5611,8 @@ TEST(McpServerTest, ExpiredTasksAreReclaimedWhenNewTaskIsCreated) {
     ASSERT_FALSE(resp.Contains("code"));
 
     EXPECT_FALSE(env.store->GetTask("task-stale").has_value());
+    ASSERT_TRUE(env.store->GetTask("task-live").has_value());
+    EXPECT_EQ(env.store->GetTask("task-live")->status, TaskStatus::Pending);
     CloseTaskEraEnv(env);
 }
 
@@ -5826,6 +5992,61 @@ TEST(McpServerTest, ModernInvalidCacheHintReturnsInvalidParams) {
     ExpectInvalidCacheHint(env.client, methods::kDiscover, "got \"\"");
 
     CloseCacheHintTestEnv(env);
+}
+
+TEST(McpServerTest, ListToolsCacheHintPerSession) {
+    auto ctx = MakeModernServerWithClient();
+    ctx.server->RegisterTool("per_session_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    NegotiateModernVersion(ctx.server);
+
+    auto resp = SendCacheProbe(ctx.client, methods::kListTools);
+    ASSERT_FALSE(resp.Contains("code"));
+    ASSERT_TRUE(resp.Contains("ttlMs"));
+    EXPECT_EQ(resp["ttlMs"].GetInt(), int64_t{0});
+    ASSERT_TRUE(resp.Contains("cacheScope"));
+    EXPECT_EQ(resp["cacheScope"].GetString(), "private");
+    EXPECT_FALSE(resp.Contains("cacheHint"));
+    ASSERT_TRUE(resp["tools"].IsArray());
+    EXPECT_EQ(resp["tools"].GetArray().size(), size_t{1});
+
+    ctx.server->RegisterTool("per_session_tool_2", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+
+    auto refreshed = SendCacheProbe(ctx.client, methods::kListTools);
+    ASSERT_FALSE(refreshed.Contains("code"));
+    ASSERT_TRUE(refreshed["tools"].IsArray());
+    EXPECT_EQ(refreshed["tools"].GetArray().size(), size_t{2});
+    ASSERT_TRUE(refreshed.Contains("ttlMs"));
+    EXPECT_EQ(refreshed["ttlMs"].GetInt(), int64_t{0});
+    ASSERT_TRUE(refreshed.Contains("cacheScope"));
+    EXPECT_EQ(refreshed["cacheScope"].GetString(), "private");
+    EXPECT_FALSE(refreshed.Contains("cacheHint"));
+
+    ctx.server->Close();
+    ctx.client->Close();
+}
+
+TEST(McpServerTest, ListToolsCacheHintValidatedPerSession) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    CacheHint negative_ttl;
+    negative_ttl.ttl_ms = int64_t{-1};
+    negative_ttl.cache_scope = std::string("private");
+    sopts.cache_hints = std::map<std::string, CacheHint, std::less<>>{
+        {"tools/list", negative_ttl}};
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->RegisterTool("per_session_tool", ToolOptions{},
+        [](const Ctx&) { return CallToolResult{}; });
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    NegotiateModernVersion(server);
+
+    ExpectInvalidCacheHint(client, methods::kListTools, "-1");
+
+    server->Close();
+    client->Close();
 }
 
 TEST(McpServerTest, DiscoverRejectedWhenRequestDeclaresLegacyVersion) {

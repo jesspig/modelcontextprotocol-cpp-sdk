@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cctype>
 #include <chrono>
 #include <mutex>
@@ -35,9 +36,10 @@
 namespace mcp {
 
 namespace {
-constexpr std::chrono::seconds kStatelessTimeout(30);
+constexpr std::chrono::milliseconds kDefaultHttpRequestTimeout(30000);
 constexpr std::chrono::milliseconds kSseListenerWaitStep(50);
 constexpr std::chrono::milliseconds kSseListenerWaitBudget(2000);
+constexpr size_t kMaxSseReplayEvents = 512;
 const char* kMcpParamHeaderPrefix = "mcp-param-";
 constexpr size_t kMaxStatelessInflight = 8;
 constexpr char kSseSessionKey[] = "__session";
@@ -84,6 +86,7 @@ std::string& MutableMessageSessionId(JsonRpcMessage& message) {
     if (auto* req = std::get_if<JsonRpcRequest>(&message)) return req->session_id;
     if (auto* notif = std::get_if<JsonRpcNotification>(&message)) return notif->session_id;
     if (auto* resp = std::get_if<JsonRpcResponse>(&message)) return resp->session_id;
+    assert(std::holds_alternative<JsonRpcErrorResponse>(message));
     return std::get<JsonRpcErrorResponse>(message).session_id;
 }
 
@@ -103,6 +106,11 @@ std::string SseEscapeData(std::string_view data) {
         else out += c;
     }
     return out;
+}
+
+std::string BuildSseLimitErrorFrame() {
+    return "event: message\ndata: {\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,"
+           "\"message\":\"event exceeds max_sse_event_bytes\"}}\n\n";
 }
 
 std::optional<std::string> RequestStreamTokenFromObject(const JsonValue& obj) {
@@ -1316,8 +1324,14 @@ void StreamableHttpServerTransport::HandlePost(
             return;
         }
 
-        auto deadline = std::chrono::steady_clock::now() + kStatelessTimeout;
-        if (future.wait_until(deadline) != std::future_status::ready) {
+        const auto timeout = options_.request_timeout.value_or(kDefaultHttpRequestTimeout);
+        bool response_ready = true;
+        if (timeout.count() > 0)
+            response_ready = future.wait_until(
+                std::chrono::steady_clock::now() + timeout) == std::future_status::ready;
+        else
+            future.wait();
+        if (!response_ready) {
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_responses_.erase(pending_key);
@@ -1395,10 +1409,12 @@ void StreamableHttpServerTransport::HandlePost(
         resp.body.clear();
         for (auto& hold_frame : hold_frames) resp.body += hold_frame;
         if (!hold_listen || !std::get_if<JsonRpcResponse>(&response)) {
-            resp.body += "event: message\ndata: " +
-                        SseEscapeData(SerializeMessage(std::move(response))) + "\n\n";
+            resp.body += BuildSseEvent(std::move(response));
         }
-        if (resp.body.size() > SseEventLimit()) resp.body.resize(SseEventLimit());
+        if (resp.body.size() > SseEventLimit()) {
+            MCP_LOG(Error, "SSE response exceeds max_sse_event_bytes; returning error frame");
+            resp.body = BuildSseLimitErrorFrame();
+        }
     } else {
         if (!(channel_ && channel_->IsOpen()) || !channel_->TrySend(std::move(msg))) {
             resp.status_code = 503;
@@ -1448,9 +1464,24 @@ void StreamableHttpServerTransport::HandleGet(
         if (last_id && !last_id->empty()) {
             try {
                 auto from = std::stoull(*last_id);
-                for (const auto& [ev_id, ev_data] :
-                        event_store_->GetEventsSince(session_id, from)) {
-                    resp.body += "id: " + std::to_string(ev_id) + "\n" + ev_data;
+                auto events = event_store_->GetEventsSince(session_id, from);
+                const auto budget = options_.max_sse_replay_bytes
+                    .value_or(detail::kMaxSseEventBytes);
+                std::size_t begin = events.size();
+                std::size_t bytes = 0;
+                while (begin > 0 && events.size() - begin < kMaxSseReplayEvents) {
+                    const auto& event = events[begin - 1];
+                    auto prefix = "id: " + std::to_string(event.first) + "\n";
+                    auto frame_bytes = prefix.size() + event.second.size();
+                    if (bytes + frame_bytes > budget) break;
+                    bytes += frame_bytes;
+                    --begin;
+                }
+                if (begin > 0)
+                    MCP_LOG(Warning, "SSE replay truncated to the most recent window");
+                for (std::size_t i = begin; i < events.size(); ++i) {
+                    resp.body += "id: " + std::to_string(events[i].first) + "\n" +
+                                  events[i].second;
                 }
             } catch (const std::exception&) {
                 MCP_LOG(Warning, "invalid Last-Event-ID header; ignoring");
@@ -1540,8 +1571,13 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
         auto event_id = event_store_->Append(message_session, event_data);
-        event_data = "id: " + std::to_string(event_id) + "\n" + event_data;
-        if (event_data.size() > SseEventLimit()) event_data.resize(SseEventLimit());
+        auto prefix = "id: " + std::to_string(event_id) + "\n";
+        if (prefix.size() + event_data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "SSE event with id exceeds max_sse_event_bytes; "
+                            "broadcasting error frame");
+            event_data = BuildSseLimitErrorFrame();
+        }
+        event_data = prefix + event_data;
     }
     if (http_server_) {
         const bool filtered = !broadcast_method.empty() &&
@@ -1578,7 +1614,10 @@ std::string StreamableHttpServerTransport::BuildSseEvent(
     JsonRpcMessage msg)
 {
     std::string data = "event: message\ndata: " + SseEscapeData(SerializeMessage(std::move(msg))) + "\n\n";
-    if (data.size() > SseEventLimit()) data.resize(SseEventLimit());
+    if (data.size() > SseEventLimit()) {
+        MCP_LOG(Error, "SSE event exceeds max_sse_event_bytes; returning error frame");
+        return BuildSseLimitErrorFrame();
+    }
     return data;
 }
 

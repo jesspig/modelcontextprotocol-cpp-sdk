@@ -1,6 +1,7 @@
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/transport/SseClientTransport.hpp>
 #include <mcp/transport/StdioClientTransport.hpp>
+#include <mcp/transport/WebSocketClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/McpError.hpp>
@@ -11,11 +12,14 @@
 #include "TestFakes.hpp"
 #include "TestServerUtil.hpp"
 
+#include <transport/detail/net/Sha1.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -466,6 +470,334 @@ TEST(SseClientRetryTest, ReconnectCarriesLastEventId) {
     EXPECT_GE(elapsed_ms, 400);
 }
 
+namespace {
+
+bool SendAllBytes(SseRetryStubSocket sock, const std::string& data) {
+    std::size_t sent = 0;
+    while (sent < data.size()) {
+#ifdef _WIN32
+        int n = send(sock, data.data() + sent, static_cast<int>(data.size() - sent), 0);
+#else
+        ssize_t n = send(sock, data.data() + sent, data.size() - sent, 0);
+#endif
+        if (n <= 0) return false;
+        sent += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+struct SseScriptStubState {
+    std::promise<void> listening;
+    std::atomic<bool> listening_ok{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int> connections{0};
+    int max_connections = 1;
+};
+
+void SseScriptStubServe(uint16_t port, SseScriptStubState* state,
+                        const std::function<std::string(int)>& script_for_connection) {
+    SseRetryStubSocket listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == kSseRetryStubInvalidSocket) {
+        state->listening.set_value();
+        return;
+    }
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bool ok = bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+              listen(listen_sock, 8) == 0;
+    state->listening_ok.store(ok);
+    state->listening.set_value();
+    if (!ok) {
+        SseRetryStubCloseSocket(listen_sock);
+        return;
+    }
+
+    while (!state->stop.load() && state->connections.load() < state->max_connections) {
+        if (!SseRetryStubWaitReadable(listen_sock, 100)) continue;
+        SseRetryStubSocket conn = accept(listen_sock, nullptr, nullptr);
+        if (conn == kSseRetryStubInvalidSocket) continue;
+        const int index = state->connections.fetch_add(1);
+        SseRetryStubRecvHead(conn);
+        const std::string script = script_for_connection(index);
+        if (!script.empty()) SendAllBytes(conn, script);
+        SseRetryStubCloseSocket(conn);
+    }
+    SseRetryStubCloseSocket(listen_sock);
+}
+
+std::string SseScriptHead(const std::string& extra_headers) {
+    return "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" + extra_headers +
+           "Connection: close\r\n\r\n";
+}
+
+std::string SseScriptMessageEvent(const std::string& method, const std::string& terminator) {
+    return "data: {\"jsonrpc\":\"2.0\",\"method\":\"" + method + "\"}" + terminator;
+}
+
+std::string ChunkPrefix(std::size_t size) {
+    static const char kHexDigits[] = "0123456789abcdef";
+    std::string text;
+    do {
+        text.insert(text.begin(), kHexDigits[size & 0xF]);
+        size >>= 4;
+    } while (size != 0);
+    return text + "\r\n";
+}
+
+std::string ChunkedPayload(const std::string& payload) {
+    return ChunkPrefix(payload.size()) + payload + "\r\n";
+}
+
+class TransportMethodWaiter {
+public:
+    TransportMethodWaiter(ITransport& transport, std::string method)
+        : transport_(transport), method_(std::move(method)), thread_([this] { ReceiveLoop(); }) {}
+
+    ~TransportMethodWaiter() {
+        if (thread_.joinable()) thread_.join();
+    }
+
+    TransportMethodWaiter(const TransportMethodWaiter&) = delete;
+    TransportMethodWaiter& operator=(const TransportMethodWaiter&) = delete;
+
+    bool WaitFor(int timeout_ms) {
+        return found_.get_future().wait_for(std::chrono::milliseconds(timeout_ms)) ==
+               std::future_status::ready;
+    }
+
+private:
+    void ReceiveLoop() {
+        for (;;) {
+            bool matched = false;
+            bool closed = false;
+            transport_.GetMessageChannel().AsyncReceive(
+                [this, &matched, &closed](std::error_code error, JsonRpcMessage message) {
+                    if (error) {
+                        closed = true;
+                        return;
+                    }
+                    if (IsNotification(message) && AsNotification(message)->method == method_)
+                        matched = true;
+                });
+            if (matched) {
+                found_.set_value();
+                return;
+            }
+            if (closed) return;
+        }
+    }
+
+    ITransport& transport_;
+    std::string method_;
+    std::promise<void> found_;
+    std::thread thread_;
+};
+
+} // namespace
+
+TEST(SseClientTransportTest, CrlfFramedStreamDispatchesEvents) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 280));
+    SseScriptStubState state;
+    std::thread server([port, &state]() {
+        SseScriptStubServe(port, &state, [](int) {
+            return SseScriptHead("") + ": keep-alive\r\n\r\n" +
+                   SseScriptMessageEvent("crlf-event", "\r\n\r\n");
+        });
+    });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    auto session = SseClientTransport("http://127.0.0.1:" + std::to_string(port) + "/sse").Connect();
+    ASSERT_NE(session, nullptr);
+    TransportMethodWaiter waiter(*session, "crlf-event");
+    const bool received = waiter.WaitFor(15000);
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+    EXPECT_TRUE(received);
+}
+
+TEST(SseClientTransportTest, ChunkedStreamBeyondEightMiBKeepsEvents) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 282));
+    SseScriptStubState state;
+    std::thread server([port, &state]() {
+        SseScriptStubServe(port, &state, [](int) {
+            std::string script = SseScriptHead("Transfer-Encoding: chunked\r\n");
+            const std::string comment_chunk = ChunkedPayload(":" + std::string(4093, 'p') + "\n\n");
+            for (int index = 0; index < 2100; ++index) script += comment_chunk;
+            script += ChunkedPayload(SseScriptMessageEvent("late-event", "\n\n"));
+            script += "0\r\n\r\n";
+            return script;
+        });
+    });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    auto session = SseClientTransport("http://127.0.0.1:" + std::to_string(port) + "/sse").Connect();
+    ASSERT_NE(session, nullptr);
+    TransportMethodWaiter waiter(*session, "late-event");
+    const bool received = waiter.WaitFor(30000);
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+    EXPECT_TRUE(received);
+}
+
+TEST(SseClientTransportTest, ReconnectBudgetResetsAfterSuccess) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 284));
+    SseScriptStubState state;
+    state.max_connections = 4;
+    std::thread server([port, &state]() {
+        SseScriptStubServe(port, &state, [](int index) {
+            return SseScriptHead("") +
+                   SseScriptMessageEvent("reconnect-" + std::to_string(index), "\n\n");
+        });
+    });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    auto session = SseClientTransport("http://127.0.0.1:" + std::to_string(port) + "/sse").Connect();
+    ASSERT_NE(session, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (state.connections.load() < 4 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const int connections = state.connections.load();
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+    EXPECT_GE(connections, 4);
+}
+
+namespace {
+
+constexpr std::string_view kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+std::string WsStubTextFrame(std::string_view payload) {
+    std::string frame;
+    frame.push_back(static_cast<char>(0x81));
+    frame.push_back(static_cast<char>(payload.size()));
+    frame.append(payload);
+    return frame;
+}
+
+struct WsStreamStubState {
+    std::promise<void> listening;
+    std::atomic<bool> listening_ok{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int> frames_sent{0};
+};
+
+void WsStreamStubServe(uint16_t port, WsStreamStubState* state) {
+    SseRetryStubSocket listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == kSseRetryStubInvalidSocket) {
+        state->listening.set_value();
+        return;
+    }
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bool ok = bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+              listen(listen_sock, 8) == 0;
+    state->listening_ok.store(ok);
+    state->listening.set_value();
+    if (!ok) {
+        SseRetryStubCloseSocket(listen_sock);
+        return;
+    }
+
+    if (SseRetryStubWaitReadable(listen_sock, 5000)) {
+        SseRetryStubSocket conn = accept(listen_sock, nullptr, nullptr);
+        if (conn != kSseRetryStubInvalidSocket) {
+            std::string head = SseRetryStubRecvHead(conn);
+            std::string key = SseRetryStubHeaderValue(head, "sec-websocket-key");
+            if (!key.empty()) {
+                std::string accept =
+                    mcp::detail::net::Base64Encode(
+                        mcp::detail::net::Sha1Raw(key + std::string(kWsAcceptGuid)));
+                SendAllBytes(conn,
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Accept: " + accept + "\r\n\r\n");
+                const std::string payload = "{\"jsonrpc\":\"2.0\",\"method\":\"probe\"}";
+                const std::string frame = WsStubTextFrame(payload);
+                while (!state->stop.load()) {
+                    if (!SendAllBytes(conn, frame)) break;
+                    state->frames_sent.fetch_add(1);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            SseRetryStubCloseSocket(conn);
+        }
+    }
+    SseRetryStubCloseSocket(listen_sock);
+}
+
+} // namespace
+
+TEST(TransportTest, WebSocketConcurrentCloseDuringStreaming) {
+#ifdef _WIN32
+    WSADATA wsa_data{};
+    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+#endif
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 270));
+    WsStreamStubState state;
+    std::thread server([port, &state]() { WsStreamStubServe(port, &state); });
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    std::string url = "ws://127.0.0.1:" + std::to_string(port) + "/ws";
+    WebSocketClientTransport transport(url, "ws-streaming");
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    auto* base = dynamic_cast<TransportBase*>(session.get());
+    ASSERT_NE(base, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (state.frames_sent.load() < 20 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_GE(state.frames_sent.load(), 20);
+
+    session->Close();
+    state.stop.store(true);
+    server.join();
+
+    EXPECT_FALSE(session->GetMessageChannel().IsOpen());
+    EXPECT_EQ(static_cast<int>(base->GetState()),
+              static_cast<int>(TransportState::Disconnected));
+}
+
 TEST(TransportTest, StdioFrameBoundDefaultsToLimit) {
     StdioClientTransportOptions opts;
     opts.command = "cat";
@@ -847,6 +1179,30 @@ TEST(TransportTest, StdioPidAvailable) {
     session->Close();
 }
 
+TEST(TransportTest, StdioChildExitTriggersClose) {
+    auto options = StdioHelperOptions({"--sleep", "300"});
+    StdioClientTransport transport(options);
+    auto session = transport.Connect();
+    ASSERT_NE(session, nullptr);
+    auto* base = dynamic_cast<TransportBase*>(session.get());
+    ASSERT_NE(base, nullptr);
+
+    std::atomic<int> close_notifications{0};
+    base->SetOnClose([&close_notifications] { close_notifications.fetch_add(1); });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (base->GetState() != TransportState::Disconnected &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    EXPECT_EQ(close_notifications.load(), 1);
+    EXPECT_EQ(static_cast<int>(base->GetState()),
+              static_cast<int>(TransportState::Disconnected));
+    EXPECT_FALSE(session->GetMessageChannel().IsOpen());
+    session->Close();
+}
+
 TEST(TransportTest, StdioProcessTreeTerminated) {
     StdioTempFile pid_file;
     auto options = StdioHelperOptions(
@@ -1023,7 +1379,165 @@ void TlsStubServe(TlsStubServer* state, const std::string& payload) {
     EVP_PKEY_free(key);
 }
 
+X509* CreateIpSanCertificate(EVP_PKEY* key) {
+    X509* cert = X509_new();
+    if (cert == nullptr) return nullptr;
+    X509_set_version(cert, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+    X509_gmtime_adj(X509_getm_notBefore(cert), 0);
+    X509_gmtime_adj(X509_getm_notAfter(cert), 3600);
+
+    X509_NAME* name = X509_NAME_new();
+    if (name == nullptr ||
+        X509_NAME_add_entry_by_txt(
+            name, "CN", MBSTRING_ASC,
+            reinterpret_cast<const unsigned char*>("localhost"), -1, -1, 0) != 1 ||
+        X509_set_subject_name(cert, name) != 1 ||
+        X509_set_issuer_name(cert, name) != 1 ||
+        X509_set_pubkey(cert, key) != 1) {
+        X509_NAME_free(name);
+        X509_free(cert);
+        return nullptr;
+    }
+    X509_NAME_free(name);
+
+    X509V3_CTX context{};
+    X509V3_set_ctx_nodb(&context);
+    X509V3_set_ctx(&context, cert, cert, nullptr, nullptr, 0);
+    X509_EXTENSION* san = X509V3_EXT_conf_nid(
+        nullptr, &context, NID_subject_alt_name, "IP:127.0.0.1");
+    if (san == nullptr) {
+        X509_free(cert);
+        return nullptr;
+    }
+    X509_add_ext(cert, san, -1);
+    X509_EXTENSION_free(san);
+
+    if (X509_sign(cert, key, EVP_sha256()) == 0) {
+        X509_free(cert);
+        return nullptr;
+    }
+    return cert;
+}
+
+bool WriteTrustAnchor(const std::filesystem::path& path, X509* cert) {
+    BIO* bio = BIO_new_file(path.string().c_str(), "w");
+    if (bio == nullptr) return false;
+    bool written = PEM_write_bio_X509(bio, cert) == 1;
+    BIO_free(bio);
+    return written;
+}
+
+void SetTrustAnchorFile(const std::filesystem::path& path) {
+#ifdef _WIN32
+    _putenv_s("SSL_CERT_FILE", path.string().c_str());
+#else
+    setenv("SSL_CERT_FILE", path.string().c_str(), 1);
+#endif
+}
+
+std::filesystem::path MakeTrustAnchorPath() {
+    static std::atomic<unsigned long long> counter{0};
+    return std::filesystem::temp_directory_path() /
+        ("mcp_tls_ipsan_" + std::to_string(counter.fetch_add(1)) + ".pem");
+}
+
+void TlsIpSanStubServe(TlsStubServer* state, X509* cert, EVP_PKEY* key,
+                       const std::string& payload) {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    if (ctx == nullptr) {
+        state->listening_ok.store(false);
+        state->listening.set_value();
+        return;
+    }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_use_certificate(ctx, cert);
+    SSL_CTX_use_PrivateKey(ctx, key);
+
+    SseRetryStubSocket listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == kSseRetryStubInvalidSocket) {
+        state->listening_ok.store(false);
+        state->listening.set_value();
+        SSL_CTX_free(ctx);
+        return;
+    }
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+        reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(state->port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bool ok = bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+              listen(listen_sock, 4) == 0;
+    state->listening_ok.store(ok);
+    state->listening.set_value();
+
+    if (ok && SseRetryStubWaitReadable(listen_sock, 10000)) {
+        SseRetryStubSocket conn = accept(listen_sock, nullptr, nullptr);
+        if (conn != kSseRetryStubInvalidSocket) {
+            SSL* ssl = SSL_new(ctx);
+            if (ssl != nullptr) {
+                SSL_set_fd(ssl, static_cast<int>(conn));
+                if (SSL_accept(ssl) == 1)
+                    SSL_write(ssl, payload.data(), static_cast<int>(payload.size()));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                SSL_free(ssl);
+            }
+            SseRetryStubCloseSocket(conn);
+        }
+    }
+
+    SseRetryStubCloseSocket(listen_sock);
+    SSL_CTX_free(ctx);
+}
+
 } // namespace
+
+TEST(TlsSocketTest, IpSanCertificateVerifies) {
+    EVP_PKEY* key = LoadTestPrivateKey();
+    ASSERT_NE(key, nullptr);
+    X509* cert = CreateIpSanCertificate(key);
+    ASSERT_NE(cert, nullptr);
+
+    const std::filesystem::path trust_anchor = MakeTrustAnchorPath();
+    const bool trust_anchor_written = WriteTrustAnchor(trust_anchor, cert);
+    SetTrustAnchorFile(trust_anchor);
+    ASSERT_TRUE(trust_anchor_written);
+
+    uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 265));
+    TlsStubServer state;
+    state.port = port;
+    std::thread server(
+        [&state, cert, key]() { TlsIpSanStubServe(&state, cert, key, "ip-san-frame\n"); });
+
+    ASSERT_EQ(state.listening.get_future().wait_for(std::chrono::seconds(10)),
+              std::future_status::ready);
+    ASSERT_TRUE(state.listening_ok.load());
+
+    std::string received;
+    std::string failure;
+    try {
+        detail::net::TlsSocket client(true);
+        client.Connect("127.0.0.1", port, std::chrono::seconds(15));
+        char buffer[64];
+        std::size_t n = client.Read(buffer, sizeof(buffer), std::chrono::seconds(15));
+        received.assign(buffer, n);
+        client.Close();
+    } catch (const std::exception& e) {
+        failure = e.what();
+    }
+    state.stop.store(true);
+    server.join();
+
+    std::error_code ignored;
+    std::filesystem::remove(trust_anchor, ignored);
+    EVP_PKEY_free(key);
+    X509_free(cert);
+
+    ASSERT_TRUE(failure.empty()) << failure;
+    EXPECT_EQ(received, "ip-san-frame\n");
+}
 
 TEST(TlsSocketTest, HandshakeAndReadFirstFrame) {
     uint16_t port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 260));

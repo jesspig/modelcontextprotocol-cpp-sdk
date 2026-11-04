@@ -37,7 +37,7 @@ inline std::string Base64UrlEncode(std::string_view raw) {
     return out;
 }
 
-inline std::optional<std::string> Base64UrlDecode(std::string_view text) {
+[[nodiscard]] inline std::optional<std::string> Base64UrlDecode(std::string_view text) {
     auto value_of = [](char c) -> int {
         if (c >= 'A' && c <= 'Z') return c - 'A';
         if (c >= 'a' && c <= 'z') return c - 'a' + 26;

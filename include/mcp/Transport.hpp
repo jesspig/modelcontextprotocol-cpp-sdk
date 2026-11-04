@@ -21,10 +21,10 @@ public:
     virtual std::string_view SessionId() const = 0;
     virtual MessageChannel& GetMessageChannel() = 0;
     virtual void SendMessageAsync(JsonRpcMessage message) = 0;
-    virtual bool BufferRequestStreamNotification(JsonRpcMessage) { return false; }
-    virtual bool RequiresRequestScopedNotifications() const { return false; }
+    [[nodiscard]] virtual bool BufferRequestStreamNotification(JsonRpcMessage) { return false; }
+    [[nodiscard]] virtual bool RequiresRequestScopedNotifications() const { return false; }
     virtual void Close() = 0;
-    virtual bool IsStateless() const { return false; }
+    [[nodiscard]] virtual bool IsStateless() const { return false; }
     virtual void Start() {}
 };
 
@@ -69,7 +69,7 @@ class MCP_API IClientTransport {
 public:
     virtual ~IClientTransport() = default;
     virtual std::string_view Name() const = 0;
-    virtual std::shared_ptr<ITransport> Connect() = 0;
+    [[nodiscard]] virtual std::shared_ptr<ITransport> Connect() = 0;
 };
 
 inline TransportBase::TransportBase() {

@@ -108,6 +108,40 @@ TEST_F(FileEventStoreTest, MaxCapacityMatches10000) {
     EXPECT_EQ(EventStore::kMaxEventsPerSession, size_t{10000});
 }
 
+TEST_F(FileEventStoreTest, EventStoreAppendIsConstantTime) {
+    FileEventStore store(store_dir);
+    AppendN(store, "sess1", 3, 0);
+    auto file_path = store_dir / "sess-sess1.jsonl";
+    {
+        std::ofstream file(file_path, std::ios::binary | std::ios::app);
+        ASSERT_TRUE(file.is_open());
+        for (int i = 0; i < 50; ++i) {
+            file << "{\"id\":" << (1000 + i) << ",\"data\":\"bulk-"
+                 << i << "\"}\n";
+        }
+    }
+
+    EXPECT_EQ(store.Append("sess1", "after-bulk"), uint64_t{4});
+    EXPECT_EQ(store.Append("sess1", "after-bulk-2"), uint64_t{5});
+
+    auto events = store.GetEventsSince("sess1", 0);
+    ASSERT_EQ(events.size(), size_t{55});
+    EXPECT_EQ(events.front().second, "data-0");
+}
+
+TEST_F(FileEventStoreTest, CorruptCursorFallsBackToLogScan) {
+    FileEventStore store(store_dir);
+    AppendN(store, "sess1", 2, 0);
+    {
+        std::ofstream file(store_dir / "sess-sess1.meta.json", std::ios::binary);
+        ASSERT_TRUE(file.is_open());
+        file << "{corrupt";
+    }
+
+    EXPECT_EQ(store.Append("sess1", "data-2"), uint64_t{3});
+    EXPECT_EQ(store.GetEventsSince("sess1", 0).size(), size_t{3});
+}
+
 TEST_F(FileEventStoreTest, PersistsAcrossInstances) {
     uint64_t last_id = 0;
     {

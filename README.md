@@ -63,7 +63,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Available library targets: `mcp-core`, `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`. All libraries are static.
+Available library targets: `mcp-core`, `mcp-transport`, `mcp-protocol`, `mcp-server`, `mcp-client`, `mcp-http`, `mcp-ext`. All libraries are static.
 
 ## Quick Start
 
@@ -89,7 +89,7 @@ Configure presets: `debug`, `release`. Ninja generator required.
 └─────────────────────────────────────┘
 ```
 
-Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`. `mcp-http` depends on `mcp-transport`. All libraries are static.
+Library dependency chain: `mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`, and both of those also link `mcp-ext` (apps, DPoP, server card, triggers). `mcp-http` depends on `mcp-transport` and `mcp-ext`. All libraries are static.
 
 - **mcp-core** — Core types, JSON-RPC message structures, error codes, capabilities, content types, transport interfaces.
 - **mcp-transport** — Transport implementations: StdioServerTransport, StdioClientTransport, SseClientTransport, InMemoryTransport, WebSocketClientTransport, StreamableHttpServerTransport, StreamableHttpClientTransport. Platform-specific I/O in `detail/` (posix, win32).
@@ -203,16 +203,31 @@ auth.Authenticate();
 
 The `WireCodec` factory auto-selects the correct codec for the negotiated version via a simple string comparison (`version >= "2026-07-28"`).
 
+## Documentation
+
+The online manual is published at <https://jesspig.github.io/modelcontextprotocol-cpp-sdk/> and lives in `docs/en` (Chinese mirror in `docs/zh`). It is organised in three layers — concepts, task-shaped how-tos, and an API reference:
+
+- [Quick start](docs/en/start/quickstart.md) — five minutes to a working server and client, with expected output.
+- [Installation](docs/en/start/installation.md) — dependencies, build options, CMake integration, optional OpenSSL.
+- [Protocol versions](docs/en/learn/protocol-versions.md) — the authoritative matrix of both eras.
+- [Register a tool](docs/en/howto/register-a-tool.md) — descriptions, input schema, annotations, structured output.
+- [Connect to a server](docs/en/howto/connect-to-a-server.md) — transports, connect modes, close timing.
+- [Handle errors](docs/en/howto/handle-errors.md) — the three failure channels and error-code remapping.
+- [API reference](docs/en/reference/index.md) — tables only: signatures, defaults, throws, source files.
+
+All C++ samples come from [`docs/snippets`](docs/snippets), which is compiled by the `mcp-docs-snippets` target in CI, so a renamed or changed API fails the docs build instead of silently rotting the manual.
+
 ## Migration
 
 - [0.3.9 migration guide](docs/en/migration/0.3.9.md) — 0.3.8 → 0.3.9 breaking changes with old/new forms and impact.
 - [0.3.10 release notes](docs/en/migration/0.3.10.md) — new APIs, behavior fixes, limits; the 0.3.9 breaks remain and are not restored.
+- [0.3.11 release notes](docs/en/migration/0.3.11.md) — contract attributes, stricter behavior, and deprecations; `ResourceNotFound` is deprecated since 0.3.11 and removed in 0.4.0.
 
-The `mcp-compat-smoke` target compiles the previous public API and allowlists known breaks in `tests/compat/expected_breaks.txt`. Run `cmake --build --preset debug --target mcp-compat-smoke`.
+The `mcp-compat-smoke` target compiles the previous public API and allowlists known breaks in `tests/compat/expected_breaks.txt`. Run `cmake --build --preset debug --target mcp-compat-smoke`. Deprecated items are registered in the [deprecation registry](docs/en/learn/compatibility.md).
 
 ## Conformance Tests
 
-**113 conformance tests** covering protocol type serialization across both eras:
+**124 conformance tests** covering protocol type serialization across both eras:
 
 - JSON-RPC message round-trips (request, notification, response, error)
 - WireCodec era-gating (2025 vs 2026 method/notification sets)
@@ -299,7 +314,7 @@ The following items are explicitly declared unsupported in this round; when a pe
 
 ### Breaking changes in this round
 
-Per the 2026-07-28 spec revision, each change is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](docs/en/migration/0.3.9.md) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.10 release notes](docs/en/migration/0.3.10.md) track the next patch.
+Per the 2026-07-28 spec revision, each change is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](docs/en/migration/0.3.9.md) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.11 release notes](docs/en/migration/0.3.11.md) track the next patch.
 
 - **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
 - **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.

@@ -27,12 +27,12 @@ public:
     virtual ~SpawnedProcess() = default;
 
     virtual int64_t Pid() const = 0;
-    virtual bool IsRunning() const = 0;
-    virtual bool Wait(int timeout_ms) = 0;
-    virtual std::optional<int> ExitCode() const = 0;
-    virtual bool Terminate(int grace_ms) = 0;
+    [[nodiscard]] virtual bool IsRunning() const = 0;
+    [[nodiscard]] virtual bool Wait(int timeout_ms) = 0;
+    [[nodiscard]] virtual std::optional<int> ExitCode() const = 0;
+    [[nodiscard]] virtual bool Terminate(int grace_ms) = 0;
 };
 
-MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
+[[nodiscard]] MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 
 } // namespace mcp

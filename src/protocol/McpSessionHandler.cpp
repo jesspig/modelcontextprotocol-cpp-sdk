@@ -11,6 +11,7 @@
 #include <mcp/ProtocolVersion.hpp>
 
 #include <chrono>
+#include <cassert>
 #include <cstdint>
 #include <future>
 #include <stdexcept>
@@ -101,6 +102,7 @@ void DeliverOutcome(const std::shared_ptr<PendingRequest>& pending,
             pending->callback(SerializeErrorData(*error));
         }, label);
     } else {
+        assert(std::holds_alternative<JsonValue>(outcome));
         const JsonValue& result = std::get<JsonValue>(outcome);
         InvokeSafely([&pending, &result] {
             pending->callback(result);
@@ -330,7 +332,7 @@ void McpSessionHandler::CheckTimeouts() {
             ctx.request_id = pending->request_id;
             MCP_LOG_CTX(Warning, ctx, "pending request timed out");
             if (pending->cancel_on_timeout) {
-                CancelTransportRequest(pending->id, "timeout");
+                CancelTransportRequest(pending->id, pending->session_id, "timeout");
             }
             DeliverOutcome(pending,
                 RequestOutcome{ErrorData{
@@ -357,6 +359,13 @@ void McpSessionHandler::ResetTimeoutByProgressToken(const std::string& pt_key) {
 void McpSessionHandler::SetMaxTotalTimeout(std::chrono::seconds total) {
     std::lock_guard<std::mutex> lock(pending_mutex_);
     max_total_timeout_ = total;
+}
+
+void McpSessionHandler::SetResponseQueueCapacity(
+    std::optional<std::size_t> capacity) {
+    assert(!capacity || *capacity > 0);
+    std::lock_guard<std::mutex> lock(response_queue_mutex_);
+    response_queue_capacity_ = capacity.value_or(kDefaultResponseQueueCapacity);
 }
 
 void McpSessionHandler::DispatchMessage(const JsonRpcMessage& msg) {
@@ -537,15 +546,32 @@ std::optional<ErrorData> McpSessionHandler::VerifyCapability(const JsonRpcReques
 }
 
 void McpSessionHandler::EnqueueResponse(const JsonRpcRequest& req, std::future<JsonValue> future) {
+    const std::string cancel_key = SessionRequestKey(req.session_id,
+                                                     GetRequestIdKey(req.id));
     PendingResponse item;
     item.req = req;
-    item.cancel_key = SessionRequestKey(req.session_id,
-                                        GetRequestIdKey(req.id));
+    item.cancel_key = cancel_key;
     item.future = std::move(future);
+    bool rejected = false;
     {
         std::lock_guard<std::mutex> lock(response_queue_mutex_);
         if (closed_.load()) return;
-        response_queue_.push_back(std::move(item));
+        if (outstanding_responses_ >= response_queue_capacity_) {
+            rejected = true;
+        } else {
+            ++outstanding_responses_;
+            response_queue_.push_back(std::move(item));
+        }
+    }
+    if (rejected) {
+        EraseIncomingCancellationFlag(cancel_key);
+        LogContext ctx;
+        ctx.method = req.method;
+        ctx.request_id = RequestIdToText(req.id);
+        MCP_LOG_CTX(Warning, ctx, "response rejected: response queue full");
+        SendErrorResponse(req.id, McpErrorCode::InternalError,
+                          "response queue full", std::nullopt, req.session_id);
+        return;
     }
     response_cv_.notify_one();
 }
@@ -615,6 +641,32 @@ void McpSessionHandler::DeliverResponse(PendingResponse item) {
     }
 }
 
+void McpSessionHandler::DeliverCancellation(const PendingResponse& item) {
+    if (closed_.load()) return;
+    if (!item.cancelled_request || !item.cancel_error) return;
+    DeliverOutcome(item.cancelled_request, RequestOutcome{*item.cancel_error},
+                   "cancel-callback");
+}
+
+void McpSessionHandler::EnqueueCancellation(
+    std::shared_ptr<PendingRequest> request, ErrorData error)
+{
+    PendingResponse item;
+    item.cancelled_request = std::move(request);
+    item.cancel_error = std::move(error);
+    {
+        std::lock_guard<std::mutex> lock(response_queue_mutex_);
+        if (closed_.load()) return;
+        response_queue_.push_back(std::move(item));
+    }
+    response_cv_.notify_one();
+}
+
+void McpSessionHandler::ReleaseResponseSlot() {
+    std::lock_guard<std::mutex> lock(response_queue_mutex_);
+    if (outstanding_responses_ > 0) --outstanding_responses_;
+}
+
 void McpSessionHandler::ResponseWorkerLoop() {
     std::deque<PendingResponse> waiting;
     for (;;) {
@@ -637,14 +689,23 @@ void McpSessionHandler::ResponseWorkerLoop() {
             }
         }
         for (auto it = waiting.begin(); it != waiting.end();) {
-            if (it->future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            const bool settled = it->cancelled_request != nullptr ||
+                it->future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+            if (settled) {
                 ready.push_back(std::move(*it));
                 it = waiting.erase(it);
             } else {
                 ++it;
             }
         }
-        for (auto& item : ready) DeliverResponse(std::move(item));
+        for (auto& item : ready) {
+            if (item.cancelled_request) {
+                DeliverCancellation(item);
+            } else {
+                ReleaseResponseSlot();
+                DeliverResponse(std::move(item));
+            }
+        }
         if (!ready.empty()) continue;
         std::unique_lock<std::mutex> lock(response_queue_mutex_);
         if (closed_.load()) {
@@ -693,7 +754,7 @@ void McpSessionHandler::OnResponse(const JsonRpcResponse& resp) {
         InvokeSafely([&] { on_response_cb_(resp); }, "on-response");
     }
 
-    auto pending = RemovePending(GetRequestIdKey(resp.id));
+    auto pending = RemovePending(resp.session_id, GetRequestIdKey(resp.id));
     if (pending) {
         DeliverOutcome(pending, RequestOutcome{resp.result}, "response-callback");
     }
@@ -705,7 +766,7 @@ void McpSessionHandler::OnError(const JsonRpcErrorResponse& err) {
     }
 
     if (!err.id) return;
-    auto pending = RemovePending(GetRequestIdKey(*err.id));
+    auto pending = RemovePending(err.session_id, GetRequestIdKey(*err.id));
     if (pending) {
         DeliverOutcome(pending, RequestOutcome{err.error}, "error-callback");
     }
@@ -739,7 +800,7 @@ void McpSessionHandler::OnNotification(const JsonRpcNotification& notif) {
         }
     }
     if (handler) {
-        handler(notif);
+        InvokeSafely([&] { handler(notif); }, notif.method);
     }
 }
 
@@ -828,8 +889,11 @@ McpSessionHandler::RegisteredRequest McpSessionHandler::RegisterRequest(
     pending->request_id = std::to_string(id);
     pending->id = RequestId{id};
     pending->cancel_on_timeout = cancel_on_timeout;
+    pending->session_id = req.session_id;
 
     const std::string id_key = std::to_string(id);
+    const std::string pending_key =
+        SessionRequestKey(pending->session_id, id_key);
     std::optional<std::string> pt_key;
     if (meta.progress_token) {
         pt_key = std::holds_alternative<std::string>(*meta.progress_token)
@@ -843,10 +907,10 @@ McpSessionHandler::RegisteredRequest McpSessionHandler::RegisterRequest(
         if (closed_.load()) {
             closed_after_register = true;
         } else {
-            pending_[id_key] = pending;
-            if (pt_key) progress_token_map_[*pt_key] = id_key;
+            pending_[pending_key] = pending;
+            if (pt_key) progress_token_map_[*pt_key] = pending_key;
             if (max_total_timeout_ > std::chrono::seconds{0}) {
-                absolute_deadlines_[id_key] =
+                absolute_deadlines_[pending_key] =
                     std::chrono::steady_clock::now() + max_total_timeout_;
             }
         }
@@ -869,16 +933,43 @@ McpSessionHandler::RegisteredRequest McpSessionHandler::RegisterRequest(
 }
 
 std::shared_ptr<PendingRequest> McpSessionHandler::RemovePending(
-    const std::string& id_key)
+    std::string_view session_id, const std::string& request_id)
 {
     std::shared_ptr<PendingRequest> pending;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        auto it = pending_.find(id_key);
+        auto it = pending_.find(SessionRequestKey(session_id, request_id));
+        if (it == pending_.end() && !session_id.empty()) {
+            it = pending_.find(SessionRequestKey({}, request_id));
+        }
         if (it == pending_.end()) return pending;
         pending = std::move(it->second);
-        EraseProgressTokens(id_key);
-        absolute_deadlines_.erase(id_key);
+        EraseProgressTokens(it->first);
+        absolute_deadlines_.erase(it->first);
+        pending_.erase(it);
+    }
+    return pending;
+}
+
+std::shared_ptr<PendingRequest> McpSessionHandler::RemovePendingByRequestId(
+    const std::string& request_id)
+{
+    std::shared_ptr<PendingRequest> pending;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        auto it = pending_.find(SessionRequestKey({}, request_id));
+        if (it == pending_.end()) {
+            for (auto candidate = pending_.begin(); candidate != pending_.end();
+                 ++candidate) {
+                if (candidate->second->request_id != request_id) continue;
+                it = candidate;
+                break;
+            }
+        }
+        if (it == pending_.end()) return pending;
+        pending = std::move(it->second);
+        EraseProgressTokens(it->first);
+        absolute_deadlines_.erase(it->first);
         pending_.erase(it);
     }
     return pending;
@@ -965,6 +1056,32 @@ void McpSessionHandler::AddSubscriptionEntry(SubscriptionEntry entry,
                                              std::string_view session_id) {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
     subscriptions_[std::string(session_id)][entry.id] = std::move(entry);
+}
+
+SubscriptionAddOutcome McpSessionHandler::TryAddSubscriptionEntry(
+    SubscriptionEntry entry, std::string_view session_id) {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+    auto& bucket = subscriptions_[std::string(session_id)];
+    const bool replaces_existing = bucket.find(entry.id) != bucket.end();
+    if (!replaces_existing &&
+        bucket.size() >= kMaxSubscriptionEntriesPerSession) {
+        const auto expiry_cutoff =
+            std::chrono::steady_clock::now() - kSubscriptionEntryTtl;
+        auto victim = bucket.end();
+        for (auto it = bucket.begin(); it != bucket.end(); ++it) {
+            if (it->second.created_at > expiry_cutoff) continue;
+            if (victim == bucket.end() ||
+                it->second.created_at < victim->second.created_at) {
+                victim = it;
+            }
+        }
+        if (victim == bucket.end()) return SubscriptionAddOutcome::LimitExceeded;
+        bucket.erase(victim);
+    }
+    bucket[entry.id] = std::move(entry);
+    assert(bucket.size() <= kMaxSubscriptionEntriesPerSession);
+    return replaces_existing ? SubscriptionAddOutcome::Overwrote
+                             : SubscriptionAddOutcome::Added;
 }
 
 void McpSessionHandler::RemoveSubscription(std::string_view id,
@@ -1069,11 +1186,6 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     auto* req_id_val = notif.params->Find(detail::kRequestId);
     if (!req_id_val) return;
 
-    std::string reason;
-    auto* reason_val = notif.params->Find(detail::kReason);
-    if (reason_val && reason_val->IsString())
-        reason = reason_val->GetString();
-
     std::string target_id_key;
     if (req_id_val->IsInt()) {
         target_id_key = std::to_string(req_id_val->GetInt());
@@ -1094,36 +1206,14 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
     if (incoming_flag) {
         incoming_flag->store(true);
     }
-
-    auto pending = RemovePending(target_id_key);
-    if (pending) {
-        ErrorData error{McpErrorCode::RequestCancelled, "request cancelled"};
-        if (!reason.empty()) {
-            JsonValue d(JsonValue::object_tag);
-            d[detail::kReason] = JsonValue(reason);
-            error.data = std::move(d);
-        }
-        LogContext ctx;
-        ctx.method = std::string(notifications::kCancelled);
-        ctx.request_id = target_id_key;
-        MCP_LOG_CTX(Warning, ctx, "request cancelled by peer");
-        auto deliver = [pending, error]() {
-            DeliverOutcome(pending, RequestOutcome{error}, "cancel-callback");
-        };
-        try {
-            std::thread(deliver).detach();
-        } catch (...) {
-            deliver();
-        }
-    }
 }
 
 void McpSessionHandler::CancelRequest(const RequestId& id, std::string_view reason) {
     const std::string id_key = GetRequestIdKey(id);
-    auto pending = RemovePending(id_key);
+    auto pending = RemovePendingByRequestId(id_key);
     if (!pending) return;
 
-    CancelTransportRequest(id, reason);
+    CancelTransportRequest(id, pending->session_id, reason);
 
     ErrorData error{McpErrorCode::RequestCancelled, "request cancelled"};
     if (!reason.empty()) {
@@ -1135,23 +1225,23 @@ void McpSessionHandler::CancelRequest(const RequestId& id, std::string_view reas
     ctx.method = pending->method;
     ctx.request_id = id_key;
     MCP_LOG_CTX(Warning, ctx, "request cancelled by client");
-    DeliverOutcome(pending, RequestOutcome{error}, "client-cancel-callback");
+    EnqueueCancellation(std::move(pending), std::move(error));
 }
 
 void McpSessionHandler::CancelTransportRequest(
-    const RequestId& id, std::string_view reason)
+    const RequestId& id, std::string_view session_id, std::string_view reason)
 {
-    if (IsModernProtocolVersion(NegotiatedProtocolVersion())) {
+    if (IsModernProtocolVersion(VersionFor(session_id))) {
         if (auto* canceller = dynamic_cast<IRequestCanceller*>(transport_.get())) {
             canceller->CancelRequest(id, reason);
             return;
         }
     }
-    SendCancelledNotification(id, reason);
+    SendCancelledNotification(id, session_id, reason);
 }
 
 void McpSessionHandler::SendCancelledNotification(
-    const RequestId& id, std::string_view reason)
+    const RequestId& id, std::string_view session_id, std::string_view reason)
 {
     JsonValue params(JsonValue::object_tag);
     std::visit([&params](const auto& value) {
@@ -1160,7 +1250,7 @@ void McpSessionHandler::SendCancelledNotification(
     if (!reason.empty()) {
         params[detail::kReason] = JsonValue(std::string(reason));
     }
-    SendNotification(notifications::kCancelled, std::move(params));
+    SendNotification(notifications::kCancelled, std::move(params), session_id);
 }
 
 void McpSessionHandler::EraseProgressTokens(const std::string& request_id) {

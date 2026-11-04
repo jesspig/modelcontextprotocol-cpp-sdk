@@ -31,7 +31,7 @@ using ClientNotificationHandler = std::function<void(
 
 class MCP_API McpClient {
 public:
-    static std::unique_ptr<McpClient> Create(
+    [[nodiscard]] static std::unique_ptr<McpClient> Create(
         std::shared_ptr<ITransport> transport,
         const ClientOptions& options = {});
 
@@ -39,9 +39,9 @@ public:
 
     const ServerCapabilities& GetServerCapabilities() const;
     const Implementation& GetServerInfo() const;
-    std::optional<std::string> GetInstructions() const;
+    [[nodiscard]] std::optional<std::string> GetInstructions() const;
     std::string_view GetNegotiatedProtocolVersion() const;
-    bool IsModernProtocol() const;
+    [[nodiscard]] bool IsModernProtocol() const;
 
     ListToolsResult ListTools(
         std::optional<std::string> cursor = std::nullopt);
@@ -131,12 +131,12 @@ public:
         std::string_view method,
         JsonValue params,
         const RequestOptions& options);
-    std::future<JsonValue> SendRequest(
+    [[nodiscard]] std::future<JsonValue> SendRequest(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},
         std::chrono::milliseconds timeout = kDefaultRequestTimeout);
-    std::future<JsonValue> SendRequestRaw(
+    [[nodiscard]] std::future<JsonValue> SendRequestRaw(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},

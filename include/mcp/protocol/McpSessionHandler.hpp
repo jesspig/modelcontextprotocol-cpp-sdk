@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <future>
 #include <memory>
@@ -41,10 +42,19 @@ struct SubscriptionEntry {
     std::chrono::steady_clock::time_point created_at;
 };
 
+enum class SubscriptionAddOutcome {
+    Added,
+    Overwrote,
+    LimitExceeded,
+};
+
 class MCP_API McpSessionHandler : public std::enable_shared_from_this<McpSessionHandler> {
 public:
     inline static constexpr std::chrono::seconds kProgressTimeoutExtension{30};
     inline static constexpr std::chrono::milliseconds kTimeoutPollInterval{100};
+    inline static constexpr std::size_t kDefaultResponseQueueCapacity{1024};
+    inline static constexpr std::size_t kMaxSubscriptionEntriesPerSession{64};
+    inline static constexpr std::chrono::seconds kSubscriptionEntryTtl{3600};
 
     McpSessionHandler(
         std::shared_ptr<ITransport> transport,
@@ -56,15 +66,15 @@ public:
 
     void Start();
     void Close();
-    bool IsRunning() const { return running_; }
+    [[nodiscard]] bool IsRunning() const { return running_; }
 
-    std::future<JsonValue> SendRequest(
+    [[nodiscard]] std::future<JsonValue> SendRequest(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta = {},
         std::chrono::milliseconds timeout = kDefaultRequestTimeout);
 
-    std::future<JsonValue> SendRequest(
+    [[nodiscard]] std::future<JsonValue> SendRequest(
         std::string_view method,
         JsonValue params,
         const RequestMeta& meta,
@@ -89,10 +99,10 @@ public:
     void SetRequestHandler(std::string_view method, RequestHandler handler);
     void SetNotificationHandler(std::string_view method, NotificationHandler handler);
 
-    static std::optional<std::string> RequiredClientCapability(std::string_view method);
+    [[nodiscard]] static std::optional<std::string> RequiredClientCapability(std::string_view method);
     void SetClientCapabilities(ClientCapabilities caps);
     void SetClientCapabilities(std::string_view session_id, ClientCapabilities caps);
-    std::optional<ClientCapabilities> GetClientCapabilities(
+    [[nodiscard]] std::optional<ClientCapabilities> GetClientCapabilities(
         std::string_view session_id) const;
     void SetServerInfo(const Implementation& info);
 
@@ -101,6 +111,8 @@ public:
     void AddSubscription(Subscription sub, std::string_view session_id = {});
     void AddSubscriptionEntry(SubscriptionEntry entry,
                               std::string_view session_id = {});
+    SubscriptionAddOutcome TryAddSubscriptionEntry(SubscriptionEntry entry,
+                                                   std::string_view session_id = {});
     void RemoveSubscription(std::string_view id, std::string_view session_id = {});
     void NotifySubscribers(
         std::string_view notification_type,
@@ -112,12 +124,14 @@ public:
 
     void HandleCancelled(const JsonRpcNotification& notif);
 
-    std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(
+    [[nodiscard]] std::shared_ptr<std::atomic<bool>> GetIncomingCancellationFlag(
         const RequestId& id, std::string_view session_id = {}) const;
 
     void ResetTimeoutByProgressToken(const std::string& pt_key);
 
     void SetMaxTotalTimeout(std::chrono::seconds total);
+
+    void SetResponseQueueCapacity(std::optional<std::size_t> capacity);
 
     void SetSpanHandler(SpanHandler handler);
 
@@ -135,10 +149,10 @@ public:
     std::string NegotiatedProtocolVersion() const;
     std::string NegotiatedProtocolVersion(std::string_view session_id) const;
     void SetSupportedProtocolVersions(std::vector<std::string> versions);
-    bool IsJuly2026OrLater() const {
+    [[nodiscard]] bool IsJuly2026OrLater() const {
         return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion());
     }
-    bool IsJuly2026OrLater(std::string_view session_id) const {
+    [[nodiscard]] bool IsJuly2026OrLater(std::string_view session_id) const {
         return mcp::IsModernProtocolVersion(NegotiatedProtocolVersion(session_id));
     }
     ITransport& GetTransport() { return *transport_; }
@@ -159,9 +173,14 @@ private:
         JsonRpcRequest req;
         std::future<JsonValue> future;
         std::string cancel_key;
+        std::shared_ptr<PendingRequest> cancelled_request;
+        std::optional<ErrorData> cancel_error;
     };
 
     void DeliverResponse(PendingResponse item);
+    void DeliverCancellation(const PendingResponse& item);
+    void EnqueueCancellation(std::shared_ptr<PendingRequest> request, ErrorData error);
+    void ReleaseResponseSlot();
     void ResponseWorkerLoop();
 
     static std::string GetRequestIdKey(const RequestId& rid);
@@ -184,9 +203,14 @@ private:
         OutcomeCallback on_outcome,
         bool cancel_on_timeout);
 
-    std::shared_ptr<PendingRequest> RemovePending(const std::string& id_key);
-    void CancelTransportRequest(const RequestId& id, std::string_view reason);
-    void SendCancelledNotification(const RequestId& id, std::string_view reason);
+    std::shared_ptr<PendingRequest> RemovePending(std::string_view session_id,
+                                                  const std::string& request_id);
+    std::shared_ptr<PendingRequest> RemovePendingByRequestId(
+        const std::string& request_id);
+    void CancelTransportRequest(const RequestId& id, std::string_view session_id,
+                                std::string_view reason);
+    void SendCancelledNotification(const RequestId& id, std::string_view session_id,
+                                   std::string_view reason);
 
     void CheckTimeouts();
     void EraseProgressTokens(const std::string& request_id);
@@ -231,6 +255,8 @@ private:
     std::deque<PendingResponse> response_queue_;
     std::mutex response_queue_mutex_;
     std::condition_variable response_cv_;
+    std::size_t response_queue_capacity_{kDefaultResponseQueueCapacity};
+    std::size_t outstanding_responses_{0};
 
     std::unordered_map<std::string,
         std::unordered_map<std::string, SubscriptionEntry>> subscriptions_;

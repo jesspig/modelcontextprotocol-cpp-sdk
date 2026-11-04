@@ -52,15 +52,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
 option(MCP_BUILD_CONFORMANCE "Build conformance server fixture (examples/conformance/server)" OFF)
+option(MCP_BUILD_DOCS_SNIPPETS "Build documentation snippets for syntax validation" OFF)
 
 function(mcp_enable_werror target)
     if(NOT MCP_WERROR)
         return()
     endif()
     if(MSVC)
-        target_compile_options(${target} PUBLIC /WX)
+        target_compile_options(${target} PRIVATE /WX)
     else()
-        target_compile_options(${target} PUBLIC -Werror)
+        target_compile_options(${target} PRIVATE -Werror)
     endif()
     message(STATUS "[mcp] Werror: ${target}")
 endfunction()
@@ -274,6 +275,11 @@ if(MCP_BUILD_CONFORMANCE)
     endif()
 endif()
 
+# 文档片段只做语法校验，不依赖 googletest，因此独立于 MCP_BUILD_TESTS
+if(MCP_BUILD_DOCS_SNIPPETS)
+    add_subdirectory(tests/docs)
+endif()
+
 file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "version=${PROJECT_VERSION}\n"
     "build_type=${CMAKE_BUILD_TYPE}\n"
@@ -282,7 +288,8 @@ file(WRITE "${CMAKE_BINARY_DIR}/build_config.txt"
     "compiler_launcher=${CMAKE_CXX_COMPILER_LAUNCHER}\n"
     "lto=${MCP_LTO}\n"
     "unity_enabled=${MCP_UNITY_ENABLED}\n"
-    "unity_batch=${MCP_UNITY_BATCH}\n")
+    "unity_batch=${MCP_UNITY_BATCH}\n"
+    "sanitize=${MCP_SANITIZE}\n")
 
 set(MCP_PACKAGE_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
 

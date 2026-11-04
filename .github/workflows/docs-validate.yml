@@ -1,0 +1,60 @@
+name: Docs Validate
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'docs/**'
+      - 'CMakeLists.txt'
+      - 'tests/docs/**'
+      - '.github/workflows/docs-validate.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'docs/**'
+      - 'CMakeLists.txt'
+      - 'tests/docs/**'
+      - '.github/workflows/docs-validate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        working-directory: docs
+
+      - name: Build site
+        run: pnpm build
+        working-directory: docs
+
+      - name: Check zh/en parity
+        run: node docs/scripts/check-parity.mjs
+
+      - name: Check API symbols
+        run: node docs/scripts/check-api-symbols.mjs
+
+      - name: Configure snippet syntax check
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMCP_BUILD_DOCS_SNIPPETS=ON -DMCP_BUILD_TESTS=OFF
+
+      - name: Syntax-check snippets
+        run: cmake --build build --target mcp-docs-snippets

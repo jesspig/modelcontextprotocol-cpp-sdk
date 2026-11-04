@@ -115,7 +115,7 @@ void FileTokenCache::StoreBoundIssuer(const std::string& issuer) {
         return;
     }
     try {
-        detail::WriteAtomicSecure(anchor, issuer);
+        (void)detail::WriteAtomicSecure(anchor, issuer);
     } catch (const std::exception& e) {
         MCP_LOG(Error, "token cache: failed to persist the issuer anchor: " +
             std::string(e.what()));
@@ -225,10 +225,10 @@ void FileTokenCache::Save() {
         MCP_LOG(Error, "token cache: CryptProtectData failed for " + cache_path_.string());
         return;
     }
-    detail::WriteAtomicSecure(cache_path_,
+    (void)detail::WriteAtomicSecure(cache_path_,
         std::string(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()));
 #else
-    detail::WriteAtomicSecure(cache_path_, dump_str);
+    (void)detail::WriteAtomicSecure(cache_path_, dump_str);
 #endif
 }
 

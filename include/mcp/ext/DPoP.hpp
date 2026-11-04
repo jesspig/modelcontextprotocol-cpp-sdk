@@ -28,7 +28,7 @@ std::string CreateProof(const EcP256Jwk& key,
                         std::optional<std::string_view> nonce = std::nullopt,
                         std::optional<int64_t> iat_override_seconds = std::nullopt);
 
-bool IsNonceFresh(int64_t iat_seconds, int64_t now_seconds, int64_t window_seconds = 300);
+[[nodiscard]] bool IsNonceFresh(int64_t iat_seconds, int64_t now_seconds, int64_t window_seconds = 300);
 
 int64_t NowSeconds();
 
@@ -45,7 +45,7 @@ struct DPoPVerifyOptions {
 class JtiReplayCache {
 public:
     explicit JtiReplayCache(int64_t window_seconds = 300);
-    bool CheckAndStore(std::string_view jti, int64_t iat_seconds, int64_t now_seconds);
+    [[nodiscard]] bool CheckAndStore(std::string_view jti, int64_t iat_seconds, int64_t now_seconds);
     void Clear();
 private:
     int64_t window_seconds_;
@@ -53,9 +53,9 @@ private:
     std::unordered_map<std::string, int64_t> seen_;
 };
 
-bool VerifyProof(std::string_view proof,
-                 const DPoPVerifyOptions& options,
-                 JtiReplayCache& replay);
+[[nodiscard]] bool VerifyProof(std::string_view proof,
+                               const DPoPVerifyOptions& options,
+                               JtiReplayCache& replay);
 
 std::string GenerateNonce(std::size_t random_bytes = 16);
 

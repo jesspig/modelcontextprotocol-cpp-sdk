@@ -7,11 +7,11 @@
 
 namespace mcp::detail {
 
-bool WriteAtomic(const std::filesystem::path& path, const std::string& contents);
+[[nodiscard]] bool WriteAtomic(const std::filesystem::path& path, const std::string& contents);
 
-bool WriteAtomic(const std::filesystem::path& path, const JsonValue& json);
+[[nodiscard]] bool WriteAtomic(const std::filesystem::path& path, const JsonValue& json);
 
-bool WriteAtomicSecure(const std::filesystem::path& path, const std::string& contents);
+[[nodiscard]] bool WriteAtomicSecure(const std::filesystem::path& path, const std::string& contents);
 
 JsonValue LoadJson(const std::filesystem::path& path);
 

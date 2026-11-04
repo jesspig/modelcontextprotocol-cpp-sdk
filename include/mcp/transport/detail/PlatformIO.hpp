@@ -10,8 +10,8 @@ namespace mcp { namespace detail {
 
 struct ProcessHandle {
     virtual ~ProcessHandle() = default;
-    virtual bool IsRunning() = 0;
-    virtual bool Terminate(int timeout_ms) = 0;
+    [[nodiscard]] virtual bool IsRunning() = 0;
+    [[nodiscard]] virtual bool Terminate(int timeout_ms) = 0;
     virtual int64_t Pid() const = 0;
 };
 
@@ -20,7 +20,7 @@ struct PipeHandle {
     virtual size_t Read(char* buffer, size_t size) = 0;
     virtual size_t Write(const char* data, size_t size) = 0;
     virtual void Close() = 0;
-    virtual bool IsEof() const { return true; }
+    [[nodiscard]] virtual bool IsEof() const { return true; }
 };
 
 struct ProcessStartInfo {
@@ -43,9 +43,9 @@ struct CreatedProcess {
 
 CreatedProcess CreateProcess(const ProcessStartInfo& info);
 
-std::unique_ptr<PipeHandle> OpenStandardInput();
-std::unique_ptr<PipeHandle> OpenStandardOutput();
-bool WriteWholeMessage(PipeHandle& pipe, const char* data, std::size_t size);
+[[nodiscard]] std::unique_ptr<PipeHandle> OpenStandardInput();
+[[nodiscard]] std::unique_ptr<PipeHandle> OpenStandardOutput();
+[[nodiscard]] bool WriteWholeMessage(PipeHandle& pipe, const char* data, std::size_t size);
 void SetThreadName(const char* name);
 
 }} // namespace mcp::detail

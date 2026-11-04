@@ -65,7 +65,7 @@ public:
         if (!running_.exchange(false)) return;
 
         if (stdin_pipe_) stdin_pipe_->Close();
-        if (process_) process_->Terminate(
+        if (process_) (void)process_->Terminate(
             static_cast<int>(shutdown_timeout_.count()));
         if (stdout_pipe_) stdout_pipe_->Close();
         if (stderr_pipe_) stderr_pipe_->Close();
@@ -162,6 +162,9 @@ private:
                 }
             }
         }
+
+        if (channel_) channel_->Close();
+        SetDisconnected();
     }
 
     std::thread read_thread_;

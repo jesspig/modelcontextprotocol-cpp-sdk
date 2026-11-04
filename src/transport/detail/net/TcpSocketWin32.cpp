@@ -12,7 +12,9 @@
 #include <mcp/ErrorCodes.hpp>
 
 #include <windows.h>
+#include <array>
 #include <mutex>
+#include <shared_mutex>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -33,12 +35,12 @@ bool EnsureWinsock() {
 }
 
 std::string WinsockErrorText(int error) {
-    char buf[256] = {0};
+    std::array<char, 256> buf{};
     DWORD written = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                                    nullptr, static_cast<DWORD>(error), 0,
-                                   buf, static_cast<DWORD>(sizeof(buf)), nullptr);
+                                   buf.data(), static_cast<DWORD>(buf.size()), nullptr);
     if (written == 0) return "error " + std::to_string(error);
-    std::string text(buf, written);
+    std::string text(buf.data(), written);
     while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == ' '))
         text.pop_back();
     return text;
@@ -62,6 +64,10 @@ bool WaitForSocket(SOCKET sock, short events, int timeout_ms) {
         rc = ::WSAPoll(&pfd, 1, timeout_ms);
     } while (rc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR);
     return rc > 0;
+}
+
+void MarkNonInheritable(SOCKET sock) {
+    ::SetHandleInformation(reinterpret_cast<HANDLE>(sock), HANDLE_FLAG_INHERIT, 0);
 }
 
 } // anonymous namespace
@@ -88,12 +94,15 @@ TcpSocket TcpSocket::FromFd(NativeFd fd) {
     TcpSocket s;
     s.fd_.store(fd);
     s.closed_.store(false);
-    s.eof_ = false;
+    s.eof_.store(false);
+    u_long nonblocking = 1;
+    ::ioctlsocket(fd, FIONBIO, &nonblocking);
+    MarkNonInheritable(fd);
     return s;
 }
 
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
-    : fd_(other.fd_.load()), eof_(other.eof_), closed_(other.closed_.load()) {
+    : fd_(other.fd_.load()), eof_(other.eof_.load()), closed_(other.closed_.load()) {
     other.fd_.store(kInvalidFd);
     other.closed_.store(true);
 }
@@ -102,7 +111,7 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
         Close();
         fd_.store(other.fd_.load());
-        eof_ = other.eof_;
+        eof_.store(other.eof_.load());
         closed_.store(other.closed_.load());
         other.fd_.store(kInvalidFd);
         other.closed_.store(true);
@@ -137,6 +146,7 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
     for (struct addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
         SOCKET sock = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (sock == INVALID_SOCKET) continue;
+        MarkNonInheritable(sock);
 
         u_long nonblocking = 1;
         ::ioctlsocket(sock, FIONBIO, &nonblocking);
@@ -186,34 +196,35 @@ void TcpSocket::Connect(std::string_view host, uint16_t port, std::chrono::milli
 
     fd_.store(connected_sock);
     closed_.store(false);
-    eof_ = false;
+    eof_.store(false);
 }
 
 std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::milliseconds timeout) {
     if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
-    SOCKET fd = fd_.load();
-    if (eof_ || fd == INVALID_SOCKET) return 0;
+    if (eof_.load() || fd_.load() == INVALID_SOCKET) return 0;
 
     if (!WaitForEvents(POLLIN, ClampTimeoutMs(timeout))) {
         if (closed_.load())
             throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
         return 0;
     }
-    fd = fd_.load();
-    if (closed_.load() || fd == INVALID_SOCKET)
+
+    std::shared_lock<std::shared_mutex> guard(io_mutex_);
+    SOCKET fd = fd_.load();
+    if (fd == INVALID_SOCKET)
         throw McpError(McpErrorCode::ConnectionClosed, "read on closed socket");
 
     int n = ::recv(fd, static_cast<char*>(buf), static_cast<int>(len), 0);
     if (n == 0) {
-        eof_ = true;
+        eof_.store(true);
         return 0;
     }
     if (n == SOCKET_ERROR) {
         int error = WSAGetLastError();
         if (error == WSAEWOULDBLOCK) return 0;
         if (error == WSAECONNRESET) {
-            eof_ = true;
+            eof_.store(true);
             return 0;
         }
         throw McpError(McpErrorCode::ConnectionClosed,
@@ -225,8 +236,7 @@ std::size_t TcpSocket::Read(void* buf, std::size_t len, std::chrono::millisecond
 void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::milliseconds timeout) {
     if (closed_.load())
         throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
-    SOCKET fd = fd_.load();
-    if (fd == INVALID_SOCKET)
+    if (fd_.load() == INVALID_SOCKET)
         throw McpError(McpErrorCode::ConnectionClosed, "write on unconnected socket");
 
     const char* data = static_cast<const char*>(buf);
@@ -242,21 +252,31 @@ void TcpSocket::Write(const void* buf, std::size_t len, std::chrono::millisecond
                 throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
             throw McpError(McpErrorCode::RequestTimeout, "socket write timed out");
         }
-        fd = fd_.load();
-        if (closed_.load() || fd == INVALID_SOCKET)
-            throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
 
-        int n = ::send(fd, data + total, static_cast<int>(len - total), 0);
-        if (n == SOCKET_ERROR) {
-            int error = WSAGetLastError();
-            if (error == WSAEWOULDBLOCK) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+        int written = 0;
+        bool would_block = false;
+        {
+            std::shared_lock<std::shared_mutex> guard(io_mutex_);
+            SOCKET fd = fd_.load();
+            if (fd == INVALID_SOCKET)
+                throw McpError(McpErrorCode::ConnectionClosed, "write on closed socket");
+
+            written = ::send(fd, data + total, static_cast<int>(len - total), 0);
+            if (written == SOCKET_ERROR) {
+                int error = WSAGetLastError();
+                if (error == WSAEWOULDBLOCK) {
+                    would_block = true;
+                } else {
+                    throw McpError(McpErrorCode::ConnectionClosed,
+                                   "socket write failed: " + WinsockErrorText(error));
+                }
             }
-            throw McpError(McpErrorCode::ConnectionClosed,
-                           "socket write failed: " + WinsockErrorText(error));
         }
-        total += static_cast<std::size_t>(n);
+        if (would_block) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        total += static_cast<std::size_t>(written);
     }
 }
 
@@ -271,12 +291,14 @@ bool TcpSocket::WaitReadable(std::chrono::milliseconds timeout) {
 }
 
 void TcpSocket::Close() {
-    closed_.store(true);
+    if (closed_.exchange(true)) return;
+    SOCKET pending = fd_.load();
+    if (pending != INVALID_SOCKET)
+        ::shutdown(pending, SD_BOTH);
+
+    std::unique_lock<std::shared_mutex> guard(io_mutex_);
     SOCKET fd = fd_.exchange(kInvalidFd);
-    if (fd != INVALID_SOCKET) {
-        ::shutdown(fd, SD_BOTH);
-        ::closesocket(fd);
-    }
+    if (fd != INVALID_SOCKET) ::closesocket(fd);
 }
 
 }}} // namespace mcp::detail::net

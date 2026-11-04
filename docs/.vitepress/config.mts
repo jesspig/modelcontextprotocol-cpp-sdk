@@ -1,87 +1,150 @@
 import { defineConfig } from 'vitepress'
 
+const githubLink = 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk'
+
+// socialLinks/footer 属于 themeConfig，写在站点根配置不会生效
+const sharedTheme = {
+  search: { provider: 'local' },
+  socialLinks: [{ icon: 'github', link: githubLink }],
+  footer: { message: 'MIT License' },
+}
+
 const en = {
+  ...sharedTheme,
   nav: [
-    { text: 'Guide', link: '/en/guide/quick-start' },
-    { text: 'Server', link: '/en/server/overview' },
-    { text: 'Client', link: '/en/client/overview' },
-    { text: 'GitHub', link: 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk' },
+    { text: 'Start', link: '/en/start/quickstart' },
+    { text: 'How-to', link: '/en/howto/register-a-tool' },
+    { text: 'Reference', link: '/en/reference/' },
+    { text: 'GitHub', link: githubLink },
   ],
   sidebar: [
-    { text: 'Getting Started', items: [
-      { text: 'What is MCP?', link: '/en/guide/what-is-mcp' },
-      { text: 'Installation', link: '/en/guide/installation' },
-      { text: 'Quick Start', link: '/en/guide/quick-start' },
-      { text: 'Architecture', link: '/en/guide/architecture' },
-      { text: 'Transports', link: '/en/guide/transports' },
+    { text: 'Start', items: [
+      { text: 'Installation', link: '/en/start/installation' },
+      { text: 'Quick Start', link: '/en/start/quickstart' },
     ]},
-    { text: 'Server', items: [
-      { text: 'Overview', link: '/en/server/overview' },
-      { text: 'Tools', link: '/en/server/tools' },
-      { text: 'Resources', link: '/en/server/resources' },
-      { text: 'Prompts', link: '/en/server/prompts' },
-      { text: 'Elicitation', link: '/en/server/elicitation' },
-      { text: 'Extensions', link: '/en/server/extensions' },
+    { text: 'Learn', items: [
+      { text: 'What is MCP?', link: '/en/learn/what-is-mcp' },
+      { text: 'Architecture', link: '/en/learn/architecture' },
+      { text: 'Transports', link: '/en/learn/transports' },
+      { text: 'Protocol Versions', link: '/en/learn/protocol-versions' },
+      { text: 'Extensions', link: '/en/learn/extensions' },
+      { text: 'Deprecation Registry', link: '/en/learn/compatibility' },
     ]},
-    { text: 'Client', items: [
-      { text: 'Overview', link: '/en/client/overview' },
-      { text: 'OAuth', link: '/en/client/oauth' },
+    { text: 'How-to · Server', items: [
+      { text: 'Register a tool', link: '/en/howto/register-a-tool' },
+      { text: 'Validate tool input', link: '/en/howto/validate-tool-input' },
+      { text: 'Serve a resource', link: '/en/howto/serve-a-resource' },
+      { text: 'Serve a prompt', link: '/en/howto/serve-a-prompt' },
+      { text: 'Collect user input', link: '/en/howto/collect-user-input' },
+      { text: 'Request extra input (MRTR)', link: '/en/howto/request-extra-input' },
+      { text: 'Run long tasks', link: '/en/howto/run-long-tasks' },
+      { text: 'Report progress', link: '/en/howto/report-progress' },
+      { text: 'Send log notifications', link: '/en/howto/send-log-notifications' },
     ]},
-    { text: 'Advanced', items: [
-      { text: 'Protocol Versions', link: '/en/advanced/protocol-versions' },
-      { text: 'MRTR', link: '/en/advanced/mrtr' },
-      { text: 'Logging', link: '/en/advanced/logging' },
+    { text: 'How-to · Client', items: [
+      { text: 'Connect to a server', link: '/en/howto/connect-to-a-server' },
+      { text: 'Call tools and read resources', link: '/en/howto/call-tools-and-read-resources' },
+      { text: 'Handle server-initiated requests', link: '/en/howto/handle-server-initiated-requests' },
+      { text: 'Cancel a request', link: '/en/howto/cancel-a-request' },
+      { text: 'Add OAuth to a client', link: '/en/howto/add-oauth-to-a-client' },
+      { text: 'Manage subprocesses', link: '/en/howto/manage-subprocesses' },
+      { text: 'Handle errors', link: '/en/howto/handle-errors' },
+      { text: 'Debug a stuck server', link: '/en/howto/debug-a-stuck-server' },
     ]},
-    { text: 'Migration', items: [
-      { text: '0.3.9 Migration Guide', link: '/en/migration/0.3.9' },
-      { text: '0.3.10 Release Notes', link: '/en/migration/0.3.10' },
+    { text: 'How-to · Transport & Ops', items: [
+      { text: 'Run a Streamable HTTP server', link: '/en/howto/run-a-streamable-http-server' },
+      { text: 'Protect an HTTP server', link: '/en/howto/protect-an-http-server' },
+    ]},
+    { text: 'Reference', items: [
+      { text: 'Overview', link: '/en/reference/' },
+      { text: 'Server', link: '/en/reference/server' },
+      { text: 'Client', link: '/en/reference/client' },
+      { text: 'Transports', link: '/en/reference/transports' },
+      { text: 'Types', link: '/en/reference/types' },
+      { text: 'Errors', link: '/en/reference/errors' },
+      { text: 'Process & Storage', link: '/en/reference/process-and-storage' },
+      { text: 'Auth & Extensions', link: '/en/reference/auth-and-extensions' },
     ]},
     { text: 'Examples', items: [
       { text: 'Echo Server', link: '/en/examples/echo-server' },
       { text: 'Weather Server', link: '/en/examples/weather-server' },
+      { text: 'Simple Client', link: '/en/examples/simple-client' },
+      { text: 'Request Cancellation', link: '/en/examples/request-cancellation' },
+    ]},
+    { text: 'Migration', items: [
+      { text: '0.3.9 Migration Guide', link: '/en/migration/0.3.9' },
+      { text: '0.3.10 Release Notes', link: '/en/migration/0.3.10' },
+      { text: '0.3.11 Release Notes', link: '/en/migration/0.3.11' },
     ]},
   ],
 }
 
 const zh = {
+  ...sharedTheme,
   nav: [
-    { text: '指南', link: '/zh/guide/quick-start' },
-    { text: '服务端', link: '/zh/server/overview' },
-    { text: '客户端', link: '/zh/client/overview' },
-    { text: 'GitHub', link: 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk' },
+    { text: '开始使用', link: '/zh/start/quickstart' },
+    { text: '任务手册', link: '/zh/howto/register-a-tool' },
+    { text: 'API 参考', link: '/zh/reference/' },
+    { text: 'GitHub', link: githubLink },
   ],
   sidebar: [
-    { text: '快速入门', items: [
-      { text: '什么是 MCP？', link: '/zh/guide/what-is-mcp' },
-      { text: '安装', link: '/zh/guide/installation' },
-      { text: '快速开始', link: '/zh/guide/quick-start' },
-      { text: '架构', link: '/zh/guide/architecture' },
-      { text: '传输层', link: '/zh/guide/transports' },
+    { text: '开始使用', items: [
+      { text: '安装与集成', link: '/zh/start/installation' },
+      { text: '快速上手', link: '/zh/start/quickstart' },
     ]},
-    { text: '服务端', items: [
-      { text: '概述', link: '/zh/server/overview' },
-      { text: '工具', link: '/zh/server/tools' },
-      { text: '资源', link: '/zh/server/resources' },
-      { text: '提示', link: '/zh/server/prompts' },
-      { text: '启发式收集', link: '/zh/server/elicitation' },
-      { text: '扩展', link: '/zh/server/extensions' },
+    { text: '核心概念', items: [
+      { text: '什么是 MCP？', link: '/zh/learn/what-is-mcp' },
+      { text: '架构', link: '/zh/learn/architecture' },
+      { text: '传输层', link: '/zh/learn/transports' },
+      { text: '协议版本', link: '/zh/learn/protocol-versions' },
+      { text: '扩展', link: '/zh/learn/extensions' },
+      { text: '弃用登记表', link: '/zh/learn/compatibility' },
     ]},
-    { text: '客户端', items: [
-      { text: '概述', link: '/zh/client/overview' },
-      { text: 'OAuth', link: '/zh/client/oauth' },
+    { text: '任务手册 · 服务端', items: [
+      { text: '注册一个工具', link: '/zh/howto/register-a-tool' },
+      { text: '校验工具入参', link: '/zh/howto/validate-tool-input' },
+      { text: '暴露资源', link: '/zh/howto/serve-a-resource' },
+      { text: '提供提示', link: '/zh/howto/serve-a-prompt' },
+      { text: '向用户收集输入', link: '/zh/howto/collect-user-input' },
+      { text: '请求补充输入（MRTR）', link: '/zh/howto/request-extra-input' },
+      { text: '跑长任务', link: '/zh/howto/run-long-tasks' },
+      { text: '上报进度', link: '/zh/howto/report-progress' },
+      { text: '发送协议日志', link: '/zh/howto/send-log-notifications' },
     ]},
-    { text: '进阶', items: [
-      { text: '协议版本', link: '/zh/advanced/protocol-versions' },
-      { text: 'MRTR 多轮往返', link: '/zh/advanced/mrtr' },
-      { text: '日志', link: '/zh/advanced/logging' },
+    { text: '任务手册 · 客户端', items: [
+      { text: '连接服务端', link: '/zh/howto/connect-to-a-server' },
+      { text: '调用工具与读取资源', link: '/zh/howto/call-tools-and-read-resources' },
+      { text: '承接服务端发起的请求', link: '/zh/howto/handle-server-initiated-requests' },
+      { text: '取消请求与超时', link: '/zh/howto/cancel-a-request' },
+      { text: '给客户端加上 OAuth', link: '/zh/howto/add-oauth-to-a-client' },
+      { text: '管住子进程', link: '/zh/howto/manage-subprocesses' },
+      { text: '处理错误', link: '/zh/howto/handle-errors' },
+      { text: '排查卡住的服务端', link: '/zh/howto/debug-a-stuck-server' },
     ]},
-    { text: '迁移', items: [
-      { text: '0.3.9 迁移指南', link: '/zh/migration/0.3.9' },
-      { text: '0.3.10 发布说明', link: '/zh/migration/0.3.10' },
+    { text: '任务手册 · 传输与运维', items: [
+      { text: '跑起 Streamable HTTP 服务端', link: '/zh/howto/run-a-streamable-http-server' },
+      { text: '给 HTTP 服务端加防护', link: '/zh/howto/protect-an-http-server' },
+    ]},
+    { text: 'API 参考', items: [
+      { text: '总览', link: '/zh/reference/' },
+      { text: '服务端', link: '/zh/reference/server' },
+      { text: '客户端', link: '/zh/reference/client' },
+      { text: '传输', link: '/zh/reference/transports' },
+      { text: '类型', link: '/zh/reference/types' },
+      { text: '错误', link: '/zh/reference/errors' },
+      { text: '进程与存储', link: '/zh/reference/process-and-storage' },
+      { text: '认证与扩展', link: '/zh/reference/auth-and-extensions' },
     ]},
     { text: '示例', items: [
       { text: 'Echo 服务端', link: '/zh/examples/echo-server' },
       { text: '天气服务端', link: '/zh/examples/weather-server' },
+      { text: 'Simple 客户端', link: '/zh/examples/simple-client' },
+      { text: '请求取消示例', link: '/zh/examples/request-cancellation' },
+    ]},
+    { text: '迁移', items: [
+      { text: '0.3.9 迁移指南', link: '/zh/migration/0.3.9' },
+      { text: '0.3.10 发布说明', link: '/zh/migration/0.3.10' },
+      { text: '0.3.11 发布说明', link: '/zh/migration/0.3.11' },
     ]},
   ],
 }
@@ -105,10 +168,4 @@ export default defineConfig({
       themeConfig: zh,
     },
   },
-
-  socialLinks: [
-    { icon: 'github', link: 'https://github.com/jesspig/modelcontextprotocol-cpp-sdk' },
-  ],
-
-  footer: { message: 'MIT License' },
 })

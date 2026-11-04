@@ -55,14 +55,14 @@ public:
 
     std::string Dump(int indent = -1) const;
 
-    bool IsNull()   const { return std::holds_alternative<std::nullptr_t>(data_); }
-    bool IsBool()   const { return std::holds_alternative<bool>(data_); }
-    bool IsInt()    const { return std::holds_alternative<int64_t>(data_); }
-    bool IsDouble() const { return std::holds_alternative<double>(data_); }
-    bool IsNumber() const { return IsInt() || IsDouble(); }
-    bool IsString() const { return std::holds_alternative<std::string>(data_); }
-    bool IsArray()  const { return std::holds_alternative<Array>(data_); }
-    bool IsObject() const { return std::holds_alternative<Object>(data_); }
+    [[nodiscard]] bool IsNull()   const { return std::holds_alternative<std::nullptr_t>(data_); }
+    [[nodiscard]] bool IsBool()   const { return std::holds_alternative<bool>(data_); }
+    [[nodiscard]] bool IsInt()    const { return std::holds_alternative<int64_t>(data_); }
+    [[nodiscard]] bool IsDouble() const { return std::holds_alternative<double>(data_); }
+    [[nodiscard]] bool IsNumber() const { return IsInt() || IsDouble(); }
+    [[nodiscard]] bool IsString() const { return std::holds_alternative<std::string>(data_); }
+    [[nodiscard]] bool IsArray()  const { return std::holds_alternative<Array>(data_); }
+    [[nodiscard]] bool IsObject() const { return std::holds_alternative<Object>(data_); }
 
     bool            GetBool()   const;
     int64_t         GetInt()    const;
@@ -74,8 +74,8 @@ public:
     Object&         GetObject();
 
     size_t Size()   const;
-    bool   Empty()  const;
-    bool   Contains(std::string_view key) const;
+    [[nodiscard]] bool   Empty()  const;
+    [[nodiscard]] bool   Contains(std::string_view key) const;
 
     JsonValue&       operator[](size_t i);
     const JsonValue& operator[](size_t i) const;

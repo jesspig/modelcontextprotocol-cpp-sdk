@@ -43,6 +43,11 @@ std::string SanitizeSessionId(std::string_view session_id) {
     return name;
 }
 
+std::filesystem::path SessionMetaFilePath(const std::filesystem::path& storage_dir,
+                                          std::string_view session_id) {
+    return storage_dir / (SanitizeSessionId(session_id) + ".meta.json");
+}
+
 class SessionFileLock {
 public:
     explicit SessionFileLock(const std::filesystem::path& lock_path) {
@@ -133,6 +138,11 @@ struct ScannedEvents {
     size_t count{0};
     uint64_t max_id{0};
     bool ends_with_newline{true};
+};
+
+struct AppendCursor {
+    uint64_t next_id{1};
+    size_t count{0};
 };
 
 std::optional<std::string> ReadFileBytes(const std::filesystem::path& path)
@@ -251,15 +261,58 @@ LoadedEvents LoadEvents(const std::filesystem::path& path)
 void RewriteTrimmed(const std::filesystem::path& path,
                     std::vector<std::pair<uint64_t, std::string>>& events)
 {
-    events.erase(events.begin(),
-                 events.end() - static_cast<std::ptrdiff_t>(
-                                     EventStore::kMaxEventsPerSession));
+    if (events.size() > EventStore::kMaxEventsPerSession) {
+        events.erase(events.begin(),
+                     events.end() - static_cast<std::ptrdiff_t>(
+                                         EventStore::kMaxEventsPerSession));
+    }
     std::string content;
     for (const auto& [id, data] : events) {
         content += SerializeEventLine(id, data);
     }
     if (!detail::WriteAtomic(path, content)) {
         throw std::runtime_error("event store: failed to trim " +
+                                 path.string());
+    }
+}
+
+bool EndsWithNewline(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return true;
+    if (file.tellg() <= 0) return true;
+    file.seekg(-1, std::ios::end);
+    char last = 0;
+    file.get(last);
+    return !file.fail() && last == '\n';
+}
+
+std::optional<AppendCursor> LoadAppendCursor(const std::filesystem::path& path)
+{
+    auto bytes = ReadFileBytes(path);
+    if (!bytes) return std::nullopt;
+    try {
+        auto json = JsonValue::Parse(*bytes);
+        auto* next_id = json.Find("next_id");
+        auto* count = json.Find("count");
+        if (!next_id || !next_id->IsInt() || next_id->GetInt() < 1) return std::nullopt;
+        if (!count || !count->IsInt() || count->GetInt() < 0) return std::nullopt;
+        AppendCursor cursor;
+        cursor.next_id = static_cast<uint64_t>(next_id->GetInt());
+        cursor.count = static_cast<size_t>(count->GetInt());
+        return cursor;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+void StoreAppendCursor(const std::filesystem::path& path, const AppendCursor& cursor)
+{
+    JsonValue::Object obj;
+    obj["next_id"] = JsonValue(static_cast<int64_t>(cursor.next_id));
+    obj["count"] = JsonValue(static_cast<int64_t>(cursor.count));
+    if (!detail::WriteAtomic(path, JsonValue(std::move(obj)).Dump())) {
+        throw std::runtime_error("event store: failed to persist cursor " +
                                  path.string());
     }
 }
@@ -293,10 +346,21 @@ uint64_t FileEventStore::Append(
     std::string_view session_id, std::string event_data)
 {
     auto file_path = SessionFilePath(session_id);
+    auto meta_path = SessionMetaFilePath(storage_dir_, session_id);
     SessionFileLock lock(SessionLockPath(session_id));
 
-    auto scanned = ScanEvents(file_path);
-    uint64_t next_id = scanned.max_id + 1;
+    AppendCursor cursor;
+    bool ends_with_newline = true;
+    if (auto stored = LoadAppendCursor(meta_path)) {
+        cursor = *stored;
+        ends_with_newline = EndsWithNewline(file_path);
+    } else {
+        auto scanned = ScanEvents(file_path);
+        cursor.next_id = scanned.max_id + 1;
+        cursor.count = scanned.count;
+        ends_with_newline = scanned.ends_with_newline;
+    }
+    const uint64_t next_id = cursor.next_id;
 
     {
         std::ofstream file(file_path, std::ios::binary | std::ios::app);
@@ -304,7 +368,7 @@ uint64_t FileEventStore::Append(
             throw std::runtime_error("event store: failed to open " +
                                      file_path.string() + " for append");
         }
-        if (!scanned.ends_with_newline) file << '\n';
+        if (!ends_with_newline) file << '\n';
         file << SerializeEventLine(next_id, event_data);
         file.flush();
         if (!file.good()) {
@@ -313,10 +377,14 @@ uint64_t FileEventStore::Append(
         }
     }
 
-    if (scanned.count + 1 > kMaxEventsPerSession) {
+    cursor.next_id = next_id + 1;
+    ++cursor.count;
+    if (cursor.count > kMaxEventsPerSession) {
         auto loaded = LoadEvents(file_path);
         RewriteTrimmed(file_path, loaded.items);
+        cursor.count = loaded.items.size();
     }
+    StoreAppendCursor(meta_path, cursor);
     return next_id;
 }
 
@@ -334,12 +402,18 @@ std::vector<std::pair<uint64_t, std::string>> FileEventStore::GetEventsSince(
 
 void FileEventStore::Clear(std::string_view session_id) {
     auto file_path = SessionFilePath(session_id);
+    auto meta_path = SessionMetaFilePath(storage_dir_, session_id);
     SessionFileLock lock(SessionLockPath(session_id));
     std::error_code ec;
     std::filesystem::remove(file_path, ec);
     if (ec) {
         throw std::runtime_error("event store: failed to remove " +
                                  file_path.string() + ": " + ec.message());
+    }
+    std::filesystem::remove(meta_path, ec);
+    if (ec) {
+        throw std::runtime_error("event store: failed to remove " +
+                                 meta_path.string() + ": " + ec.message());
     }
 }
 

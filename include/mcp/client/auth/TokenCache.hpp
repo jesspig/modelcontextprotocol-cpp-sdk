@@ -16,19 +16,19 @@ struct TokenContainer {
     std::string token_type{"Bearer"};
     std::optional<std::string> resource;
 
-    bool IsExpired() const;
-    bool WillExpireSoon(int64_t margin_ms = 60000) const;
+    [[nodiscard]] bool IsExpired() const;
+    [[nodiscard]] bool WillExpireSoon(int64_t margin_ms = 60000) const;
 };
 
 class ITokenCache {
 public:
     virtual ~ITokenCache() = default;
     virtual void StoreTokens(const TokenContainer& tokens) = 0;
-    virtual std::optional<TokenContainer> GetTokens() = 0;
+    [[nodiscard]] virtual std::optional<TokenContainer> GetTokens() = 0;
     virtual void ClearTokens() = 0;
 
     virtual void StoreBoundIssuer(const std::string& issuer) { (void)issuer; }
-    virtual std::optional<std::string> GetBoundIssuer() { return std::nullopt; }
+    [[nodiscard]] virtual std::optional<std::string> GetBoundIssuer() { return std::nullopt; }
 };
 
 class InMemoryTokenCache : public ITokenCache {
@@ -57,8 +57,9 @@ struct OAuthMetadata {
     std::vector<std::string> grant_types_supported;
     std::vector<std::string> code_challenge_methods_supported;
     std::vector<std::string> token_endpoint_auth_methods_supported;
+    bool authorization_response_iss_parameter_supported{false};
 
-    static std::optional<OAuthMetadata> Discover(std::string_view server_url);
+    [[nodiscard]] static std::optional<OAuthMetadata> Discover(std::string_view server_url);
 };
 
 struct OAuthTokenResponse {
@@ -76,7 +77,7 @@ struct ClientRegistrationInfo {
     std::vector<std::string> grant_types;
     std::vector<std::string> redirect_uris;
 
-    static std::optional<ClientRegistrationInfo> Register(
+    [[nodiscard]] static std::optional<ClientRegistrationInfo> Register(
         std::string_view registration_endpoint,
         std::string_view redirect_uri,
         std::string_view client_name,

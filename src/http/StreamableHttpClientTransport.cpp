@@ -27,6 +27,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -625,7 +626,7 @@ private:
             return finish(ListenState::Streaming);
         }
         std::string pending;
-        char buf[4096];
+        std::array<char, 4096> buf;
         for (;;) {
             if (!running_) break;
             DWORD navail = 0;
@@ -635,10 +636,10 @@ private:
             }
             if (navail == 0) break;
             DWORD nread = 0;
-            DWORD nwant = navail < sizeof(buf) ? navail : static_cast<DWORD>(sizeof(buf));
-            if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
+            DWORD nwant = navail < buf.size() ? navail : static_cast<DWORD>(buf.size());
+            if (!WinHttpReadData(hRequest, buf.data(), nwant, &nread) || nread == 0)
                 break;
-            pending.append(buf, nread);
+            pending.append(buf.data(), nread);
             if (pending.size() > SseEventLimit()) {
                 MCP_LOG(Error, "Listen SSE stream exceeded max SSE event size");
                 break;
@@ -753,9 +754,9 @@ private:
         if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                 nullptr, 0, 0, 0) &&
             WinHttpReceiveResponse(hRequest, nullptr)) {
-            char buf[4096];
+            std::array<char, 4096> buf;
             DWORD read = 0;
-            while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
+            while (WinHttpReadData(hRequest, buf.data(), buf.size(), &read) && read > 0) {
                 read = 0;
             }
         }
@@ -998,10 +999,10 @@ private:
             if (status_ok && status_code >= 400)
             {
                 std::string err_body;
-                char ebuf[4096];
+                std::array<char, 4096> ebuf;
                 DWORD eread = 0;
-                while (WinHttpReadData(hRequest, ebuf, sizeof(ebuf), &eread) && eread > 0) {
-                    err_body.append(ebuf, eread);
+                while (WinHttpReadData(hRequest, ebuf.data(), ebuf.size(), &eread) && eread > 0) {
+                    err_body.append(ebuf.data(), eread);
                     eread = 0;
                 }
                 bool retry = false;
@@ -1053,7 +1054,7 @@ private:
                     try {
                         auto req_body = JsonValue::Parse(current_body);
                         if (channel_) {
-                            channel_->Send(streamable_http_client_impl::
+                            (void)channel_->Send(streamable_http_client_impl::
                                 MakeSessionExpiredError(req_body));
                             delivered = true;
                         }
@@ -1104,7 +1105,7 @@ private:
                 SetActivePost(post_key);
                 bool resolved = false;
                 std::string sse_body;
-                char sbuf[4096];
+                std::array<char, 4096> sbuf;
                 for (;;) {
                     if (!post_key.empty() && IsRequestCancelled(post_key)) break;
                     DWORD savail = 0;
@@ -1115,11 +1116,11 @@ private:
                     }
                     if (savail == 0) break;
                     DWORD sread = 0;
-                    DWORD swant = savail < sizeof(sbuf) ? savail
-                                                        : static_cast<DWORD>(sizeof(sbuf));
-                    if (!WinHttpReadData(hRequest, sbuf, swant, &sread) || sread == 0)
+                    DWORD swant = savail < sbuf.size() ? savail
+                                                        : static_cast<DWORD>(sbuf.size());
+                    if (!WinHttpReadData(hRequest, sbuf.data(), swant, &sread) || sread == 0)
                         break;
-                    sse_body.append(sbuf, sread);
+                    sse_body.append(sbuf.data(), sread);
                     if (sse_body.size() > SseEventLimit()) {
                         sse_request_ = nullptr;
                         ClearActivePost(post_key);
@@ -1150,7 +1151,7 @@ private:
                     stream_error.id = request_id;
                     stream_error.error.code = McpErrorCode::ConnectionClosed;
                     stream_error.error.message = "SSE stream ended without response";
-                    channel_->Send(JsonRpcMessage(std::move(stream_error)));
+                    (void)channel_->Send(JsonRpcMessage(std::move(stream_error)));
                     NotifyError("HTTP POST SSE stream ended without response");
                 }
                 ClearActivePost(post_key);
@@ -1168,10 +1169,10 @@ private:
                     return;
                 }
                 std::string resp_body;
-                char buf[4096];
+                std::array<char, 4096> buf;
                 DWORD read = 0;
-                while (WinHttpReadData(hRequest, buf, sizeof(buf), &read) && read > 0) {
-                    resp_body.append(buf, read);
+                while (WinHttpReadData(hRequest, buf.data(), buf.size(), &read) && read > 0) {
+                    resp_body.append(buf.data(), read);
                     read = 0;
                 }
                 if (!resp_body.empty()) {
@@ -1307,7 +1308,7 @@ private:
         std::optional<RequestId> wanted = request_id;
         bool matched = false;
         std::string pending;
-        char buf[4096];
+        std::array<char, 4096> buf;
         auto deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(kHttpTimeoutMs);
         for (;;) {
@@ -1320,10 +1321,10 @@ private:
             }
             if (navail == 0) break;
             DWORD nread = 0;
-            DWORD nwant = navail < sizeof(buf) ? navail : static_cast<DWORD>(sizeof(buf));
-            if (!WinHttpReadData(hRequest, buf, nwant, &nread) || nread == 0)
+            DWORD nwant = navail < buf.size() ? navail : static_cast<DWORD>(buf.size());
+            if (!WinHttpReadData(hRequest, buf.data(), nwant, &nread) || nread == 0)
                 break;
-            pending.append(buf, nread);
+            pending.append(buf.data(), nread);
             if (pending.size() > SseEventLimit()) {
                 MCP_LOG(Error, "Resume SSE stream exceeded max SSE event size");
                 break;
@@ -1992,7 +1993,7 @@ private:
                     try {
                         auto req_body = JsonValue::Parse(body);
                         if (channel_) {
-                            channel_->Send(streamable_http_client_impl::
+                            (void)channel_->Send(streamable_http_client_impl::
                                 MakeSessionExpiredError(req_body));
                             delivered = true;
                         }
@@ -2032,7 +2033,7 @@ private:
                     stream_error.id = post_request_id;
                     stream_error.error.code = McpErrorCode::ConnectionClosed;
                     stream_error.error.message = "SSE stream ended without response";
-                    channel_->Send(JsonRpcMessage(std::move(stream_error)));
+                    (void)channel_->Send(JsonRpcMessage(std::move(stream_error)));
                     NotifyError("HTTP POST SSE stream ended without response");
                 }
                 return;

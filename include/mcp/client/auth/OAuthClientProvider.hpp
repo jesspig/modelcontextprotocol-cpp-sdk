@@ -40,6 +40,7 @@ struct OAuthClientOptions {
     std::string signing_algorithm{"ES256"};
     std::function<int64_t()> client_assertion_clock_seconds;
     std::vector<std::string> allowed_authorization_server_origins;
+    bool require_iss_when_advertised{false};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -51,22 +52,22 @@ public:
     explicit OAuthClientProvider(OAuthClientOptions options);
     ~OAuthClientProvider();
 
-    static bool IsSecureEndpoint(std::string_view url);
+    [[nodiscard]] static bool IsSecureEndpoint(std::string_view url);
 
-    static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
+    [[nodiscard]] static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
 
-    bool Authenticate();
+    [[nodiscard]] bool Authenticate();
 
-    bool AuthenticateClientCredentials();
+    [[nodiscard]] bool AuthenticateClientCredentials();
 
     std::string GetAccessToken();
 
-    bool RefreshTokens();
+    [[nodiscard]] bool RefreshTokens();
 
     void Revoke();
 
-    bool IsAuthenticated() const;
-    bool HasToken() const;
+    [[nodiscard]] bool IsAuthenticated() const;
+    [[nodiscard]] bool HasToken() const;
 
     std::string GetAuthorizationHeader() const;
 
@@ -81,15 +82,22 @@ public:
 
     void SetDPoPNonce(std::string nonce);
 
-    bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
+    [[nodiscard]] bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
 
-    bool HandleAuthChallenge(std::string_view www_authenticate);
+    [[nodiscard]] bool HandleAuthChallenge(std::string_view www_authenticate);
 
 private:
     enum class RefreshOutcome {
         Refreshed,
         InvalidGrant,
         TransientFailure,
+    };
+
+    enum class ClientAuthMethod {
+        None,
+        ClientSecretPost,
+        ClientSecretBasic,
+        PrivateKeyJwt,
     };
 
     struct TokenEndpointResponse {
@@ -118,6 +126,8 @@ private:
     RefreshOutcome RefreshTokensInternal();
 
     bool ValidateTokenIssuer(const JsonValue& response) const;
+
+    bool ValidateAuthorizationResponseIssuer(const std::optional<std::string>& iss) const;
 
     bool CodeChallengeS256Supported() const;
 
@@ -151,11 +161,17 @@ private:
 
     std::string CreateClientAssertion() const;
 
-    void ApplyClientAuthentication(std::map<std::string, std::string>& form) const;
+    ClientAuthMethod ResolveClientAuthMethod() const;
+
+    std::string ResolveClientId() const;
+
+    void ApplyClientAuthentication(std::map<std::string, std::string>& form,
+                                   std::map<std::string, std::string>& headers) const;
 
     TokenEndpointResponse HttpPost(
         std::string_view url,
-        const std::map<std::string, std::string>& form_data);
+        const std::map<std::string, std::string>& form_data,
+        const std::map<std::string, std::string>& extra_headers = {});
 
     OAuthClientOptions options_;
     std::shared_ptr<ITokenCache> token_cache_;

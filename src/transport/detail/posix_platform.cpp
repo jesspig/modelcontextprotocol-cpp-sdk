@@ -8,6 +8,13 @@
 #include <signal.h>
 #include <poll.h>
 #include <pthread.h>
+#if defined(__linux__) && defined(__has_include)
+#if __has_include(<sys/syscall.h>)
+#include <sys/syscall.h>
+#define MCP_HAVE_CLOSE_RANGE 1
+#endif
+#endif
+#include <array>
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
@@ -43,6 +50,17 @@ void SetCloseOnExec(int fd) {
     if (fd < 0) return;
     int flags = ::fcntl(fd, F_GETFD, 0);
     if (flags >= 0) ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+constexpr int kMaxDescriptorSweep = 65536;
+
+void CloseInheritedDescriptors() {
+#if defined(MCP_HAVE_CLOSE_RANGE) && defined(SYS_close_range)
+    if (::syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
+#endif
+    long limit = ::sysconf(_SC_OPEN_MAX);
+    if (limit < 0 || limit > kMaxDescriptorSweep) limit = kMaxDescriptorSweep;
+    for (long fd = 3; fd < limit; ++fd) ::close(static_cast<int>(fd));
 }
 
 constexpr int kPipeReadPollTimeoutMs = 100;
@@ -349,6 +367,8 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
 
         if (info.terminate_process_tree) setpgid(0, 0);
 
+        CloseInheritedDescriptors();
+
         if (!info.working_directory.empty()) {
             if (chdir(info.working_directory.c_str()) != 0)
                 _exit(127);
@@ -393,13 +413,13 @@ std::unique_ptr<PipeHandle> CreatePipeFromFd(int fd) {
 }
 
 void SetThreadName(const char* name) {
-    char truncated[16];
-    std::strncpy(truncated, name, sizeof(truncated) - 1);
-    truncated[sizeof(truncated) - 1] = '\0';
+    std::array<char, 16> truncated;
+    std::strncpy(truncated.data(), name, truncated.size() - 1);
+    truncated[truncated.size() - 1] = '\0';
 #ifdef __APPLE__
-    pthread_setname_np(truncated);
+    pthread_setname_np(truncated.data());
 #else
-    pthread_setname_np(pthread_self(), truncated);
+    pthread_setname_np(pthread_self(), truncated.data());
 #endif
 }
 

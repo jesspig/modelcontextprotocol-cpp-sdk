@@ -68,7 +68,7 @@ inline UrlParts ParseUrl(const std::string& url) {
     return c;
 }
 
-inline bool EqualUrlHost(const std::string& a, const std::string& b) {
+[[nodiscard]] inline bool EqualUrlHost(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
         char ca = a[i];
@@ -80,8 +80,8 @@ inline bool EqualUrlHost(const std::string& a, const std::string& b) {
     return true;
 }
 
-inline bool IsSameOriginRedirect(const std::string& from_url,
-                                 const std::string& to_url) {
+[[nodiscard]] inline bool IsSameOriginRedirect(const std::string& from_url,
+                                               const std::string& to_url) {
     UrlParts from = ParseUrl(from_url);
     UrlParts to = ParseUrl(to_url);
     if (from.host.empty() || to.host.empty()) return false;
@@ -121,7 +121,7 @@ inline std::string ResolveRedirectUrl(const std::string& base_url,
     return origin + dir + StripUrlFragment(loc);
 }
 
-inline bool IsRedirectStatus(int status) {
+[[nodiscard]] inline bool IsRedirectStatus(int status) {
     return status == 301 || status == 302 || status == 303 ||
            status == 307 || status == 308;
 }

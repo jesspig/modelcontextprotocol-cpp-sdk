@@ -288,7 +288,7 @@ TEST(SpawnTest, DetachedChildSurvivesLauncherExit) {
 
 TEST(SpawnTest, RejectsEmptyCommand) {
     SpawnOptions options;
-    EXPECT_THROW(Spawn(options), McpError);
+    EXPECT_THROW((void)Spawn(options), McpError);
 }
 
 TEST(SpawnTest, SpawnsConcurrentlyFromMultipleThreads) {

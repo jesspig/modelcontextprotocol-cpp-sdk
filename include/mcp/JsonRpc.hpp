@@ -61,16 +61,16 @@ std::string SerializeMessage(const JsonRpcMessage& msg);
 std::string SerializeMessage(JsonRpcMessage&& msg);
 JsonRpcMessage DeserializeMessage(std::string_view json);
 
-inline bool IsRequest(const JsonRpcMessage& msg) noexcept {
+[[nodiscard]] inline bool IsRequest(const JsonRpcMessage& msg) noexcept {
     return std::holds_alternative<JsonRpcRequest>(msg);
 }
-inline bool IsNotification(const JsonRpcMessage& msg) noexcept {
+[[nodiscard]] inline bool IsNotification(const JsonRpcMessage& msg) noexcept {
     return std::holds_alternative<JsonRpcNotification>(msg);
 }
-inline bool IsResponse(const JsonRpcMessage& msg) noexcept {
+[[nodiscard]] inline bool IsResponse(const JsonRpcMessage& msg) noexcept {
     return std::holds_alternative<JsonRpcResponse>(msg);
 }
-inline bool IsError(const JsonRpcMessage& msg) noexcept {
+[[nodiscard]] inline bool IsError(const JsonRpcMessage& msg) noexcept {
     return std::holds_alternative<JsonRpcErrorResponse>(msg);
 }
 inline const JsonRpcRequest* AsRequest(const JsonRpcMessage& msg) noexcept {

@@ -27,8 +27,8 @@ class MCP_API WireCodec {
 public:
     virtual ~WireCodec() = default;
 
-    virtual bool HasRequestMethod(std::string_view method) const = 0;
-    virtual bool HasNotificationMethod(std::string_view method) const = 0;
+    [[nodiscard]] virtual bool HasRequestMethod(std::string_view method) const = 0;
+    [[nodiscard]] virtual bool HasNotificationMethod(std::string_view method) const = 0;
 
     virtual WireValidation ValidateRequest(
         std::string_view method, const JsonValue& raw) const = 0;
@@ -55,7 +55,7 @@ public:
         const JsonValue& params,
         std::string_view mcp_name) const;
 
-    virtual std::optional<RequestMeta> ExtractIncomingMeta(
+    [[nodiscard]] virtual std::optional<RequestMeta> ExtractIncomingMeta(
         const JsonValue&) const { return std::nullopt; }
 
     virtual JsonValue EncodeResult(
@@ -66,6 +66,6 @@ public:
     virtual std::string_view Era() const = 0;
 };
 
-MCP_API std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version);
+[[nodiscard]] MCP_API std::unique_ptr<WireCodec> MakeWireCodec(std::string_view protocol_version);
 
 } // namespace mcp

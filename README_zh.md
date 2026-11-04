@@ -64,7 +64,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-可用库目标：`mcp-core`、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`。所有库均为静态库。
+可用库目标：`mcp-core`、`mcp-transport`、`mcp-protocol`、`mcp-server`、`mcp-client`、`mcp-http`、`mcp-ext`。所有库均为静态库。
 
 ## 快速开始
 
@@ -90,7 +90,7 @@ ctest --preset debug --output-on-failure
 └─────────────────────────────────────┘
 ```
 
-库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`。`mcp-http` 依赖 `mcp-transport`。所有库均为静态库。
+库依赖链：`mcp-core` (STATIC) → `mcp-transport` → `mcp-protocol` → `mcp-server | mcp-client`，后两者同时链接 `mcp-ext`（apps、DPoP、server card、triggers）。`mcp-http` 依赖 `mcp-transport` 与 `mcp-ext`。所有库均为静态库。
 
 - **mcp-core** — 核心类型、JSON-RPC 消息结构、错误码、能力声明、内容类型、传输层接口。
 - **mcp-transport** — 传输层实现：StdioServerTransport、StdioClientTransport、SseClientTransport、InMemoryTransport、WebSocketClientTransport、StreamableHttpServerTransport、StreamableHttpClientTransport。平台相关 I/O 在 `detail/` 目录下（posix、win32）。
@@ -204,16 +204,31 @@ auth.Authenticate();
 
 `WireCodec` 工厂通过简单的字符串比较（`version >= "2026-07-28"`）自动选择正确的编解码器。
 
+## 在线文档
+
+在线手册发布在 <https://jesspig.github.io/modelcontextprotocol-cpp-sdk/>，源文件在 `docs/zh`（英文镜像在 `docs/en`），分三层——概念、任务式手册、API 参考：
+
+- [快速上手](docs/zh/start/quickstart.md)——五分钟跑通服务端与客户端，附实测输出。
+- [安装与集成](docs/zh/start/installation.md)——依赖、构建选项、CMake 集成与可选 OpenSSL。
+- [协议版本](docs/zh/learn/protocol-versions.md)——双时代方法与通知矩阵的唯一权威页。
+- [注册一个工具](docs/zh/howto/register-a-tool.md)——描述、输入 schema、行为注解与结构化输出。
+- [连接服务端](docs/zh/howto/connect-to-a-server.md)——传输、连接模式与关闭时机。
+- [处理错误](docs/zh/howto/handle-errors.md)——三条失败通道与错误码重映射。
+- [API 参考](docs/zh/reference/index.md)——只放表格：签名、默认值、抛出与对应源文件。
+
+全部 C++ 示例来自 [`docs/snippets`](docs/snippets)，由 CI 的 `mcp-docs-snippets` 目标编译，API 改名或改签名会让文档构建直接失败，而不是让手册悄悄腐烂。
+
 ## 迁移指南
 
 - [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)——0.3.8 → 0.3.9 公共头文件破坏性变更，逐项给出旧写法、新写法与影响。
 - [0.3.10 发布说明](docs/zh/migration/0.3.10.md)——新增 API、行为修复与限制；0.3.9 的破坏项保持，不恢复已删除字段。
+- [0.3.11 发布说明](docs/zh/migration/0.3.11.md)——契约属性、行为收紧项与弃用登记；`ResourceNotFound` 自 0.3.11 起弃用，0.4.0 移除。
 
-`mcp-compat-smoke` 目标会编译上一版公共 API，并按 `tests/compat/expected_breaks.txt` 允许已知破坏。运行 `cmake --build --preset debug --target mcp-compat-smoke`。
+`mcp-compat-smoke` 目标会编译上一版公共 API，并按 `tests/compat/expected_breaks.txt` 允许已知破坏。运行 `cmake --build --preset debug --target mcp-compat-smoke`。弃用项登记在 [弃用登记表](docs/zh/learn/compatibility.md)。
 
 ## 一致性测试
 
-**113 个一致性测试**，覆盖两个时代的协议类型序列化：
+**124 个一致性测试**，覆盖两个时代的协议类型序列化：
 
 - JSON-RPC 消息往返（请求、通知、响应、错误）
 - WireCodec 时代门控（2025 与 2026 方法/通知集）
@@ -297,7 +312,7 @@ build/debug/examples/EchoServer/EchoServer
 
 ### 本轮破坏性变更
 
-按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)；下一 patch 的变化见 [0.3.10 发布说明](docs/zh/migration/0.3.10.md)。
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](docs/zh/migration/0.3.9.md)；下一 patch 的变化见 [0.3.11 发布说明](docs/zh/migration/0.3.11.md)。
 
 - **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
 - **`_meta` 省略**——空的每请求 `_meta` 改为线上了省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。
