@@ -41,7 +41,7 @@ ctest --preset debug --output-on-failure
 - **`-march=native` 仅本地且非 Apple**（`MCP_IS_CI` 与 `APPLE` 门控），本地构建的二进制不可跨机分发
 - MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4100 /wd4324 /wd4244 /wd4267 /EHsc` + 宏 `_CRT_SECURE_NO_WARNINGS`、`_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS`、`_WIN32_WINNT=0x0A00`、**`NOMINMAX` + `NOGDI`**（clang-cl 与 MSVC 两分支同加；`NOGDI` 排除 `wingdi.h` 的 GDI 定义（含与 `JsonValue::GetObject` 冲突的 `GetObject` 宏），`NOMINMAX` 排除 `min`/`max` 宏；配合全仓 `(std::min)`/`(std::max)` 括号防御纵深）
 - Clang/GCC：`-Wall -Wextra -Wpedantic -Wno-unused-parameter`
-- **GCC 独有 `-Wdangling-else`**：属 `-Wall` 成员（clang 不启用，显式加同参数亦不报该形态，实测 clang 22 + 真实 gtest 头静默）——断言宏（`EXPECT_*`/`ASSERT_*`）自带 `if/else`，作无括号单语句体时（`if (c) EXPECT_EQ(a, b);`）只有 Linux-gcc 两个 job 报 `-Werror`；CI run 38764091884 即因 `tests/unit/HttpServerTests.cpp:327` 该形态失败，现三处同类已补 `{}`，详见 [/AGENTS.md](../AGENTS.md) 关键陷阱第 8 条
+- **GCC 独有 `-Wdangling-else`**：属 `-Wall` 成员（clang 不启用，显式加同参数亦不报该形态，实测 clang 22 + 真实 gtest 头静默）——断言宏（`EXPECT_*`/`ASSERT_*`）自带 `if/else`，作无括号单语句体时（`if (c) EXPECT_EQ(a, b);`）只有 Linux-gcc 两个 job 报 `-Werror`；CI run 38764091884 即因 `tests/unit/HttpServerTests.cpp` 该形态失败，现三处同类已补 `{}`，详见 [/AGENTS.md](../AGENTS.md) 关键陷阱第 8 条
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
 - 配置期生成 `build_config.txt` 摘要
 

@@ -13,12 +13,12 @@ resource: src/transport/StdioServerTransport.cpp
 
 ## 服务端
 
-- 无参构造；`Start()` 幂等（`running_.exchange(true)`），`OpenStandardInput/Output()` 打开管道，启动读线程——**由 `McpServer` 构造自动调用**（`ITransport::Start` 契约，[McpServer.cpp:242](../../src/server/McpServer.cpp)），服务端用户无需手动 Start
+- 无参构造；`Start()` 幂等（`running_.exchange(true)`），`OpenStandardInput/Output()` 打开管道，启动读线程——**由 `McpServer` 构造自动调用**（`ITransport::Start` 契约，[McpServer.cpp](../../src/server/McpServer.cpp)），服务端用户无需手动 Start
 - `Close()`：`running_.exchange(false)` 块内关管道（解除读线程阻塞）→ **无条件** `JoinThreadSafely(read_thread_)`（读线程可能已自行退出，Close 兜底 join）→ 关通道 → `SetDisconnected`
 - 发送：`SerializeMessage(message) + "\n"` 写 stdout；写字节数不符 → `NotifyError`
 - 缓冲超限防护：`buffer.append` 后检查 > `detail::kMaxMessageSize`（8MB，[Limits.hpp](../../include/mcp/transport/detail/Limits.hpp)）→ 清空 + `NotifyError` + 退出读循环；单行超限同样 `NotifyError`（不退出，丢弃该行）
 - 读到真 EOF / 读错误 / 超限自行退出时：**不置 `running_`**（留待 Close 完整收尾并 join），关通道 + `SetDisconnected`
-- `ReadLoop` 入口 `shared_from_this()` **自持有保活**（[StdioServerTransport.cpp:55](../../src/transport/StdioServerTransport.cpp)）：IO 线程回调内 `Close()` 触发 `JoinThreadSafely` detach 后线程仍存活，成员访问不 UAF
+- `ReadLoop` 入口 `shared_from_this()` **自持有保活**（[StdioServerTransport.cpp](../../src/transport/StdioServerTransport.cpp)）：IO 线程回调内 `Close()` 触发 `JoinThreadSafely` detach 后线程仍存活，成员访问不 UAF
 
 ## 客户端（工厂）
 

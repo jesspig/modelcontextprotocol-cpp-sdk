@@ -13,7 +13,7 @@ SEP-2640 技能扩展（扩展标识 `io.modelcontextprotocol/skills`，[Capabil
 
 ## 扩展声明
 
-服务端同时满足三项时，`DeriveCapabilities` 在 `capabilities_.extensions` 中声明 `io.modelcontextprotocol/skills`（[McpServer.cpp:1655](../../src/server/McpServer.cpp)）：`ServerOptions::enable_skills_extension` 为真**且** `skills_` 非空**且** `capabilities_.resources` 具备。值为 `SerializeSkillsExtensionSettings`——默认空对象，仅 `SetSkillsDirectoryRead(true)` 后携带 `"directoryRead": true`。开关关闭时三处理器入口一律回 `MethodNotFound "skills extension is disabled"`（[McpServer.cpp:2587](../../src/server/McpServer.cpp)）。
+服务端同时满足三项时，`DeriveCapabilities` 在 `capabilities_.extensions` 中声明 `io.modelcontextprotocol/skills`（[McpServer.cpp](../../src/server/McpServer.cpp)）：`ServerOptions::enable_skills_extension` 为真**且** `skills_` 非空**且** `capabilities_.resources` 具备。值为 `SerializeSkillsExtensionSettings`——默认空对象，仅 `SetSkillsDirectoryRead(true)` 后携带 `"directoryRead": true`。开关关闭时三处理器入口一律回 `MethodNotFound "skills extension is disabled"`（[McpServer.cpp](../../src/server/McpServer.cpp)）。
 
 ## 三方法（均仅 2026）
 

@@ -38,7 +38,7 @@ resource: src/client/McpClient.cpp
 - `ClientOptions::span_handler` 在会话 `Start()` 前传入 `McpSessionHandler::SetSpanHandler`；事件契约和线程约束见 [/concepts/span-hooks.md](../concepts/span-hooks.md)
 - OAuth provider 支持 RFC 8707 `resource`、CIMD client metadata、RFC 9207 授权响应 `iss` 校验，以及 `client_credentials` 入口（详见 [/concepts/oauth.md](../concepts/oauth.md)）
 
-### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp:442](../../src/client/McpClient.cpp)）
+### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp](../../src/client/McpClient.cpp)）
 
 - **stdio 类传输**（RTTI 判定 typeid name 含 `InMemoryTransportImpl`/`StdioClientSessionTransport`）：discover 探测超时/网络失败→回退 initialize
 - **HTTP 类传输**：超时→抛 `McpError(RequestTimeout)`；网络异常→`McpError(ConnectionClosed)`，不回退
@@ -48,7 +48,7 @@ resource: src/client/McpClient.cpp
 
 ### 缓存读取兼容
 
-`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp:1106](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private）；private 键再附 `ClientOptions::cache_auth_context` 返回的授权上下文，上下文切换时清空 private（public 跨上下文共享），`Invalidate` 跨上下文删除同键，`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
+`ExtractCacheHint` 顶层 `ttlMs/cacheScope` 优先、回退嵌套 `cacheHint`（兼容 2026 扁平化与 2025 嵌套两形态）；`CacheIfHinted` 顺序**相反**——嵌套 `cacheHint` 优先、顶层兜底（[McpClient.cpp](../../src/client/McpClient.cpp)）。`ResponseCache` 键 = `CacheKey(method, context)`（列表带 cursor、read 带 uri），TTL 钳制 24h，按 cacheScope 分 public/private 双分区（`GetAny` 双查、`Close` 清 private）；private 键再附 `ClientOptions::cache_auth_context` 返回的授权上下文，上下文切换时清空 private（public 跨上下文共享），`Invalidate` 跨上下文删除同键，`resources/updated` 按 uri 单键失效（[ResponseCache.hpp](../../src/detail/ResponseCache.hpp)）。`DoSendRequest/ListPages` 的键均用 `detail` 常量。
 
 ### progress 接收（客户端方向）
 
@@ -58,7 +58,7 @@ resource: src/client/McpClient.cpp
 
 ### 客户端 → 服务端通知
 
-`SendRootsListChanged()` 发送 `notifications/roots/list_changed`，协商版本须为 legacy 且 **>= 2025-06-18**；modern（>= 2026-07-28）已移除该通知，发送抛 `McpError(ProtocolViolation)`（[McpClient.cpp:1887](../../src/client/McpClient.cpp)）。
+`SendRootsListChanged()` 发送 `notifications/roots/list_changed`，协商版本须为 legacy 且 **>= 2025-06-18**；modern（>= 2026-07-28）已移除该通知，发送抛 `McpError(ProtocolViolation)`（[McpClient.cpp](../../src/client/McpClient.cpp)）。
 
 ## 相关页面
 

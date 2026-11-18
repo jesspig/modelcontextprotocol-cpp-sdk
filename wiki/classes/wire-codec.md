@@ -9,7 +9,7 @@ resource: src/protocol/WireCodec.cpp
 
 # WireCodec
 
-抽象接口（[WireCodec.hpp](../../include/mcp/protocol/WireCodec.hpp)）：`HasRequestMethod / HasNotificationMethod / ValidateRequest / ValidateResponse / ValidateNotification / ValidateTaskHeaders / StampOutgoingRequest / ExtractIncomingMeta / EncodeResult / EncodeErrorCode / Era`。校验结果枚举 `WireValidation {Ok, NotInEra, Invalid}`。方法/通知集合为 `unordered_set<string_view>`（[WireCodec.cpp:16](../../src/protocol/WireCodec.cpp)）。
+抽象接口（[WireCodec.hpp](../../include/mcp/protocol/WireCodec.hpp)）：`HasRequestMethod / HasNotificationMethod / ValidateRequest / ValidateResponse / ValidateNotification / ValidateTaskHeaders / StampOutgoingRequest / ExtractIncomingMeta / EncodeResult / EncodeErrorCode / Era`。校验结果枚举 `WireValidation {Ok, NotInEra, Invalid}`。方法/通知集合为 `unordered_set<string_view>`（[WireCodec.cpp](../../src/protocol/WireCodec.cpp)）。
 
 ## 双时代实现
 
@@ -19,7 +19,7 @@ resource: src/protocol/WireCodec.cpp
 | 响应校验 | 无额外要求 | 所有响应必须含 `resultType`；5 个列表方法（tools/list、resources/list、resources/templates/list、prompts/list、skills/list）要求 `"complete"` |
 | 通知校验 | 通知不在时代→NotInEra | 通知不在时代→NotInEra；含 id/result/error→Invalid |
 | StampOutgoingRequest | 空操作 | 写 `params._meta`：protocolVersion/clientInfo/clientCapabilities |
-| ExtractIncomingMeta | 无 override | 无 override——基类为非纯虚默认返回 `nullopt`（WireCodec.hpp:48），meta 解析在 McpSessionHandler 层 |
+| ExtractIncomingMeta | 无 override | 无 override——基类为非纯虚默认返回 `nullopt`（WireCodec.hpp），meta 解析在 McpSessionHandler 层 |
 | EncodeResult | 原样 | 嵌套 `cacheHint` 扁平化为顶层 `ttlMs`/`cacheScope`（移除嵌套键）；无 resultType 补 `"complete"` |
 | EncodeErrorCode | 原样 | 内部错误（RequestTimeout/ConnectionRefused/TlsHandshakeFailed）记日志并映射为 InternalError(-32603)；协议码（-32020/-32021/-32022/-32042）原样传递 |
 

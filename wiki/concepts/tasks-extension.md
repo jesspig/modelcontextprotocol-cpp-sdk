@@ -13,7 +13,7 @@ SEP-2663 任务扩展（扩展标识 `io.modelcontextprotocol/tasks`，[Capabili
 
 ## 扩展声明
 
-- 服务端：必须显式 `ServerOptions::enable_tasks_extension = true`，`DeriveCapabilities` 才在 `capabilities_.extensions` 中声明 `io.modelcontextprotocol/tasks`（空对象，`SerializeTasksExtensionSettings`，[McpServer.cpp:1637](../../src/server/McpServer.cpp)）；`task_store` 存在仅决定 `WireTaskHandlers` 是否接线 `tasks/get|update|cancel` 三处理器，三处理器入口关时一律回 `MethodNotFound "tasks extension is disabled"`（[McpServer.cpp:1205](../../src/server/McpServer.cpp)），任务化 `tools/call` 关时走同步路径（[McpServer.cpp:2018](../../src/server/McpServer.cpp)）
+- 服务端：必须显式 `ServerOptions::enable_tasks_extension = true`，`DeriveCapabilities` 才在 `capabilities_.extensions` 中声明 `io.modelcontextprotocol/tasks`（空对象，`SerializeTasksExtensionSettings`，[McpServer.cpp](../../src/server/McpServer.cpp)）；`task_store` 存在仅决定 `WireTaskHandlers` 是否接线 `tasks/get|update|cancel` 三处理器，三处理器入口关时一律回 `MethodNotFound "tasks extension is disabled"`（[McpServer.cpp](../../src/server/McpServer.cpp)），任务化 `tools/call` 关时走同步路径（[McpServer.cpp](../../src/server/McpServer.cpp)）
 - 客户端：`ClientOptions::capabilities->extensions` 含该键，或 `ClientOptions::extensions`（JsonValue）含该键；modern 协商版本下收到 `resultType=="task"` 而未声明时抛 `McpError(HandlerError)`（`DeclaresTasksExtension`，[McpClient.cpp](../../src/client/McpClient.cpp)），legacy 不检查
 
 ## 方法分流
