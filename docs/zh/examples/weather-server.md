@@ -47,7 +47,7 @@ server->RegisterTool("get_alerts",
 
 ## 有 schema 之后 SDK 做了什么
 
-`input_schema` 一旦声明，SDK 在把调用交给你的 handler **之前**按它校验 `arguments`：类型不符或缺必填项时直接回 `is_error` 结果，文本以 `invalid arguments: ` 开头（`src/server/McpServer.cpp:553-559`、`:2359`、`:2507`、`:2616`）。
+`input_schema` 一旦声明，SDK 在把调用交给你的 handler **之前**按它校验 `arguments`：类型不符或缺必填项时直接回 `is_error` 结果，文本以 `invalid arguments: ` 开头（`src/server/McpServer.cpp:553-559`、`:2363`、`:2537`、`:2646`）。
 
 这解释了两个 handler 的读取差异：
 

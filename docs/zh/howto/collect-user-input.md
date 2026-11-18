@@ -9,7 +9,7 @@
 
 | 方法 | 签名 | 等待时限 |
 |---|---|---|
-| `Elicit` | `std::future<ElicitResult> Elicit(const ElicitRequestParams&, std::string_view session_id = {})` | 没有超时参数：取 `ServerOptions::input_required_config->round_timeout`，未配置时用内部默认 600s（`src/server/McpServer.cpp`、`McpServer.cpp`） |
+| `Elicit` | `std::future<ElicitResult> Elicit(const ElicitRequestParams&, std::string_view session_id = {})` | 没有超时参数：取 `ServerOptions::input_required_config->round_timeout`，未配置时用内部默认 600s（`src/server/McpServer.cpp`） |
 | `ElicitUrl` | `std::future<ElicitResult> ElicitUrl(const std::string& url, const std::string& message, std::chrono::seconds timeout = std::chrono::seconds(600), std::string_view session_id = {})` | 显式 `timeout`，看门狗到期以 `RequestTimeout`（`-32001`）结算 future（`src/server/McpServer.cpp`） |
 
 - 客户端必须能回答 `elicitation/create`：`ElicitationHandler` 与 `UrlElicitationHandler` 均返回 `ElicitResult`（`include/mcp/client/ClientOptions.hpp`），且必须写进 `ClientOptions` 后再 `McpClient::Create`——上报的能力在构造函数里由 `DeriveClientCapabilities` 推导（`src/client/McpClient.cpp`）。
@@ -83,7 +83,7 @@ cmake -S . -B build/p2c -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p2c --target mcp-doc-snippet-collect-user-input
 ```
 
-实测输出（clang-cl 前端，Windows）：configure 末尾 `[mcp-docs] syntax-checking 10 snippet(s) with '/Zs'`，build 输出
+实测输出（clang-cl 前端，Windows）：configure 末尾 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），build 输出
 
 ```text
 [0/2] Re-checking globbed directories...

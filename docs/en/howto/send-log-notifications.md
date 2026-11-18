@@ -90,7 +90,7 @@ Behaviour is guarded by these existing cases; run `git submodule update --init t
 
 ## Era differences
 
-| Item | legacy (≤ 2025-06-18) | modern (2026-07-28) |
+| Item | legacy (≤ 2025-11-25) | modern (2026-07-28) |
 |---|---|---|
 | How the level is negotiated | Client sends `logging/setLevel`; the server remembers one global level | No `logging/setLevel`; the level travels with each request as `_meta.io.modelcontextprotocol/logLevel` |
 | What the server filters on | The level recorded by `setLevel` | The level carried by that request; without one, **not a single line is sent** |

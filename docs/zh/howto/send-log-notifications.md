@@ -90,7 +90,7 @@ cmake --build build/p2d --target mcp-doc-snippet-send-log-notifications
 
 ## 时代差异
 
-| 项目 | legacy（≤ 2025-06-18） | modern（2026-07-28） |
+| 项目 | legacy（≤ 2025-11-25） | modern（2026-07-28） |
 |---|---|---|
 | 级别协商方式 | 客户端发 `logging/setLevel`，服务端记住一个全局级别 | 无 `logging/setLevel`；级别随每个请求的 `_meta.io.modelcontextprotocol/logLevel` 走 |
 | 服务端过滤依据 | `setLevel` 记录的级别 | 该请求自带的级别；没带就**一条都不发** |

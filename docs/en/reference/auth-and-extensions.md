@@ -16,7 +16,7 @@ Declared in `include/mcp/client/auth/OAuthClientProvider.hpp`, implemented in `s
 | `client_secret` | `std::optional<std::string>` | `nullopt` | Only required by the `client_credentials` branch when no private-key assertion is used |
 | `scopes` | `std::vector<std::string>` | empty | Requested scopes; `StepUpAuthorization` appends in place |
 | `scope_filter` | `std::function<std::vector<std::string>(const std::vector<std::string>&)>` | unset | Called with `scopes` as the input on every scope resolution; unset means use them verbatim |
-| `token_cache` | `std::shared_ptr<ITokenCache>` | `nullopt` | Construction substitutes an `InMemoryTokenCache` when empty |
+| `token_cache` | `std::shared_ptr<ITokenCache>` | `nullptr` | Construction substitutes an `InMemoryTokenCache` when empty |
 | `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 resource indicator; falls back to the normalized `server_url` when unset |
 | `application_type` | `std::string` | `"native"` | Dynamic-registration body field; an empty string is sent as `native` |
 | `enable_dpop` | `bool` | `false` | When on, token-endpoint requests carry a `DPoP` header and `Authorization` switches to the `DPoP` scheme |

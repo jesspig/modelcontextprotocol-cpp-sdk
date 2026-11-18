@@ -92,7 +92,7 @@ cmake -S . -B build/p3f -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3f --target mcp-doc-snippet-cancel-a-request
 ```
 
-期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 13 snippet(s) with '/Zs'`，构建阶段打印
+期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建阶段打印
 
 ```text
 [1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-cancel-a-request.dir\__\__\docs\snippets\cancel-a-request.cpp.obj

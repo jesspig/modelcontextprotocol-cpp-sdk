@@ -42,7 +42,7 @@
 
 <<< @/snippets/request-extra-input.cpp#state-payload
 
-handler 填的 `request_state` 只是**未签名 payload**（一段 JSON 文本）：配置了 `request_state_key` 时，服务端把这段 payload 解出来、补上 `iat`、再 HMAC-SHA256 签名后发给客户端（`src/server/McpServer.cpp`、`src/server/McpServer.cpp`）——所以「handler 自己签名」是错的，签名一次由服务端完成。工具里用 `detail::DecodeRequestStatePayload` 读回（`include/mcp/server/RequestState.hpp`），它在有无签名的两种情况下都能取回 payload。
+handler 填的 `request_state` 只是**未签名 payload**（一段 JSON 文本）：配置了 `request_state_key` 时，服务端把这段 payload 解出来、补上 `iat`、再 HMAC-SHA256 签名后发给客户端（`src/server/McpServer.cpp`）——所以「handler 自己签名」是错的，签名一次由服务端完成。工具里用 `detail::DecodeRequestStatePayload` 读回（`include/mcp/server/RequestState.hpp`），它在有无签名的两种情况下都能取回 payload。
 
 <<< @/snippets/request-extra-input.cpp#server-signing
 <<< @/snippets/request-extra-input.cpp#custom-verifier
@@ -79,7 +79,7 @@ cmake -S . -B build/p2c -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p2c --target mcp-doc-snippet-request-extra-input
 ```
 
-实测输出（clang-cl 前端）：configure 末尾 `[mcp-docs] syntax-checking 10 snippet(s) with '/Zs'`，build 为 `[1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-request-extra-input.dir\__\__\docs\snippets\request-extra-input.cpp.obj`，返回码 0、无 `error:` 行；`argument unused during compilation: '-c'` 是 `/Zs` 组合下的固有告警。
+实测输出（clang-cl 前端）：configure 末尾 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），build 为 `[1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-request-extra-input.dir\__\__\docs\snippets\request-extra-input.cpp.obj`，返回码 0、无 `error:` 行；`argument unused during compilation: '-c'` 是 `/Zs` 组合下的固有告警。
 
 行为级验证需要测试目标：
 
@@ -87,7 +87,7 @@ cmake --build build/p2c --target mcp-doc-snippet-request-extra-input
 ctest --preset debug -R 'McpServerTest.(MrtrToolInputRequiredElicitationRoundTrip|MrtrMintedRequestStateRoundTrip|MrtrForgedRequestStateRejectedWithReason)|McpClientTest.MrtrDefaultWithoutHandlersReturnsInputRequired'
 ```
 
-应看到 4 条用例逐个 `Passed`，末行 `100% tests passed, 0 tests failed out of 4`：分别覆盖裸结果回读、服务端签名往返、伪造状态被拒（`data.reason`）、缺 handler 时原样返回。
+应看到 4 条用例逐个 `Passed`，末行 `100% tests passed out of 4`：分别覆盖裸结果回读、服务端签名往返、伪造状态被拒（`data.reason`）、缺 handler 时原样返回。
 
 ## 时代差异
 

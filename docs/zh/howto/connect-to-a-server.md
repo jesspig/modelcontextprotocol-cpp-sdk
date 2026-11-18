@@ -93,7 +93,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-connect-to-a-server
 ```
 
-实测输出：configure 末尾 `[mcp-docs] syntax-checking 12 snippet(s) with '/Zs'`，build 输出 `[1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-connect-to-a-server.dir\__\__\docs\snippets\connect-to-a-server.cpp.obj`，返回码 0、无 `error:` 行。
+实测输出：configure 末尾 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），build 输出 `[1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-connect-to-a-server.dir\__\__\docs\snippets\connect-to-a-server.cpp.obj`，返回码 0、无 `error:` 行。
 
 行为级验证需要测试目标（`cmake --preset debug && cmake --build --preset debug`）：
 

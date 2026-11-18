@@ -84,7 +84,7 @@ server->RegisterResourceTemplate("echo-template",
     });
 ```
 
-From `examples/EchoServer/main.cpp:46-57`. A template handler gets the parsed variable map as a second argument, so `vars.at("text")` reads the `{text}` placeholder. Registration validates the template first and throws `InvalidParams` at the call site when it is malformed (`src/server/McpServer.cpp:329`) — never deferred to the first read.
+From `examples/EchoServer/main.cpp:46-57`. A template handler gets the parsed variable map as a second argument, so `vars.at("text")` reads the `{text}` placeholder. Registration validates the template first and throws `InvalidParams` at the call site when it is malformed (`src/server/McpServer.cpp:840`) — never deferred to the first read.
 
 ## Registering the prompt: capitalize
 

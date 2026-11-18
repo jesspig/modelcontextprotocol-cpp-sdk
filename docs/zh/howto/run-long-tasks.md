@@ -93,7 +93,7 @@ cmake --build build/p2d --target mcp-doc-snippet-run-long-tasks
 
 ## 时代差异
 
-| 项目 | legacy（≤ 2025-06-18） | modern（2026-07-28） |
+| 项目 | legacy（≤ 2025-11-25） | modern（2026-07-28） |
 |---|---|---|
 | `tasks/get`/`tasks/update`/`tasks/cancel` | 可用 | 可用，但客户端必须声明 `io.modelcontextprotocol/tasks`，否则回 `MissingRequiredClientCapability`（`-32021`） |
 | `tasks/result`、`tasks/list` | 可用 | **无此方法**，回 `MethodNotFound`（`McpServer.cpp`） |

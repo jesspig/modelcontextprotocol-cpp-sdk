@@ -13,14 +13,14 @@
 
 <<< @/snippets/call-tools-and-read-resources.cpp#list-tools
 
-| Entry point | Pagination | Cache and etag | Sends `query`／`pageSize` |
+| Entry point | Pagination | Cache and etag | Sends `query`/`pageSize` |
 |---|---|---|---|
 | `ListTools()` (no cursor) | merges pages internally, up to 64 | yes | no |
 | `ListTools(cursor)` | single page, you continue via `next_cursor` | yes, keyed per cursor | no |
 | `ListToolsAll()` | loops `ListTools(cursor)` | yes | no |
 | `SearchTools(query, page_size)` | sends `tools/list` page by page directly | no | only when `enable_progressive_discovery` is set |
 
-Calling `ListTools()` without a cursor already merges the pages (`src/client/McpClient.cpp`), which makes `ListToolsAll()` equivalent to it (`McpClientTest.ListToolsAutoPaginates` returns 3 tools, `McpClientTest.ListToolsAllSinglePageEqualsPlainList` compares both shapes). Pagination that never converges past 64 pages throws `ProtocolViolation` with the message `list pagination did not converge within 64 pages` (`src/client/McpClient.cpp`). The `Tool` fields (`name`／`title`／`description`／`input_schema`／`output_schema`／`annotations`／`icons`) are in [/en/reference/types](/en/reference/types).
+Calling `ListTools()` without a cursor already merges the pages (`src/client/McpClient.cpp`), which makes `ListToolsAll()` equivalent to it (`McpClientTest.ListToolsAutoPaginates` returns 3 tools, `McpClientTest.ListToolsAllSinglePageEqualsPlainList` compares both shapes). Pagination that never converges past 64 pages throws `ProtocolViolation` with the message `list pagination did not converge within 64 pages` (`src/client/McpClient.cpp`). The `Tool` fields (`name`/`title`/`description`/`input_schema`/`output_schema`/`annotations`/`icons`) are in [/en/reference/types](/en/reference/types).
 
 ## Step 2: Build `arguments` from `inputSchema`
 
@@ -35,7 +35,7 @@ The client never validates inputs: `CallTool` only packs `name` and `arguments` 
 | Channel | Triggered by | What you write |
 |---|---|---|
 | `result.is_error == true` | arguments off-schema, or the tool handler throws (`McpError` keeps its message, any other exception yields fixed text) (`src/server/McpServer.cpp`) | read the text out of `content`; do not catch |
-| `McpError` thrown | the peer returned a JSON-RPC error: unknown tool name, `structuredContent` not matching `outputSchema`, MRTR rounds or budget exhausted | `try`／`catch`; the MRTR path keeps `data` (`src/client/McpClient.cpp`) |
+| `McpError` thrown | the peer returned a JSON-RPC error: unknown tool name, `structuredContent` not matching `outputSchema`, MRTR rounds or budget exhausted | `try`/`catch`; the MRTR path keeps `data` (`src/client/McpClient.cpp`) |
 
 `isError` is just a result field, deserialized straight into `CallToolResult::is_error` (`src/core/McpTypesResults.cpp`). When the server finds `structuredContent` incompatible with the declared `outputSchema` it converts that into `InvalidParams` (`src/server/McpServer.cpp`), so on the client `CallTool` throws `McpError` (`McpClientTest.ToolOutputSchemaValidation`). The timeout does not come from `RequestOptions::timeout`: `CallTool` uses `input_required_config->round_timeout` (600s by default, `src/client/McpClient.cpp`), and on `HeaderMismatch` the client clears its cache, re-fetches `tools/list` and retries once verbatim.
 
@@ -48,7 +48,7 @@ The client never validates inputs: `CallTool` only packs `name` and `arguments` 
 | `TextContent` | `text` | `text` | `mime_type` optional |
 | `ImageContent` | `image` | `data` (base64) | `mime_type` mandatory |
 | `AudioContent` | `audio` | `data` (base64) | `mime_type` mandatory |
-| `EmbeddedResource` | `resource` | `resource` (again discriminated by `text`／`blob`) | resource contents inlined |
+| `EmbeddedResource` | `resource` | `resource` (again discriminated by `text`/`blob`) | resource contents inlined |
 | `ResourceLink` | `resource_link` | `uri`, `name` | a reference only — follow up with `resources/read` |
 
 Dispatch is by the `type` string and an unknown value throws `DeserializeFailed` (`src/core/Content.cpp`); `ResourceContents` is discriminated by the presence of a `text` or `blob` field, and neither present throws `DeserializeFailed` too (`src/core/Content.cpp`). Pull values with `std::get_if<T>(&item)`. `structured_content` is a raw `JsonValue` the client never validates — use `Find(...)` or `Dump()` as needed.
@@ -58,13 +58,13 @@ Dispatch is by the `type` string and an unknown value throws `DeserializeFailed`
 <<< @/snippets/call-tools-and-read-resources.cpp#list-resources
 <<< @/snippets/call-tools-and-read-resources.cpp#read-resource
 
-`ListResources`／`ListResourcesAll` mirror the tool side; template entries expose the `uri_template` field (`ResourceTemplate`). The client offers **no** template expansion: the RFC 6570 matching in `src/detail/UriTemplate.hpp` runs only on the server, so you must turn `docs://users/{userId}/profile` into a literal URI yourself before calling `ReadResource` (`include/mcp/McpTypes.hpp`; nothing in `src/client/` expands templates). Every `contents` entry carries its own `uri`; text arrives in `TextResourceContents::text` and binary in `BlobResourceContents::blob` — base64 as sent, which the SDK neither decodes nor validates.
+`ListResources`/`ListResourcesAll` mirror the tool side; template entries expose the `uri_template` field (`ResourceTemplate`). The client offers **no** template expansion: the RFC 6570 matching in `src/detail/UriTemplate.hpp` runs only on the server, so you must turn `docs://users/{userId}/profile` into a literal URI yourself before calling `ReadResource` (`include/mcp/McpTypes.hpp`; nothing in `src/client/` expands templates). Every `contents` entry carries its own `uri`; text arrives in `TextResourceContents::text` and binary in `BlobResourceContents::blob` — base64 as sent, which the SDK neither decodes nor validates.
 
 ## Step 6: Cache, Freshness and etag
 
 <<< @/snippets/call-tools-and-read-resources.cpp#cache-modes
 
-`ReadResource` is the only resource method that accepts `CacheableRequestOptions`; `ListTools`／`ListResources`／`ListPrompts` always use the default read path (`src/client/McpClient.cpp`):
+`ReadResource` is the only resource method that accepts `CacheableRequestOptions`; `ListTools`/`ListResources`/`ListPrompts` always use the default read path (`src/client/McpClient.cpp`):
 
 | `cache_mode` | Reads cache | Writes cache | Use for |
 |---|---|---|---|
@@ -125,9 +125,9 @@ This table covers only the differences that matter to calling and reading; the f
 | Aspect | Legacy (before 2026-07-28) | Modern (2026-07-28 and later) |
 |---|---|---|
 | `tools/list`, `resources/list`, `resources/templates/list`, `resources/read`, `tools/call` | available in both eras with the same shape | same methods, but responses must carry `resultType` and list results must say `complete` (`src/protocol/WireCodec.cpp`) |
-| `cacheHint` shape | object `cacheHint{ttlMs,cacheScope}` | flattened to top-level `ttlMs`／`cacheScope` with `cacheHint` erased; the client reads both shapes (`src/protocol/WireCodec.cpp`, `src/client/McpClient.cpp`) |
-| Resource subscription | `resources/subscribe`／`unsubscribe` | `subscriptions/listen` plus the acknowledged frame; the legacy methods are not in the method set (`src/protocol/WireCodec.cpp`) |
-| Internal error codes | passed through unchanged | `RequestTimeout`／`ConnectionRefused`／`TlsHandshakeFailed` are rewritten to `InternalError` (`src/protocol/WireCodec.cpp`) |
+| `cacheHint` shape | object `cacheHint{ttlMs,cacheScope}` | flattened to top-level `ttlMs`/`cacheScope` with `cacheHint` erased; the client reads both shapes (`src/protocol/WireCodec.cpp`, `src/client/McpClient.cpp`) |
+| Resource subscription | `resources/subscribe`/`unsubscribe` | `subscriptions/listen` plus the acknowledged frame; the legacy methods are not in the method set (`src/protocol/WireCodec.cpp`) |
+| Internal error codes | passed through unchanged | `RequestTimeout`/`ConnectionRefused`/`TlsHandshakeFailed` are rewritten to `InternalError` (`src/protocol/WireCodec.cpp`) |
 
 ## Common mistakes
 
@@ -156,7 +156,7 @@ This table covers only the differences that matter to calling and reading; the f
 - `include/mcp/Content.hpp` (the five `ContentVariant` members, the two `ResourceContents` members)
 - `include/mcp/JsonValue.hpp`
 - `src/client/McpClient.cpp` (list pagination and caching, MRTR calls, content deserialization entry points, subscriptions)
-- `src/core/McpTypesResults.cpp` (`isError`／`structuredContent` serialization and restore)
+- `src/core/McpTypesResults.cpp` (`isError`/`structuredContent` serialization and restore)
 - `src/core/Content.cpp` (`type` dispatch and `DeserializeFailed`)
 - `src/detail/ResponseCache.hpp` (TTL cap, public and private scopes)
 - `src/protocol/WireCodec.cpp` (per-era shape checks and error-code rewriting)

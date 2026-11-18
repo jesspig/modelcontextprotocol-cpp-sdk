@@ -102,7 +102,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-manage-subprocesses
 ```
 
-期望：configure 打印 `[mcp-docs] syntax-checking 16 snippet(s) with '/Zs'`，构建打印一行 `Building CXX object ...manage-subprocesses.cpp.obj`，返回码 0 且无 `error:` 行。
+期望：configure 打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建打印一行 `Building CXX object ...manage-subprocesses.cpp.obj`，返回码 0 且无 `error:` 行。
 
 行为侧由既有用例守护，需先 `git submodule update --init third_party/googletest`，再 `cmake --preset debug && cmake --build --preset debug`，然后：
 

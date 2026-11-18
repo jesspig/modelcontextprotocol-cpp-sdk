@@ -72,7 +72,7 @@ for (const auto& t : tools.tools) {
 }
 ```
 
-对应 `examples/SimpleClient/main.cpp:50-56`。`ListTools()` 只取**一页**（`next_cursor` 有值时还有后续），要一次拿全用 `ListToolsAll()`；`t.description` 是 `std::optional<std::string>`，示例用三目拼接避免打印空串。
+对应 `examples/SimpleClient/main.cpp:50-56`。`ListTools()` 不传 cursor 时会自动翻页聚合到末页（上限 64 页，与 `ListToolsAll()` 等价；要手工分页就显式传 cursor，见 [/zh/howto/call-tools-and-read-resources](/zh/howto/call-tools-and-read-resources)）；`t.description` 是 `std::optional<std::string>`，示例用三目拼接避免打印空串。
 
 ```cpp
 JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));

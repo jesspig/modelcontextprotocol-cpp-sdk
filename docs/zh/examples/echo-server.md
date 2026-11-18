@@ -128,7 +128,7 @@ build/debug/examples/EchoServer/EchoServer
 EchoServer starting on stdio...
 ```
 
-横幅写在 **stderr**（`examples/EchoServer/main.cpp:77`），stdout 留给协议帧——这也是为什么 `StdioClientTransportOptions::stderr_path` 值得配置。之后进程进入 `server->Run()` 阻塞循环（`:78`）。本次实测还确认：把 stdin 重定向到 `/dev/null` 后进程**不会自行退出**，说明 stdio 服务端的生命周期由宿主关闭进程决定，而不是靠 stdin EOF 自终止。
+横幅写在 **stderr**（`examples/EchoServer/main.cpp:77`），stdout 留给协议帧——这也是为什么 `StdioClientTransportOptions::stderr_path` 值得配置。之后进程进入 `server->Run()` 阻塞循环（`:78`）。实测还确认：把 stdin 重定向到 `/dev/null` 后进程**不会自行退出**，说明 stdio 服务端的生命周期由宿主关闭进程决定，而不是靠 stdin EOF 自终止。
 
 要看到它真的应答，用 `SimpleClient`（本页不重复，见 [/zh/examples/simple-client](/zh/examples/simple-client)），或用 Inspector 之类的客户端连上来跑 `tools/list` 与 `prompts/list`。
 

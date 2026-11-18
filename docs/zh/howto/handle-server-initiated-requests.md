@@ -100,7 +100,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-handle-server-initiated-requests
 ```
 
-期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 14 snippet(s) with '/Zs'`，构建阶段打印
+期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建阶段打印
 
 ```text
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-handle-server-initiated-requests.dir\__\__\docs\snippets\handle-server-initiated-requests.cpp.obj

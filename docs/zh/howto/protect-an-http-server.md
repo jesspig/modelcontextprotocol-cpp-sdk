@@ -96,7 +96,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-protect-an-http-server
 ```
 
-期望：configure 打印 `[mcp-docs] syntax-checking 18 snippet(s) with '/Zs'`，构建打印一行 `Building CXX object ...protect-an-http-server.cpp.obj`，返回码 0 且无 `error:` 行。
+期望：configure 打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建打印一行 `Building CXX object ...protect-an-http-server.cpp.obj`，返回码 0 且无 `error:` 行。
 
 行为侧最省事的复现是用官方裁判打你的服务端：`CONFORMANCE_SPEC_VERSION=2026-07-28 ./scripts/run-conformance.sh server`（`MCP_BUILD_CONFORMANCE=ON` 起 fixture）。判据是 unexpected failures 为空；基线文件里已登记的条目属「已知未达标」，见 `tests/conformance/`。
 

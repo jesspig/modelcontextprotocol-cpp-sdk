@@ -77,7 +77,7 @@ Behaviour is guarded by these existing cases; run `git submodule update --init t
 
 ## Era differences
 
-| Item | legacy (≤ 2025-06-18) | modern (2026-07-28) |
+| Item | legacy (≤ 2025-11-25) | modern (2026-07-28) |
 |---|---|---|
 | Where `_meta.progressToken` lands | stays in `params._meta`; `JsonRpcRequest::meta` is empty | hoisted to the envelope-level `_meta`, written back into `params._meta` when serialising |
 | How business code reads it | `ctx.Params().meta->progress_token` | identical — the SDK normalises, no branching |

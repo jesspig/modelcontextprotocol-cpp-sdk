@@ -77,7 +77,7 @@ cmake --build build/p2d --target mcp-doc-snippet-report-progress
 
 ## 时代差异
 
-| 项目 | legacy（≤ 2025-06-18） | modern（2026-07-28） |
+| 项目 | legacy（≤ 2025-11-25） | modern（2026-07-28） |
 |---|---|---|
 | `_meta.progressToken` 的落位 | 留在 `params._meta`，`JsonRpcRequest::meta` 为空 | 提到信封级 `_meta`，序列化时再写回 `params._meta` |
 | 业务代码读取方式 | `ctx.Params().meta->progress_token` | 同左，SDK 已归一化，无需分支 |
