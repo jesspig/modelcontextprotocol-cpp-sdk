@@ -1,17 +1,32 @@
 ---
 type: Concept
 title: Tier1 技术对标声明（2026-07-28）
-description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
-tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-11-18T14:08:29+08:00
+description: 与 Tier1 六实现（TS v2.4.0 / Python v2.3.0 / C# v2.4.0 含 v2.3.1 安全修复 / Go v1.8.0 稳定与 v1.9.0-pre.1 预发布 / Rust rmcp-v3.11.0 / Ruby，spec 2026-07-28；基线数据截止 2026-11-18）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
+tags: [tier1, parity, 2026-07-28, conformance, 对标, ruby, baseline-2026-11-18]
+timestamp: 2026-11-19T01:05:35+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
 # Tier1 技术对标声明（2026-07-28）
 
-本页记录分支 `feature/tier1-parity-2026-07-28`（含 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` 与 `baseline-2026-07-28.yaml` 的 http-custom-headers 删除）相对 Tier1 五实现的**技术对等状态**。比较基准：TypeScript v2.3.1、Python v2.3.0、C# v2.2.0、Go v1.8.0、Rust v3.5.1，均以 spec `2026-07-28` 为准。
+本页记录分支 `feature/tier1-parity-2026-07-28`（含 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` 与 `baseline-2026-07-28.yaml` 的 http-custom-headers 删除）相对 Tier1 六实现的**技术对等状态**。比较基准（官方事实基线，数据截止 2026-11-18）：TypeScript v2.4.0、Python v2.3.0、C# v2.4.0（另有 v2.3.1 安全修复）、Go v1.8.0 稳定与 v1.9.0-pre.1 预发布、Rust rmcp-v3.11.0、Ruby（2026-10-30 加入 Tier 1），均以 spec `2026-07-28` 为准；下一版 spec `2027-03-30`（SEP-3398，每年两次发布，2026-11-11 公告）尚未发布，不在本页对标口径内。
 
 **仅技术对标、无官方 Tier 申报意向**：本页不构成向 MCP 官方申请 Tier 分级的申报材料，不承诺与任一 Tier1 实现逐行行为一致；差异处以本 SDK 源码与知识库为准。
+
+## SDK 版本基线（数据截止 2026-11-18）
+
+| 项目 | 版本 | 基线日期 | 来源 |
+|------|------|----------|------|
+| 当前 spec | `2026-07-28` | 2026-11-18 核实 | [官方 spec](https://modelcontextprotocol.io/specification/2026-07-28) |
+| 下一版 spec | `2027-03-30`（SEP-3398，每年两次发布） | 2026-11-11 公告 | SEP-3398 官方公告；尚未发布 |
+| Tier 1 SDK 名单 | TypeScript、Python、C#、Go、Rust、Ruby | 2026-10-30（Ruby 加入） | [Ruby 进入 Tier 1 官方博客](https://blog.modelcontextprotocol.io/posts/ruby-sdk-tier-1/) |
+| TypeScript SDK | `v2.4.0` | 2026-10-23 | [GitHub release](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/v2.4.0) |
+| Python SDK | `v2.3.0` | 2026-10-02 | [GitHub release](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.3.0) |
+| C# SDK | `v2.4.0`，另有 `v2.3.1` 安全修复 | 2026-11-07 / 2026-11-03 | [v2.4.0 release](https://github.com/modelcontextprotocol/csharp-sdk/releases/tag/v2.4.0)、[v2.3.1 release](https://github.com/modelcontextprotocol/csharp-sdk/releases/tag/v2.3.1) |
+| Go SDK | `v1.8.0` 稳定；`v1.9.0-pre.1` 预发布 | 2026-09-14 / 2026-11-17 | [v1.8.0 release](https://github.com/modelcontextprotocol/go-sdk/releases/tag/v1.8.0)、[v1.9.0-pre.1 release](https://github.com/modelcontextprotocol/go-sdk/releases/tag/v1.9.0-pre.1) |
+| Rust SDK | `rmcp-v3.11.0` | 2026-11-17 | [GitHub release](https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.11.0) |
+
+上表仅更新官方发布版本与日期事实，不改变下文技术对等结论、conformance 实测结果或测试基线数字。
 
 ## 对标总览
 
