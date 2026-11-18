@@ -1,6 +1,6 @@
 # 向用户收集输入
 
-服务端在一次工具调用里向用户要结构化输入（`form`）或把人支到站外页面完成确认（`url`），只需 `McpServer::Elicit` 与 `McpServer::ElicitUrl` 两个入口；真正的难点是会话定位与两个协议时代的不同行为。签名与字段表在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，机制原理见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions) 与 [/zh/howto/request-extra-input](/zh/howto/request-extra-input)。
+服务端用 `McpServer::Elicit`（`form` 结构化输入）与 `McpServer::ElicitUrl`（`url` 站外确认）在一次工具调用里向用户要输入；难点是会话定位与两时代的行为差异。签名与字段表见 [服务端参考](/zh/reference/server)、[类型参考](/zh/reference/types)，机制见 [协议版本](/zh/learn/protocol-versions)、[MRTR](/zh/howto/request-extra-input)。
 
 ## 前置条件
 
@@ -9,7 +9,7 @@
 
 | 方法 | 签名 | 等待时限 |
 |---|---|---|
-| `Elicit` | `std::future<ElicitResult> Elicit(const ElicitRequestParams&, std::string_view session_id = {})` | 没有超时参数：取 `ServerOptions::input_required_config->round_timeout`，未配置时用内部默认 600s（`src/server/McpServer.cpp`、`McpServer.cpp`） |
+| `Elicit` | `std::future<ElicitResult> Elicit(const ElicitRequestParams&, std::string_view session_id = {})` | 没有超时参数：取 `ServerOptions::input_required_config->round_timeout`，未配置时用内部默认 600s（`src/server/McpServer.cpp`） |
 | `ElicitUrl` | `std::future<ElicitResult> ElicitUrl(const std::string& url, const std::string& message, std::chrono::seconds timeout = std::chrono::seconds(600), std::string_view session_id = {})` | 显式 `timeout`，看门狗到期以 `RequestTimeout`（`-32001`）结算 future（`src/server/McpServer.cpp`） |
 
 - 客户端必须能回答 `elicitation/create`：`ElicitationHandler` 与 `UrlElicitationHandler` 均返回 `ElicitResult`（`include/mcp/client/ClientOptions.hpp`），且必须写进 `ClientOptions` 后再 `McpClient::Create`——上报的能力在构造函数里由 `DeriveClientCapabilities` 推导（`src/client/McpClient.cpp`）。
@@ -71,7 +71,7 @@ handler 的骨架是「先回读、再发问」：现代时代 `Elicit` 不直�
 
 ## 完整代码
 
-服务端标识与选项、两个工具的注册、客户端两个 handler、一次端到端调用，全部在上面五个步骤里按区域给出；可编译的完整文件是 `docs/snippets/collect-user-input.cpp`，各区域名依次为 `form-schema`、`read-back`、`outcome`、`form-tool-handler`、`url-tool-handler`、`server-options`、`server-registration`、`client-handlers`、`end-to-end`。
+可编译的完整文件是 `docs/snippets/collect-user-input.cpp`（代码已按区域分散在上面各步骤），区域名依次为 `form-schema`、`read-back`、`outcome`、`form-tool-handler`、`url-tool-handler`、`server-options`、`server-registration`、`client-handlers`、`end-to-end`。
 
 ## 验证
 
@@ -83,7 +83,7 @@ cmake -S . -B build/p2c -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p2c --target mcp-doc-snippet-collect-user-input
 ```
 
-实测输出（clang-cl 前端，Windows）：configure 末尾 `[mcp-docs] syntax-checking 10 snippet(s) with '/Zs'`，build 输出
+实测输出（clang-cl 前端，Windows）：configure 末尾 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），build 输出
 
 ```text
 [0/2] Re-checking globbed directories...

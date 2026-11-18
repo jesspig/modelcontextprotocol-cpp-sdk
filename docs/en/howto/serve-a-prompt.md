@@ -6,7 +6,7 @@ A prompt is a reusable message template: the client fetches it by name and fills
 
 - You can already bring up a server instance: see [Quick Start](/en/start/quickstart).
 - You have a `std::shared_ptr<ITransport>`. For an in-process round trip, `InMemoryTransport::CreatePair()` hands back a matched `.client` and `.server`.
-- Signatures and field tables live only in the reference layer and are not repeated here: `RegisterPrompt` and `SetCompletionHandler` in [Server Facade Reference](/en/reference/server), `PromptOptions`, `PromptArgument`, `GetPromptResult`, `CompleteRequestParams` and `CompleteResult` in [Type Reference](/en/reference/types).
+- Signatures and field tables (not repeated here): `RegisterPrompt`, `SetCompletionHandler` in [Server Facade Reference](/en/reference/server); `PromptOptions`, `PromptArgument`, `GetPromptResult`, `CompleteRequestParams`, `CompleteResult` in [Type Reference](/en/reference/types).
 
 ## Step 1: Declare the Prompt and Its Arguments
 

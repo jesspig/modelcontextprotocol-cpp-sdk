@@ -13,7 +13,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 
 ## 生命周期
 
-- `Start()` CAS 防重入；`closed_` 已置时调用抛 `std::logic_error`（[McpSessionHandler.cpp:77](../../src/protocol/McpSessionHandler.cpp)）。启动 3 个线程：消息循环、超时检查（每 100ms `CheckTimeouts()`）、响应 worker
+- `Start()` CAS 防重入；`closed_` 已置时调用抛 `std::logic_error`（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）。启动 3 个线程：消息循环、超时检查（每 100ms `CheckTimeouts()`）、响应 worker
 - `Close()`：置标志 → 关通道唤醒循环 → `JoinThreadSafely`（self-join 时 detach）→ notify + join 响应 worker（任务内 `closed_` 中止，join 不阻塞）→ 锁内收集并清空 pending 表（含 progress_token_map_）→ 锁外以 `ConnectionClosed` 回调所有 pending → 关 transport
 - 请求 ID：原子计数器从 1 起
 
@@ -33,7 +33,7 @@ resource: include/mcp/protocol/McpSessionHandler.hpp
 - `RegisterRequest` 注册 pending 后复查 `closed_`：已关闭则以 `ConnectionClosed` 错误满足 promise；`SendRequestWithOutcome` 复用同一登记路径并返回 `RequestId`，供 `McpClient::SendRequest` 构造 `RequestHandle`
 - `SendRequest` 双 era meta：modern era 把 `SerializeRequestMeta(meta)` 信封写入 `req.meta`（序列化层落 `params._meta`）；legacy era 仅当带 progressToken 时写 `params._meta.progressToken`
 - `RequiredClientCapability`：`createMessage→sampling`、`listRoots→roots`；缺失回 `MissingRequiredClientCapability`（data 含 `requiredCapabilities`）；`VerifyCapability` 只判定不发送，返回 `optional<ErrorData>` 由调用方经 `reject` 闭包统一收尾（[McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp)）
-- 拒收路径 span 先行：`OnRequest` 内局部 `reject` 闭包显式发 ServerRequest End（`failed=true`、trace 回填）→ 置 `span_open=false`（抑制栈上 guard 重发）→ `SendErrorResponse`；9 处 early-return（含两处 handler 异常 catch）全走该闭包，成功路径与 `DeliverResponse` 未动（[McpSessionHandler.cpp:344](../../src/protocol/McpSessionHandler.cpp)）
+- 拒收路径 span 先行：`OnRequest` 内局部 `reject` 闭包显式发 ServerRequest End（`failed=true`、trace 回填）→ 置 `span_open=false`（抑制栈上 guard 重发）→ `SendErrorResponse`；9 处 early-return（含两处 handler 异常 catch）全走该闭包，成功路径与 `DeliverResponse` 未动（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）
 
 ## 结果/错误分型投递
 
@@ -42,10 +42,10 @@ pending 请求的全部结算路径（正常响应、错误响应、超时、连
 ## 其他
 
 - `negotiated_version_` 为 `shared_ptr<const std::string>`；`NegotiatedProtocolVersion()` 读锁下仅拷贝 shared_ptr、锁外解引用；`SetNegotiatedProtocolVersion` 在 `codec_mutex_`（`shared_mutex`，读并发写独占）下写（替换 codec + 版本），消息循环运行中可调用
-- `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp:596](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
+- `ExtractIncomingMeta(req)` 为本类成员（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）：解析 `req.meta` 全部 RequestMeta 字段 + `subscriptionId`；解析失败记 Warning 并返回空 meta
 - `SetRequestStateVerifier`（HMAC/AEAD）须在 `Start()` 前调用；校验失败回 `InvalidParams "invalid requestState"` + `data.reason="invalid_request_state"`
 - `SetSpanHandler` 必须在 `Start()` 前调用；设置后在消息循环、响应 worker 和发送路径发出成对的 server request/transport receive/transport send 事件，入站 `_meta` 的 trace context 会复制到 server request 事件；未设置时不创建事件对象（详见 [/concepts/span-hooks.md](../concepts/span-hooks.md)）
-- 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp:688](../../src/protocol/McpSessionHandler.cpp)）
+- 订阅：`AddSubscription/RemoveSubscription/NotifySubscribers`，按 `SubscriptionFilter` 过滤，通知带 `subscriptionId` meta——事件通知的 `subscriptionId` **优先回显条目 `session_id`**（订阅时 `_meta` 携带的客户端 ID，与 ack 帧一致），未设置时回退服务端自增 `id`（[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）
 - 事件回调全部经 `InvokeSafely` 包异常（记 Error 日志）
 - 过滤器挂接：入站在消息循环分发前，出站在 `SendMessage` 中（`closed_` 时不再发送）
 
@@ -55,7 +55,7 @@ pending 请求的全部结算路径（正常响应、错误响应、超时、连
 - 超时取消由 `CheckTimeouts` 复用同一传输取消逻辑（`reason="timeout"`），`cancel_on_timeout=false` 时仅本地结算
 - 入站取消（对端发起）：`HandleCancelled` 从 `params.requestId`（整数或字符串）定位标志并 `store(true)`，同时清掉同 id 的 pending 请求（以 `RequestCancelled` 结算，带 `reason`）与 progressToken 映射；`reason` 非字符串时忽略
 - `GetIncomingCancellationFlag(id)` 返回该在途请求的 `shared_ptr<std::atomic<bool>>`（未登记时 nullptr）；`EraseIncomingCancellationFlag(key)` 清理条目；标志表 `incoming_cancel_flags_`（`incoming_cancel_mutex_` 保护）按 JSON-RPC id 键控
-- 服务端在 `tools/call` 派发前把该标志注入 `RequestContext`（[McpServer.cpp:1038](../../src/server/McpServer.cpp)），handler 内 `IsCancellationRequested()` 因此能真实反映协议级取消；未登记时注入一个不共享的 false 标志
+- 服务端在 `tools/call` 派发前把该标志注入 `RequestContext`（[McpServer.cpp](../../src/server/McpServer.cpp)），handler 内 `IsCancellationRequested()` 因此能真实反映协议级取消；未登记时注入一个不共享的 false 标志
 
 ## 相关页面
 

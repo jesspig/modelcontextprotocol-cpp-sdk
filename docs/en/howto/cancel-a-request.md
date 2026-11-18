@@ -1,6 +1,6 @@
 # Cancel a request and handle timeouts
 
-Take a request that is already in flight but no longer wanted **out of the running as early as possible**: the client calls `RequestHandle::Cancel` or lets the deadline expire, the SDK settles it locally into a terminal error straight away, and decides per era and transport whether the peer gets a notice; the server can only notice cooperatively and is never interrupted. Signatures and field tables live in [/en/reference/client](/en/reference/client) and [/en/reference/transports](/en/reference/transports) — this page is about the operations.
+Take a request that is already in flight but no longer wanted **out of the running as early as possible**: the client calls `RequestHandle::Cancel` or lets the deadline expire, the SDK settles it locally into a terminal error straight away, and decides per era and transport whether the peer gets a notice; the server can only notice cooperatively and is never interrupted. Signatures and field tables: [/en/reference/client](/en/reference/client), [/en/reference/transports](/en/reference/transports).
 
 ::: info Division of labour with closing and tasks
 Cancellation targets **one request ID**. To tear down the whole connection use `McpClient::Close()` (everything in flight settles as `ConnectionClosed`, see [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server)); to keep work queryable and resumable after a disconnect, use tasks — see [/en/howto/run-long-tasks](/en/howto/run-long-tasks).

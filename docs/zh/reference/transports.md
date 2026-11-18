@@ -122,6 +122,8 @@
 | `allowed_origins` | `std::vector<std::string>` | `{}` | Origin 白名单；无 `Origin` 头时放行 |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes`（4 MiB） | 请求体上限 |
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes`（1 MiB） | 单个 SSE 事件上限 |
+| `max_sse_replay_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes`（1 MiB） | 会话模式 GET 流按 `Last-Event-ID` 回放时的字节预算，从最新事件向前截取 |
+| `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s（`kDefaultHttpRequestTimeout`） | POST 等待处理器响应的截止；`0` 无限期等待，超时回 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | 未设置时无鉴权门，行为不变 |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | 未设置 | 按方法/工具名解析 `Mcp-Param-*` 头注解；未设置时跳过参数头校验 |
 | `enable_server_card` | `bool` | `false` | 注册 `GET /server-card` 发现端点 |
@@ -241,7 +243,7 @@
 | `HttpRequest` | `struct { std::string method; std::string path; std::unordered_map<std::string, std::string> headers; std::string body; }` | — | 入站请求视图 |
 | `HttpResponse` | `struct`，含 `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`、`"OK"`、其余空/`false` | 后两字段控制 SSE 定向与写完即断 |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | 路由处理体 |
-| `HttpServerOptions` | `struct`，含 `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes` | `0`、`""`、`kMaxHttpBodyBytes` | 传输层把 `host`/`allowed_*` 原样转发到此 |
+| `HttpServerOptions` | `struct`，含 `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`、`""`、`kMaxHttpBodyBytes`、`header_read_budget = nullopt` | 传输层把 `host`/`allowed_*` 原样转发到此 |
 | `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`，配 `void Start()` / `void Stop()` | 选项默认构造 | 非 `ITransport`，独立生命周期 |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | `(method, path)` 精确匹配 |
 | `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | 无 tag | `SseClientId = uint64_t`；带 tag 版本供定向广播与过滤 |
@@ -306,7 +308,7 @@
 | 场景 | `IsStateless()` | 会话与通知 |
 |---|---|---|
 | stdio / InMemory / SSE / WebSocket | `false`（`TransportBase` 恒 `false`） | 单会话长连接，通知走同一通道 |
-| Streamable HTTP 服务端（默认 `stateless = true`） | `true` | 每请求独立、同步 JSON 响应（截止 `kStatelessTimeout` = 30s），零监听者时跳过等待 |
+| Streamable HTTP 服务端（默认 `stateless = true`） | `true` | 每请求独立、同步 JSON 响应（截止 `kDefaultHttpRequestTimeout` = 30s，`request_timeout` 可覆盖），零监听者时跳过等待 |
 | Streamable HTTP 会话模式（`stateless = false`） | `false` | 发 `Mcp-Session-Id`、支持 GET 监听流与 `EventStore` 回放 |
 
 判定入口在 `include/mcp/Transport.hpp` 与 `include/mcp/transport/StreamableHttpServerTransport.hpp`，无状态分支的实现在 `src/http/StreamableHttpServerTransport.cpp`。
@@ -322,4 +324,6 @@
 - `include/mcp/transport/StreamableHttpServerTransport.hpp`、`include/mcp/transport/StreamableHttpClientTransport.hpp`、`include/mcp/transport/HttpTransportMode.hpp`
 - `include/mcp/transport/SseClientTransport.hpp`、`include/mcp/transport/WebSocketClientTransport.hpp`、`include/mcp/transport/InMemoryTransport.hpp`
 - `include/mcp/http/HttpServer.hpp`、`include/mcp/http/EventStore.hpp`、`include/mcp/http/SessionStore.hpp`、`include/mcp/transport/detail/Limits.hpp`（末者被公共 Options 引用，非稳定 API）
-- 行为佐证：`src/transport/StdioClientTransport.cpp`、`src/http/StreamableHttpServerTransport.cpp`、`src/http/StreamableHttpClientTransport.cpp`、`src/http/HttpServerImpl.cpp`、`src/transport/detail/net/TlsSocket.cpp`、`cmake/FetchDependencies.cmake`、`cmake/OpenSslVersion.cmake`、`CMakeLists.txt`；相关任务写法：[/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server)、[/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)、[/zh/howto/manage-subprocesses](/zh/howto/manage-subprocesses)
+- 行为佐证：`src/transport/StdioClientTransport.cpp`、`src/http/StreamableHttpServerTransport.cpp`、`src/http/StreamableHttpClientTransport.cpp`、`src/http/HttpServerImpl.cpp`、`src/transport/detail/net/TlsSocket.cpp`、`cmake/FetchDependencies.cmake`、`cmake/OpenSslVersion.cmake`、`CMakeLists.txt`
+
+相关任务写法：[/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server)、[/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)、[/zh/howto/manage-subprocesses](/zh/howto/manage-subprocesses)。

@@ -1,10 +1,10 @@
 # Extensions
 
-An extension is an optional add-on to protocol capability: it occupies a key in the capability table, a set of methods on the wire, and a switch in the implementation. This page maps the switch family onto protocol extension identifiers, shows what capability derivation produces, and explains how entry points behave when a switch is off. Types and field tables live in [/en/reference/auth-and-extensions](/en/reference/auth-and-extensions).
+An extension is an optional add-on to protocol capability: it occupies a capability-table key, a set of wire methods, and an implementation switch. This page maps switches to protocol extension identifiers, shows what capability derivation produces, and explains entry-point behaviour when a switch is off. Types and field tables live in [/en/reference/auth-and-extensions](/en/reference/auth-and-extensions).
 
 ## How Extensions Appear in the Protocol
 
-Capability structs carry exactly one extension-related member: a map from a reverse-DNS identifier to that extension's configuration object (free-form JSON). Server capabilities are derived from registration plus switches, client capabilities from options, and both ends negotiate through the same map. Method names are not hidden inside the extension — an extension either brings its own methods or changes the behaviour of existing ones; for the era each method belongs to, see [/en/learn/protocol-versions](/en/learn/protocol-versions).
+Capability structs carry exactly one extension-related member: a map from a reverse-DNS identifier to the extension's configuration object (free-form JSON). Server capabilities derive from registration plus switches, client capabilities from options, and both ends negotiate through the same map. Method names are not hidden inside the extension — it either brings its own methods or changes existing ones; for each method's era see [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
 ## Only Four Switches Reach the Wire
 
@@ -17,9 +17,9 @@ Of the eight server-side switches, only four write an extension key into the cap
 | `io.modelcontextprotocol/ui` | `enable_apps_extension` | declared whenever the switch is true | empty object |
 | `io.modelcontextprotocol/server-card` | `enable_server_card` | declared whenever the switch is true | empty object |
 
-The remaining switches (etag cache, progressive discovery, file input, triggers/events) have no wire identifier at all: they change only what this SDK does and declare nothing to the peer. Calling them "extensions" creates confusion whenever negotiation is discussed — the peer cannot see them in the capability table and therefore cannot depend on them.
+The remaining switches (etag cache, progressive discovery, file input, triggers/events) have no wire identifier at all: they change only this SDK's behaviour and declare nothing to the peer. Calling them "extensions" is misleading in negotiation discussions — the peer cannot see them in the capability table and cannot depend on them.
 
-Skills are the one case where the declaration condition is stricter than the switch: switch on but register no skill, or lack the resources capability, and the skills key never appears. That is not a defect but the direct consequence of "capabilities are derived from registration" (see [/en/learn/architecture](/en/learn/architecture)).
+Skills are the one case where the declaration condition is stricter than the switch: with the switch on but no skill registered, or no resources capability, the skills key never appears. That follows directly from "capabilities are derived from registration" (see [/en/learn/architecture](/en/learn/architecture)), not a defect.
 
 ## Server-Side Switch Family
 
@@ -34,7 +34,7 @@ Skills are the one case where the declaration condition is stricter than the swi
 | `enable_file_input` | local and resource references inside tool arguments are sliced by range and small files inlined; remote addresses pass through | arguments pass through verbatim | no |
 | `enable_triggers_events` | the trigger registry matches by type, delivers the event notification through subscriptions and calls webhooks | the emit call returns immediately and the event is dropped | no |
 
-Trigger webhooks retry internally (up to three attempts with growing backoff) and a final failure logs a warning only, leaving the already-delivered event notification intact — a different posture from the "failure is an error" behaviour elsewhere, so treat it separately.
+Trigger webhooks retry internally (up to three attempts with growing backoff); a final failure only logs a warning and leaves the already-delivered event notification intact. This differs from the "failure is an error" behaviour elsewhere, so treat it separately.
 
 ## Client-Side Switch Family
 
@@ -45,7 +45,7 @@ Trigger webhooks retry internally (up to three attempts with growing backoff) an
 | `enable_progressive_discovery` | tool-search requests carry query and page size | paging aggregation still works, but the two parameters are not sent | no |
 | `enable_etag_cache` (on by default) | read entry points send conditional requests and reuse stored copies for unchanged responses | no conditions attached, stored copies unread, requests sent as usual | no |
 
-The client-side tasks switch has a smaller footprint than it looks: it only blocks "submit input" and "poll to completion". Fetching a task, cancelling one, and issuing a tool call as a task still send requests. The real backstop is on the response side — in the modern era, receiving a task result without having declared the tasks extension throws handler error. See the next section.
+The client-side tasks switch has a smaller footprint than it looks: it only blocks "submit input" and "poll to completion". Fetching a task, cancelling one, and issuing a tool call as a task still send requests. The real backstop is on the response side — in the modern era, receiving a task result without having declared the tasks extension throws handler error (next section).
 
 ## What the Entry Points Return When a Switch Is Off
 
@@ -58,19 +58,19 @@ A third rejection is easy to confuse with these: **missing required client capab
 
 ## Implicit Enablement Has Been Removed
 
-Setting only a task store no longer declares the tasks extension and no longer logs a warning; skills never had an implicit path. Both now require the switch to be set explicitly. Two "implicitly enabled" accessor helpers remain on the options struct, but they are marked deprecated and have no call site anywhere in production code — they are compatibility residue for external callers, not something to reason about behaviourally.
+Setting only a task store no longer declares the tasks extension or logs a warning; skills never had an implicit path. Both now require the switch to be set explicitly. Two "implicitly enabled" accessor helpers remain on the options struct but are deprecated with no call site in production code — compatibility residue for external callers, not something to reason about behaviourally.
 
 ## Skills: uri Shape and Directory Reading
 
 A skill entry's uri must have the shape `<scheme>://<name>/SKILL.md`: a non-empty scheme part, a non-empty first path segment, and the fixed file name at the end. No specific scheme is mandated — `skill://` is a convention, not a requirement. A malformed uri or a duplicate uri at registration throws invalid params and never enters the registry.
 
-Directory reading is a separate flag inside the skills extension declaration and must be enabled explicitly; while it is off, the directory-read entry point answers invalid params. Its effect is to treat a skill uri minus the trailing file name as a directory prefix and list the children beneath it — so the directory structure is determined entirely by uri naming, not by a second registration API.
+Directory reading is a separate flag inside the skills extension declaration and must be enabled explicitly; while off, the directory-read entry point answers invalid params. It treats a skill uri minus the trailing file name as a directory prefix and lists the children beneath it — so directory structure is determined entirely by uri naming, not a second registration API.
 
 Whether skill content is trustworthy is not decided by server-side shape validation: limit checks, file digest comparison, frontmatter consistency review and approval-snapshot re-validation are provided as separate client-side helpers.
 
 ## When Switches Take Effect
 
-Both server and client copy options by value at construction, so mutating your own options object afterwards has no effect. The etag cache switch is the one exception in shape: it is process-global state, and constructing any server instance with it enabled turns the read/write path on for the whole process — multiple instances in one process cannot therefore hold different values.
+Server and client copy options by value at construction, so mutating your options object afterwards has no effect. The etag cache switch is the one exception: it is process-global state, and constructing any server instance with it enabled turns the read/write path on for the whole process — multiple instances in one process cannot hold different values.
 
 ## Further Reading
 

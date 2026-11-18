@@ -1,6 +1,6 @@
 # 上报执行进度
 
-在一次慢请求还没返回之前，把「已经做到哪一步」推给发起方：服务端读请求自带的 `progressToken`，用 `McpServer::SendProgress` 发 `notifications/progress`，客户端在 `RequestOptions::on_progress` 里收。签名与字段表只在 [/zh/reference/server](/zh/reference/server)、[/zh/reference/client](/zh/reference/client) 与 [/zh/reference/types](/zh/reference/types) 维护，本页只讲操作步骤。
+在慢请求返回前把进度推给发起方：服务端读请求自带的 `progressToken`，用 `McpServer::SendProgress` 发 `notifications/progress`，客户端在 `RequestOptions::on_progress` 里收。本页只讲操作步骤；签名与字段表见 [服务端参考](/zh/reference/server)、[client 参考](/zh/reference/client)、[类型参考](/zh/reference/types)。
 
 ::: info 与任务、日志的分工
 进度是**同一请求内的临时心跳**：请求一旦返回，token 就失效。要让用户在断开之后还能回查，用 [/zh/howto/run-long-tasks](/zh/howto/run-long-tasks)；要送人类可读的日志行，用 [/zh/howto/send-log-notifications](/zh/howto/send-log-notifications)。
@@ -77,7 +77,7 @@ cmake --build build/p2d --target mcp-doc-snippet-report-progress
 
 ## 时代差异
 
-| 项目 | legacy（≤ 2025-06-18） | modern（2026-07-28） |
+| 项目 | legacy（≤ 2025-11-25） | modern（2026-07-28） |
 |---|---|---|
 | `_meta.progressToken` 的落位 | 留在 `params._meta`，`JsonRpcRequest::meta` 为空 | 提到信封级 `_meta`，序列化时再写回 `params._meta` |
 | 业务代码读取方式 | `ctx.Params().meta->progress_token` | 同左，SDK 已归一化，无需分支 |

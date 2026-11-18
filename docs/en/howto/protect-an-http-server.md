@@ -1,6 +1,6 @@
 # Protect an HTTP server
 
-Turn a `StreamableHttpServerTransport` from "runs on my machine" into "survives the public internet": Bearer verification, `WWW-Authenticate` challenges and the metadata endpoint, DPoP, Host/Origin allowlists, size limits, and consistency between `Mcp-Param-*` headers and the body. Protocol-level session behaviour is in [/en/howto/run-a-streamable-http-server](/en/howto/run-a-streamable-http-server); the client side of OAuth is [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-client).
+Turn a `StreamableHttpServerTransport` from "runs on my machine" into "survives the public internet": Bearer verification, `WWW-Authenticate` challenges and the metadata endpoint, DPoP, Host/Origin allowlists, size limits, and consistency between `Mcp-Param-*` headers and the body. Session behaviour: [/en/howto/run-a-streamable-http-server](/en/howto/run-a-streamable-http-server); OAuth client side: [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-client).
 
 ## Prerequisites
 

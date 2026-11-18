@@ -16,7 +16,7 @@
 | `client_secret` | `std::optional<std::string>` | `nullopt` | 仅 `client_credentials` 分支在无私钥断言时必需 |
 | `scopes` | `std::vector<std::string>` | 空 | 请求范围；`StepUpAuthorization` 就地追加 |
 | `scope_filter` | `std::function<std::vector<std::string>(const std::vector<std::string>&)>` | 未设置 | 每次解析范围都以 `scopes` 为入参回调；未设置即原样使用 |
-| `token_cache` | `std::shared_ptr<ITokenCache>` | `nullopt` | 构造时为空则自建 `InMemoryTokenCache` |
+| `token_cache` | `std::shared_ptr<ITokenCache>` | `nullptr` | 构造时为空则自建 `InMemoryTokenCache` |
 | `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 资源指示符；未设置回退 `server_url` 的规范化值 |
 | `application_type` | `std::string` | `"native"` | 动态注册请求体字段；空串按 `native` 送出 |
 | `enable_dpop` | `bool` | `false` | 打开后 token 端点请求带 `DPoP` 头，`Authorization` 改用 `DPoP` 方案 |
@@ -24,6 +24,7 @@
 | `signing_algorithm` | `std::string` | `"ES256"` | 断言签名算法名；非 `ES256` 时生成断言抛 `InvalidParams` |
 | `client_assertion_clock_seconds` | `std::function<int64_t()>` | 未设置 | 断言 `iat`/`exp` 的时钟源；未设置用 `dpop::NowSeconds` |
 | `allowed_authorization_server_origins` | `std::vector<std::string>` | 空 | 授权服务器 origin 白名单，比对 issuer 与各端点；空表示不收窄 |
+| `require_iss_when_advertised` | `bool` | `false` | 服务端广告 `authorization_response_iss_parameter_supported` 时生效：为真则授权响应缺 `iss` 即失败，为假则按本地策略放行 |
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | 未设置 | 拿到完整授权 URL 后回调，供外部打开浏览器；不影响流程判定 |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | 未设置 | 必须提供，否则授权流程直接 `false`；返回空、`state` 不符、`iss` 不符均失败 |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | 未设置 | 每次令牌落缓存后回调 |
@@ -226,7 +227,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `kMaxSkillTotalBytes` | `constexpr int64_t` | `16 * 1024 * 1024` | 单技能累计字节上限；负 `size` 直接判错 |
 | `CheckSkillLimits` | `bool CheckSkillLimits(const Skill& skill, std::string& error_out)` | — | 仅对 manifest 形态（`vector<SkillResource>`）生效；字符串形态（目录读取）直接通过 |
 | `VerifyFileBytes` | `bool VerifyFileBytes(const SkillResource& expected, std::string_view bytes, std::string& error_out)` | — | 字节数必须相等，`digest` 必须是 `sha256:` 前缀（大小写不敏感）+ 十六进制摘要 |
-| `VerifyFrontmatter` | `bool VerifyFrontmatter(const Skill& advertised, const JsonValue& fetched_frontmatter, std::string& error_out)` | — | 广告与取回的前马文必须深相等，且必须是对象、带字符串 `name`，`name` 还要等于 uri 推出的技能名段 |
+| `VerifyFrontmatter` | `bool VerifyFrontmatter(const Skill& advertised, const JsonValue& fetched_frontmatter, std::string& error_out)` | — | 广告与取回的 frontmatter 必须深相等，且必须是对象、带字符串 `name`，`name` 还要等于 uri 推出的技能名段 |
 | `IsApprovalStillValid` | `bool IsApprovalStillValid(const Skill& approved, const Skill& current)` | — | 无时间有效期：uri、frontmatter、meta、resources 四项全等才算审批仍有效，任一变化即失效 |
 | `ApprovalKey` | `std::string ApprovalKey(const std::string& host_label, const Skill& skill)` | — | `host_label` + `0x1F` + `skill.uri` 拼接，供调用方做审批表主键 |
 
@@ -236,7 +237,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 |---|---|
 | 入口 uri 形态 | 必须形如 `<scheme>://<authority>/<路径段>/SKILL.md`：以 `/SKILL.md` 结尾、含 `://`、authority 非空且 authority 后至少一段路径 |
 | 违反即抛 | `RegisterSkill` 对不合形态的 uri 抛 `McpError(InvalidParams, "invalid skill uri: …")`；同 uri 重复注册亦抛 |
-| 前马文 `name` 的期望值 | 客户端校验取 uri 去掉尾部 `/SKILL.md`、去掉 `scheme://` 与 authority 之后的最后一段路径作技能名，要求等于 `frontmatter.name` |
+| frontmatter `name` 的期望值 | 客户端校验取 uri 去掉尾部 `/SKILL.md`、去掉 `scheme://` 与 authority 之后的最后一段路径作技能名，要求等于 `frontmatter.name` |
 | 结论 | 注册名与校验名由同一 uri 形态决定：uri 多一层或少一层，都会让已审批技能在校验侧判为名字不符；注册与目录读取开关见 [服务端参考](/zh/reference/server) |
 
 形态判定在 `src/server/McpServer.cpp` 的 `IsSkillEntryUri`，名字比对在 `src/client/SkillVerify.cpp`。

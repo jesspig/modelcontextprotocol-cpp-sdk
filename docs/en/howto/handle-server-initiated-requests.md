@@ -1,6 +1,6 @@
 # Handle server-initiated requests
 
-The server does more than answer your calls — it also **asks you things**: for missing input (elicitation), for a completion you can produce (sampling, deprecated), for your workspace list (roots, deprecated). This page covers which callbacks the client side needs, what the SDK already does for you, and when you have to drive it yourself. Signatures and field tables live in [/en/reference/client](/en/reference/client); the server side of asking is [/en/howto/collect-user-input](/en/howto/collect-user-input).
+The server does more than answer your calls — it also **asks you things**: for missing input (elicitation), for a completion you can produce (sampling, deprecated), for your workspace list (roots, deprecated). Below: which client callbacks are needed, what the SDK does for you, and when to drive it yourself. Signatures and field tables: [/en/reference/client](/en/reference/client); server side of asking: [/en/howto/collect-user-input](/en/howto/collect-user-input).
 
 ::: info The two eras take completely different roads
 In the legacy era (≤ 2025-11-25) a question is a **standalone JSON-RPC request**: `elicitation/create` lands directly in your handler. In the modern era (2026-07-28) it becomes an `input_required` result of the same tool call plus an `inputResponses` follow-up round, and by default the SDK **runs that exchange for you** — your handler is still invoked exactly once.

@@ -3,7 +3,7 @@ type: Concept
 title: DPoP 证明绑定令牌
 description: DPoP（RFC 9449 / SEP-1932 草案）在本 SDK 的落点：dpop 原语的 JWS 签发与验签链（htm/htu/ath/nonce/iat 窗口 + jti 重放表）、Streamable HTTP 服务端 Bearer 链上的 DPoP 校验门、OAuthClientProvider 发送侧开关与 nonce 接口、传输层逐请求 proof 头注入口与 use_dpop_nonce 单次重试、OpenSSL 可选依赖缺失时的抛错降级语义。
 tags: [dpop, oauth, 安全, sep-1932, rfc9449, 传输, openssl]
-timestamp: 2026-10-29T22:11:23+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: src/ext/DPoP.cpp
 ---
 
@@ -11,21 +11,21 @@ resource: src/ext/DPoP.cpp
 
 DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定到密钥，泄密令牌无法被重放。MCP 侧对应 SEP-1932「DPoP Profile for MCP」，截至 2026-10 仍处 Draft（来源：`modelcontextprotocol/modelcontextprotocol#2753` 与 `go-sdk#1139` 均记 SEP-1932 in-flight / Draft）。
 
-本 SDK 的落点分三层：`mcp::ext::dpop` 原语（密钥、JWS 签发、验签、重放表）、Streamable HTTP 服务端资源服务器的 DPoP 校验门、`OAuthClientProvider` 的发送侧开关与 nonce 接口。传输层已提供逐请求头注入口与响应侧观察入口（见「客户端发送侧」）。`detail::SignEs256JwtWithPem`（以 PEM 私钥签任意 ES256 JWT）同样落在本模块，OpenSSL 缺失时抛错（[DPoP.hpp:62-67](../../include/mcp/ext/DPoP.hpp)）。
+本 SDK 的落点分三层：`mcp::ext::dpop` 原语（密钥、JWS 签发、验签、重放表）、Streamable HTTP 服务端资源服务器的 DPoP 校验门、`OAuthClientProvider` 的发送侧开关与 nonce 接口。传输层已提供逐请求头注入口与响应侧观察入口（见「客户端发送侧」）。`detail::SignEs256JwtWithPem`（以 PEM 私钥签任意 ES256 JWT）同样落在本模块，OpenSSL 缺失时抛错（[DPoP.hpp](../../include/mcp/ext/DPoP.hpp)）。
 
 ## 开关与依赖
 
-- 服务端门：`StreamableHttpServerOptions::BearerAuthConfig::enable_dpop`（默认 false，[StreamableHttpServerTransport.hpp:74](../../include/mcp/transport/StreamableHttpServerTransport.hpp)）——**唯一实际生效的门**，且须先配置 `bearer_auth`；`ServerOptions` 已无 DPoP 字段，服务端开关只在传输配置上。
-- 客户端门：`OAuthClientOptions::enable_dpop`（默认 false，[OAuthClientProvider.hpp:38](../../include/mcp/client/auth/OAuthClientProvider.hpp)），provider 构造期拷贝取值；两端开关互不影响，需各自显式开启。
-- **OpenSSL 可选依赖**：本模块严格跟随编译宏 `MCP_HAVE_OPENSSL`——该宏未定义时整条密码学路径不可用，`GenerateKey`/`CreateProof`/`VerifyProof` 三个函数**一律抛** `McpError(InternalError, "DPoP requires OpenSSL EC support, which is not available in this build")`（[DPoP.cpp:475-495](../../src/ext/DPoP.cpp)）。`MCP_HAVE_OPENSSL` 由 CMake 开关 `MCP_WITH_OPENSSL`（取值 `AUTO`/`ON`/`OFF`，默认 `AUTO`）与 `find_package(OpenSSL)` 结果共同决定，并经单一 INTERFACE 目标 `mcp-openssl` 统一施加到 `mcp-transport`/`mcp-client`/`mcp-ext`（`mcp-ext` 即本模块所在目标）；构建系统不再用 `__has_include` 嗅探 ec/ecdsa/evp/obj_mac/rand 头来推断 OpenSSL 可用——头可见不等于宏已定义、更不等于已链接。
+- 服务端门：`StreamableHttpServerOptions::BearerAuthConfig::enable_dpop`（默认 false，[StreamableHttpServerTransport.hpp](../../include/mcp/transport/StreamableHttpServerTransport.hpp)）——**唯一实际生效的门**，且须先配置 `bearer_auth`；`ServerOptions` 已无 DPoP 字段，服务端开关只在传输配置上。
+- 客户端门：`OAuthClientOptions::enable_dpop`（默认 false，[OAuthClientProvider.hpp](../../include/mcp/client/auth/OAuthClientProvider.hpp)），provider 构造期拷贝取值；两端开关互不影响，需各自显式开启。
+- **OpenSSL 可选依赖**：本模块严格跟随编译宏 `MCP_HAVE_OPENSSL`——该宏未定义时整条密码学路径不可用，`GenerateKey`/`CreateProof`/`VerifyProof` 三个函数**一律抛** `McpError(InternalError, "DPoP requires OpenSSL EC support, which is not available in this build")`（[DPoP.cpp](../../src/ext/DPoP.cpp)）。`MCP_HAVE_OPENSSL` 由 CMake 开关 `MCP_WITH_OPENSSL`（取值 `AUTO`/`ON`/`OFF`，默认 `AUTO`）与 `find_package(OpenSSL)` 结果共同决定，并经单一 INTERFACE 目标 `mcp-openssl` 统一施加到 `mcp-transport`/`mcp-client`/`mcp-ext`（`mcp-ext` 即本模块所在目标）；构建系统不再用 `__has_include` 嗅探 ec/ecdsa/evp/obj_mac/rand 头来推断 OpenSSL 可用——头可见不等于宏已定义、更不等于已链接。
   - 服务端在 `AuthorizeRequest` 内用 `try/catch` 包住 `VerifyProof`，异常按「校验失败」处理回 401，不中断 HTTP 服务。
   - 客户端 `BuildDPoPProof` 无 catch，无 OpenSSL 构建下开启开关会把异常抛给调用方（授权流直接失败）。
   - 与 OpenSSL 无关的部分：SHA-256 为内置 FIPS 180-4 实现（[sha256.hpp](../../include/mcp/detail/sha256.hpp)），Base64url 为自研。
-  - `GenerateNonce` 有 OpenSSL 走 `RAND_bytes`，否则逐字节取 `std::random_device`（[DPoP.cpp:151-166](../../src/ext/DPoP.cpp)）——无 OpenSSL 构建的 nonce 随机源不等同 OS CSPRNG。
+  - `GenerateNonce` 有 OpenSSL 走 `RAND_bytes`，否则逐字节取 `std::random_device`（[DPoP.cpp](../../src/ext/DPoP.cpp)）——无 OpenSSL 构建的 nonce 随机源不等同 OS CSPRNG。
 
 ## 服务端校验链
 
-`StreamableHttpServerTransport::AuthorizeRequest`（[StreamableHttpServerTransport.cpp:509-582](../../src/http/StreamableHttpServerTransport.cpp)）。未配置 `bearer_auth` 时直接放行（`:512`），DPoP 分支在其内部，与 Bearer 分支互斥：
+`StreamableHttpServerTransport::AuthorizeRequest`（[StreamableHttpServerTransport.cpp](../../src/http/StreamableHttpServerTransport.cpp)）。未配置 `bearer_auth` 时直接放行（`:512`），DPoP 分支在其内部，与 Bearer 分支互斥：
 
 1. `Authorization` 必须是 `DPoP ` 方案（前缀大小写不敏感匹配，`:211`）；缺头 / 方案不符 / 令牌去空白后为空 → **401** + `error="invalid_token"` + `DPoP-Nonce`
 2. `verify(token)` 回调失败（SDK 不解析 JWT，令牌校验全权委托调用方）→ **401** + `DPoP-Nonce`
@@ -38,7 +38,7 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 
 ## 证明校验（`dpop::VerifyProof`）
 
-[DPoP.cpp:365-471](../../src/ext/DPoP.cpp)，失败一律返回 false（不抛），校验顺序：
+[DPoP.cpp](../../src/ext/DPoP.cpp)，失败一律返回 false（不抛），校验顺序：
 
 - 结构：JWS compact 恰好三段，签名段 base64url 解码须恰 64 字节（P-256 的 `r‖s` 定长）
 - 头：`alg` 必须 `ES256`；`typ` 必须 `dpop+jwt`（大小写不敏感）；`jwk` 须 `kty=EC`、`crv=P-256`，`x`/`y` 非空且各解出 32 字节；**`jwk.d` 存在即拒**（证明中夹带私钥材料不接受）
@@ -46,11 +46,11 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 - 签名：对 `header.payload` 的 SHA-256 摘要做 `ECDSA_do_verify`
 - 重放：验签通过后才进 `replay.CheckAndStore(jti, iat, now)`——先在互斥量内按 `now - seen > window` 淘汰过期项，再查重，重复 jti 直接 false。服务端用的是**进程级单例** `DPoPReplayCache()`（`static`，窗口 300s，`:222`），跨全部会话共享
 
-守护测试：`DPoPBoundTokenRequiresMatchingProof`、`DPoPProofReplayRejected`、`DPoPDisabledSkipsProofChecks`（[StreamableHttpTransportTests.cpp:1865/1921/1969](../../tests/unit/StreamableHttpTransportTests.cpp)）；`DPoPDisabledByDefaultSkipsProof`、`DPoPEnabledBindsSchemeAndProof`、`DPoPStaleProofRejectedByWindow`（[OAuthTests.cpp:263/282/320](../../tests/unit/OAuthTests.cpp)）。
+守护测试：`DPoPBoundTokenRequiresMatchingProof`、`DPoPProofReplayRejected`、`DPoPDisabledSkipsProofChecks`（[StreamableHttpTransportTests.cpp](../../tests/unit/StreamableHttpTransportTests.cpp)）；`DPoPDisabledByDefaultSkipsProof`、`DPoPEnabledBindsSchemeAndProof`、`DPoPStaleProofRejectedByWindow`（[OAuthTests.cpp](../../tests/unit/OAuthTests.cpp)）。
 
-## 客户端发送侧（已接线部分）
+## 客户端发送侧
 
-- `GetAuthorizationHeader()`：开关开返回 `DPoP <access_token>`，否则 `Bearer <access_token>`（[OAuthClientProvider.cpp:760-767](../../src/client/auth/OAuthClientProvider.cpp)）
+- `GetAuthorizationHeader()`：开关开返回 `DPoP <access_token>`，否则 `Bearer <access_token>`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）
 - `BuildDPoPProof(htm, htu, access_token)`：开关关直接返回空串；开则在 `dpop_mutex_` 保护下懒生成进程内单份 P-256 密钥（`GenerateKey`），`dpop_nonce_` 非空时写入 `nonce` claim（`:769-779`）
 - `SetDPoPNonce(nonce)`：写入 `dpop_nonce_`，后续签发的证明携带该 nonce（`:781-784`）
 - provider 自己发往授权服务器的 `HttpPost`（令牌交换 / 刷新 / 动态注册等）在开关开时自动附 `DPoP` 头（`:278-280`）；该请求**不带 `ath`**（`BuildDPoPProof` 未传 access_token）——按 RFC 9449，`ath` 只用于绑资源请求，授权服务器请求不绑
@@ -58,7 +58,7 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 
 ## 逐请求 proof 与 nonce 重试（传输层接线）
 
-传输层新增两个可选回调（[StreamableHttpClientTransport.hpp:51-55](../../include/mcp/transport/StreamableHttpClientTransport.hpp)），二者均**默认未设置**，未配置时零回归：
+传输层提供两个可选回调（[StreamableHttpClientTransport.hpp](../../include/mcp/transport/StreamableHttpClientTransport.hpp)），二者均**默认未设置**，未配置时零回归：
 
 - `apply_per_request_headers(context, headers)`：**每次发请求前**（含重试与内部自发的补发）被调用一次，入参 `HttpRequestHeaderContext` 含 `http_method` / `url`（实际请求 URL，重定向后为新 URL）/ `purpose`（`MessagePost`/`ListenStream`/`ResumeStream`/`SessionDelete`/`ToolAnnotationsRefresh`）/ `request_id` / `attempt_index`；回调把要追加的头写进可写 `headers` 引用，**覆盖在静态 `additional_headers` 与 `Authorization` 之后**（后者先写），故回调可覆盖二者。Win32 与 POSIX 两实现共用 `streamable_http_client_impl::ResolvePerRequestHeaders` 判定，行为强制一致。
 - `observe_response_challenge(context)`：**每个响应**（含 2xx 与 SSE）被调用一次，入参含 `status_code` / `www_authenticate` / `dpop_nonce`（`DPoP-Nonce` 响应头）。视图存活至本次调用返回，回调不得持有。
@@ -77,7 +77,6 @@ OpenSSL 缺失时 `GenerateKey`/`CreateProof` 抛错的既有失败语义保持�
 ## 遗留
 
 - `RegisterClient` 注册体仍未发送 `dpop_jkt`（见上节），DPoP 绑定的动态注册未覆盖。已核实官方 referee（`@modelcontextprotocol/conformance@0.2.0-alpha.12` 的 `dist/index.js`）**全包不含 `dpop_jkt` 字样、`/register` handler 直接忽略未知字段**，故 conformance 的 `auth/dpop` 场景不检查该字段；**且当前无法发送**——provider 的 `dpop_key_` 为私有成员且无公开 accessor，取不到 JKT 所需的 x/y，需先给 `OAuthClientProvider` 加公开的 `DPoPKeyThumbprint()` 之类接口。声明 `dpop_bound_access_tokens` 亦未实现（referee 元数据里刻意不广播该字段）
-- conformance 的 `dpop` / `dpop-nonce` 场景夹具接线由另一任务负责（记账见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）
 
 ## 相关页面
 

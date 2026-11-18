@@ -1,6 +1,6 @@
 # 排查卡住的服务端
 
-请求发出去、石沉大海。这一页把「没有响应」拆成可判定的三类成因，并给出每种情况最短的定位手段：内部日志、日志汇、span 钩子、conformance 复现。协议语义本身见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
+「没有响应」可分为三类成因，对应定位手段：内部日志、日志汇、span 钩子、conformance 复现。协议语义见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
 
 ## 先分类：三种「没反应」
 
@@ -95,7 +95,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-debug-a-stuck-server
 ```
 
-期望：configure 打印 `[mcp-docs] syntax-checking 17 snippet(s) with '/Zs'`，构建打印一行 `Building CXX object ...debug-a-stuck-server.cpp.obj`，返回码 0 且无 `error:` 行。
+期望：configure 打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建打印一行 `Building CXX object ...debug-a-stuck-server.cpp.obj`，返回码 0 且无 `error:` 行。
 
 `full` 片段本身可执行（进程内一客户端一「故意扣住 promise」的服务端）：它打印 `held promises: 1` 后返回，正是「请求被吞」的最小形态。要看取消后的终局码，跑 `RequestCancellation` 示例（见 [/zh/howto/cancel-a-request](/zh/howto/cancel-a-request) 的实测输出）。
 

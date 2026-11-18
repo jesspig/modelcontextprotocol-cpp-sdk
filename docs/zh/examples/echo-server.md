@@ -5,8 +5,8 @@
 ## 这个示例演示什么
 
 - 用 `StdioServerTransport` 起服务端，而不是 HTTP。
-- `McpServer::Create` 收 `std::unique_ptr<ITransport>`，因此传输对象的所有权交给服务端。
-- 三类注册 API 的最小形态：`RegisterTool`、`RegisterResource`、`RegisterResourceTemplate`、`RegisterPrompt`。
+- `McpServer::Create` 收 `std::shared_ptr<ITransport>`；示例的 `unique_ptr` 经 `std::move` 隐式转换传入，所有权随之交给服务端。
+- 四类注册 API 的最小形态：`RegisterTool`、`RegisterResource`、`RegisterResourceTemplate`、`RegisterPrompt`。
 - 工具入参要从 `ctx.Params().arguments`（`std::optional<JsonValue>`）里取，判空是必须的。
 
 ## 装配骨架
@@ -49,7 +49,7 @@ server->RegisterTool("echo",
 
 - 真实工具名取 `RegisterTool` 的**第一个实参** `"echo"`，`ToolOptions` 只带描述（`examples` 里没设 `name`，那个字段没有消费点）。
 - 这里**没有声明 `InputSchema`**，所以 SDK 不会做入参预校验；示例改用 `Contains("text")` 自保。要理解声明 schema 后 SDK 会替你拦一路，见 [/zh/howto/validate-tool-input](/zh/howto/validate-tool-input)。
-- `std::function<CallToolResult(const Ctx&)>` 的显式包装是必须的：裸 lambda 无法推导到重载的注册接口。
+- `std::function<CallToolResult(const Ctx&)>` 的显式包装并非必须：裸 lambda 同样能绑定到 `RegisterTool(name, options, fn)` 重载（`docs/snippets/register-a-tool.cpp` 即裸 lambda 形态）。
 - 返回的 `TextContent{"text", text}` 是聚合初始化，顺序为 `{type, text, mime_type, annotations, meta}`（`include/mcp/Content.hpp:42-47`）。
 
 ## 注册静态资源与模板资源
@@ -84,7 +84,7 @@ server->RegisterResourceTemplate("echo-template",
     });
 ```
 
-对应 `examples/EchoServer/main.cpp:46-57`。模板 handler 多收一个已解析的变量表：`vars.at("text")` 直接取模板里的 `{text}`。注册时 SDK 会先校验模板合法性，非法模板在注册点就抛 `InvalidParams`（`src/server/McpServer.cpp:329`），不会拖到第一次读取。
+对应 `examples/EchoServer/main.cpp:46-57`。模板 handler 多收一个已解析的变量表：`vars.at("text")` 直接取模板里的 `{text}`。注册时 SDK 会先校验模板合法性，非法模板在注册点就抛 `InvalidParams`（`src/server/McpServer.cpp:840`），不会拖到第一次读取。
 
 ## 注册提示词：capitalize
 
@@ -128,7 +128,7 @@ build/debug/examples/EchoServer/EchoServer
 EchoServer starting on stdio...
 ```
 
-横幅写在 **stderr**（`examples/EchoServer/main.cpp:77`），stdout 留给协议帧——这也是为什么 `StdioClientTransportOptions::stderr_path` 值得配置。之后进程进入 `server->Run()` 阻塞循环（`:78`）。本次实测还确认：把 stdin 重定向到 `/dev/null` 后进程**不会自行退出**，说明 stdio 服务端的生命周期由宿主关闭进程决定，而不是靠 stdin EOF 自终止。
+横幅写在 **stderr**（`examples/EchoServer/main.cpp:77`），stdout 留给协议帧——这也是为什么 `StdioClientTransportOptions::stderr_path` 值得配置。之后进程进入 `server->Run()` 阻塞循环（`:78`）。实测还确认：把 stdin 重定向到 `/dev/null` 后进程**不会自行退出**，说明 stdio 服务端的生命周期由宿主关闭进程决定，而不是靠 stdin EOF 自终止。
 
 要看到它真的应答，用 `SimpleClient`（本页不重复，见 [/zh/examples/simple-client](/zh/examples/simple-client)），或用 Inspector 之类的客户端连上来跑 `tools/list` 与 `prompts/list`。
 

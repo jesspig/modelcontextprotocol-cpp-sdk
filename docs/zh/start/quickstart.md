@@ -83,7 +83,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-期望：构建无错误，全量用例通过（当前 18 个测试目标、Windows 本机注册 982 例）。改完示例只验证一个目标时用 `cmake --build --preset debug --target SimpleClient`。
+期望：构建无错误，全量用例通过（当前 18 个测试目标、Windows 本机注册 1021 例）。改完示例只验证一个目标时用 `cmake --build --preset debug --target SimpleClient`。
 
 ## 常见错误
 

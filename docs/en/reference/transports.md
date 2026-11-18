@@ -122,6 +122,8 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `allowed_origins` | `std::vector<std::string>` | `{}` | Origin allow-list; requests without an `Origin` header pass |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes` (4 MiB) | Request-body cap |
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` (1 MiB) | Per-SSE-event cap |
+| `max_sse_replay_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` (1 MiB) | Byte budget when the session-mode GET stream replays from `Last-Event-ID`, truncated from the newest event backwards |
+| `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s (`kDefaultHttpRequestTimeout`) | Deadline for the POST wait on the handler's response; `0` waits forever, expiry answers 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | Without it there is no auth gate and behaviour is unchanged |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | unset | Resolves `Mcp-Param-*` header annotations per method/tool; when unset parameter-header validation is skipped |
 | `enable_server_card` | `bool` | `false` | Registers the `GET /server-card` discovery endpoint |
@@ -241,7 +243,7 @@ Declared in `include/mcp/transport/IRequestCanceller.hpp`.
 | `HttpRequest` | `struct { std::string method; std::string path; std::unordered_map<std::string, std::string> headers; std::string body; }` | — | Inbound request view |
 | `HttpResponse` | `struct` with `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`, `"OK"`, rest empty/`false` | The last two fields control directed SSE writes and close-after-write |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | Route body |
-| `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes` | `0`, `""`, `kMaxHttpBodyBytes` | The transport forwards `host`/`allowed_*` here unchanged |
+| `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`, `""`, `kMaxHttpBodyBytes`, `header_read_budget = nullopt` | The transport forwards `host`/`allowed_*` here unchanged |
 | `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`, plus `void Start()` / `void Stop()` | default-constructed options | Not an `ITransport`; independent lifecycle |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | Exact `(method, path)` match |
 | `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | no tag | `SseClientId = uint64_t`; the tagged overload enables directed broadcast and filtering |
@@ -306,7 +308,7 @@ The cache entries and detection are in `cmake/FetchDependencies.cmake`, `cmake/O
 | Scenario | `IsStateless()` | Session and notifications |
 |---|---|---|
 | stdio / InMemory / SSE / WebSocket | `false` (`TransportBase` is always `false`) | One long-lived session, notifications share the channel |
-| Streamable HTTP server (default `stateless = true`) | `true` | Each request stands alone with a synchronous JSON response (deadline `kStatelessTimeout` = 30s); the zero-listener wait is skipped |
+| Streamable HTTP server (default `stateless = true`) | `true` | Each request stands alone with a synchronous JSON response (deadline `kDefaultHttpRequestTimeout` = 30s, overridable via `request_timeout`); the zero-listener wait is skipped |
 | Streamable HTTP session mode (`stateless = false`) | `false` | Sends `Mcp-Session-Id`, supports the GET listen stream and `EventStore` replay |
 
 The decision entry points are `include/mcp/Transport.hpp` and `include/mcp/transport/StreamableHttpServerTransport.hpp`; the stateless branch is implemented in `src/http/StreamableHttpServerTransport.cpp`.

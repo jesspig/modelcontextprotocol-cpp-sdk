@@ -236,6 +236,7 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | `sse_keep_alive_ms` | `int` | `0`（不起心跳线程） | `> 0` 才启动 KeepAlive 线程，按该间隔向全部 SSE 客户端发心跳 |
 | `bind_host` | `std::string` | `""` → `INADDR_ANY` | 可带方括号的 IPv6 字面量；解析失败抛 `std::runtime_error("HttpServer: invalid bind_host: ...")`；`listen` backlog 固定 16 |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes`（4 MiB） | 按 `Content-Length` 预判，超限直接 413；`nullopt` 回退同一常量 |
+| `header_read_budget` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 10s（`kHeaderReadBudget`，实现内部常量） | 读请求头块的总时长预算，超时按坏请求断开 |
 
 字段声明在 `include/mcp/http/HttpServer.hpp`，Host/Origin 校验、回调触发点与请求体上限判定在 `src/http/HttpServerImpl.cpp`。
 

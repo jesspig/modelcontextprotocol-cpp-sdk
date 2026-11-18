@@ -66,7 +66,7 @@
 | `skills/get` | 拒绝 | 可用 | 同上 |
 | `resources/directory/read` | 拒绝 | 可用 | 还需声明目录读取 |
 
-覆盖 27 个方法名。三处易误读：任务三方法在两套白名单里都出现，是**双时代交集**，而非「仅旧时代」；`tasks/result` 与 `tasks/list` 才是仅旧时代；`server/extensions/list` 是双时代公共成员，过去被记为「不属于任何时代」是错的。
+覆盖 27 个方法名。三处易误读：任务三方法在两套白名单里都出现，是**双时代交集**，而非「仅旧时代」；`tasks/result` 与 `tasks/list` 才是仅旧时代；`server/extensions/list` 是双时代公共成员。
 
 ## 双时代可用性矩阵：通知
 
@@ -76,7 +76,7 @@
 | 仅旧时代（3） | `notifications/initialized`、`notifications/elicitation/complete`、`notifications/roots/list_changed` |
 | 仅现代时代（1） | `notifications/subscriptions/acknowledged` |
 
-覆盖 18 个通知名。六个任务通知与触发器事件通知都在公共集合内（服务端确实在发），过去「任务通知只属旧时代、其余五个不在任何集合」的记法是错的。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。
+覆盖 18 个通知名。六个任务通知与触发器事件通知都在公共集合内（服务端确实在发）。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。
 
 ## `_meta` 的位置与强制性
 
@@ -117,6 +117,16 @@
 | Pin | 不发任何握手请求，直接用钉住的版本构造一个空的发现结果 | 现代 |
 
 Pin 模式跳过协商，也就跳过了服务端能力与信息的获取——能力表是空的，只有确定对端行为时才该用。探测失败的回退规则按传输分类，见 [/zh/learn/transports](/zh/learn/transports)。
+
+## 2026-07-28 修订的破坏性变更
+
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](/zh/migration/0.3.9)；下一 patch 的变化见 [0.3.11 发布说明](/zh/migration/0.3.11)。
+
+- **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
+- **`_meta` 省略**——空的每请求 `_meta` 改为线上省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。
+- **重定向收紧**——HTTP 重定向处理比遗留行为更严格。迁移：默认策略 `SameOriginOnly`（同 scheme/host/port，允许 `http`→`https` 升级；跨源跳转被拒绝且剥离 `Authorization` 头，`301`/`302` POST 转 GET，`303` 一律转 GET）；经 `SseClientTransportOptions` / `HttpClientTransportOptions` 的 `redirect_policy`（`FollowAll`/`NoFollow`）与 `max_redirects`（默认 5）逐传输覆盖。
+- **默认上限**——对端省略对应限制时适用内置默认上限。迁移：HTTP 响应 8 MB（内部 `HttpRequestSpec` 字段 `max_response_bytes`）、SSE 事件 1 MB（SSE/Streamable HTTP 客户端选项的 `max_sse_event_bytes`）、CIMD 文档 1 MB（硬上限，best-effort 回退）、stdio 帧 8 MB（`StdioClientTransportOptions::max_frame_bytes` / `StdioServerTransport` 构造参数）、服务端请求体 4 MB（`max_request_body_bytes`）、工具参数 `ServerOptions::max_tool_input_elements`（超限返回 `is_error` 工具结果而非协议错误）、技能 manifest 512 文件 / 16 MB 总量（客户端 `CheckSkillLimits`）；对端确需超限时调大对应旋钮，或对载荷分片/分页。
+- **异步取消**——`notifications/cancelled` 投递异步，与被取消调用无序。迁移：待处理请求回调现跑在分离线程（仅线程创建失败时回退内联），调用方须按最终一致处理取消——handler 保持幂等并轮询 `RequestContext::IsCancellationRequested()` 协作退出，不得假设取消先于响应到达。
 
 ## 新增协议方法时的义务
 

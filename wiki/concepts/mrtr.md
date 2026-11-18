@@ -13,18 +13,18 @@ resource: include/mcp/McpTypes.hpp
 
 ## 数据模型
 
-- MRTR 三件套：`InputRequest`（`method` + `params` 两项）、`InputRequests`（`std::map<std::string, InputRequest, std::less<>>`，键由服务端自定义）、`InputRequiredResult`（必填 `input_requests` + 可选 `request_state`）（[McpTypes.hpp:219-228](../../include/mcp/McpTypes.hpp)）
-- `inputRequests` 的线上结构为「服务端键 → `{method, params}`」，序列化与反序列化均逐项校验 `method` 为非空字符串、`params` 为对象，畸形项直接抛 `InvalidParams`（[McpTypesResults.cpp:357](../../src/core/McpTypesResults.cpp)）
-- `inputResponses` 的值是**裸结果**：elicitation 为 `{action, content}`、sampling 为 `{role, content, model, stopReason}`、roots 为 `{roots}`，均不带 `resultType`/`meta` 信封（`MakeInputResponseFromElicitResult`/`MakeInputResponseFromCreateMessageResult`/`MakeInputResponseFromListRootsResult`，[McpTypesParams.cpp:282](../../src/core/McpTypesParams.cpp)）
+- MRTR 三件套：`InputRequest`（`method` + `params` 两项）、`InputRequests`（`std::map<std::string, InputRequest, std::less<>>`，键由服务端自定义）、`InputRequiredResult`（必填 `input_requests` + 可选 `request_state`）（[McpTypes.hpp](../../include/mcp/McpTypes.hpp)）
+- `inputRequests` 的线上结构为「服务端键 → `{method, params}`」，序列化与反序列化均逐项校验 `method` 为非空字符串、`params` 为对象，畸形项直接抛 `InvalidParams`（[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）
+- `inputResponses` 的值是**裸结果**：elicitation 为 `{action, content}`、sampling 为 `{role, content, model, stopReason}`、roots 为 `{roots}`，均不带 `resultType`/`meta` 信封（`MakeInputResponseFromElicitResult`/`MakeInputResponseFromCreateMessageResult`/`MakeInputResponseFromListRootsResult`，[McpTypesParams.cpp](../../src/core/McpTypesParams.cpp)）
 - `ElicitResultTyped<T>` 模板：`action` 默认 `"cancel"`，`is_accepted()` 判 `"accept"`
 - `ElicitRequestParams` 双模式：`mode` 默认 `"form"`（wire 不写新字段，向后兼容）；`mode=="url"`（SEP-1034）携带 `url`，legacy 另带 `elicitationId`，modern 由 MRTR 完成往返、客户端不再要求 `elicitationId`；`ElicitResult` wire 键 `action` + `content`（原 `values` 已修正，对齐规范与官方服务器）
 
 ## 客户端（[/classes/mcp-client.md](../classes/mcp-client.md)）
 
-- `SendRequestWithMrtr` 循环处理 `input_required`：`input_required_config` 默认构造（`auto_fulfill=true`、`max_rounds=10`），默认自动补全；显式置 `std::nullopt` 或 `auto_fulfill=false`、以及任一请求项缺少对应 handler 时，不补全并把 `input_required` 结果原样返回调用方。补全时经 handler 填 `inputResponses` / `requestState`；遍历 `input_requests` 逐项按 `method` 分派——`elicitation/create` 是当前 MRTR 主路径（form 需 `ElicitationHandler`，url 未配置 handler 时默认 decline），`sampling/createMessage` 与 `roots/list` 仅保留 legacy/2025 兼容 handler（两 API 已因 SEP-2577 废弃，现代 2026 时代不应视为可用能力）；回发 `inputResponses` 的键为服务端原键；未知 `method` → `HandlerError`（分派逻辑见 [McpClient.cpp:936](../../src/client/McpClient.cpp)）
+- `SendRequestWithMrtr` 循环处理 `input_required`：`input_required_config` 默认构造（`auto_fulfill=true`、`max_rounds=10`），默认自动补全；显式置 `std::nullopt` 或 `auto_fulfill=false`、以及任一请求项缺少对应 handler 时，不补全并把 `input_required` 结果原样返回调用方。补全时经 handler 填 `inputResponses` / `requestState`；遍历 `input_requests` 逐项按 `method` 分派——`elicitation/create` 是当前 MRTR 主路径（form 需 `ElicitationHandler`，url 未配置 handler 时默认 decline），`sampling/createMessage` 与 `roots/list` 仅保留 legacy/2025 兼容 handler（两 API 已因 SEP-2577 废弃，现代 2026 时代不应视为可用能力）；回发 `inputResponses` 的键为服务端原键；未知 `method` → `HandlerError`（分派逻辑见 [McpClient.cpp](../../src/client/McpClient.cpp)）
 - 预算：`max_rounds`（默认 10）超限 → `InternalError`；每轮超时取 `round_timeout`（默认 600s）与调用方超时的较小值；`max_total_timeout`（默认 0 = 不设总预算）超限 → `RequestTimeout`。注意与 `ClientOptions::max_total_timeout`（会话引擎**每请求**总量封顶，见 [/classes/mcp-session-handler.md](../classes/mcp-session-handler.md)）是两个独立预算——后者接线自构造期 `SetMaxTotalTimeout`，MRTR 轮内每轮 `SendRequest` 同受其约束
-- **state-only 退避**：`input_required` 无任何请求项（仅 `request_state`）时按 50ms 起每轮 ×2 增长、封顶 250ms 退避后重发（`kMrtrStateOnlyBackoffBase`/`kMrtrStateOnlyBackoffMax`，[McpClient.cpp:32](../../src/client/McpClient.cpp)，第 4 轮起不再增长），补全轮后计数清零
-- **URL elicitation 三态与顺序**：`UrlElicitationHandler` 返回 `ElicitResult`，action 必须为 `accept`/`decline`/`cancel`，非法值抛 `HandlerError`，未配置 handler 默认 `decline`；旧 void 回调经 deprecated 的 `SetLegacyUrlElicitationHandler` 承接并固定 `accept`。legacy 时代处理 `mode=="url"` 请求时**先发 `notifications/elicitation/complete`、再 `p.set_value` 提交 elicit 响应**（通知发送异常仅记 Error 日志，不阻断响应提交）；modern 时代不发送 complete，改由 MRTR `inputResponses` 完成往返（[McpClient.cpp:666](../../src/client/McpClient.cpp)）
+- **state-only 退避**：`input_required` 无任何请求项（仅 `request_state`）时按 50ms 起每轮 ×2 增长、封顶 250ms 退避后重发（`kMrtrStateOnlyBackoffBase`/`kMrtrStateOnlyBackoffMax`，[McpClient.cpp](../../src/client/McpClient.cpp)，第 4 轮起不再增长），补全轮后计数清零
+- **URL elicitation 三态与顺序**：`UrlElicitationHandler` 返回 `ElicitResult`，action 必须为 `accept`/`decline`/`cancel`，非法值抛 `HandlerError`，未配置 handler 默认 `decline`；旧 void 回调经 deprecated 的 `SetLegacyUrlElicitationHandler` 承接并固定 `accept`。legacy 时代处理 `mode=="url"` 请求时**先发 `notifications/elicitation/complete`、再 `p.set_value` 提交 elicit 响应**（通知发送异常仅记 Error 日志，不阻断响应提交）；modern 时代不发送 complete，改由 MRTR `inputResponses` 完成往返（[McpClient.cpp](../../src/client/McpClient.cpp)）
 
 ## 服务端（[/classes/mcp-server.md](../classes/mcp-server.md)）
 

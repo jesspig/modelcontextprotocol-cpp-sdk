@@ -1,6 +1,6 @@
 # 注册一个工具
 
-用 `McpServer::RegisterTool` 把一段本地函数挂成 MCP 工具：注册完成后客户端能在 `tools/list` 看到它、用 `tools/call` 调用它，并按你声明的 `inputSchema` 校验入参。签名与字段表只在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，本页只讲怎么把它们串起来。
+用 `McpServer::RegisterTool` 把本地函数挂成 MCP 工具：客户端随后能在 `tools/list` 看到它、用 `tools/call` 调用它，并按 `inputSchema` 校验入参。本页只讲串联步骤；签名与字段表见 [服务端参考](/zh/reference/server)、[类型参考](/zh/reference/types)。
 
 ## 前置条件
 

@@ -1,6 +1,6 @@
 # 给 HTTP 服务端加防护
 
-把一个 `StreamableHttpServerTransport` 从「本地能跑」变成「能被公网打」：Bearer 校验、`WWW-Authenticate` 挑战与元数据端点、DPoP、Host/Origin 白名单、体积上限，以及 `Mcp-Param-*` 头与 body 的一致性。协议层会话行为见 [/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server)，客户端侧的 OAuth 见 [/zh/howto/add-oauth-to-a-client](/zh/howto/add-oauth-to-a-client)。
+把一个 `StreamableHttpServerTransport` 武装到可公网部署：Bearer 校验、`WWW-Authenticate` 挑战与元数据端点、DPoP、Host/Origin 白名单、体积上限、`Mcp-Param-*` 头与 body 一致性。协议层会话见 [/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server)，客户端 OAuth 见 [/zh/howto/add-oauth-to-a-client](/zh/howto/add-oauth-to-a-client)。
 
 ## 前置条件
 
@@ -96,7 +96,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-protect-an-http-server
 ```
 
-期望：configure 打印 `[mcp-docs] syntax-checking 18 snippet(s) with '/Zs'`，构建打印一行 `Building CXX object ...protect-an-http-server.cpp.obj`，返回码 0 且无 `error:` 行。
+期望：configure 打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建打印一行 `Building CXX object ...protect-an-http-server.cpp.obj`，返回码 0 且无 `error:` 行。
 
 行为侧最省事的复现是用官方裁判打你的服务端：`CONFORMANCE_SPEC_VERSION=2026-07-28 ./scripts/run-conformance.sh server`（`MCP_BUILD_CONFORMANCE=ON` 起 fixture）。判据是 unexpected failures 为空；基线文件里已登记的条目属「已知未达标」，见 `tests/conformance/`。
 

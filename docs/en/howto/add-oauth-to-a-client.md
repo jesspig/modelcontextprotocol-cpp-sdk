@@ -1,6 +1,6 @@
 # Add OAuth to a client
 
-Make `StreamableHttpClientTransport` leave the house with a usable access token, and repair the situation when the server throws a `401`/`403` challenge: discover the authorization server metadata, run authorization code + PKCE or client credentials, store tokens in a cache you own, and step up scopes or swap in a DPoP proof when needed. This page covers the client side only; server-side Bearer validation lives in [/en/howto/protect-an-http-server](/en/howto/protect-an-http-server).
+Make `StreamableHttpClientTransport` leave the house with a usable access token, and repair the situation when the server throws a `401`/`403` challenge: discover the authorization server metadata, run authorization code + PKCE or client credentials, store tokens in a cache you own, and step up scopes or swap in a DPoP proof when needed. Client side only; server-side Bearer validation: [/en/howto/protect-an-http-server](/en/howto/protect-an-http-server).
 
 ::: info Authentication is era-independent
 OAuth, PKCE and DPoP all live in the HTTP transport layer and behave identically in both eras (legacy / modern); the era only changes which **protocol methods** run over that connection — see [/en/learn/protocol-versions](/en/learn/protocol-versions).

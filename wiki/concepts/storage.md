@@ -11,7 +11,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 ## AtomicJsonFile（[AtomicJsonFile.hpp](../../include/mcp/detail/AtomicJsonFile.hpp)）
 
-- `WriteAtomic(path, contents)`：临时文件名为 `<path>.tmp.<pid>.<counter>`（pid + 进程内静态自增计数器，多进程与同进程并发均不踩踏，[AtomicJsonFile.cpp:21](../../src/detail/AtomicJsonFile.cpp)）；写入后 `fflush` + 刷盘（Windows `FlushFileBuffers` / POSIX `fsync`）再 rename
+- `WriteAtomic(path, contents)`：临时文件名为 `<path>.tmp.<pid>.<counter>`（pid + 进程内静态自增计数器，多进程与同进程并发均不踩踏，[AtomicJsonFile.cpp](../../src/detail/AtomicJsonFile.cpp)）；写入后 `fflush` + 刷盘（Windows `FlushFileBuffers` / POSIX `fsync`）再 rename
 - 失败（打开/写/刷盘/rename）删除残留 tmp 并记 Error 日志、返回 false
 - **`WriteAtomicSecure(path, contents)`**：机密文件专用——临时文件名追加随机 salt（`<path>.tmp.<pid>.<counter>.<salt>`），以 `CREATE_NEW`/`O_CREAT|O_EXCL|O_NOFOLLOW` 独占创建且权限创建即收紧（Windows SDDL `D:P(A;;FA;;;OW)` 仅所有者 ACL / POSIX `0600`），写入循环处理短写与 `EINTR`，刷盘后原子改名，POSIX 侧再 fsync 父目录；任一步失败删除残留 tmp 并**抛 `McpError(InternalError)`**（区别于 `WriteAtomic` 的返回 false）
 - `WriteAtomic(path, JsonValue)`：`Dump(2)` 缩进 2 后走字节重载
@@ -41,7 +41,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 
 ## FileTaskStore 双锁结构
 
-`write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；**锁序固定 `write_mutex_` → `data_mutex_`**（[FileTaskStore.hpp:36](../../include/mcp/storage/FileTaskStore.hpp)）。
+`write_mutex_`（`std::mutex`，写方法全程持有，含写盘与回滚）+ `data_mutex_`（`std::shared_mutex`，读 `shared_lock` / 写 `unique_lock`）；**锁序固定 `write_mutex_` → `data_mutex_`**（[FileTaskStore.hpp](../../include/mcp/storage/FileTaskStore.hpp)）。
 
 写方法（CreateTask/UpdateTask/CancelTask/SetTaskStatus/FailTask/SetTaskOwner/SetTaskTtl/AdvanceTaskWithInput/ParkTaskForInput/BindTaskTool）流程：
 

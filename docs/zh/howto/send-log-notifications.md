@@ -1,6 +1,6 @@
 # 发送协议日志通知
 
-把服务端执行途中产生的日志行，用 MCP 的 `notifications/message` 推给正在连接的客户端：声明 `logging` 能力、按级别过滤、在 handler 内外两种位置发帧。签名与字段表只在 [/zh/reference/server](/zh/reference/server)、[/zh/reference/client](/zh/reference/client) 与 [/zh/reference/types](/zh/reference/types) 维护，本页只讲操作步骤。
+用 `notifications/message` 把服务端执行途中的日志行推给客户端：声明 `logging` 能力、按级别过滤、在 handler 内外两种位置发帧。本页只讲操作步骤；签名与字段表见 [服务端参考](/zh/reference/server)、[client 参考](/zh/reference/client)、[类型参考](/zh/reference/types)。
 
 ## 前置条件
 
@@ -90,7 +90,7 @@ cmake --build build/p2d --target mcp-doc-snippet-send-log-notifications
 
 ## 时代差异
 
-| 项目 | legacy（≤ 2025-06-18） | modern（2026-07-28） |
+| 项目 | legacy（≤ 2025-11-25） | modern（2026-07-28） |
 |---|---|---|
 | 级别协商方式 | 客户端发 `logging/setLevel`，服务端记住一个全局级别 | 无 `logging/setLevel`；级别随每个请求的 `_meta.io.modelcontextprotocol/logLevel` 走 |
 | 服务端过滤依据 | `setLevel` 记录的级别 | 该请求自带的级别；没带就**一条都不发** |

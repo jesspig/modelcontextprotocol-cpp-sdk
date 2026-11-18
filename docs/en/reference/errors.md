@@ -28,7 +28,7 @@ Underlying type `int32_t`, 20 entries, listed in declaration order (`include/mcp
 | `MissingRequiredClientCapability` | -32021 | Client lacks a required capability; `data.requiredCapabilities` names it | `VerifyCapability` checks, server needing sampling/elicitation/tasks |
 | `UnsupportedProtocolVersion` | -32022 | Negotiated version unsupported; `data.supported`/`data.requested` | Unsupported `_meta.protocolVersion`, mismatching HTTP version header, rejected `server/discover` probe |
 | `UrlElicitationRequired` | -32042 | Protocol definition: URL-mode elicitation required | See the dedicated section below; **no throw site in the SDK** |
-| `ResourceNotFound` | -32002 | Protocol reserved: resource unreadable | See the dedicated section below; **no throw site in the SDK** |
+| `ResourceNotFound` | -32002 | Protocol reserved: resource unreadable; **deprecated** (`[[deprecated("since 0.3.11, removed in 0.4.0; use InvalidParams")]]`) | See the dedicated section below; **no throw site in the SDK**; remapped to `InvalidParams` outbound in the modern era |
 | `ConnectionClosed` | -32000 | Connection or handle already closed | Socket/HTTP read hits the end, `HttpClient` closed, pending requests aborted at close |
 | `RequestTimeout` | -32001 | Request timed out | Session deadline (60 s by default), HTTP read/write timeout, URL elicitation watchdog |
 | `RequestCancelled` | -32800 | Request cancelled; `data.reason` optional | Peer `notifications/cancelled`, local `CancelRequest` or `RequestHandle::Cancel` |
@@ -43,7 +43,7 @@ Underlying type `int32_t`, 20 entries, listed in declaration order (`include/mcp
 ### The three codes without a throw site
 
 ::: warning
-`UrlElicitationRequired` (-32042), `ResourceNotFound` (-32002) and `TaskNotFound` (-32006) have **no throw site at all** in SDK production code. They appear only in two registration places: the category message branches (`include/mcp/ErrorCodes.hpp`) and the server-side known-code whitelist `IsKnownMcpErrorCode` (`src/server/McpServer.cpp`).
+`UrlElicitationRequired` (-32042), `ResourceNotFound` (-32002) and `TaskNotFound` (-32006) have **no throw site at all** in SDK production code. They appear only in registration places: the category message branches (`include/mcp/ErrorCodes.hpp`) and the server-side known-code whitelist `IsKnownMcpErrorCode` (`src/server/McpServer.cpp`); `ResourceNotFound` additionally takes part in the modern-era outbound remapping as a deprecated code (see below).
 :::
 
 Every "not found" outcome goes through `InvalidParams` instead — task, tool, resource, prompt and skill misses all throw that code from `src/server/McpServer.cpp`. URL-mode elicitation never emits -32042 either: the server simply sends an elicitation request with `mode:"url"`, and a client that has not declared the elicitation capability gets `MissingRequiredClientCapability` — both in `src/server/McpServer.cpp`.
@@ -73,10 +73,11 @@ The bridge only covers the code: `McpError` has no member returning `std::error_
 `MakeWireCodec` picks `Rev2026Codec` when `protocol_version >= kLatestProtocolVersion` (`"2026-07-28"`) and `Rev2025Codec` otherwise (`src/protocol/WireCodec.cpp`). Remapping applies **only where outbound error responses are encoded**: `McpSessionHandler::SendErrorResponse` and the three response delivery branches (`src/protocol/McpSessionHandler.cpp`). Local `McpError` objects, logs and `data` are untouched.
 :::
 
-### The three rewritten codes
+### The four rewritten codes
 
 | Code | Legacy outbound | Modern outbound | Warning logged |
 |---|---|---|---|
+| `ResourceNotFound` (-32002) | unchanged | `InvalidParams` (-32602) | yes, `Warning` level |
 | `RequestTimeout` (-32001) | unchanged | `InternalError` (-32603) | yes, `Warning` level |
 | `ConnectionRefused` (-32003) | unchanged | `InternalError` (-32603) | yes, `Warning` level |
 | `TlsHandshakeFailed` (-32004) | unchanged | `InternalError` (-32603) | yes, `Warning` level |
@@ -85,7 +86,7 @@ The evidence sits in `src/protocol/WireCodec.cpp`: the modern codec's `EncodeErr
 
 ### Codes that pass through unchanged
 
--32020, -32021, -32022 and -32042 are not in the `switch`, so both eras emit them as-is; the remaining internal codes (-32000, -32002, -32005, -32006, -32007, -32008, -32009, -32800) pass through too. A modern-era caller therefore cannot tell timeout from connection refused from a TLS failure by response code alone, only by the message and the peer's warning log.
+-32020, -32021, -32022 and -32042 are not in the `switch`, so both eras emit them as-is; the remaining internal codes (-32000, -32005, -32006, -32007, -32008, -32009, -32800) pass through too. A modern-era caller therefore cannot tell timeout from connection refused from a TLS failure by response code alone, only by the message and the peer's warning log.
 
 ## Three ways an error is delivered
 

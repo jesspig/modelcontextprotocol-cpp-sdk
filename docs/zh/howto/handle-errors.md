@@ -1,6 +1,6 @@
 # 处理错误
 
-同一个「出错」在 SDK 里有三条完全不同的出口：抛 `McpError`、回 `is_error` 的工具结果、以及 `RequestOutcome` 里的 `ErrorData`；再叠上协议时代的错误码重映射。这一页给你判定顺序与重试策略。取消与超时的细节在 [/zh/howto/cancel-a-request](/zh/howto/cancel-a-request)。
+SDK 里「出错」有三条出口：抛 `McpError`、回 `is_error` 的工具结果、`RequestOutcome` 里的 `ErrorData`；再叠上协议时代的错误码重映射。本页给出判定顺序与重试策略。取消与超时见 [/zh/howto/cancel-a-request](/zh/howto/cancel-a-request)。
 
 ## 前置条件
 
@@ -42,7 +42,7 @@
 | `-32003` / `-32004` | `ConnectionRefused` / `TlsHandshakeFailed` | 传输层建连失败 |
 | `-32005` | `ProtocolViolation` | 时代不允许的调用（如 modern 下 `logging/setLevel`） |
 | `-32006` | `TaskNotFound` | **SDK 内无抛出点** |
-| `-32007` | `HandlerError` | handler 抛出的非 MCP 错误、未知 input request method |
+| `-32007` | `HandlerError` | 本地回调/扩展前置条件不满足：未知 input request method、非法 elicitation action、扩展未开启；工具 handler 抛出的普通异常映射为 `InternalError` |
 | `-32008` | `DeserializeFailed` | 反序列化失败 |
 | `-32009` | `SessionExpired` | 未知/过期会话 |
 

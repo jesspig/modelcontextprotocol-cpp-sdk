@@ -1,6 +1,6 @@
 # Protocol Versions
 
-This page is the **only** place in the documentation that maintains the dual-era differences: every other page links back here instead of copying the tables. The SDK supports two protocol eras through one façade and two codec implementations, so any statement about whether a capability is available has to name the era.
+This page is the **only** place in the documentation that maintains the dual-era differences: every other page links back here instead of copying the tables. The SDK supports two eras through one façade and two codecs, so any statement about capability availability must name the era.
 
 ## The Five Supported Versions
 
@@ -16,9 +16,9 @@ The supported list defaults to these five and can be narrowed by a server-side v
 
 ## How the Era Is Decided
 
-The decision is a lexicographic comparison of the version string: greater than or equal to `2026-07-28` means modern, anything else means legacy. Because versions are ISO dates, lexicographic order matches chronological order, so "modern" is currently equivalent to "exactly `2026-07-28`" — only one version sits on the modern side. This predicate is the single era switch; every branch inside the SDK goes through it and there is no second test.
+Era is decided by a lexicographic comparison of the version string: greater than or equal to `2026-07-28` means modern, anything else legacy. Because versions are ISO dates, lexicographic and chronological order coincide, so "modern" currently equals "exactly `2026-07-28`" — only one version sits on that side. This predicate is the single era switch; every branch in the SDK goes through it, with no second test.
 
-The negotiated result selects the codec: the modern era uses the 2026 codec, everything else the 2025 codec. The codec is swapped as a unit once negotiation completes, so changing versions is safe while the message loop is running.
+The negotiated result selects the codec: modern uses the 2026 codec, everything else the 2025 codec. The codec is swapped as a unit once negotiation completes, so changing versions is safe while the message loop runs.
 
 ## Handshake Shape
 
@@ -66,7 +66,7 @@ Each codec holds its own method allow-list; a request outside its era is judged 
 | `skills/get` | rejected | available | same |
 | `resources/directory/read` | rejected | available | also requires directory reading to be declared |
 
-That covers 27 method names. Three easy misreadings: the three task methods appear in both allow-lists and are therefore a **dual-era intersection**, not "legacy only"; `tasks/result` and `tasks/list` are the legacy-only pair; `server/extensions/list` is a member of the shared set, and the earlier claim that it "belongs to no era" was wrong.
+That covers 27 method names. Three easy misreadings: the three task methods appear in both allow-lists and are therefore a **dual-era intersection**, not "legacy only"; `tasks/result` and `tasks/list` are the legacy-only pair; `server/extensions/list` is a member of the shared set, present in both eras.
 
 ## Dual-Era Availability Matrix: Notifications
 
@@ -76,11 +76,11 @@ That covers 27 method names. Three easy misreadings: the three task methods appe
 | Legacy only (3) | `notifications/initialized`, `notifications/elicitation/complete`, `notifications/roots/list_changed` |
 | Modern only (1) | `notifications/subscriptions/acknowledged` |
 
-That covers 18 notification names. The six task notifications and the trigger-event notification are all in the shared set (the server does send them), so the earlier account — "task notifications belong to 2025 only and the remaining five are in no era's set" — was wrong. The modern era adds a shape rule: a notification must not carry `id`, `result` or `error`, otherwise it is invalid. The roots-changed notification additionally requires a negotiated version of at least `2025-06-18` on the client side.
+That covers 18 notification names. The six task notifications and the trigger-event notification all belong to the shared set (the server does send them). The modern era adds a shape rule: a notification must not carry `id`, `result` or `error`, otherwise it is invalid. The roots-changed notification additionally requires a negotiated version of at least `2025-06-18` on the client side.
 
 ## Where `_meta` Lives and When It Is Required
 
-Inside a request object the metadata is a field parallel to `params`, and it is folded into `params._meta` on the way out — both eras share that wire shape, and they differ on whether it is mandatory:
+Inside a request object the metadata is a field parallel to `params`, folded into `params._meta` on the way out — both eras share that wire shape and differ only on whether it is mandatory:
 
 | Item | Legacy era | Modern era |
 |------|------------|------------|
@@ -93,7 +93,7 @@ Inside a request object the metadata is a field parallel to `params`, and it is 
 
 ## The `resultType` Field in Responses
 
-Result encoding in the legacy era is the identity function: the object goes on the wire unchanged. The modern era requires the result object to contain `resultType`, and a missing one makes the response invalid; outgoing encoding stamps a "complete" marker automatically and hoists the two cache-hint fields (time-to-live and scope) to the top level. The five list-shaped responses (tools, resources, resource templates, prompts, skills) must furthermore have `resultType` set to "complete" — a list result may not be a partial multi-round-trip result.
+Legacy result encoding is the identity function: the object goes on the wire unchanged. The modern era requires the result object to contain `resultType`, and a missing one makes the response invalid; outgoing encoding stamps a "complete" marker automatically and hoists the two cache-hint fields (time-to-live and scope) to the top level. The five list-shaped responses (tools, resources, resource templates, prompts, skills) must further set `resultType` to "complete" — a list result may not be a partial multi-round-trip result.
 
 ## Reverse Requests: `elicitation_id` and Multi-Round-Trip
 
@@ -116,7 +116,17 @@ Three transport-internal error codes are remapped to internal error (`-32603`) o
 | Legacy | forces the `initialize` handshake | legacy |
 | Pin | sends no handshake request at all and builds an empty discovery result from the pinned version | modern |
 
-Pin mode skips negotiation, which also skips learning the server's capabilities and info — the capability table comes out empty, so it should only be used when the peer's behaviour is already known. The fallback rules for a failed probe are classified by transport; see [/en/learn/transports](/en/learn/transports).
+Pin mode skips negotiation, and with it the server's capabilities and info — the capability table comes out empty, so use it only when the peer's behaviour is already known. Failed-probe fallback is classified by transport; see [/en/learn/transports](/en/learn/transports).
+
+## Breaking Changes in the 2026-07-28 Revision
+
+Each change below is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](/en/migration/0.3.9) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.11 release notes](/en/migration/0.3.11) track the next patch.
+
+- **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
+- **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.
+- **Redirect tightening** — HTTP redirect handling is stricter than the legacy behavior. Migration: the default policy is `SameOriginOnly` (same scheme/host/port, with `http`→`https` upgrade allowed; cross-origin hops are rejected and strip the `Authorization` header, `301`/`302` POST flips to `GET`, `303` always flips to `GET`); opt out through `redirect_policy` (`FollowAll`/`NoFollow`) and `max_redirects` (default 5) on `SseClientTransportOptions` / `HttpClientTransportOptions`.
+- **Default upper limits** — built-in default caps apply when the peer omits the corresponding limits. Migration: HTTP responses 8 MB (internal `HttpRequestSpec` field `max_response_bytes`), SSE events 1 MB (`max_sse_event_bytes` on the SSE/Streamable-HTTP client options), CIMD documents 1 MB (hard cap, best-effort fallback), stdio frames 8 MB (`StdioClientTransportOptions::max_frame_bytes` / `StdioServerTransport` ctor arg), server request bodies 4 MB (`max_request_body_bytes`), tool arguments `ServerOptions::max_tool_input_elements` (over-budget calls return an `is_error` tool result, not a protocol error), skill manifests 512 files / 16 MB total (client-side `CheckSkillLimits`); raise the matching knob, or shard/page the payload, when a peer legitimately exceeds a default.
+- **Async cancellation** — `notifications/cancelled` delivery is asynchronous and unordered relative to the cancelled call. Migration: the pending-request callback now runs on a detached thread (inline only as a thread-spawn fallback), so callers must treat cancellation as eventually consistent — keep handlers idempotent and poll `RequestContext::IsCancellationRequested()` for cooperative exit instead of assuming the cancel lands before the response.
 
 ## Obligations When Adding a Protocol Method
 

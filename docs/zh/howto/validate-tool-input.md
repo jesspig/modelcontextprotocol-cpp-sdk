@@ -1,6 +1,6 @@
 # 校验工具入参
 
-给工具加三层防线：先让 SDK 按 `input_schema` 把不合格参数拒在 handler 之外，再在 handler 内做语义与类型的自保，最后用 `ServerOptions::max_tool_input_elements` 设总量护栏。做完你得到的是「参数不合法时客户端立刻拿到可读的 `is_error`，而你的业务代码永远只见到合法形状」。字段与签名以 [/zh/reference/types](/zh/reference/types)、[/zh/reference/server](/zh/reference/server) 为准。
+给工具加三层防线：SDK 按 `input_schema` 把不合格参数拒在 handler 之外、handler 内做语义与类型自保、`ServerOptions::max_tool_input_elements` 设总量护栏。效果是参数不合法时客户端立刻拿到可读的 `is_error`，业务代码只见到合法形状。字段与签名见 [类型参考](/zh/reference/types)、[服务端参考](/zh/reference/server)。
 
 ## 前置条件
 

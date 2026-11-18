@@ -1,6 +1,6 @@
 # Validate Tool Input
 
-Put three layers of defence around a tool: let the SDK reject bad arguments against `input_schema` before your handler ever runs, keep semantic and type self-checks inside the handler, and finally cap the total payload with `ServerOptions::max_tool_input_elements`. The result: clients get a readable `is_error` the moment arguments are wrong, and your business code only ever sees well-shaped input. Signatures and field tables stay in [/en/reference/types](/en/reference/types) and [/en/reference/server](/en/reference/server).
+Put three layers of defence around a tool: let the SDK reject bad arguments against `input_schema` before your handler ever runs, keep semantic and type self-checks inside the handler, and finally cap the total payload with `ServerOptions::max_tool_input_elements`. Result: clients get a readable `is_error` the moment arguments are wrong, and your business code only ever sees well-shaped input. Signatures and field tables: [/en/reference/types](/en/reference/types), [/en/reference/server](/en/reference/server).
 
 ## Prerequisites
 

@@ -65,7 +65,7 @@ The trailing session argument (both APIs) is resolved by `EffectiveSessionId()` 
 Protocol-era differences (important):
 
 - **Modern era** (negotiated version `>= 2026-07-28`): neither call **sends** `elicitation/create`; both throw the implementation-internal `ElicitationInputRequired` carrying `inputRequests["elicitation"]`. The three `HandleCallTool` paths catch it and turn it into `CallToolResult::input_required`, fulfilled by the client's `SetElicitationHandler` / `SetUrlElicitationHandler`. The `timeout` argument of `ElicitUrl` is ignored on this branch.
-- **Legacy era**: client capabilities are checked first; a missing declaration throws `McpError(MissingRequiredClientCapability)` with `data.requiredCapabilities.elicitation` containing an empty `form`/`url` object. For form mode "declared" means `elicitation.form` present **or** `url` not declared; URL mode requires `elicitation.url`.
+- **Legacy era**: `Elicit` checks client capabilities first; a missing declaration throws `McpError(MissingRequiredClientCapability)` with `data.requiredCapabilities.elicitation` containing an empty `form`/`url` object. For form mode "declared" means `elicitation.form` present **or** `url` not declared; with `params.mode="url"` the call requires `elicitation.url`. `ElicitUrl` performs no such pre-check.
 - If the response carries a known JSON-RPC error code, the `Elicit` future resolves by throwing `McpError(code, message)`.
 
 ::: warning
