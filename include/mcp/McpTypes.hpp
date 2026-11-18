@@ -520,6 +520,27 @@ struct ReadDirectoryResult : Result {
     std::optional<std::string> cache_scope;
 };
 
+struct SkillDiagnostic {
+    std::string uri;
+    std::string reason;
+};
+
+struct SkillFileContent {
+    std::string uri;
+    std::string bytes;
+};
+
+struct SkillReadResult : Result {
+    Skill skill;
+    std::vector<SkillFileContent> files;
+    std::vector<SkillDiagnostic> diagnostics;
+};
+
+struct SkillDirectoryReadResult : Result {
+    std::vector<SkillReadResult> skills;
+    std::vector<SkillDiagnostic> diagnostics;
+};
+
 struct ToolOptions {
     std::optional<std::string> name;
     std::optional<std::string> description;

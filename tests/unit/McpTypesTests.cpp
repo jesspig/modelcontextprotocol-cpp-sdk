@@ -1,10 +1,47 @@
 #include <mcp/McpTypes.hpp>
+#include <mcp/McpError.hpp>
 
 #include <detail/JsonSchemaValidator.hpp>
 
 #include <gtest/gtest.h>
 
 using namespace mcp;
+
+TEST(UrlElicitationTest, ParsesAllFields) {
+    McpError error(
+        McpErrorCode::UrlElicitationRequired,
+        "url elicitation required",
+        JsonValue::Parse(
+            R"({"elicitations":[{"mode":"url","elicitationId":"e-1",)"
+            R"("url":"https://example.com/auth","message":"Authorize"}]})"));
+
+    auto parsed = ParseUrlElicitationRequired(error);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->mode, "url");
+    EXPECT_EQ(parsed->elicitation_id, "e-1");
+    EXPECT_EQ(parsed->url, "https://example.com/auth");
+    EXPECT_EQ(parsed->message, "Authorize");
+}
+
+TEST(UrlElicitationTest, MissingFieldReturnsNullopt) {
+    McpError error(
+        McpErrorCode::UrlElicitationRequired,
+        "url elicitation required",
+        JsonValue::Parse(
+            R"({"elicitations":[{"mode":"url","elicitationId":"e-1",)"
+            R"("url":"https://example.com/auth"}]})"));
+    EXPECT_FALSE(ParseUrlElicitationRequired(error).has_value());
+}
+
+TEST(UrlElicitationTest, WrongErrorCodeReturnsNullopt) {
+    McpError error(
+        McpErrorCode::InvalidParams,
+        "invalid params",
+        JsonValue::Parse(
+            R"({"elicitations":[{"mode":"url","elicitationId":"e-1",)"
+            R"("url":"https://example.com/auth","message":"Authorize"}]})"));
+    EXPECT_FALSE(ParseUrlElicitationRequired(error).has_value());
+}
 
 TEST(McpTypesTest, ToolRoundTrip) {
     Tool t;

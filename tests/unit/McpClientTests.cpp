@@ -1,4 +1,5 @@
 #include <mcp/client/McpClient.hpp>
+#include <mcp/detail/sha256.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/protocol/McpSessionHandler.hpp>
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -469,6 +471,29 @@ TEST(McpClientTest, PinNegotiationUsesPinnedVersion) {
     EXPECT_EQ(client->GetNegotiatedProtocolVersion(), std::string(kLatestProtocolVersion));
     client->Close();
     server_handler->Close();
+}
+
+TEST(McpClientTest, PinNegotiationKeepsDiscoverServerInfoEmpty) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.client_info = Implementation{"pin-client", "9.9"};
+
+    auto result = VersionNegotiation::Negotiate(*client_handler, opts);
+    ASSERT_TRUE(result.discover.has_value());
+    EXPECT_NE(result.discover->server_info.name, opts.client_info.name);
+    EXPECT_TRUE(result.discover->server_info.name.empty());
+    EXPECT_TRUE(result.server_info.name.empty());
+    client_handler->Close();
+
+    auto another_pair = InMemoryTransport::CreatePair();
+    auto client = McpClient::Create(std::move(another_pair.client), opts);
+    EXPECT_TRUE(client->GetServerInfo().name.empty());
+    client->Close();
 }
 
 TEST(McpClientTest, SetNotificationHandlerFiresAfterCreate) {
@@ -1842,6 +1867,58 @@ TEST(McpClientTest, SubscribeAsyncReturnsOnAcknowledgedWithoutResult) {
     const auto start = std::chrono::steady_clock::now();
     EXPECT_NO_THROW(client->SubscribeAsync(params));
     EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(3));
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SubscribeAsyncReturnsWhenTransportCloses) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client_transport = pair.client;
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto held_response = std::make_shared<std::promise<JsonValue>>();
+    std::promise<void> request_received;
+    auto request_future = request_received.get_future();
+    server_handler->SetRequestHandler(methods::kSubscribe,
+        [held_response, &request_received](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            *held_response = std::move(p);
+            request_received.set_value();
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_TRUE(client->IsModernProtocol());
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+
+    std::promise<void> subscribe_done;
+    auto subscribe_finished = subscribe_done.get_future();
+    std::thread worker([&]() {
+        try {
+            client->SubscribeAsync(params);
+            subscribe_done.set_value();
+        } catch (...) {
+            subscribe_done.set_exception(std::current_exception());
+        }
+    });
+
+    const bool request_sent =
+        request_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    client_transport->Close();
+    const bool returned =
+        subscribe_finished.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready;
+    if (returned) {
+        EXPECT_NO_THROW(subscribe_finished.get());
+    }
+    worker.join();
+
+    EXPECT_TRUE(request_sent);
+    EXPECT_TRUE(returned);
 
     client->Close();
     server_handler->Close();
@@ -4726,4 +4803,328 @@ TEST(McpClientTest, SetLoggingLevelModernRejected) {
 
         client->Close();
     });
+}
+
+namespace {
+
+std::string SkillTestDigest(std::string_view bytes) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    auto raw = detail::Sha256::Hash(bytes);
+    std::string out = "sha256:";
+    for (unsigned char c : raw) {
+        out.push_back(kHex[c >> 4]);
+        out.push_back(kHex[c & 0x0f]);
+    }
+    return out;
+}
+
+std::string SkillTestNameFromUri(const std::string& uri) {
+    constexpr std::string_view kSuffix = "/SKILL.md";
+    std::string path = uri.substr(0, uri.size() - kSuffix.size());
+    auto scheme = path.find("://");
+    std::string_view rest = scheme == std::string::npos
+        ? std::string_view(path) : std::string_view(path).substr(scheme + 3);
+    auto slash = rest.rfind('/');
+    return std::string(slash == std::string_view::npos ? rest : rest.substr(slash + 1));
+}
+
+JsonValue SkillTestSkillValue(
+    const std::string& uri, const std::string& name,
+    const std::vector<SkillResource>& resources)
+{
+    JsonValue skill(JsonValue::object_tag);
+    skill["uri"] = JsonValue(uri);
+    JsonValue frontmatter(JsonValue::object_tag);
+    frontmatter["name"] = JsonValue(name);
+    skill["frontmatter"] = std::move(frontmatter);
+    JsonValue arr(JsonValue::array_tag);
+    for (const auto& r : resources) {
+        JsonValue entry(JsonValue::object_tag);
+        entry["uri"] = JsonValue(r.uri);
+        entry["digest"] = JsonValue(r.digest);
+        entry["size"] = JsonValue(r.size);
+        arr.PushBack(std::move(entry));
+    }
+    skill["resources"] = std::move(arr);
+    return skill;
+}
+
+JsonValue SkillTestGetResult(JsonValue skill) {
+    JsonValue result(JsonValue::object_tag);
+    result["skill"] = std::move(skill);
+    result["ttlMs"] = JsonValue(int64_t(60000));
+    result["cacheScope"] = JsonValue("public");
+    result["resultType"] = JsonValue("complete");
+    return result;
+}
+
+JsonValue SkillTestReadResourceResult(const std::string& uri, const std::string& text) {
+    JsonValue result(JsonValue::object_tag);
+    JsonValue arr(JsonValue::array_tag);
+    JsonValue content(JsonValue::object_tag);
+    content["uri"] = JsonValue(uri);
+    content["text"] = JsonValue(text);
+    arr.PushBack(std::move(content));
+    result["contents"] = std::move(arr);
+    JsonValue hint(JsonValue::object_tag);
+    hint["ttlMs"] = JsonValue(int64_t(60000));
+    result["cacheHint"] = std::move(hint);
+    return result;
+}
+
+JsonValue SkillTestDirectoryResult(
+    const std::vector<std::string>& uris,
+    const std::optional<std::string>& next_cursor)
+{
+    JsonValue result(JsonValue::object_tag);
+    JsonValue arr(JsonValue::array_tag);
+    for (const auto& uri : uris) {
+        JsonValue child(JsonValue::object_tag);
+        child["uri"] = JsonValue(uri);
+        auto pos = uri.rfind('/');
+        child["name"] = JsonValue(pos == std::string::npos ? uri : uri.substr(pos + 1));
+        arr.PushBack(std::move(child));
+    }
+    result["resources"] = std::move(arr);
+    result["ttlMs"] = JsonValue(int64_t(60000));
+    result["cacheScope"] = JsonValue("public");
+    result["resultType"] = JsonValue("complete");
+    if (next_cursor) result["nextCursor"] = JsonValue(*next_cursor);
+    return result;
+}
+
+std::unique_ptr<McpClient> SkillTestClient(InMemoryTransport::Pair& pair) {
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.enable_skills_extension = true;
+    return McpClient::Create(std::move(pair.client), opts);
+}
+
+} // namespace
+
+TEST(McpClientTest, SkillReadValidAndCacheHit) {
+    const std::string body = "skill body";
+    const std::string uri = "skill://code-review/SKILL.md";
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> get_calls{0};
+    std::atomic<int> res_calls{0};
+    std::vector<SkillResource> manifest{
+        SkillResource{uri, SkillTestDigest(body), static_cast<int64_t>(body.size())}};
+    server->SetRequestHandler(methods::kGetSkill,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            get_calls.fetch_add(1);
+            p.set_value(SkillTestGetResult(SkillTestSkillValue(uri, "code-review", manifest)));
+        });
+    server->SetRequestHandler(methods::kReadResource,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            res_calls.fetch_add(1);
+            p.set_value(SkillTestReadResourceResult(uri, body));
+        });
+    server->Start();
+    auto client = SkillTestClient(pair);
+
+    auto result = client->ReadSkill(uri);
+    EXPECT_TRUE(result.diagnostics.empty());
+    EXPECT_EQ(result.skill.uri, uri);
+    ASSERT_EQ(result.files.size(), 1u);
+    EXPECT_EQ(result.files[0].uri, uri);
+    EXPECT_EQ(result.files[0].bytes, body);
+    EXPECT_EQ(get_calls.load(), 1);
+    EXPECT_EQ(res_calls.load(), 1);
+
+    auto cached = client->ReadSkill(uri);
+    EXPECT_TRUE(cached.diagnostics.empty());
+    ASSERT_EQ(cached.files.size(), 1u);
+    EXPECT_EQ(cached.files[0].bytes, body);
+    EXPECT_EQ(get_calls.load(), 1);
+    EXPECT_EQ(res_calls.load(), 1);
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SkillReadSizeMismatchRejected) {
+    const std::string body = "skill body";
+    const std::string uri = "skill://code-review/SKILL.md";
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::vector<SkillResource> manifest{
+        SkillResource{uri, SkillTestDigest(body), static_cast<int64_t>(body.size() + 1)}};
+    server->SetRequestHandler(methods::kGetSkill,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestGetResult(SkillTestSkillValue(uri, "code-review", manifest)));
+        });
+    server->SetRequestHandler(methods::kReadResource,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestReadResourceResult(uri, body));
+        });
+    server->Start();
+    auto client = SkillTestClient(pair);
+
+    auto result = client->ReadSkill(uri);
+    ASSERT_EQ(result.diagnostics.size(), 1u);
+    EXPECT_EQ(result.diagnostics[0].uri, uri);
+    EXPECT_EQ(result.diagnostics[0].reason, "size_mismatch");
+    EXPECT_TRUE(result.files.empty());
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SkillReadDigestMismatchRejected) {
+    const std::string body = "skill body";
+    const std::string uri = "skill://code-review/SKILL.md";
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::vector<SkillResource> manifest{
+        SkillResource{uri, "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            static_cast<int64_t>(body.size())}};
+    server->SetRequestHandler(methods::kGetSkill,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestGetResult(SkillTestSkillValue(uri, "code-review", manifest)));
+        });
+    server->SetRequestHandler(methods::kReadResource,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestReadResourceResult(uri, body));
+        });
+    server->Start();
+    auto client = SkillTestClient(pair);
+
+    auto result = client->ReadSkill(uri);
+    ASSERT_EQ(result.diagnostics.size(), 1u);
+    EXPECT_EQ(result.diagnostics[0].uri, uri);
+    EXPECT_EQ(result.diagnostics[0].reason, "digest_mismatch");
+    EXPECT_TRUE(result.files.empty());
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SkillReadFrontmatterNameMismatchRejected) {
+    const std::string body = "skill body";
+    const std::string uri = "skill://code-review/SKILL.md";
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::vector<SkillResource> manifest{
+        SkillResource{uri, SkillTestDigest(body), static_cast<int64_t>(body.size())}};
+    server->SetRequestHandler(methods::kGetSkill,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestGetResult(SkillTestSkillValue(uri, "wrong-name", manifest)));
+        });
+    server->SetRequestHandler(methods::kReadResource,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestReadResourceResult(uri, body));
+        });
+    server->Start();
+    auto client = SkillTestClient(pair);
+
+    auto result = client->ReadSkill(uri);
+    ASSERT_EQ(result.diagnostics.size(), 1u);
+    EXPECT_EQ(result.diagnostics[0].uri, uri);
+    EXPECT_EQ(result.diagnostics[0].reason, "frontmatter_mismatch");
+    EXPECT_EQ(result.files.size(), 1u);
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SkillDirectoryKeepsValidEntriesWithDiagnostics) {
+    const std::string body = "skill body";
+    const std::string good = "skill://alpha/SKILL.md";
+    const std::string bad = "skill://beta/SKILL.md";
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    server->SetRequestHandler(methods::kReadDirectory,
+        [&](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            p.set_value(SkillTestDirectoryResult({good, bad}, std::nullopt));
+        });
+    server->SetRequestHandler(methods::kGetSkill,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            auto uri = req.params->Find("uri")->GetString();
+            std::vector<SkillResource> manifest{
+                SkillResource{uri, SkillTestDigest(body), static_cast<int64_t>(body.size())}};
+            std::string name = uri == bad ? "wrong" : SkillTestNameFromUri(uri);
+            p.set_value(SkillTestGetResult(SkillTestSkillValue(uri, name, manifest)));
+        });
+    server->SetRequestHandler(methods::kReadResource,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            p.set_value(SkillTestReadResourceResult(
+                req.params->Find("uri")->GetString(), body));
+        });
+    server->Start();
+    auto client = SkillTestClient(pair);
+
+    auto result = client->ReadSkillDirectory("skill://");
+    ASSERT_EQ(result.skills.size(), 1u);
+    EXPECT_EQ(result.skills[0].skill.uri, good);
+    ASSERT_EQ(result.diagnostics.size(), 1u);
+    EXPECT_EQ(result.diagnostics[0].uri, bad);
+    EXPECT_EQ(result.diagnostics[0].reason, "frontmatter_mismatch");
+
+    client->Close();
+    server->Close();
+}
+
+TEST(McpClientTest, SkillDirectoryPaginationAndCacheHit) {
+    const std::string body = "skill body";
+    const std::string first = "skill://alpha/SKILL.md";
+    const std::string second = "skill://gamma/SKILL.md";
+    auto pair = InMemoryTransport::CreatePair();
+    auto server = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    std::atomic<int> dir_calls{0};
+    std::atomic<int> get_calls{0};
+    server->SetRequestHandler(methods::kReadDirectory,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            dir_calls.fetch_add(1);
+            std::string cursor;
+            if (req.params) {
+                if (auto* c = req.params->Find("cursor"); c && c->IsString())
+                    cursor = c->GetString();
+            }
+            if (cursor.empty())
+                p.set_value(SkillTestDirectoryResult({first}, std::string("p2")));
+            else
+                p.set_value(SkillTestDirectoryResult({second}, std::nullopt));
+        });
+    server->SetRequestHandler(methods::kGetSkill,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            get_calls.fetch_add(1);
+            auto uri = req.params->Find("uri")->GetString();
+            std::vector<SkillResource> manifest{
+                SkillResource{uri, SkillTestDigest(body), static_cast<int64_t>(body.size())}};
+            p.set_value(SkillTestGetResult(
+                SkillTestSkillValue(uri, SkillTestNameFromUri(uri), manifest)));
+        });
+    server->SetRequestHandler(methods::kReadResource,
+        [&](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+            p.set_value(SkillTestReadResourceResult(
+                req.params->Find("uri")->GetString(), body));
+        });
+    server->Start();
+    auto client = SkillTestClient(pair);
+
+    auto result = client->ReadSkillDirectory("skill://");
+    EXPECT_TRUE(result.diagnostics.empty());
+    ASSERT_EQ(result.skills.size(), 2u);
+    EXPECT_EQ(result.skills[0].skill.uri, first);
+    EXPECT_EQ(result.skills[1].skill.uri, second);
+    EXPECT_EQ(dir_calls.load(), 2);
+    EXPECT_EQ(get_calls.load(), 2);
+
+    auto cached = client->ReadSkillDirectory("skill://");
+    EXPECT_TRUE(cached.diagnostics.empty());
+    ASSERT_EQ(cached.skills.size(), 2u);
+    EXPECT_EQ(dir_calls.load(), 2);
+    EXPECT_EQ(get_calls.load(), 2);
+
+    client->Close();
+    server->Close();
 }

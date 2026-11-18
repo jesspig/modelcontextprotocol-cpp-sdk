@@ -83,6 +83,12 @@ public:
         std::string_view uri,
         std::optional<std::string> cursor = std::nullopt,
         const CacheableRequestOptions& options = {});
+    SkillReadResult ReadSkill(
+        std::string_view uri,
+        const CacheableRequestOptions& options = {});
+    SkillDirectoryReadResult ReadSkillDirectory(
+        std::string_view uri,
+        const CacheableRequestOptions& options = {});
 
     CompleteResult Complete(const CompleteRequestParams& params);
 
@@ -157,6 +163,7 @@ private:
     void WireClientHandlers();
     void WireTransportCallbacks();
     void DetachTransportCallbacks();
+    void ClearPendingSubscriptionAck();
     void InstallSamplingHandler();
     void InstallRootsHandler();
     NegotiationResult NegotiateProtocol();
