@@ -12,7 +12,7 @@ ctest --preset debug --output-on-failure
 
 - 仅 Ninja；CMake 3.28+、C++17 强制。单用例 `ctest --preset debug -R 'XxxTest.CaseName'`，或 `build/debug/tests/unit/mcp-core-tests --gtest_filter='XxxTest.*'`。示例需 `-DMCP_BUILD_EXAMPLES=ON`（预设默认 OFF）；conformance fixture 需 `-DMCP_BUILD_CONFORMANCE=ON`，fixture 与基线见 [wiki/tests.md](wiki/tests.md)。
 - 编译器自动探测：Windows 优先 clang-cl，Linux 优先 clang++-19 起，仅 MSVC 时显式 `-DCMAKE_CXX_COMPILER=cl`；`-DMCP_WERROR=ON` 才警告即错误（本地默认关，CI 自动开）。configure 不拉第三方，唯一可选系统依赖 OpenSSL：`-DMCP_WITH_OPENSSL=AUTO|ON|OFF`（默认 `AUTO` 按 `find_package` 结果启用，`ON` 未找到即 configure 失败，`OFF` 强制禁用；仅 3.x/4.x）；未启用则禁 TLS，PKCE 随机源回退 `BCryptGenRandom`/`random_device`，SHA-256 恒为内置实现。
-- 本机基线（Windows、OpenSSL 未探到）：18 目标 / 1021 ctest 用例；静态 `TEST/TEST_F/TEST_P` 1032，条件编译差 11（9 个 POSIX 专属 + 2 个 TLS 专属）、断言 token 4887 的逐项明细见 [wiki/tests.md](wiki/tests.md)；自查 `ctest --test-dir build/debug -N`。
+- 本机基线（Windows、OpenSSL 未探到）：18 目标 / 1037 ctest 用例；静态 `TEST/TEST_F/TEST_P` 1048，条件编译差 11（9 个 POSIX 专属 + 2 个 TLS 专属）、断言 token 4961 的逐项明细见 [wiki/tests.md](wiki/tests.md)；自查 `ctest --test-dir build/debug -N`。
 - 测试栈 googletest（子模块 `third_party/googletest`），目标链 `mcp-test-support` + `GTest::gtest_main`，注册走 `mcp_discover_tests`。`WireCodec::ValidateResponse`/`StampOutgoingRequest` 无生产调用者但有测试守护，不是死代码，勿删；集成测试护栏 `MCP_RUN_WITH_TIMEOUT`（`tests/support/include/mcp/test/McpTimeout.hpp`，默认 10s）超时打印 Failure 并 `std::_Exit(EXIT_FAILURE)` 硬退出整个进程，勿改回永久阻塞。
 
 ## 关键陷阱（每条都曾踩坑）

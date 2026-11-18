@@ -120,7 +120,7 @@ Pin mode skips negotiation, and with it the server's capabilities and info — t
 
 ## Breaking Changes in the 2026-07-28 Revision
 
-Each change below is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](/en/migration/0.3.9) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.11 release notes](/en/migration/0.3.11) track the next patch.
+Each change below is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](/en/migration/0.3.9) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.12 release notes](/en/migration/0.3.12) track the latest patch.
 
 - **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
 - **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.
