@@ -10,7 +10,29 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 using namespace mcp;
+
+#ifdef _WIN32
+namespace {
+
+struct ScopedWinHandle {
+    HANDLE handle{INVALID_HANDLE_VALUE};
+
+    ScopedWinHandle() = default;
+    ScopedWinHandle(const ScopedWinHandle&) = delete;
+    ScopedWinHandle& operator=(const ScopedWinHandle&) = delete;
+
+    ~ScopedWinHandle() {
+        if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    }
+};
+
+} // namespace
+#endif
 
 struct FileTaskStoreTest : ::testing::Test {
     std::filesystem::path store_path;
@@ -561,3 +583,60 @@ TEST_F(FileTaskStoreTest, StoreAppendsRecordsInsteadOfRewritingWholeFile) {
     ASSERT_TRUE(task.has_value());
     EXPECT_EQ(task->status, TaskStatus::Working);
 }
+
+TEST_F(FileTaskStoreTest, AutomaticCompactionAcrossThresholdKeepsWritesSucceeding) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+
+    for (int i = 0; i < 200; ++i) {
+        ASSERT_TRUE(store.SetTaskOwner("task-1", "owner-" + std::to_string(i)));
+    }
+
+    auto task = store.GetTask("task-1");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_EQ(task->owner, "owner-199");
+
+    {
+        std::ifstream ifs(store_path, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(ifs)),
+                            std::istreambuf_iterator<char>());
+        EXPECT_LT(std::count(content.begin(), content.end(), '\n'), 201);
+    }
+
+    FileTaskStore restored(store_path);
+    auto reloaded = restored.GetTask("task-1");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->owner, "owner-199");
+}
+
+#ifdef _WIN32
+TEST_F(FileTaskStoreTest, CompactionFailureKeepsSubsequentWritesSucceeding) {
+    FileTaskStore store(store_path);
+    store.CreateTask("task-1");
+
+    ScopedWinHandle reader;
+    reader.handle = CreateFileW(store_path.wstring().c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(reader.handle, INVALID_HANDLE_VALUE);
+
+    for (int i = 0; i < 200; ++i) {
+        ASSERT_TRUE(store.SetTaskOwner("task-1", "owner-" + std::to_string(i)));
+    }
+
+    {
+        std::ifstream ifs(store_path, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(ifs)),
+                            std::istreambuf_iterator<char>());
+        EXPECT_EQ(std::count(content.begin(), content.end(), '\n'), 201);
+    }
+
+    CloseHandle(reader.handle);
+    reader.handle = INVALID_HANDLE_VALUE;
+
+    FileTaskStore restored(store_path);
+    auto reloaded = restored.GetTask("task-1");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->owner, "owner-199");
+}
+#endif

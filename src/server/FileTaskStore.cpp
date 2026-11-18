@@ -599,18 +599,20 @@ bool FileTaskStore::Flush() {
 }
 
 bool FileTaskStore::AppendRecord(const std::string& task_id, const TaskState& state) {
-    std::ofstream file(storage_path_, std::ios::app | std::ios::binary);
-    if (!file.is_open()) {
-        MCP_LOG(Error, "task store: failed to open " + storage_path_.string() +
-            " for append");
-        return false;
-    }
-    file << SerializeRecord(task_id, state) << '\n';
-    file.flush();
-    if (!file.good()) {
-        MCP_LOG(Error, "task store: failed to append task record to " +
-            storage_path_.string());
-        return false;
+    {
+        std::ofstream file(storage_path_, std::ios::app | std::ios::binary);
+        if (!file.is_open()) {
+            MCP_LOG(Error, "task store: failed to open " + storage_path_.string() +
+                " for append");
+            return false;
+        }
+        file << SerializeRecord(task_id, state) << '\n';
+        file.flush();
+        if (!file.good()) {
+            MCP_LOG(Error, "task store: failed to append task record to " +
+                storage_path_.string());
+            return false;
+        }
     }
     ++pending_records_;
     size_t live_count = 0;
@@ -619,7 +621,9 @@ bool FileTaskStore::AppendRecord(const std::string& task_id, const TaskState& st
         live_count = tasks_.size();
     }
     if (pending_records_ > kMinCompactThreshold + live_count * 2) {
-        return CompactLocked();
+        if (!CompactLocked()) {
+            pending_records_ = 0;
+        }
     }
     return true;
 }
