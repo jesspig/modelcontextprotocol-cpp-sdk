@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect: configure prints `[mcp] SDK version: 0.3.11` plus the OpenSSL decision; the build completes without errors; `ctest` passes in full (currently 18 test targets, 1019 registered cases on Windows). To verify linking only, build a minimal executable that just includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
+Expect: configure prints `[mcp] SDK version: 0.3.11` plus the OpenSSL decision; the build completes without errors; `ctest` passes in full (currently 18 test targets, 1021 registered cases on Windows). To verify linking only, build a minimal executable that just includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
 
 ## Next steps
 

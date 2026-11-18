@@ -159,11 +159,11 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | 构造 | `explicit FileTaskStore(std::filesystem::path storage_path)` | — | 参数是**单个日志文件路径**（非目录），构造即加载；文件不存在视为空库 |
 | 析构 | `~FileTaskStore() override` | — | 析构内 `Flush()` → 全量原子重写 |
 | 15 个覆写 | 与 `IMcpTaskStore` 同名同签名，全部 `override` | — | 无默认实现残留：含 `AdvanceTaskWithInput`/`ParkTaskForInput`/`BindTaskTool`/`FailTask`/`RemoveTask`/`GetExpiredTaskIds`/`SetTaskOwner`/`SetTaskTtl` |
-| 写入语义 | 更新类函数返回 `bool` | `false` | id 不存在 → `false`；已终态 → `false`（`SetTaskOwner`/`SetTaskTtl`/`BindTaskTool` 无终态守卫）；落盘失败 → 回滚内存并抛 `McpError(InternalError)` |
+| 写入语义 | 更新类函数返回 `bool` | `false` | id 不存在 → `false`；已终态 → `false`（`SetTaskOwner`/`SetTaskTtl`/`BindTaskTool` 无终态守卫）；追加失败（打开/写入/flush）→ 回滚内存并抛 `McpError(InternalError)`；压缩失败仅记日志，不影响本次写成功 |
 | 创建语义 | `CreateTask` | — | 重复 id 抛 `McpError(McpErrorCode::InvalidParams, "task already exists: " + id)` |
 | 并发模型 | `write_mutex_` 串行写 + `shared_mutex` 读写锁 | — | 读函数只持读锁；写函数全程持 `write_mutex_` |
 | 日志格式 | 每行一条 JSON：`{"task_id":...,"state":{...}}`；删除追加 `{"task_id":...,"removed":true}` | — | 追加写，重放时按行覆盖/删除 |
-| 压缩触发 | `pending_records_ > kMinCompactThreshold + 2 × 存活任务数` | `kMinCompactThreshold = 64` | 满足即在追加后重写全文件：临时文件落盘 + `fsync`/`FlushFileBuffers` + `rename` 原子替换（内部辅助在 `src/detail/AtomicJsonFile.cpp`），计数归零 |
+| 压缩触发 | `pending_records_ > kMinCompactThreshold + 2 × 存活任务数` | `kMinCompactThreshold = 64` | 追加句柄先离开作用域再计数，避免 Windows 上 `rename` 撞到存储自身的句柄；满足阈值即重写全文件：临时文件落盘 + `fsync`/`FlushFileBuffers` + `rename` 原子替换（内部辅助在 `src/detail/AtomicJsonFile.cpp`），成功后计数归零；压缩失败只记 Error 日志并将计数归零，本次追加仍返回成功 |
 | 损坏处理 | 中间行解析失败 → 复制同名 `.corrupt` 备份并**清空整库**；末行残片只记日志忽略 | — | 兼容旧的 `{"tasks":{...}}` 快照格式 |
 | 归属目标 | `mcp-server` 静态库 | — | 示例用法见 `examples/conformance/server/SkillsAndTasks.cpp` |
 
