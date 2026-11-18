@@ -1,6 +1,6 @@
 # Connect to a Server
 
-`McpClient::Create()` does everything in one call — attach a transport, negotiate the protocol version, start the message thread — so the session is ready when it returns. The tricky part is telling `IClientTransport` apart from `ITransport`, and knowing which packets each negotiation mode actually sends. Signatures and field tables live only in [/en/reference/client](/en/reference/client); this page covers the procedure.
+`McpClient::Create()` does everything in one call — attach a transport, negotiate the protocol version, start the message thread — so the session is ready when it returns. The tricky part is telling `IClientTransport` apart from `ITransport`, and knowing which packets each negotiation mode actually sends. Signatures and field tables: [/en/reference/client](/en/reference/client).
 
 ## Prerequisites
 
@@ -31,7 +31,7 @@
 
 - To answer a server-initiated `elicitation/create`, the handler must be inside `ClientOptions` before `Create()`: the outgoing capability set is fixed in the constructor by `DeriveClientCapabilities` (`src/client/McpClient.cpp`), so calling `SetElicitationHandler()` afterwards cannot change the capabilities the peer already saw.
 - `connect_mode` defaults to `Auto`; `initialization_timeout` (60s) only bounds the `initialize` handshake and `discover_probe_timeout` (5s) only bounds the `server/discover` probe (`include/mcp/client/ClientOptions.hpp`).
-- `on_transport_close`／`on_transport_error` are wired only when the transport derives from `TransportBase`; otherwise the SDK logs a Warning and ignores them (`src/client/McpClient.cpp`). All three bundled transports qualify.
+- `on_transport_close`/`on_transport_error` are wired only when the transport derives from `TransportBase`; otherwise the SDK logs a Warning and ignores them (`src/client/McpClient.cpp`). All three bundled transports qualify.
 - `enable_etag_cache` defaults to **true** on the client (`include/mcp/client/ClientOptions.hpp`), the opposite of the server default.
 
 ## Step 3: `Create()` Negotiates, and Throws on Failure
@@ -76,7 +76,7 @@ Declared in `include/mcp/client/ClientOptions.hpp` and `src/client/McpClient.cpp
 - The destructor calls `Close()` again and detaches the transport callbacks (`src/client/McpClient.cpp`), so a `unique_ptr` going out of scope disconnects.
 
 ::: warning
-`on_transport_close`／`on_transport_error` and every notification handler run on the transport's IO thread. Calling `Close()` from such a callback joins the current thread and self-deadlocks. Dispatch the shutdown onto your own thread instead; for stuck-session triage see [/en/howto/debug-a-stuck-server](/en/howto/debug-a-stuck-server).
+`on_transport_close`/`on_transport_error` and every notification handler run on the transport's IO thread. Calling `Close()` from such a callback joins the current thread and self-deadlocks. Dispatch the shutdown onto your own thread instead; for stuck-session triage see [/en/howto/debug-a-stuck-server](/en/howto/debug-a-stuck-server).
 :::
 
 ## Complete code

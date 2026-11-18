@@ -1,6 +1,6 @@
 # Handle errors
 
-A single "failure" has three completely different exits in the SDK: a thrown `McpError`, an `is_error` tool result, and the `ErrorData` inside `RequestOutcome` — then protocol-era error-code remapping is layered on top. This page gives you the decision order and a retry policy. Cancellation and timeout details are in [/en/howto/cancel-a-request](/en/howto/cancel-a-request).
+A single "failure" has three completely different exits in the SDK: a thrown `McpError`, an `is_error` tool result, and the `ErrorData` inside `RequestOutcome` — then protocol-era error-code remapping is layered on top. Below: decision order and a retry policy. Cancellation and timeout details: [/en/howto/cancel-a-request](/en/howto/cancel-a-request).
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ Values are defined in `include/mcp/ErrorCodes.hpp` (reference table in [/en/refe
 | `-32003` / `-32004` | `ConnectionRefused` / `TlsHandshakeFailed` | transport connect failures |
 | `-32005` | `ProtocolViolation` | call disallowed by the era (e.g. `logging/setLevel` in modern) |
 | `-32006` | `TaskNotFound` | **no throw site inside the SDK** |
-| `-32007` | `HandlerError` | non-MCP errors from handlers, unknown input request method |
+| `-32007` | `HandlerError` | local callback or extension precondition not met: unknown input request method, illegal elicitation action, extension disabled; a tool handler's ordinary exception maps to `InternalError` instead |
 | `-32008` | `DeserializeFailed` | deserialization failure |
 | `-32009` | `SessionExpired` | unknown or expired session |
 

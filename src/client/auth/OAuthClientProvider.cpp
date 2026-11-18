@@ -474,7 +474,8 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
 }
 
 bool OAuthClientProvider::DiscoverMetadata() {
-    std::optional<OAuthMetadata> discovered = OAuthMetadata::Discover(options_.server_url);
+    std::optional<OAuthMetadata> discovered = OAuthMetadata::Discover(
+        options_.server_url, options_.allow_legacy_metadata_fallback);
     bool from_discovery = discovered && !discovered->issuer.empty();
     OAuthMetadata meta;
     if (from_discovery) {
@@ -1270,7 +1271,7 @@ std::optional<std::string> DiscoverAuthorizationServerUrl(const JsonValue& prm) 
 } // anonymous namespace
 
 std::optional<OAuthMetadata> OAuthMetadata::Discover(
-    std::string_view server_url)
+    std::string_view server_url, bool allow_legacy_fallback)
 {
     std::string url(server_url);
     while (!url.empty() && url.back() == '/') url.pop_back();
@@ -1304,6 +1305,8 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
             MCP_LOG(Warning, "OAuth protected-resource metadata lists no usable authorization_servers entry; falling back to RFC8414 discovery");
         }
     }
+
+    if (!allow_legacy_fallback) return std::nullopt;
 
     std::string metadata_url = url + "/.well-known/oauth-authorization-server";
 

@@ -1,6 +1,6 @@
 # Keep subprocesses under control
 
-Connecting to a local MCP server over stdio means you actually started a process, and its input, output, termination and reaping are your problem. This page covers two things: **what `mcp::Spawn` does** (a generic, protocol-independent child process) and **what the stdio transport does on its own** (and the fact that it does not listen to `SpawnOptions`). Transport selection is in [/en/learn/transports](/en/learn/transports).
+Connecting to a local MCP server over stdio means you actually started a process, and its input, output, termination and reaping are your problem. Below: **what `mcp::Spawn` does** (a generic, protocol-independent child process) and **what the stdio transport does on its own** (it does not listen to `SpawnOptions`). Transport selection: [/en/learn/transports](/en/learn/transports).
 
 ::: info Two paths, not one
 The stdio transport creates its process through the internal platform layer and **does not go through** `mcp::Spawn`; the two share low-level platform helpers but have separate entry points and option structs. Do not expect fields in `SpawnOptions` to influence stdio behaviour, and do not expect the stdio transport to manage a non-MCP process — that job is what `Spawn` is for.

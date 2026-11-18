@@ -1,12 +1,12 @@
 # Turn a Slow Tool into a Task
 
-Add MCP task semantics to a long-running tool: `tools/call` returns a `taskId` immediately, the real work continues in the background, and the client polls with `tasks/get`, cancels cooperatively with `tasks/cancel`, and resumes after `input_required` with `tasks/update`. Signature and field tables live only in [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client) and [/en/reference/types](/en/reference/types); this page only shows how to wire them together.
+Add MCP task semantics to a long-running tool: `tools/call` returns a `taskId` immediately, the real work continues in the background, and the client polls with `tasks/get`, cancels cooperatively with `tasks/cancel`, and resumes after `input_required` with `tasks/update`. Signature and field tables: [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client), [/en/reference/types](/en/reference/types).
 
 ## Prerequisites
 
 - Headers: `mcp/server/McpServer.hpp`, `mcp/server/ServerOptions.hpp`, `mcp/server/McpTaskStore.hpp`, `mcp/server/RequestContext.hpp`, `mcp/storage/FileTaskStore.hpp`, `mcp/client/McpClient.hpp`, `mcp/client/ClientOptions.hpp`, `mcp/McpTypes.hpp`, `mcp/JsonValue.hpp`, `mcp/Content.hpp`, `mcp/Implementation.hpp`, `mcp/transport/InMemoryTransport.hpp`; always write the full subdirectory path.
 - Flags: server side needs `ServerOptions::enable_tasks_extension = true` **and** a non-null `ServerOptions::task_store` — neither alone is enough; client side needs `ClientOptions::enable_tasks_extension = true`.
-- Protocol era: tasking is discussable across all five versions, but 2026-07-28 (modern) additionally requires the client to declare the `io.modelcontextprotocol/tasks` extension — see "Era differences".
+- Protocol era: tasking is negotiable across all five versions, but 2026-07-28 (modern) additionally requires the client to declare the `io.modelcontextprotocol/tasks` extension — see "Era differences".
 - Boundary with elicitation: this page covers only "the task parks at `input_required` and resumes via `tasks/update`"; blocking on a reverse request inside the handler belongs to [/en/howto/request-extra-input](/en/howto/request-extra-input) and [/en/howto/collect-user-input](/en/howto/collect-user-input).
 
 ## Declare task execution
@@ -93,7 +93,7 @@ Behaviour is guarded by these existing cases; run `git submodule update --init t
 
 ## Era differences
 
-| Item | legacy (≤ 2025-06-18) | modern (2026-07-28) |
+| Item | legacy (≤ 2025-11-25) | modern (2026-07-28) |
 |---|---|---|
 | `tasks/get`/`tasks/update`/`tasks/cancel` | available | available, but the client must declare `io.modelcontextprotocol/tasks`, otherwise `MissingRequiredClientCapability` (`-32021`) |
 | `tasks/result`, `tasks/list` | available | **no such method**, answers `MethodNotFound` (`McpServer.cpp`) |

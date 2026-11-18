@@ -159,11 +159,11 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | 构造 | `explicit FileTaskStore(std::filesystem::path storage_path)` | — | 参数是**单个日志文件路径**（非目录），构造即加载；文件不存在视为空库 |
 | 析构 | `~FileTaskStore() override` | — | 析构内 `Flush()` → 全量原子重写 |
 | 15 个覆写 | 与 `IMcpTaskStore` 同名同签名，全部 `override` | — | 无默认实现残留：含 `AdvanceTaskWithInput`/`ParkTaskForInput`/`BindTaskTool`/`FailTask`/`RemoveTask`/`GetExpiredTaskIds`/`SetTaskOwner`/`SetTaskTtl` |
-| 写入语义 | 更新类函数返回 `bool` | `false` | id 不存在 → `false`；已终态 → `false`（`SetTaskOwner`/`SetTaskTtl`/`BindTaskTool` 无终态守卫）；落盘失败 → 回滚内存并抛 `McpError(InternalError)` |
+| 写入语义 | 更新类函数返回 `bool` | `false` | id 不存在 → `false`；已终态 → `false`（`SetTaskOwner`/`SetTaskTtl`/`BindTaskTool` 无终态守卫）；追加失败（打开/写入/flush）→ 回滚内存并抛 `McpError(InternalError)`；压缩失败仅记日志，不影响本次写成功 |
 | 创建语义 | `CreateTask` | — | 重复 id 抛 `McpError(McpErrorCode::InvalidParams, "task already exists: " + id)` |
 | 并发模型 | `write_mutex_` 串行写 + `shared_mutex` 读写锁 | — | 读函数只持读锁；写函数全程持 `write_mutex_` |
 | 日志格式 | 每行一条 JSON：`{"task_id":...,"state":{...}}`；删除追加 `{"task_id":...,"removed":true}` | — | 追加写，重放时按行覆盖/删除 |
-| 压缩触发 | `pending_records_ > kMinCompactThreshold + 2 × 存活任务数` | `kMinCompactThreshold = 64` | 满足即在追加后重写全文件：临时文件落盘 + `fsync`/`FlushFileBuffers` + `rename` 原子替换（内部辅助在 `src/detail/AtomicJsonFile.cpp`），计数归零 |
+| 压缩触发 | `pending_records_ > kMinCompactThreshold + 2 × 存活任务数` | `kMinCompactThreshold = 64` | 追加句柄先离开作用域再计数，避免 Windows 上 `rename` 撞到存储自身的句柄；满足阈值即重写全文件：临时文件落盘 + `fsync`/`FlushFileBuffers` + `rename` 原子替换（内部辅助在 `src/detail/AtomicJsonFile.cpp`），成功后计数归零；压缩失败只记 Error 日志并将计数归零，本次追加仍返回成功 |
 | 损坏处理 | 中间行解析失败 → 复制同名 `.corrupt` 备份并**清空整库**；末行残片只记日志忽略 | — | 兼容旧的 `{"tasks":{...}}` 快照格式 |
 | 归属目标 | `mcp-server` 静态库 | — | 示例用法见 `examples/conformance/server/SkillsAndTasks.cpp` |
 
@@ -236,6 +236,7 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | `sse_keep_alive_ms` | `int` | `0`（不起心跳线程） | `> 0` 才启动 KeepAlive 线程，按该间隔向全部 SSE 客户端发心跳 |
 | `bind_host` | `std::string` | `""` → `INADDR_ANY` | 可带方括号的 IPv6 字面量；解析失败抛 `std::runtime_error("HttpServer: invalid bind_host: ...")`；`listen` backlog 固定 16 |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes`（4 MiB） | 按 `Content-Length` 预判，超限直接 413；`nullopt` 回退同一常量 |
+| `header_read_budget` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 10s（`kHeaderReadBudget`，实现内部常量） | 读请求头块的总时长预算，超时按坏请求断开 |
 
 字段声明在 `include/mcp/http/HttpServer.hpp`，Host/Origin 校验、回调触发点与请求体上限判定在 `src/http/HttpServerImpl.cpp`。
 

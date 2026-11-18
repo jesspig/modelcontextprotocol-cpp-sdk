@@ -1,11 +1,11 @@
 # Echo server, section by section
 
-`examples/EchoServer` is the repo's smallest server that covers all four primitives: one tool, one static resource, one resource template, one prompt, all over stdio. Reading each call's actual signature builds the mental model faster than a field table. Source: [`examples/EchoServer/main.cpp`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/blob/master/examples/EchoServer/main.cpp).
+`examples/EchoServer` is the repo's smallest server covering all four primitives: one tool, one static resource, one resource template, one prompt, all over stdio. Source: [`examples/EchoServer/main.cpp`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/blob/master/examples/EchoServer/main.cpp).
 
 ## What this example demonstrates
 
 - Starting a server with `StdioServerTransport` rather than HTTP.
-- `McpServer::Create` takes a `std::unique_ptr<ITransport>`, so ownership of the transport moves into the server.
+- `McpServer::Create` takes a `std::shared_ptr<ITransport>`; the example's `unique_ptr` is passed via `std::move` implicit conversion, transferring ownership to the server.
 - The minimal shapes of the four registration APIs: `RegisterTool`, `RegisterResource`, `RegisterResourceTemplate`, `RegisterPrompt`.
 - Tool arguments must be read from `ctx.Params().arguments` (a `std::optional<JsonValue>`), so the emptiness check is mandatory.
 
@@ -21,7 +21,7 @@ opts.server_instructions = "An echo server — sends back what you send.";
 auto server = McpServer::Create(std::move(transport), opts);
 ```
 
-From `examples/EchoServer/main.cpp:13-19`. Three things worth noting:
+From `examples/EchoServer/main.cpp:13-19`:
 
 - `server_instructions` becomes the `instructions` field of the `initialize` response and the client can read it (`McpClient::GetInstructions()`).
 - `Implementation{name, version}` is the server identity, surfacing in `tools/list` `_meta` and the server card.
@@ -49,7 +49,7 @@ From `examples/EchoServer/main.cpp:21-33`, with `using Ctx = RequestContext<Call
 
 - The real tool name comes from the **first argument** `"echo"`; `ToolOptions` carries only the description (the example never sets `name`, and that field has no consumer).
 - **No `InputSchema` is declared here**, so the SDK performs no argument pre-validation; the example guards itself with `Contains("text")`. To see what changes once you declare a schema, read [/en/howto/validate-tool-input](/en/howto/validate-tool-input).
-- The explicit `std::function<CallToolResult(const Ctx&)>` wrapper is required: a bare lambda cannot be deduced against the overloaded registration interface.
+- The explicit `std::function<CallToolResult(const Ctx&)>` wrapper is not required: a bare lambda binds to the `RegisterTool(name, options, fn)` overload as well (`docs/snippets/register-a-tool.cpp` uses a bare lambda).
 - `TextContent{"text", text}` is aggregate initialisation in the order `{type, text, mime_type, annotations, meta}` (`include/mcp/Content.hpp:42-47`).
 
 ## Registering static and templated resources
@@ -84,7 +84,7 @@ server->RegisterResourceTemplate("echo-template",
     });
 ```
 
-From `examples/EchoServer/main.cpp:46-57`. A template handler gets the parsed variable map as a second argument, so `vars.at("text")` reads the `{text}` placeholder. Registration validates the template first and throws `InvalidParams` at the call site when it is malformed (`src/server/McpServer.cpp:329`) — never deferred to the first read.
+From `examples/EchoServer/main.cpp:46-57`. A template handler gets the parsed variable map as a second argument, so `vars.at("text")` reads the `{text}` placeholder. Registration validates the template first and throws `InvalidParams` at the call site when it is malformed (`src/server/McpServer.cpp:840`) — never deferred to the first read.
 
 ## Registering the prompt: capitalize
 

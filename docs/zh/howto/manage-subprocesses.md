@@ -1,6 +1,6 @@
 # 管住子进程
 
-用 stdio 传输连本地 MCP 服务端时，你其实启动了一个进程，就得负责它的输入输出、终止与回收。这一页讲两件事：**`mcp::Spawn` 能做什么**（与协议无关的通用子进程）、**stdio 传输自己做了什么**（以及它不听 `SpawnOptions` 的话）。传输选型见 [/zh/learn/transports](/zh/learn/transports)。
+stdio 传输连本地服务端时你启动了一个进程，须负责其输入输出、终止与回收。本页讲两件事：**`mcp::Spawn`**（通用子进程）与 **stdio 传输自身的进程管理**（后者不听 `SpawnOptions`）。传输选型见 [/zh/learn/transports](/zh/learn/transports)。
 
 ::: info 两条路径不是一条
 stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者共用底层平台辅助，但入口与选项各自独立。别指望往 `SpawnOptions` 里填字段能影响 stdio 传输的行为，也别指望 stdio 传输帮你管非 MCP 的进程——那种活儿直接用 `Spawn`。
@@ -102,7 +102,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-manage-subprocesses
 ```
 
-期望：configure 打印 `[mcp-docs] syntax-checking 16 snippet(s) with '/Zs'`，构建打印一行 `Building CXX object ...manage-subprocesses.cpp.obj`，返回码 0 且无 `error:` 行。
+期望：configure 打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建打印一行 `Building CXX object ...manage-subprocesses.cpp.obj`，返回码 0 且无 `error:` 行。
 
 行为侧由既有用例守护，需先 `git submodule update --init third_party/googletest`，再 `cmake --preset debug && cmake --build --preset debug`，然后：
 

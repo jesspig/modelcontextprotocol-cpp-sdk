@@ -1,6 +1,6 @@
 # Weather server, section by section
 
-`examples/WeatherServer` demonstrates a **multi-tool server with input schemas**: both tools declare `inputSchema` plus `required`, so arguments are validated by the SDK before your handler ever runs. The contrast with `EchoServer` is the point of this page — with and without a schema changes which checks you may skip and which you must not. Source: [`examples/WeatherServer/main.cpp`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/blob/master/examples/WeatherServer/main.cpp).
+`examples/WeatherServer` demonstrates a **multi-tool server with input schemas**: both tools declare `inputSchema` plus `required`, so arguments are validated by the SDK before your handler ever runs. The contrast with `EchoServer` shows which argument checks a schema makes optional and which stay mandatory. Source: [`examples/WeatherServer/main.cpp`](https://github.com/jesspig/modelcontextprotocol-cpp-sdk/blob/master/examples/WeatherServer/main.cpp).
 
 ## What this example demonstrates
 
@@ -39,7 +39,7 @@ server->RegisterTool("get_alerts",
     ...);
 ```
 
-From `examples/WeatherServer/main.cpp:32-43`. Notes:
+From `examples/WeatherServer/main.cpp:32-43`:
 
 - `Description` and `InputSchema` both return `*this`, so they chain; the remaining `ToolOptions` fields (e.g. `read_only_hint`) are plain member assignments with no setter.
 - `JsonValue::Object{...}` / `JsonValue::Array{...}` are the construction entry points, and `JsonValue("string")` builds a string node.
@@ -47,7 +47,7 @@ From `examples/WeatherServer/main.cpp:32-43`. Notes:
 
 ## What the SDK does once a schema exists
 
-As soon as `input_schema` is declared, the SDK validates `arguments` against it **before** handing the call to your handler: a type violation or a missing required property yields an `is_error` result whose text starts with `invalid arguments: ` (`src/server/McpServer.cpp:553-559`, `:2359`, `:2507`, `:2616`).
+As soon as `input_schema` is declared, the SDK validates `arguments` against it **before** handing the call to your handler: a type violation or a missing required property yields an `is_error` result whose text starts with `invalid arguments: ` (`src/server/McpServer.cpp:553-559`, `:2363`, `:2537`, `:2646`).
 
 That explains the difference between the two handlers:
 
@@ -78,7 +78,7 @@ if (params.arguments) {
 }
 ```
 
-Two details deserve separate mention:
+Two details:
 
 - `Find` returns `JsonValue*` (`nullptr` when absent), and `if (auto* v = ...; v && v->IsString())` is the repository's idiomatic guard.
 - **Integers and doubles are two representations on the same node**: after `IsNumber()` you still need `IsDouble()` to decide between `GetDouble()` and `GetInt()`. Both `40` and `40.5` pass `"type": "number"` validation, so skipping this branch silently misreads integral input.

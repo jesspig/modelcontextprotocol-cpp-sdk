@@ -159,11 +159,11 @@ Integration point: `ServerOptions` holds the store in its `task_store` field as 
 | Constructor | `explicit FileTaskStore(std::filesystem::path storage_path)` | — | The argument is a **single journal file path** (not a directory); loading happens in the constructor and a missing file means an empty store |
 | Destructor | `~FileTaskStore() override` | — | Calls `Flush()` → full atomic rewrite |
 | 15 overrides | Same names and signatures as `IMcpTaskStore`, all `override` | — | No default implementation survives: including `AdvanceTaskWithInput`/`ParkTaskForInput`/`BindTaskTool`/`FailTask`/`RemoveTask`/`GetExpiredTaskIds`/`SetTaskOwner`/`SetTaskTtl` |
-| Write semantics | Update functions return `bool` | `false` | Unknown id → `false`; already terminal → `false` (`SetTaskOwner`/`SetTaskTtl`/`BindTaskTool` have no terminal guard); persistence failure → in-memory rollback plus `McpError(InternalError)` |
+| Write semantics | Update functions return `bool` | `false` | Unknown id → `false`; already terminal → `false` (`SetTaskOwner`/`SetTaskTtl`/`BindTaskTool` have no terminal guard); append failure (open/write/flush) → in-memory rollback plus `McpError(InternalError)`; a failed compaction only logs and does not fail the write |
 | Create semantics | `CreateTask` | — | A duplicate id throws `McpError(McpErrorCode::InvalidParams, "task already exists: " + id)` |
 | Concurrency model | `write_mutex_` serialises writes + `shared_mutex` for readers | — | Readers take only the shared lock; writers hold `write_mutex_` for the whole call |
 | Journal format | One JSON line per record: `{"task_id":...,"state":{...}}`; deletion appends `{"task_id":...,"removed":true}` | — | Append-only; replay overwrites or erases line by line |
-| Compaction trigger | `pending_records_ > kMinCompactThreshold + 2 × live task count` | `kMinCompactThreshold = 64` | When met, the whole file is rewritten right after the append: temporary file + `fsync`/`FlushFileBuffers` + atomic `rename` (internal helper in `src/detail/AtomicJsonFile.cpp`), counter reset to zero |
+| Compaction trigger | `pending_records_ > kMinCompactThreshold + 2 × live task count` | `kMinCompactThreshold = 64` | The append handle leaves scope before counting, so on Windows `rename` cannot collide with the store's own handle; when met, the whole file is rewritten: temporary file + `fsync`/`FlushFileBuffers` + atomic `rename` (internal helper in `src/detail/AtomicJsonFile.cpp`), counter reset to zero on success. A failed compaction only logs an Error and resets the counter; the append itself still succeeds |
 | Corruption handling | A bad line in the middle → copy a `.corrupt` backup with the same name and **clear the whole store**; a truncated trailing line is only logged and ignored | — | The legacy `{"tasks":{...}}` snapshot format is still read |
 | Owning target | `mcp-server` static library | — | Example usage: `examples/conformance/server/SkillsAndTasks.cpp` |
 
@@ -236,6 +236,7 @@ The transport-side usage of `HttpServer`/`EventStore`/`SessionStore` and the ful
 | `sse_keep_alive_ms` | `int` | `0` (no heartbeat thread) | Only `> 0` starts the KeepAlive thread, which heartbeats every SSE client at that interval |
 | `bind_host` | `std::string` | `""` → `INADDR_ANY` | Accepts bracketed IPv6 literals; an unparseable value throws `std::runtime_error("HttpServer: invalid bind_host: ...")`; the `listen` backlog is fixed at 16 |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes` (4 MiB) | Decided from `Content-Length` before reading, over the limit answers 413; `nullopt` falls back to the same constant |
+| `header_read_budget` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 10s (`kHeaderReadBudget`, an implementation-internal constant) | Total budget for reading the request header block; expiry disconnects as a bad request |
 
 The fields are declared in `include/mcp/http/HttpServer.hpp`; Host/Origin validation, the callback trigger points and the body-size decision are in `src/http/HttpServerImpl.cpp`.
 

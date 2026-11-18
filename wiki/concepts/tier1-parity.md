@@ -1,17 +1,32 @@
 ---
 type: Concept
 title: Tier1 技术对标声明（2026-07-28）
-description: 与 Tier1 五实现（TS v2.3.1 / Python v2.3.0 / C# v2.2.0 / Go v1.8.0 / Rust v3.5.1，spec 2026-07-28）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
-tags: [tier1, parity, 2026-07-28, conformance, 对标]
-timestamp: 2026-10-31T18:13:54+08:00
+description: 与 Tier1 六实现（TS v2.4.0 / Python v2.3.0 / C# v2.4.0 含 v2.3.1 安全修复 / Go v1.8.0 稳定与 v1.9.0-pre.1 预发布 / Rust rmcp-v3.11.0 / Ruby，spec 2026-07-28；基线数据截止 2026-11-18）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
+tags: [tier1, parity, 2026-07-28, conformance, 对标, ruby, baseline-2026-11-18]
+timestamp: 2026-11-19T01:05:35+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
 # Tier1 技术对标声明（2026-07-28）
 
-本页记录分支 `feature/tier1-parity-2026-07-28`（含 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` 与 `baseline-2026-07-28.yaml` 的 http-custom-headers 删除）相对 Tier1 五实现的**技术对等状态**。比较基准：TypeScript v2.3.1、Python v2.3.0、C# v2.2.0、Go v1.8.0、Rust v3.5.1，均以 spec `2026-07-28` 为准。
+本页记录分支 `feature/tier1-parity-2026-07-28`（含 `fb559d5/ba1f8c2/53fbce0/40134f4/e3fa585/8ad053e/2f2fc8d/a581292/b7a613e/8d589ae` 与 `baseline-2026-07-28.yaml` 的 http-custom-headers 删除）相对 Tier1 六实现的**技术对等状态**。比较基准（官方事实基线，数据截止 2026-11-18）：TypeScript v2.4.0、Python v2.3.0、C# v2.4.0（另有 v2.3.1 安全修复）、Go v1.8.0 稳定与 v1.9.0-pre.1 预发布、Rust rmcp-v3.11.0、Ruby（2026-10-30 加入 Tier 1），均以 spec `2026-07-28` 为准；下一版 spec `2027-03-30`（SEP-3398，每年两次发布，2026-11-11 公告）尚未发布，不在本页对标口径内。
 
 **仅技术对标、无官方 Tier 申报意向**：本页不构成向 MCP 官方申请 Tier 分级的申报材料，不承诺与任一 Tier1 实现逐行行为一致；差异处以本 SDK 源码与知识库为准。
+
+## SDK 版本基线（数据截止 2026-11-18）
+
+| 项目 | 版本 | 基线日期 | 来源 |
+|------|------|----------|------|
+| 当前 spec | `2026-07-28` | 2026-11-18 核实 | [官方 spec](https://modelcontextprotocol.io/specification/2026-07-28) |
+| 下一版 spec | `2027-03-30`（SEP-3398，每年两次发布） | 2026-11-11 公告 | SEP-3398 官方公告；尚未发布 |
+| Tier 1 SDK 名单 | TypeScript、Python、C#、Go、Rust、Ruby | 2026-10-30（Ruby 加入） | [Ruby 进入 Tier 1 官方博客](https://blog.modelcontextprotocol.io/posts/ruby-sdk-tier-1/) |
+| TypeScript SDK | `v2.4.0` | 2026-10-23 | [GitHub release](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/v2.4.0) |
+| Python SDK | `v2.3.0` | 2026-10-02 | [GitHub release](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.3.0) |
+| C# SDK | `v2.4.0`，另有 `v2.3.1` 安全修复 | 2026-11-07 / 2026-11-03 | [v2.4.0 release](https://github.com/modelcontextprotocol/csharp-sdk/releases/tag/v2.4.0)、[v2.3.1 release](https://github.com/modelcontextprotocol/csharp-sdk/releases/tag/v2.3.1) |
+| Go SDK | `v1.8.0` 稳定；`v1.9.0-pre.1` 预发布 | 2026-09-14 / 2026-11-17 | [v1.8.0 release](https://github.com/modelcontextprotocol/go-sdk/releases/tag/v1.8.0)、[v1.9.0-pre.1 release](https://github.com/modelcontextprotocol/go-sdk/releases/tag/v1.9.0-pre.1) |
+| Rust SDK | `rmcp-v3.11.0` | 2026-11-17 | [GitHub release](https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.11.0) |
+
+上表仅更新官方发布版本与日期事实，不改变下文技术对等结论、conformance 实测结果或测试基线数字。
 
 ## 对标总览
 
@@ -57,7 +72,7 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 - client modern：450 passed / 9 failed；9 项均为本地构建无 OpenSSL 的 DPoP/ES256 环境限制（`auth/client-credentials-jwt`、`auth/dpop`、`auth/dpop-nonce`），CI runner 具备 OpenSSL 时预期通过，不新增基线
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
 
-当前测试基线为静态 **1030** 用例 / **4873** 断言、18 目标（Windows `ctest -N` 注册 1019，差 11 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
+当前测试基线为静态 **1032** 用例 / **4887** 断言、18 目标（Windows `ctest -N` 注册 1021，差 11 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
 
 ## A-T2 auth 进展（fixture 真实流联调）
 
@@ -93,16 +108,16 @@ CI 另改 per-leg 基线映射：`.github/workflows/conformance.yml` 的 server/
 ## 遗留记账（未静默丢弃）
 
 1. auth 基线现状（2026-10-29 复跑收口）：modern 0 条、legacy 仅留 `http-custom-headers`（本 leg 未运行，保留待复跑）；`client-credentials-basic`/`enterprise-managed-authorization`/`wif-jwt-bearer` 实测 passed 后已删除；两 leg 的 `did_not_complete` 假绿已清零（modern 4 处 `iss-*` 为主动拒绝的被测语义，referee 判绿）。client modern 450/9 的 9 项失败均为本地无 OpenSSL 的 DPoP/ES256 环境限制，不新增基线。完整逐条归因见 [baseline-2026-07-28.yaml](../../tests/conformance/baseline-2026-07-28.yaml) 与 [baseline.yaml](../../tests/conformance/baseline.yaml) 的头部注释
-2. ~~`maxToolInputElements` 未实现~~（已实现：`ServerOptions::max_tool_input_elements` 门在 `tools/call` 入参侧计数，超限回 `is_error` 工具结果而非协议错误——`ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements`，[McpServer.cpp:1993-1998](../../src/server/McpServer.cpp)；`optional` 未设即不限，上限语义见 [experimental-flags](/concepts/experimental-flags.md) 与 `README.md` 「Default upper limits」条）
-3. ~~`ttlMs`/`cacheScope` 客户端消费未验证~~（已实现且有用例：客户端 `McpClient::CacheIfHinted`（[McpClient.cpp:967-982](../../src/client/McpClient.cpp)）兼容两种线格式——2026 时代结果顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，`ttlMs > 0` 才入缓存，`cacheScope` 仅 `"private"` 落 Private 分区、其余按 Public，结果类型另落 `ttl_ms`/`cache_scope` 字段；守护用例见 [response-cache](/concepts/response-cache.md) 与 `tests/unit/McpClientTests.cpp` 的分页/skills/TTL 到期用例）
-4. ~~`enable_listen_stream` 默认 true~~（本分支 `1668e2e` 已改：字段为 `optional<bool>`，未设置时取 `!stateless`——stateful 默认开、stateless 默认关，显式置 `true` 仍可强制开，`ShouldListenStream` 判定见 [StreamableHttpClientTransport.cpp:148-149](../../src/http/StreamableHttpClientTransport.cpp)，`StatelessClientSkipsListenStreamByDefault` / `StatelessClientForcedListenStreamSendsGet` 两用例锁定；口径见 [streamable-http](/transports/streamable-http.md)）
+2. ~~`maxToolInputElements` 未实现~~（已实现：`ServerOptions::max_tool_input_elements` 门在 `tools/call` 入参侧计数，超限回 `is_error` 工具结果而非协议错误——`ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements`，[McpServer.cpp](../../src/server/McpServer.cpp)；`optional` 未设即不限，上限语义见 [experimental-flags](/concepts/experimental-flags.md) 与 `README.md` 「Default upper limits」条）
+3. ~~`ttlMs`/`cacheScope` 客户端消费未验证~~（已实现且有用例：客户端 `McpClient::CacheIfHinted`（[McpClient.cpp](../../src/client/McpClient.cpp)）兼容两种线格式——2026 时代结果顶层 `ttlMs`/`cacheScope` 与 2025 时代嵌套 `cacheHint`，`ttlMs > 0` 才入缓存，`cacheScope` 仅 `"private"` 落 Private 分区、其余按 Public，结果类型另落 `ttl_ms`/`cache_scope` 字段；守护用例见 [response-cache](/concepts/response-cache.md) 与 `tests/unit/McpClientTests.cpp` 的分页/skills/TTL 到期用例）
+4. ~~`enable_listen_stream` 默认 true~~（本分支 `1668e2e` 已改：字段为 `optional<bool>`，未设置时取 `!stateless`——stateful 默认开、stateless 默认关，显式置 `true` 仍可强制开，`ShouldListenStream` 判定见 [StreamableHttpClientTransport.cpp](../../src/http/StreamableHttpClientTransport.cpp)，`StatelessClientSkipsListenStreamByDefault` / `StatelessClientForcedListenStreamSendsGet` 两用例锁定；口径见 [streamable-http](/transports/streamable-http.md)）
 5. `StepUpAuthorization` 空元数据解引用：无元数据路径存在空解引用风险，待加固；另无 403 链路（见上生产缺口记账）
 6. ~~`GetAccessToken` 持锁同步刷新~~（**已修**）：网络 I/O 已移出 `refresh_mutex_`（`1668e2e` single-flight 合并）；同线程重入死锁亦已消除——新增 `refresh_owner_` 记录持有刷新标志的线程，`token_update_handler` 回调内同线程再调 `GetAccessToken` 时直接返回而不进条件变量等待（原会等自己永久阻塞）。守护用例 `TokenUpdateHandlerReentrantGetAccessTokenDoesNotDeadlock`（超时护栏）与 `ConcurrentWaiterSurvivesRefreshOwnerReentry`（跨线程等待不回归）见 [oauth](/concepts/oauth.md)
 7. `MakeModernTaskEnv` 死通知已删、握手守护断言保留：2026 时代服务端丢弃未初始化会话的 `notifications/initialized`，该死通知已从 helper 删除（`tests/unit/McpServerTests.cpp`），现代任务用例改走 `MakeBareModernTaskEnv` 已验证的直连路径——任务门控请求逐请求 `_meta` 声明（`b7a613e` 先例）；helper 仍保留 C-T1 的握手守护断言（initialize 回 `MethodNotFound` 即判失败），引用该 helper 的 12 处用例形态不变
 8. `unevaluatedProperties`/`unevaluatedItems`：按 spec §7.3 注解收集 opt-out 归入忽略注解类，无近似路径——`374a591` 删除 `JsonSchemaValidator.hpp` 内两处近似求值实现，改由三条忽略行为守护测试锁定（`tests/unit/McpTypesTests.cpp`）
 9. ~~README 的 PKCE/DCR 表述待统一~~（本分支已解决：`README.md`/`README_zh.md` 统一为 `PKCE/CIMD（DCR 回退）`，`ad8075a` 前序 + 本分支 `README` 口径；`jwt-bearer` 不支持声明同步更新）
 10. ~~`auth/scope-retry-limit` 在 legacy leg 挂 30s 超时~~（**已修**）：根因是 SSE 拆除路径——服务端不支持 `GET /mcp` 时返404，而 `ListenStateForStatusCode` 仅对 405 判 `Unsupported`，404 落 `Connecting` 触发 5 次退避重连，耗尽 referee 的 30s 预算（检查已跑完但进程退不出）。改判为 4xx 视为不支持监听流并静默放弃（对齐既有 405 语义，200 但 content-type 非 SSE 同样判 `Unsupported`；保留 408/429 与 2xx 非 200 为可重连）。属设计契约变更：既有断言 `ListenStateForStatusCode(404) == Connecting` 已同步翻转，并扩充 401/403/400/204/408/429 覆盖。修复后 legacy leg `scope-step-up` 20 passed 且进程正常退出
-11. ~~`scope-retry-limit` fixture 永久挂起~~（**已修**）：现象是 referee modern leg 偶发卡 6 分钟需强杀。诊断路径：`/proc/<pid>/task/*/wchan` 显示 4 线程 futex + 1 线程 nanosleep（均为健康等待），主线程等 future；把 fixture stderr 重定向到按 PID 命名的文件绕过 referee socket 缓冲后，读到卡住进程真实日志——`CheckTimeouts` 持续运行但 `pending` 恒为 1 且**永不超时**，`OnResponse` 从未被调用。根因：`McpSessionHandler::max_total_timeout_` 默认 `0`（禁用，见 [McpSessionHandler.hpp:170](../../include/mcp/protocol/McpSessionHandler.hpp)），`absolute_deadlines_` 仅在非 0 时登记；而 per-request deadline 会被 progress 通知不断延长（`ResetTimeoutByProgressToken`，该行为由 `McpClientTest.TotalTimeoutDisabledAllowsProgressExtension` 锁定）。服务端只发 progress 不发最终响应时 → 永久挂起。修复：fixture 的 `ConnectBearerClient` 与 `ConnectDPoPClient` 显式设 `max_total_timeout = 10s`（不超过 referee 30s 预算）。修复后 referee 正常收尾 EXIT=0，Close 链完整执行
+11. ~~`scope-retry-limit` fixture 永久挂起~~（**已修**）：现象是 referee modern leg 偶发卡 6 分钟需强杀。诊断路径：`/proc/<pid>/task/*/wchan` 显示 4 线程 futex + 1 线程 nanosleep（均为健康等待），主线程等 future；把 fixture stderr 重定向到按 PID 命名的文件绕过 referee socket 缓冲后，读到卡住进程真实日志——`CheckTimeouts` 持续运行但 `pending` 恒为 1 且**永不超时**，`OnResponse` 从未被调用。根因：`McpSessionHandler::max_total_timeout_` 默认 `0`（禁用，见 [McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp)），`absolute_deadlines_` 仅在非 0 时登记；而 per-request deadline 会被 progress 通知不断延长（`ResetTimeoutByProgressToken`，该行为由 `McpClientTest.TotalTimeoutDisabledAllowsProgressExtension` 锁定）。服务端只发 progress 不发最终响应时 → 永久挂起。修复：fixture 的 `ConnectBearerClient` 与 `ConnectDPoPClient` 显式设 `max_total_timeout = 10s`（不超过 referee 30s 预算）。修复后 referee 正常收尾 EXIT=0，Close 链完整执行
 
 ## 相关页面
 

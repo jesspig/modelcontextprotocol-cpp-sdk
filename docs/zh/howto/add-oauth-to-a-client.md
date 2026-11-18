@@ -1,6 +1,6 @@
 # 给客户端加上 OAuth
 
-让 `StreamableHttpClientTransport` 带着可用的 access token 出门，并在服务端甩 `401`/`403` 挑战时自己补齐：发现授权服务器元数据、走授权码 + PKCE 或客户端凭据、把 token 存进你自己的缓存、必要时升权（step-up）或换 DPoP 证明。本页只讲客户端侧装配；服务端如何校验 Bearer 见 [/zh/howto/protect-an-http-server](/zh/howto/protect-an-http-server)。
+配置 `StreamableHttpClientTransport` 携带 access token，并在收到 `401`/`403` 挑战时自动补齐：发现授权服务器元数据、走授权码 + PKCE 或客户端凭据、把 token 存进你自己的缓存、必要时升权（step-up）或换 DPoP 证明。本页只讲客户端侧装配；服务端校验 Bearer 见 [/zh/howto/protect-an-http-server](/zh/howto/protect-an-http-server)。
 
 ::: info 认证与协议时代无关
 OAuth、PKCE、DPoP 全在 HTTP 传输层，双时代（legacy / modern）行为一致；时代只影响这条连接上跑的**协议方法集合**，见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
@@ -96,7 +96,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-add-oauth-to-a-client
 ```
 
-期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 15 snippet(s) with '/Zs'`，构建阶段打印
+期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建阶段打印
 
 ```text
 [1/4] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-add-oauth-to-a-client.dir\__\__\docs\snippets\add-oauth-to-a-client.cpp.obj

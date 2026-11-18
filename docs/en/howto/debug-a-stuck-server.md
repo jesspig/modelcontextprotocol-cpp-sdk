@@ -1,6 +1,6 @@
 # Debug a stuck server
 
-The request went out and sank without a trace. This page splits "no response" into three decidable cause classes and gives the shortest diagnostic for each: internal logs, a log sink of your own, span hooks, and reproduction via conformance. Protocol semantics themselves live in [/en/learn/protocol-versions](/en/learn/protocol-versions).
+The request went out and sank without a trace. This page splits "no response" into three decidable cause classes and gives the shortest diagnostic for each: internal logs, a log sink of your own, span hooks, and reproduction via conformance. Protocol semantics: [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
 ## Classify first: three kinds of "no response"
 

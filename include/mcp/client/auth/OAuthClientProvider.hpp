@@ -41,6 +41,7 @@ struct OAuthClientOptions {
     std::function<int64_t()> client_assertion_clock_seconds;
     std::vector<std::string> allowed_authorization_server_origins;
     bool require_iss_when_advertised{false};
+    bool allow_legacy_metadata_fallback{true};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;

@@ -16,7 +16,7 @@ Declared in `include/mcp/client/auth/OAuthClientProvider.hpp`, implemented in `s
 | `client_secret` | `std::optional<std::string>` | `nullopt` | Only required by the `client_credentials` branch when no private-key assertion is used |
 | `scopes` | `std::vector<std::string>` | empty | Requested scopes; `StepUpAuthorization` appends in place |
 | `scope_filter` | `std::function<std::vector<std::string>(const std::vector<std::string>&)>` | unset | Called with `scopes` as the input on every scope resolution; unset means use them verbatim |
-| `token_cache` | `std::shared_ptr<ITokenCache>` | `nullopt` | Construction substitutes an `InMemoryTokenCache` when empty |
+| `token_cache` | `std::shared_ptr<ITokenCache>` | `nullptr` | Construction substitutes an `InMemoryTokenCache` when empty |
 | `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 resource indicator; falls back to the normalized `server_url` when unset |
 | `application_type` | `std::string` | `"native"` | Dynamic-registration body field; an empty string is sent as `native` |
 | `enable_dpop` | `bool` | `false` | When on, token-endpoint requests carry a `DPoP` header and `Authorization` switches to the `DPoP` scheme |
@@ -24,6 +24,7 @@ Declared in `include/mcp/client/auth/OAuthClientProvider.hpp`, implemented in `s
 | `signing_algorithm` | `std::string` | `"ES256"` | Assertion algorithm name; anything other than `ES256` throws `InvalidParams` while building the assertion |
 | `client_assertion_clock_seconds` | `std::function<int64_t()>` | unset | Clock source for assertion `iat`/`exp`; unset uses `dpop::NowSeconds` |
 | `allowed_authorization_server_origins` | `std::vector<std::string>` | empty | Authorization-server origin allow-list, checked against the issuer and each endpoint; empty means no narrowing |
+| `require_iss_when_advertised` | `bool` | `false` | Takes effect when the server advertises `authorization_response_iss_parameter_supported`: with it true an authorization response missing `iss` fails, with it false the response is accepted per local policy |
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | unset | Invoked with the full authorization URL so the caller can open a browser; does not influence the flow outcome |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | unset | Mandatory, otherwise the authorization flow returns `false` immediately; an empty result, a `state` mismatch or an `iss` mismatch all fail |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | unset | Invoked every time tokens land in the cache |

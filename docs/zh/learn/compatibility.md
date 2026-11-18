@@ -17,8 +17,8 @@
 | `McpClient::SetSamplingHandler()` | SEP-2577 | `SetElicitationHandler()` | 随协议 |
 | `McpClient::SetRootsHandler()` | SEP-2577 | 无（roots 在 2026-07-28 弃用） | 随协议 |
 | `McpClient::SetLegacyUrlElicitationHandler()` | 0.3.9 | `SetUrlElicitationHandler()`（三态结果） | 随协议 |
-| `ServerOptions::TasksImplicitlyEnabled()` | 0.3.9 | 显式设置 `enable_tasks_extension=true` | 随协议 |
-| `ServerOptions::SkillsImplicitlyEnabled()` | 0.3.9 | 显式设置 `enable_skills_extension=true` | 随协议 |
+| `ServerOptions::TasksImplicitlyEnabled()` | 0.3.7 | 显式设置 `enable_tasks_extension=true` | 随协议 |
+| `ServerOptions::SkillsImplicitlyEnabled()` | 0.3.7 | 显式设置 `enable_skills_extension=true` | 随协议 |
 
 ## 到期检查
 

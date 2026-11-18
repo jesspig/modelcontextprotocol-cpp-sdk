@@ -1,6 +1,6 @@
 # 取消请求与超时
 
-让一个已经发出去、但不再需要的请求**尽快出局**：客户端调 `RequestHandle::Cancel` 或让超时到期，SDK 立刻把它本地结算成终局错误，并按时代与传输类型决定要不要通知对端；服务端只能协作式感知，不会被打断。签名与字段表见 [/zh/reference/client](/zh/reference/client) 与 [/zh/reference/transports](/zh/reference/transports)，本页只讲操作。
+取消一个已发出但不再需要的请求：客户端调 `RequestHandle::Cancel` 或让超时到期，SDK 立即本地结算成终局错误，并按时代与传输类型决定是否通知对端；服务端只能协作式感知，不会被打断。本页只讲操作；签名与字段表见 [client 参考](/zh/reference/client)、[transports 参考](/zh/reference/transports)。
 
 ::: info 与关连接、任务的分工
 取消针对**单个请求 ID**。要拆掉整条连接用 `McpClient::Close()`（在途请求统一结算为 `ConnectionClosed`，见 [/zh/howto/connect-to-a-server](/zh/howto/connect-to-a-server)）；要让活儿在断开后仍能回查与续跑，改用任务，见 [/zh/howto/run-long-tasks](/zh/howto/run-long-tasks)。
@@ -92,7 +92,7 @@ cmake -S . -B build/p3f -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3f --target mcp-doc-snippet-cancel-a-request
 ```
 
-期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 13 snippet(s) with '/Zs'`，构建阶段打印
+期望输出：configure 阶段打印 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），构建阶段打印
 
 ```text
 [1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-cancel-a-request.dir\__\__\docs\snippets\cancel-a-request.cpp.obj

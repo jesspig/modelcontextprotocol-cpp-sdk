@@ -1,6 +1,6 @@
 # 连接到一个服务端
 
-`McpClient::Create()` 一次调用把「建立传输 → 版本协商 → 起消息线程」全做完，返回时会话已经可用；难点在于分清 `IClientTransport` 与 `ITransport` 两个类型，以及理解三档协商各自发出什么包。签名与字段表只在 [/zh/reference/client](/zh/reference/client) 维护，本篇只讲操作流程。
+`McpClient::Create()` 一次调用完成「建立传输 → 版本协商 → 起消息线程」，返回时会话已可用；难点是分清 `IClientTransport` 与 `ITransport`，以及理解三档协商各发什么包。本篇只讲操作流程；签名与字段表见 [client 参考](/zh/reference/client)。
 
 ## 前置条件
 
@@ -93,7 +93,7 @@ cmake -S . -B build/p3a -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/p3a --target mcp-doc-snippet-connect-to-a-server
 ```
 
-实测输出：configure 末尾 `[mcp-docs] syntax-checking 12 snippet(s) with '/Zs'`，build 输出 `[1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-connect-to-a-server.dir\__\__\docs\snippets\connect-to-a-server.cpp.obj`，返回码 0、无 `error:` 行。
+实测输出：configure 末尾 `[mcp-docs] syntax-checking 19 snippet(s) with '/Zs'`（该计数是 docs/snippets 全部 .cpp 的总数，与所构建目标无关），build 输出 `[1/2] Building CXX object tests\docs\CMakeFiles\mcp-doc-snippet-connect-to-a-server.dir\__\__\docs\snippets\connect-to-a-server.cpp.obj`，返回码 0、无 `error:` 行。
 
 行为级验证需要测试目标（`cmake --preset debug && cmake --build --preset debug`）：
 

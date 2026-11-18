@@ -75,6 +75,7 @@ const en = {
       { text: '0.3.9 Migration Guide', link: '/en/migration/0.3.9' },
       { text: '0.3.10 Release Notes', link: '/en/migration/0.3.10' },
       { text: '0.3.11 Release Notes', link: '/en/migration/0.3.11' },
+      { text: '0.3.12 Release Notes', link: '/en/migration/0.3.12' },
     ]},
   ],
 }
@@ -145,6 +146,7 @@ const zh = {
       { text: '0.3.9 迁移指南', link: '/zh/migration/0.3.9' },
       { text: '0.3.10 发布说明', link: '/zh/migration/0.3.10' },
       { text: '0.3.11 发布说明', link: '/zh/migration/0.3.11' },
+      { text: '0.3.12 发布说明', link: '/zh/migration/0.3.12' },
     ]},
   ],
 }

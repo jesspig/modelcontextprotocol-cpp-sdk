@@ -3,7 +3,7 @@ type: Concept
 title: 版本协商
 description: 2025（initialize）与 2026（server/discover）双时代协议版本选择、supportedVersions 交集、codec 重建、HTTP 版本头自学习与主动校验、tasks/skills 双时代门控。
 tags: [协议, 版本, 协商, 2026, tasks, skills]
-timestamp: 2026-10-27T04:48:00+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: include/mcp/client/VersionNegotiation.hpp
 ---
 
@@ -18,14 +18,14 @@ resource: include/mcp/client/VersionNegotiation.hpp
 - `server/discover` 支持版本为 `EffectiveSupportedVersions()`（默认 `kProtocolVersions` 全表 5 个，`ServerOptions::supported_protocol_versions` 非空时窄化，见下节），并**无条件置 `initialized_=true`**；服务端 `HandleDiscover` 总是回 `serverInfo`（`options_.server_info` 缺失回退 `{"mcp-server", kSdkVersion}`）；discover 响应**解析侧**（客户端 `DeserializeDiscoverResult`）对 `serverInfo` 容缺——顶层缺失时从 `_meta["io.modelcontextprotocol/serverInfo"]` 提取（官方 TS 服务器即此形态，[McpTypesResults.cpp](../../src/core/McpTypesResults.cpp)）
 - **客户端 discover 响应的版本交集**（[McpClient.cpp](../../src/client/McpClient.cpp)）：`DeclaresSharedClientVersion` 判定响应 `supportedVersions` 与客户端支持表（`kProtocolVersions`）是否相交——字段缺失/非数组视为**未声明**，接受探测版本；`SelectSharedVersion` 从交集中取客户端支持的**最新**版本（数组从新到旧找第一个命中）；声明的列表为空或无交集则回退 `initialize`；仅字段未声明时保留探测版本（服务器应答探测即隐式接受）
 - 每次协商后 `SetNegotiatedProtocolVersion` 重建 WireCodec（`shared_ptr<WireCodec>` + `codec_mutex_`，`shared_mutex` 内整体交换 `negotiated_version_` 与 `codec_`，线程安全，消息循环运行中可调用）；`NegotiatedProtocolVersion()` 锁下拷贝返回 `std::string`
-- **`initialize` 仅 legacy era 豁免**：入站验证遇 `NotInEra` 时，仅 legacy era（`IsJuly2026OrLater()` 为假）才放行 `initialize`；modern era 下 `initialize` 同样可被拒（回 `MethodNotFound`，[McpSessionHandler.cpp:370](../../src/protocol/McpSessionHandler.cpp)，era 判定 [McpSessionHandler.hpp:109](../../include/mcp/protocol/McpSessionHandler.hpp)）
-- **未协商会话的握手入口为 `initialize` 与 `server/discover`**（handshake entry）：会话尚未协商版本时（`negotiated_version_` 为空），两方法即使 `NotInEra` 也放行（Auto 探测需要 discover 先于协商到达）；协商完成后 `NotInEra` 一律拒绝。两代 codec 的 `ValidateRequest`/`ValidateNotification` 现均先查方法/通知集合——时代外的请求与通知在会话层分别以 `MethodNotFound` 拒绝与静默丢弃（含 2025 codec：此前其请求校验不查集合，任意方法放行）
+- **`initialize` 仅 legacy era 豁免**：入站验证遇 `NotInEra` 时，仅 legacy era（`IsJuly2026OrLater()` 为假）才放行 `initialize`；modern era 下 `initialize` 同样可被拒（回 `MethodNotFound`，[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)，era 判定 [McpSessionHandler.hpp](../../include/mcp/protocol/McpSessionHandler.hpp)）
+- **未协商会话的握手入口为 `initialize` 与 `server/discover`**（handshake entry）：会话尚未协商版本时（`negotiated_version_` 为空），两方法即使 `NotInEra` 也放行（Auto 探测需要 discover 先于协商到达）；协商完成后 `NotInEra` 一律拒绝。两代 codec 的 `ValidateRequest`/`ValidateNotification` 现均先查方法/通知集合——时代外的请求与通知在会话层分别以 `MethodNotFound` 拒绝与静默丢弃（含 2025 codec）
 - **`server/discover` 的时代门**：请求 `_meta` 显式携带 `io.modelcontextprotocol/protocolVersion` 且为旧版本时，服务端 `HandleDiscover` 直接回 `MethodNotFound`（2026+ 专属方法）；`_meta` 未携带版本时按协商会话处理不受此门影响
 - **通知集合收口**：`notifications/tasks/*` 6 个与 `notifications/triggers/event` 移入两代共用集合（服务端实际在发）；2026 专属通知仅剩 `notifications/subscriptions/acknowledged`，2025 专属为 `notifications/initialized` 与 `notifications/elicitation/complete`（[WireCodec.cpp](../../src/protocol/WireCodec.cpp)）
 
 ## 服务端拒绝不受支持版本
 
-`McpSessionHandler` 在派发前检查非 `initialize` 请求的 `_meta.protocolVersion`：不在**已配置支持表**（`IsVersionSupported`，默认 `kProtocolVersions` 全表）内即回 `UnsupportedProtocolVersion`（-32022），`data` 同时携带 `requested` 与服务端 `supported` 列表（`MakeVersionErrorData` 按同一配置表生成，[McpSessionHandler.cpp:415](../../src/protocol/McpSessionHandler.cpp)）。上表客户端 Auto 模式的 corrective 重试正是针对该错误码。
+`McpSessionHandler` 在派发前检查非 `initialize` 请求的 `_meta.protocolVersion`：不在**已配置支持表**（`IsVersionSupported`，默认 `kProtocolVersions` 全表）内即回 `UnsupportedProtocolVersion`（-32022），`data` 同时携带 `requested` 与服务端 `supported` 列表（`MakeVersionErrorData` 按同一配置表生成，[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）。上表客户端 Auto 模式的 corrective 重试正是针对该错误码。
 
 ## 支持版本窄化（`SupportedProtocolVersions`）
 
@@ -58,11 +58,11 @@ resource: include/mcp/client/VersionNegotiation.hpp
 | `-32022` 且 data 缺失/畸形 | 回退 initialize | 同左 |
 | `-32001` / `-32020` / `-32021` / `-32601` 及其他错误码 | 回退 initialize | 同左 |
 
-（[McpClient.cpp:329](../../src/client/McpClient.cpp)）
+（[McpClient.cpp](../../src/client/McpClient.cpp)）
 
 ## Streamable HTTP 客户端的版本头自学习
 
-transport 层无协商状态，改为**从流量中学习**（[StreamableHttpClientTransport.cpp:52](../../src/http/StreamableHttpClientTransport.cpp)）：
+transport 层无协商状态，改为**从流量中学习**（[StreamableHttpClientTransport.cpp](../../src/http/StreamableHttpClientTransport.cpp)）：
 
 - initialize 请求**不带** `MCP-Protocol-Version` 头（版本尚未确定，由 body 的 `params.protocolVersion` 表达）
 - 从 initialize 响应 `result.protocolVersion` 学习协商版本——**只认 initialize 的 POST 响应**（单 JSON 体或 SSE 块；GET 监听流不参与，`DispatchSseBlock` 仅在 `is_initialize` 时学习，`NegotiatedVersionFromResponse`）
@@ -90,7 +90,7 @@ transport 层无协商状态，改为**从流量中学习**（[StreamableHttpCli
 ## 官方互通验证（TS conformance 服务器，端口 3010）
 
 - **Auto 模式 modern era（2026-07-28）首次走通**：discover（serverInfo 容缺 + 版本交集）→ tools/list → tools/call
-- **Legacy 模式（2025-11-25）form elicitation 官方互通全链路**：`elicitation/create` → 客户端 handler → `ElicitResult` `content` 数据被官方服务器消费（wire 键已由 `values` 修正为 `content`，对齐规范与官方服务器）
+- **Legacy 模式（2025-11-25）form elicitation 官方互通全链路**：`elicitation/create` → 客户端 handler → `ElicitResult` `content` 数据被官方服务器消费（wire 键为 `content`，对齐规范与官方服务器）
 - modern era 下 TS 服务器自身按规范拒绝 server→client 请求（`elicitation/create not supported in wire era 2026-07-28`），属官方正确行为
 
 ## 相关页面

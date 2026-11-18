@@ -11,7 +11,7 @@
 
 ## Why a custom codec is needed
 
-`WireCodec` prunes known methods and valid frames by negotiated era, so an unregistered `demo/slow` would be rejected as illegal. The example delegates and opens a single hole:
+`WireCodec` prunes known methods and valid frames by negotiated era, so an unregistered `demo/slow` would be rejected. The example delegates and opens one exception:
 
 ```cpp
 bool HasRequestMethod(std::string_view method) const override {

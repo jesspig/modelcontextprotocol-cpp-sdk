@@ -2149,3 +2149,146 @@ TEST(OAuthTest, TriggerWebhookLogDoesNotLeakWebhookUrl) {
     EXPECT_EQ(captured.find("SUPERSECRETTOKEN"), std::string::npos);
     EXPECT_NE(captured.find("127.0.0.1"), std::string::npos);
 }
+
+TEST(OAuthFallbackTest, OptionDefaultsToTrue) {
+    OAuthClientOptions opts;
+    EXPECT_TRUE(opts.allow_legacy_metadata_fallback);
+}
+
+TEST(OAuthFallbackTest, PrmReachableWithValidAsMetadata) {
+    auto resource_port = PickFreePort(kTestBasePort + 2100);
+    auto as_port = PickFreePort(kTestBasePort + 2110);
+    std::string resource = "http://127.0.0.1:" + std::to_string(resource_port);
+    std::string as = "http://127.0.0.1:" + std::to_string(as_port);
+
+    mcp::HttpServer resource_server(resource_port);
+    resource_server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [as](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"authorization_servers\":[\"" + as + "\"]}";
+        });
+    mcp::HttpServer as_server(as_port);
+    as_server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [as](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + as + "\","
+                        "\"authorization_endpoint\":\"" + as + "/authorize\","
+                        "\"token_endpoint\":\"" + as + "/token\"}";
+        });
+    resource_server.Start();
+    as_server.Start();
+    ASSERT_TRUE(WaitUntilReady(resource_port));
+    ASSERT_TRUE(WaitUntilReady(as_port));
+
+    auto enabled = OAuthMetadata::Discover(resource);
+    ASSERT_TRUE(enabled.has_value());
+    EXPECT_EQ(enabled->issuer, as);
+
+    auto disabled = OAuthMetadata::Discover(resource, false);
+    ASSERT_TRUE(disabled.has_value());
+    EXPECT_EQ(disabled->issuer, as);
+
+    resource_server.Stop();
+    as_server.Stop();
+}
+
+TEST(OAuthFallbackTest, PrmUnreachable) {
+    auto port = PickFreePort(kTestBasePort + 2120);
+    std::string origin = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [origin](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + origin + "\","
+                        "\"authorization_endpoint\":\"" + origin + "/authorize\","
+                        "\"token_endpoint\":\"" + origin + "/token\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto enabled = OAuthMetadata::Discover(origin);
+    ASSERT_TRUE(enabled.has_value());
+    EXPECT_EQ(enabled->issuer, origin);
+
+    auto disabled = OAuthMetadata::Discover(origin, false);
+    EXPECT_FALSE(disabled.has_value());
+
+    server.Stop();
+}
+
+TEST(OAuthFallbackTest, EmptyAsMetadata) {
+    auto resource_port = PickFreePort(kTestBasePort + 2130);
+    auto as_port = PickFreePort(kTestBasePort + 2140);
+    std::string resource = "http://127.0.0.1:" + std::to_string(resource_port);
+    std::string as = "http://127.0.0.1:" + std::to_string(as_port);
+
+    mcp::HttpServer resource_server(resource_port);
+    resource_server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [as](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"authorization_servers\":[\"" + as + "\"]}";
+        });
+    resource_server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [resource](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + resource + "\","
+                        "\"authorization_endpoint\":\"" + resource + "/authorize\","
+                        "\"token_endpoint\":\"" + resource + "/token\"}";
+        });
+    mcp::HttpServer as_server(as_port);
+    as_server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{}";
+        });
+    resource_server.Start();
+    as_server.Start();
+    ASSERT_TRUE(WaitUntilReady(resource_port));
+    ASSERT_TRUE(WaitUntilReady(as_port));
+
+    auto enabled = OAuthMetadata::Discover(resource);
+    ASSERT_TRUE(enabled.has_value());
+    EXPECT_EQ(enabled->issuer, resource);
+
+    auto disabled = OAuthMetadata::Discover(resource, false);
+    EXPECT_FALSE(disabled.has_value());
+
+    resource_server.Stop();
+    as_server.Stop();
+}
+
+TEST(OAuthFallbackTest, ProviderHonorsFallbackOption) {
+    auto port = PickFreePort(kTestBasePort + 2150);
+    std::string origin = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> rfc8414_requests{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [origin, &rfc8414_requests](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            ++rfc8414_requests;
+            resp.body = "{\"issuer\":\"" + origin + "\","
+                        "\"authorization_endpoint\":\"" + origin + "/authorize\","
+                        "\"token_endpoint\":\"" + origin + "/token\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    {
+        OAuthClientOptions opts;
+        opts.server_url = origin;
+        opts.client_id = "client";
+        opts.client_secret = "secret";
+        opts.allow_legacy_metadata_fallback = false;
+        OAuthClientProvider provider(opts);
+        (void)provider.AuthenticateClientCredentials();
+    }
+    const int after_disabled = rfc8414_requests.load();
+    EXPECT_EQ(after_disabled, 0);
+
+    {
+        OAuthClientOptions opts;
+        opts.server_url = origin;
+        opts.client_id = "client";
+        opts.client_secret = "secret";
+        OAuthClientProvider provider(opts);
+        (void)provider.AuthenticateClientCredentials();
+    }
+    EXPECT_GT(rfc8414_requests.load(), after_disabled);
+
+    server.Stop();
+}
