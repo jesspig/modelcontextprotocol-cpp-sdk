@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-10-27T04:48:00+08:00
+timestamp: 2026-11-18T14:08:29+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -46,7 +46,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 写方法（CreateTask/UpdateTask/CancelTask/SetTaskStatus/FailTask/SetTaskOwner/SetTaskTtl/AdvanceTaskWithInput/ParkTaskForInput/BindTaskTool）流程：
 
 1. 锁内检查（任务不存在或已终态返回 `false`；重复创建抛 `McpError(InvalidParams)`）
-2. 内存提交 → 释放 `data_mutex_` → **锁外** `AppendRecord`（单条 JSONL 追加 + flush；超过阈值自动 `CompactLocked` 压缩为 `WriteAtomic` 全量快照）
+2. 内存提交 → 释放 `data_mutex_` → **锁外** `AppendRecord`（单条 JSONL 追加 + flush，追加句柄先关作用域再计数；超过阈值自动 `CompactLocked` 压缩为 `WriteAtomic` 全量快照；压缩失败只记日志并重置计数，不影响本次追加成功）
 3. 持久化失败 → 重取 `data_mutex_` 回滚内存修改 → 抛 `McpError(InternalError)`
 
 读（`GetTask`/`GetAllTasks`）在写盘 I/O 期间**不阻塞**——同一时刻至多一个写者持锁写盘，读者并发通过。
@@ -54,6 +54,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 ## 失败语义约定
 
 - `UpdateTask/CancelTask/SetTaskStatus/FailTask/ParkTaskForInput` 返回 `false` 表示任务**不存在或已终态**（不是持久化失败——持久化失败抛 `McpError(InternalError)`）；`CreateTask` 不返回 bool（返回 `TaskState`，重复创建抛 `McpError(InvalidParams)`）
+- `FileTaskStore` 的压缩失败是 **best-effort**：`AppendRecord` 只记 Error 日志并把 `pending_records_` 归零，仍返回 `true`；只有追加本身（打开/写入/flush）失败才回滚内存并抛 `McpError(InternalError)`
 - token 刷新失败不回退旧 token
 - `FileTokenCache` 的机密写入经 `WriteAtomicSecure`（失败抛 `McpError(InternalError)`，向 `StoreTokens`/`Save` 调用方传播）；析构内的 `Save` 捕获异常仅记 Error，避免进程终止；加载前校验文件属主与权限（组/其他可读即拒绝加载）
 
