@@ -163,6 +163,7 @@ private:
     void WireClientHandlers();
     void WireTransportCallbacks();
     void DetachTransportCallbacks();
+    void ClearPendingSubscriptionAck();
     void InstallSamplingHandler();
     void InstallRootsHandler();
     NegotiationResult NegotiateProtocol();

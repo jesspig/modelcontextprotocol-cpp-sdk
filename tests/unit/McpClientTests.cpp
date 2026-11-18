@@ -473,6 +473,29 @@ TEST(McpClientTest, PinNegotiationUsesPinnedVersion) {
     server_handler->Close();
 }
 
+TEST(McpClientTest, PinNegotiationKeepsDiscoverServerInfoEmpty) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    opts.client_info = Implementation{"pin-client", "9.9"};
+
+    auto result = VersionNegotiation::Negotiate(*client_handler, opts);
+    ASSERT_TRUE(result.discover.has_value());
+    EXPECT_NE(result.discover->server_info.name, opts.client_info.name);
+    EXPECT_TRUE(result.discover->server_info.name.empty());
+    EXPECT_TRUE(result.server_info.name.empty());
+    client_handler->Close();
+
+    auto another_pair = InMemoryTransport::CreatePair();
+    auto client = McpClient::Create(std::move(another_pair.client), opts);
+    EXPECT_TRUE(client->GetServerInfo().name.empty());
+    client->Close();
+}
+
 TEST(McpClientTest, SetNotificationHandlerFiresAfterCreate) {
     auto pair = InMemoryTransport::CreatePair();
     auto server = McpServer::Create(std::move(pair.server));
@@ -1844,6 +1867,58 @@ TEST(McpClientTest, SubscribeAsyncReturnsOnAcknowledgedWithoutResult) {
     const auto start = std::chrono::steady_clock::now();
     EXPECT_NO_THROW(client->SubscribeAsync(params));
     EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(3));
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, SubscribeAsyncReturnsWhenTransportCloses) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto client_transport = pair.client;
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    auto held_response = std::make_shared<std::promise<JsonValue>>();
+    std::promise<void> request_received;
+    auto request_future = request_received.get_future();
+    server_handler->SetRequestHandler(methods::kSubscribe,
+        [held_response, &request_received](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            *held_response = std::move(p);
+            request_received.set_value();
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLatestProtocolVersion);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+    ASSERT_TRUE(client->IsModernProtocol());
+
+    SubscriptionsListenRequestParams params;
+    params.notifications.tools_list_changed = true;
+
+    std::promise<void> subscribe_done;
+    auto subscribe_finished = subscribe_done.get_future();
+    std::thread worker([&]() {
+        try {
+            client->SubscribeAsync(params);
+            subscribe_done.set_value();
+        } catch (...) {
+            subscribe_done.set_exception(std::current_exception());
+        }
+    });
+
+    const bool request_sent =
+        request_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    client_transport->Close();
+    const bool returned =
+        subscribe_finished.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready;
+    if (returned) {
+        EXPECT_NO_THROW(subscribe_finished.get());
+    }
+    worker.join();
+
+    EXPECT_TRUE(request_sent);
+    EXPECT_TRUE(returned);
 
     client->Close();
     server_handler->Close();

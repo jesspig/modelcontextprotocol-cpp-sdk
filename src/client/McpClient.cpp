@@ -437,7 +437,6 @@ NegotiationResult VersionNegotiation::Negotiate(
         DiscoverResult disc;
         disc.supported_versions = {result.negotiated_version};
         disc.capabilities = ServerCapabilities{};
-        disc.server_info = options.client_info;
         result.discover = std::move(disc);
         return result;
     }
@@ -642,22 +641,24 @@ McpClient::~McpClient() {
 }
 
 void McpClient::WireTransportCallbacks() {
-    if (!options_.on_transport_close && !options_.on_transport_error) return;
     auto* base = dynamic_cast<TransportBase*>(transport_.get());
     if (!base) {
-        MCP_LOG(Warning, "client: transport does not support error/close callbacks");
+        if (options_.on_transport_close || options_.on_transport_error) {
+            MCP_LOG(Warning, "client: transport does not support error/close callbacks");
+        }
         return;
     }
-    if (options_.on_transport_close) {
-        auto handler = options_.on_transport_close;
-        base->SetOnClose([handler]() {
-            MCP_LOG(Warning, "client: transport closed");
+    auto user_close = options_.on_transport_close;
+    base->SetOnClose([this, user_close]() {
+        ClearPendingSubscriptionAck();
+        MCP_LOG(Warning, "client: transport closed");
+        if (user_close) {
             try {
-                handler();
+                user_close();
             } catch (...) {
             }
-        });
-    }
+        }
+    });
     if (options_.on_transport_error) {
         auto handler = options_.on_transport_error;
         base->SetOnError([handler](std::string_view message) {
@@ -691,7 +692,14 @@ NegotiationResult McpClient::NegotiateProtocol() {
     return VersionNegotiation::Negotiate(*handler_, options_);
 }
 
+void McpClient::ClearPendingSubscriptionAck() {
+    std::lock_guard<std::mutex> lk(ack_mutex_);
+    pending_ack_id_.reset();
+    ack_cv_.notify_all();
+}
+
 void McpClient::Close() {
+    ClearPendingSubscriptionAck();
     if (handler_) handler_->Close();
     std::lock_guard<std::mutex> lock(cache_auth_mutex_);
     response_cache_->ClearPrivate();
