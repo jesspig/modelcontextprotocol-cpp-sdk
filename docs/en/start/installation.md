@@ -101,9 +101,9 @@ System installation examples: `vcpkg install openssl`, `apt install libssl-dev`,
 
 ## Distribution pitfalls
 
-- **`-march=native` is on by default**: it applies when not in CI and not on Apple (flags at `cmake/CompilerOptions.cmake`), so binaries are not portable across machines. CI mode is decided by the `CI` environment variable (`cmake/Platform.cmake`). Build release artifacts in CI, or remove the flag yourself.
+- **`-march=native` is on by default**: it applies when not in CI and not on Apple or Windows (flags at `cmake/CompilerOptions.cmake`; the flag block exists only in the non-Windows Clang/GCC branches), so binaries are not portable across machines. CI mode is decided by the `CI` environment variable (`cmake/Platform.cmake`). Build release artifacts in CI, or remove the flag yourself.
 - **Release enables LTO automatically** (Clang ThinLTO, MSVC LTCG, GCC IPO); slow local Release links are expected.
-- **Unity build defaults to ON** for core/server/client/http but OFF for protocol and transport. Check a target's `UNITY_BUILD` before adding a `.cpp` — anonymous namespaces or duplicate static symbols will collide.
+- **Unity build defaults to ON** for core/server/client/http/ext but OFF for protocol and transport. Check a target's `UNITY_BUILD` before adding a `.cpp` — anonymous namespaces or duplicate static symbols will collide.
 
 ## Verification
 
@@ -117,15 +117,11 @@ Expect: configure prints `[mcp] SDK version: 0.3.11` plus the OpenSSL decision; 
 
 ## Next steps
 
-- First server and client: [Quick start](/en/start/quickstart)
-- Choosing a transport: [Transports](/en/learn/transports)
-- Signatures and fields: [Server reference](/en/reference/server)
-
-## Next steps
-
 - Run one end-to-end round trip after installing: [/en/start/quickstart](/en/start/quickstart)
 - The first thing a server does: [/en/howto/register-a-tool](/en/howto/register-a-tool)
 - Client-side transport and auth choices: [/en/howto/connect-to-a-server](/en/howto/connect-to-a-server), [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-client)
+- Choosing a transport: [Transports](/en/learn/transports)
+- Signatures and fields: [Server reference](/en/reference/server)
 
 ## Source files behind this page
 

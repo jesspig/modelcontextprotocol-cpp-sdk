@@ -83,7 +83,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect: a clean build and the full suite passing (currently 18 test targets, 982 registered cases on Windows). When you only touched an example, build just that target: `cmake --build --preset debug --target SimpleClient`.
+Expect: a clean build and the full suite passing (currently 18 test targets, 1021 registered cases on Windows). When you only touched an example, build just that target: `cmake --build --preset debug --target SimpleClient`.
 
 ## Common failures
 
