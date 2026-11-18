@@ -3,7 +3,7 @@ type: Module
 title: mcp-core 核心库
 description: 基础静态库：JSON 值模型、JSON-RPC 消息结构、协议数据类型、错误码与方法常量。
 tags: [core, json, jsonrpc, 数据类型]
-timestamp: 2026-10-14T15:08:03+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: src/core/JsonValue.cpp
 ---
 
@@ -18,7 +18,6 @@ resource: src/core/JsonValue.cpp
 - 解析用自研解析器（[JsonParser.cpp](../../src/core/JsonParser.cpp)，`mcp::detail::json`，`vector<Frame>` 显式栈迭代实现）；深度 1000 层嵌套数组期望成功（`JsonParserTest.DeepNesting1000Succeeds`，原上限 512 见 [/changelog/2026-10-12-log.md](../changelog/2026-10-12-log.md)），数字超界分类（uint64 超 int64 抛 `DeserializeFailed`，其余语法/范围错误抛 `ParseError`，消息带 offset）；浮点 `from_chars` 下溢（如 `1e-400`）返回 0.0，**仅非有限值才报 "number out of range"**；`Parse` 失败抛 `McpError`
 - `JsonValue` 递归值类型的析构与拷贝为显式工作栈迭代实现（防深层嵌套栈溢出，CI `windows-2022-debug` 上 `DeepNesting1000Succeeds` SEGFAULT 的根因；`DumpValue` 与 `operator==` 仍递归但单层帧小、无深层用例，暂不在范围），显式默认移动；详见 [/classes/json-value.md](../classes/json-value.md)
 - 非 const `operator[]` 缺失键时单次 `emplace` 插入 null 并返回引用；const 版本抛 `DeserializeFailed`（[JsonValue.cpp:287-299](../../src/core/JsonValue.cpp)）
-- 详见 [/classes/json-value.md](../classes/json-value.md)
 
 ## JSON-RPC 消息
 
@@ -41,7 +40,7 @@ resource: src/core/JsonValue.cpp
 ## 常量集
 
 - **错误码 20 个**（[ErrorCodes.hpp](../../include/mcp/ErrorCodes.hpp)）：标准 JSON-RPC 5 个（-32700~-32603）+ MCP 专用 8 个（HeaderMismatch、MissingRequiredClientCapability、UnsupportedProtocolVersion、UrlElicitationRequired、ResourceNotFound、ConnectionClosed、RequestTimeout、RequestCancelled）+ 细粒度子类 7 个（ConnectionRefused、TlsHandshakeFailed、ProtocolViolation、TaskNotFound、HandlerError、DeserializeFailed(-32008)、SessionExpired(-32009)）；`default_error_condition` 将传输类错误（含 SessionExpired）映射到 `errc::connection_aborted` 等
-- **方法/通知常量 41 个**（[Methods.hpp](../../include/mcp/Methods.hpp)）：`methods` 命名空间 24 个（含 `ext/` 前缀常量），`notifications` 命名空间 17 个
+- **方法/通知常量 48 个**（[Methods.hpp](../../include/mcp/Methods.hpp)）：`methods` 命名空间 30 个（27 个去重线方法 + 2 个 legacy 重复别名常量 + `ext/` 前缀常量），`notifications` 命名空间 18 个
 - **协议版本**（[ProtocolVersion.hpp](../../include/mcp/ProtocolVersion.hpp)）：`kLatestProtocolVersion = "2026-07-28"`、`kLegacyProtocolVersion = "2025-11-25"`、`kDefaultNegotiatedProtocolVersion = "2025-03-26"`（缺失版本声明的回退值，对齐 5 语言 `DEFAULT_NEGOTIATED_PROTOCOL_VERSION`），支持版本数组共 5 个（"2024-11-05" 起）；`IsModernProtocolVersion` = 字典序 `>= kLatest`
 - **日志 6 级**（[Log.hpp](../../include/mcp/Log.hpp)）：Off/Error/Warning/Info/Debug/Trace，级别经 `MCP_LOG_LEVEL` 环境变量，输出到 stderr
 

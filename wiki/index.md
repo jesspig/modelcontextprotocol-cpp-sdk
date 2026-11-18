@@ -60,4 +60,4 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 ## 维护
 
 - [/log.md](/log.md) — 更新摘要（最近 7 条）
-- [/changelog/2026-10-31-log.md](/changelog/2026-10-31-log.md) — 按天的详细更新日志
+- [/changelog/2026-11-18-log.md](/changelog/2026-11-18-log.md) — 按天的详细更新日志

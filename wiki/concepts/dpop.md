@@ -3,7 +3,7 @@ type: Concept
 title: DPoP 证明绑定令牌
 description: DPoP（RFC 9449 / SEP-1932 草案）在本 SDK 的落点：dpop 原语的 JWS 签发与验签链（htm/htu/ath/nonce/iat 窗口 + jti 重放表）、Streamable HTTP 服务端 Bearer 链上的 DPoP 校验门、OAuthClientProvider 发送侧开关与 nonce 接口、传输层逐请求 proof 头注入口与 use_dpop_nonce 单次重试、OpenSSL 可选依赖缺失时的抛错降级语义。
 tags: [dpop, oauth, 安全, sep-1932, rfc9449, 传输, openssl]
-timestamp: 2026-10-29T22:11:23+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: src/ext/DPoP.cpp
 ---
 
@@ -48,7 +48,7 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 
 守护测试：`DPoPBoundTokenRequiresMatchingProof`、`DPoPProofReplayRejected`、`DPoPDisabledSkipsProofChecks`（[StreamableHttpTransportTests.cpp:1865/1921/1969](../../tests/unit/StreamableHttpTransportTests.cpp)）；`DPoPDisabledByDefaultSkipsProof`、`DPoPEnabledBindsSchemeAndProof`、`DPoPStaleProofRejectedByWindow`（[OAuthTests.cpp:263/282/320](../../tests/unit/OAuthTests.cpp)）。
 
-## 客户端发送侧（已接线部分）
+## 客户端发送侧
 
 - `GetAuthorizationHeader()`：开关开返回 `DPoP <access_token>`，否则 `Bearer <access_token>`（[OAuthClientProvider.cpp:760-767](../../src/client/auth/OAuthClientProvider.cpp)）
 - `BuildDPoPProof(htm, htu, access_token)`：开关关直接返回空串；开则在 `dpop_mutex_` 保护下懒生成进程内单份 P-256 密钥（`GenerateKey`），`dpop_nonce_` 非空时写入 `nonce` claim（`:769-779`）
@@ -58,7 +58,7 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 
 ## 逐请求 proof 与 nonce 重试（传输层接线）
 
-传输层新增两个可选回调（[StreamableHttpClientTransport.hpp:51-55](../../include/mcp/transport/StreamableHttpClientTransport.hpp)），二者均**默认未设置**，未配置时零回归：
+传输层提供两个可选回调（[StreamableHttpClientTransport.hpp:51-55](../../include/mcp/transport/StreamableHttpClientTransport.hpp)），二者均**默认未设置**，未配置时零回归：
 
 - `apply_per_request_headers(context, headers)`：**每次发请求前**（含重试与内部自发的补发）被调用一次，入参 `HttpRequestHeaderContext` 含 `http_method` / `url`（实际请求 URL，重定向后为新 URL）/ `purpose`（`MessagePost`/`ListenStream`/`ResumeStream`/`SessionDelete`/`ToolAnnotationsRefresh`）/ `request_id` / `attempt_index`；回调把要追加的头写进可写 `headers` 引用，**覆盖在静态 `additional_headers` 与 `Authorization` 之后**（后者先写），故回调可覆盖二者。Win32 与 POSIX 两实现共用 `streamable_http_client_impl::ResolvePerRequestHeaders` 判定，行为强制一致。
 - `observe_response_challenge(context)`：**每个响应**（含 2xx 与 SSE）被调用一次，入参含 `status_code` / `www_authenticate` / `dpop_nonce`（`DPoP-Nonce` 响应头）。视图存活至本次调用返回，回调不得持有。
@@ -77,7 +77,6 @@ OpenSSL 缺失时 `GenerateKey`/`CreateProof` 抛错的既有失败语义保持�
 ## 遗留
 
 - `RegisterClient` 注册体仍未发送 `dpop_jkt`（见上节），DPoP 绑定的动态注册未覆盖。已核实官方 referee（`@modelcontextprotocol/conformance@0.2.0-alpha.12` 的 `dist/index.js`）**全包不含 `dpop_jkt` 字样、`/register` handler 直接忽略未知字段**，故 conformance 的 `auth/dpop` 场景不检查该字段；**且当前无法发送**——provider 的 `dpop_key_` 为私有成员且无公开 accessor，取不到 JKT 所需的 x/y，需先给 `OAuthClientProvider` 加公开的 `DPoPKeyThumbprint()` 之类接口。声明 `dpop_bound_access_tokens` 亦未实现（referee 元数据里刻意不广播该字段）
-- conformance 的 `dpop` / `dpop-nonce` 场景夹具接线由另一任务负责（记账见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）
 
 ## 相关页面
 

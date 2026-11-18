@@ -3,13 +3,13 @@ type: Concept
 title: 实验开关
 description: 服务端 8 开关与客户端 4 开关：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器已实现语义与构造期同步、DPoP 门在传输侧而非 ServerOptions、interceptor 为无门控别名。
 tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容]
-timestamp: 2026-11-01T18:03:59+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: include/mcp/server/ServerOptions.hpp
 ---
 
 # 实验开关
 
-`ad547f9` 起 Tier1 对齐引入的实验能力大多默认关闭，须显式开启。服务端 8 开关（[ServerOptions.hpp:80-88](../../include/mcp/server/ServerOptions.hpp)），客户端 4 开关（[ClientOptions.hpp:71-75](../../include/mcp/client/ClientOptions.hpp)）。服务端 8 开关与客户端 tasks/skills/渐进发现默认 `false`，客户端 etag 默认 `true`。其中 tasks/skills 为最早接线的一批；etag/渐进发现/文件输入/触发器四开关在后续批次全部接线（默认关实现）；apps/server_card 两开关在本轮接线（能力声明 + 请求门控，见下）。DPoP 不在本表——服务端门为传输侧 `StreamableHttpServerOptions::BearerAuthConfig::enable_dpop`，客户端为 `OAuthClientOptions::enable_dpop`（见 [/concepts/dpop.md](/concepts/dpop.md)）；`Interceptor` 仍为 `MessageFilter` 的无门控别名。
+`ad547f9` 起 Tier1 对齐引入的实验能力大多默认关闭，须显式开启。服务端 8 开关（[ServerOptions.hpp:80-88](../../include/mcp/server/ServerOptions.hpp)），客户端 4 开关（[ClientOptions.hpp:71-75](../../include/mcp/client/ClientOptions.hpp)）。服务端 8 开关与客户端 tasks/skills/渐进发现默认 `false`，客户端 etag 默认 `true`。DPoP 不在本表——服务端门为传输侧 `StreamableHttpServerOptions::BearerAuthConfig::enable_dpop`，客户端为 `OAuthClientOptions::enable_dpop`（见 [/concepts/dpop.md](/concepts/dpop.md)）；`Interceptor` 仍为 `MessageFilter` 的无门控别名。
 
 ## 开关表
 
@@ -43,7 +43,7 @@ resource: include/mcp/server/ServerOptions.hpp
 - etag 例外：构造期经 `SetEtagCacheEnabled` 同步的是进程级全局开关（[McpTypesResults.cpp:50-56](../../src/core/McpTypesResults.cpp)），客户端 8 读取路径读的是同一全局（[McpClient.cpp:1139](../../src/client/McpClient.cpp) 起）——任一 `McpServer` 以 `enable_etag_cache=true` 构造即打开全进程的 etag 读写，同进程的客户端同步生效；关态构造则关闭全进程。
 - DPoP 不属于本页开关：服务端门在传输配置 `StreamableHttpServerOptions::BearerAuthConfig::enable_dpop`（[StreamableHttpServerTransport.cpp:515](../../src/http/StreamableHttpServerTransport.cpp)，且必须先配置 `bearer_auth`），客户端门由 `OAuthClientProvider` 的 `options_.enable_dpop` 决定（[OAuthClientProvider.cpp:366](../../src/client/auth/OAuthClientProvider.cpp)），两端须各自显式开启；`ServerOptions` 已无 dpop 字段。
 
-## Tasks/Skills 兼容期（0.3.5 → 0.3.8，本次任务给定口径）
+## Tasks/Skills 兼容期（0.3.5 → 0.3.8）
 
 - Tasks：隐式路径已移除——仅设 `task_store` 不再声明 tasks 扩展、不再记 `Warning`，必须显式开 `enable_tasks_extension=true`（能力推导 [McpServer.cpp:1897](../../src/server/McpServer.cpp)、任务三方法守卫 `1452、1493、1731`、任务化调用 `2279` 均只认显式开关）。`TasksImplicitlyEnabled()`（[ServerOptions.hpp:90-92](../../include/mcp/server/ServerOptions.hpp)）仍保留 `[[deprecated]]` 标记作公开 API 兼容，但服务端已不再调用。注：0.3.8 为任务口径，代码内无版本标记；现版本为 0.3.11。
 - Skills：`SkillsImplicitlyEnabled()`（[ServerOptions.hpp:93-95](../../include/mcp/server/ServerOptions.hpp)）同样标记 deprecated，但实现只返回开关本身、无隐式路径——技能自 `ad547f9` 起必须显式开 `enable_skills_extension=true`，否则能力不声明、三方法 `MethodNotFound`。

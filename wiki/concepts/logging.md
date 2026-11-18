@@ -3,7 +3,7 @@ type: Concept
 title: 日志与可观测性
 description: 日志级别、全局钩子（SetLogHandler/SetLogLevel/LogRecord）、诊断增强与 bind_host 可配置。
 tags: [日志, 可观测性, 诊断, bind_host]
-timestamp: 2026-09-20T03:14:18+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: include/mcp/Log.hpp
 ---
 
@@ -15,7 +15,7 @@ resource: include/mcp/Log.hpp
 
 - `LogLevel`：`Off(0)` / `Error(1)` / `Warning(2)` / `Info(3)` / `Debug(4)` / `Trace(5)`。
 - 默认从环境变量 `MCP_LOG_LEVEL` 读取（未设置 = `Off`，即不开任何日志）。
-- 新增 `mcp::SetLogLevel(LogLevel)`：运行时覆盖环境变量（原实现为静态缓存、不可运行时变更）。
+- `mcp::SetLogLevel(LogLevel)`：运行时覆盖环境变量取值。
 
 ## 全局日志钩子
 
@@ -29,13 +29,17 @@ resource: include/mcp/Log.hpp
 - 钩子在**发射日志的线程（含 IO 线程）同步调用**，用户须保证线程安全。
 - **禁止在钩子内调用 `Close()`**：IO 线程直接执行回调，回调里 `Close()` 会 self-join（见 [/concepts/concurrency.md](/concepts/concurrency.md)）。
 
-## 诊断日志增强（本次新增）
+## 诊断日志
 
 - `HttpServer::Start` 绑定前打印 `binding <addr>:<port>`（`Info`）；bind 失败消息补充地址。
 - DNS 重绑保护拒绝请求时，打印被拒 `Host` 值；无 `Host` 头时打印 `<missing>`，**不会因 `at()` 抛异常而崩溃**（403 状态码/文本不变）。
 
-- **Span 观测钩子**：协议层另有 `SpanHandler`，覆盖请求和传输边界，接入规则见 [/concepts/span-hooks.md](../concepts/span-hooks.md)
+## 监听地址（bind_host）
 
 - `HttpServerOptions::bind_host` 与 `StreamableHttpServerOptions::host`：监听地址可配置。
 - 接受 IPv4/IPv6 字面量（如 `127.0.0.1` / `::1` / `::`，可用 `[]` 包围）；空字符串 = 仅监听 IPv4 所有接口（`INADDR_ANY`，与历史一致）；不支持主机名解析。
 - 非法 `bind_host` 抛 `std::runtime_error("HttpServer: invalid bind_host: ...")`。
+
+## 相关页面
+
+- [/concepts/span-hooks.md](../concepts/span-hooks.md) — 协议层 `SpanHandler` 观测钩子（覆盖请求与传输边界）

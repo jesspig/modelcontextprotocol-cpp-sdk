@@ -3,7 +3,7 @@ type: Class
 title: McpClient
 description: MCP 客户端门面：创建即协商、请求/通知 API、控制面 API、任务化工具调用（含 tasks 扩展声明守卫与 inputResponses）、技能三方法与缓存、404 会话自愈、progress 回调、MRTR 默认自动驱动、URL elicitation 三态、授权上下文缓存分区与翻页聚合。
 tags: [client, 门面, 协商, mrt, progress, tasks, skills]
-timestamp: 2026-11-01T18:03:59+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: include/mcp/client/McpClient.hpp
 ---
 
@@ -42,7 +42,7 @@ Auto 回退分派（对齐官方 TS SDK，[McpClient.cpp:442](../../src/client/M
 - **技能三方法（2026-only，SEP-2640）**：`ListSkills(cursor?)`（翻页聚合 + `CacheIfHinted`，缓存键 `skills/list\x1F<cursor>`；嵌套 `cacheHint` 扁平回填顶层 `ttlMs`/`cacheScope` 后再缓存）、`GetSkill(uri, options?)`（`CacheableRequestOptions`：`cache_mode use/bypass/refresh` + `max_age_ms`，键 `skills/get\x1F<uri>`）、`ReadDirectory(uri, cursor?, options?)`（键 `resources/directory/read\x1F<uri>[\x1F<cursor>]`，同为 cache_mode + max_age）；三者 TTL/分区语义与既有列表/读资源缓存一致（`ttlMs > 0` 才缓存，钳制 24h，public/private 双分区），详见 [/concepts/skills-extension.md](../concepts/skills-extension.md)
 - 404 会话自愈：`SessionExpired(-32009)` 且 `reinit_on_expired_session`（默认 true）时，`SendRequestWithMrtr` 捕获后调 `RecoverExpiredSession()`——`session_generation_` 原子世代计数 + `reinit_mutex_` 串行化重协商，持锁前先读世代、并发等待者见世代已变则跳过；随后原请求**恰一次重放**（`SendRequestWithMrtrOnce` 不再捕获，避免二次重放）
 - 总量超时：构造时 `SetMaxTotalTimeout(options_.max_total_timeout)` 接线至会话引擎（默认 0 禁用），progress 续命不可越过每请求绝对截止（见 [/classes/mcp-session-handler.md](mcp-session-handler.md)）；MRTR 循环自身的总预算仍取 `input_required_config->max_total_timeout`
-- **audience（资源绑定）透传**：OAuth 令牌现携带 `resource`（audience），`Authenticate` 在指示符变化时清缓存、`GetAccessToken`/`IsAuthenticated`/`HasToken`/`GetAuthorizationHeader` 在失配时按无 token 处理——客户端无需改调用，行为详见 [/concepts/oauth.md](../concepts/oauth.md)
+- **audience（资源绑定）透传**：OAuth 令牌携带 `resource`（audience），`Authenticate` 在指示符变化时清缓存、`GetAccessToken`/`IsAuthenticated`/`HasToken`/`GetAuthorizationHeader` 在失配时按无 token 处理——客户端无需改调用，行为详见 [/concepts/oauth.md](../concepts/oauth.md)
 - URL elicitation：`SetUrlElicitationHandler` 注册 url 模式处理器——收到 `mode=="url"` 的 `elicitation/create` 时调用；handler 返回 `ElicitResult`，action 必须为 `accept`/`decline`/`cancel`（其他值抛 `HandlerError`，未配置 handler 默认 `decline`）。legacy 时代在响应后发送 `notifications/elicitation/complete`（缺 `elicitationId` 回 `InvalidParams`），modern 时代不发 complete 而由 MRTR 完成往返；handler 异常原样回传服务端。旧 void 回调经 deprecated 的 `SetLegacyUrlElicitationHandler` 承接并固定 `accept`
 - 客户端控制面：`SendRequest(method, params, RequestOptions)` 返回 `RequestHandle{id, future<RequestOutcome>}`——`RequestOptions` 含 `timeout`、`cancel_on_timeout`、`CancelToken`、`on_progress`，句柄暴露服务端可见的请求 ID，`RequestHandle::Cancel(reason)` 或 `CancelToken::Cancel` 会从 pending 取出条目并投递 `RequestCancelled`；`SendRequestRaw(method, params, meta, timeout)` 与兼容重载 `SendRequest(..., meta, timeout)` 保留 `future<JsonValue>` 的 raw JSON 错误语义（错误对象含 `code`/`message`/`data`），新代码应优先使用 typed 句柄。`SendNotification` 发送任意通知；`CancelRequest(id, reason)` 仅对 pending 请求生效：legacy/stdio 发 `notifications/cancelled`，modern Streamable HTTP 经 `IRequestCanceller` 关闭请求 SSE 流；`SetLoggingLevel(level)` 仅 legacy 发 `logging/setLevel`，modern 抛 `ProtocolViolation`（改用逐请求 `logLevel`）
 - 超时：任务类请求 600s、Ping 10s（Ping 已标记 deprecated）；`SubscribeAsync` 发送后等待 `subscriptions/acknowledged` 首帧（**5s**，`kSubscriptionAckTimeout`），超时抛 `McpError(InternalError)`；请求携带 `_meta` `subscriptionId`（调用方提供或自动生成 `client-sub-<时钟>-<计数>`）

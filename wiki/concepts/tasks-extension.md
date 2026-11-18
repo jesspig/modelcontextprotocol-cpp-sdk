@@ -3,7 +3,7 @@ type: Concept
 title: 任务扩展
 description: SEP-2663 任务扩展：双时代 tasks/get|update|cancel、2025-only tasks/result|list、任务化 tools/call、inputResponses 推进、Mcp-Name 头校验与现代订阅路由。
 tags: [tasks, 扩展, 双时代, 2026]
-timestamp: 2026-10-27T04:48:00+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -22,7 +22,7 @@ SEP-2663 任务扩展（扩展标识 `io.modelcontextprotocol/tasks`，[Capabili
 |------|------|------|
 | tasks/get、tasks/update、tasks/cancel | 可用 | 可用（头校验 + 订阅路由） |
 | tasks/result、tasks/list | 可用 | `MethodNotFound`（`kLegacyGetTaskPayload`/`kLegacyListTasks`，服务端硬拒绝） |
-| tools/call（`ToolExecutionMode::Task` + task_store） | 立即返回 `CreateTaskResult` | 立即返回 `CreateTaskResult`（此前拒绝，现放行） |
+| tools/call（`ToolExecutionMode::Task` + task_store） | 立即返回 `CreateTaskResult` | 立即返回 `CreateTaskResult` |
 
 wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../../src/protocol/WireCodec.cpp) 的 `k2025OnlyRequestMethods` 与 `k2026OnlyRequestMethods` 均含），`tasks/result`/`tasks/list` 仅前者含。
 
@@ -40,7 +40,7 @@ wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../..
 
 - **owner 会话隔离**：服务端构造时生成安全随机 `session_id`（`McpServer::SessionId()`），任务 ID 形如 `task-<session>-<16 字节随机 hex>`（不可枚举、非顺序）；任务化 `tools/call` 创建任务时记 `owner = session_id`，`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/list` 一律按 owner 过滤——他人任务与不存在任务同样回 `InvalidParams "task not found"`（不泄露存在性），`tasks/list` 仅列本会话任务
 - **TTL 与回收**：任务创建默认 `ttl_ms = 300000`（5 分钟，`kDefaultTaskTtlMs`）；`IMcpTaskStore::GetExpiredTaskIds/RemoveTask` 供回收用，服务端在每次创建新任务前顺带清扫过期任务（`SweepExpiredTasks`）
-- **终态守卫**：`tasks/update` 对已终态（Completed/Failed/Cancelled）任务直接回 `InvalidParams`（存储层 `UpdateTask/CancelTask/FailTask/ParkTaskForInput` 同样拒绝再变更，`SetTaskStatus` 保留同状态幂等）；服务端失败落态经 `FailTask` 一步原子完成（原「写错误结果再改状态」两步序列废除）
+- **终态守卫**：`tasks/update` 对已终态（Completed/Failed/Cancelled）任务直接回 `InvalidParams`（存储层 `UpdateTask/CancelTask/FailTask/ParkTaskForInput` 同样拒绝再变更，`SetTaskStatus` 保留同状态幂等）；服务端失败落态经 `FailTask` 一步原子完成
 
 ## 存储字段
 

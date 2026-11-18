@@ -3,7 +3,7 @@ type: Class
 title: WireCodec
 description: 按协议时代划分的线协议词汇表：方法成员判定、消息校验、meta 处理与错误码映射。
 tags: [protocol, codec, 双时代, 2026, meta, tasks, skills]
-timestamp: 2026-10-27T04:48:00+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: src/protocol/WireCodec.cpp
 ---
 
@@ -33,10 +33,10 @@ resource: src/protocol/WireCodec.cpp
 
 - 公共（9）：tools/list、tools/call、resources/list、resources/read、resources/templates/list、prompts/list、prompts/get、completion/complete、server/extensions/list
 - 2025 独有（13）：initialize、ping、resources/subscribe、resources/unsubscribe、logging/setLevel、roots/list、sampling/createMessage、elicitation/create、tasks/get、tasks/update、tasks/cancel、tasks/result、tasks/list
-- 2026 独有（8）：server/discover、subscriptions/listen、tasks/get、tasks/update、tasks/cancel、skills/list、skills/get、resources/directory/read（2026 合计 16 个请求方法）
+- 2026 独有（8）：server/discover、subscriptions/listen、tasks/get、tasks/update、tasks/cancel、skills/list、skills/get、resources/directory/read（2026 时代集合合计 17 个请求方法 = 公共 9 + 独有 8）
 - 双时代交集：tasks/get、tasks/update、tasks/cancel 同时属于 2025 与 2026 集合（SEP-2663 任务扩展）；tasks/result、tasks/list 仍仅 2025（`kLegacyGetTaskPayload`/`kLegacyListTasks`）；skills/list、skills/get、resources/directory/read 仅 2026（SEP-2640 技能扩展）
 
-通知共 **18 种**：公共 15（cancelled、progress、message、resources/updated、resources/list_changed、tools/list_changed、prompts/list_changed、roots/list_changed、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required、triggers/event）+ 2025 独有 2（initialized、elicitation/complete）+ 2026 独有 1（subscriptions/acknowledged）。任务 6 通知与 triggers/event 为两代共用（服务端实际在发，[WireCodec.cpp](../../src/protocol/WireCodec.cpp)）。
+通知共 **18 种**：公共 14（cancelled、progress、message、resources/updated、resources/list_changed、tools/list_changed、prompts/list_changed、tasks/status、tasks/working、tasks/completed、tasks/failed、tasks/cancelled、tasks/input_required、triggers/event）+ 2025 独有 3（initialized、roots/list_changed、elicitation/complete）+ 2026 独有 1（subscriptions/acknowledged）。任务 6 通知与 triggers/event 为两代共用（服务端实际在发，[WireCodec.cpp](../../src/protocol/WireCodec.cpp)）。
 
 2026 时代入站收到 ping、tasks/result、tasks/list、elicitation/create 等不在时代的方法：`ValidateRequest` 判定为 `NotInEra`，McpSessionHandler 回 `-32601 MethodNotFound`（未协商会话的握手入口 initialize/discover 豁免，[McpSessionHandler.cpp](../../src/protocol/McpSessionHandler.cpp)）；2025 时代同样按集合拒绝时代外方法（如 skills 族）。通知不在时代时在会话层静默丢弃并记 Warning。
 

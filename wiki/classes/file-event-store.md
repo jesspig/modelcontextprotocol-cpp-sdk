@@ -3,7 +3,7 @@ type: Class
 title: FileEventStore
 description: EventStore 的 JSONL 文件持久化实现：跨进程文件锁、崩溃残留容错、1024 事件裁剪。
 tags: [storage, event-store, sse, 文件锁, 持久化]
-timestamp: 2026-09-20T21:46:56+08:00
+timestamp: 2026-11-18T16:15:39+08:00
 resource: include/mcp/storage/FileEventStore.hpp
 ---
 
@@ -38,7 +38,7 @@ resource: include/mcp/storage/FileEventStore.hpp
 
 ## 测试
 
-`mcp-event-store-tests`（[FileEventStoreTests.cpp](../../tests/unit/FileEventStoreTests.cpp)）10 用例：双实例共享、进程重启恢复、并发追加 id 单调、trim、净化文件名、损坏尾行容错等。
+`mcp-event-store-tests`（[FileEventStoreTests.cpp](../../tests/unit/FileEventStoreTests.cpp)）13 用例：双实例共享、进程重启恢复、并发追加 id 单调、trim、净化文件名、损坏尾行容错等。
 
 ## 相关页面
 
