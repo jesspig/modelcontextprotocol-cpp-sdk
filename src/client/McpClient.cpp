@@ -1,6 +1,7 @@
 #include <detail/JsonFields.hpp>
 #include <detail/ResponseCache.hpp>
 #include <mcp/client/McpClient.hpp>
+#include <mcp/client/SkillVerify.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Log.hpp>
 #include <mcp/Transport.hpp>
@@ -1676,6 +1677,93 @@ ReadDirectoryResult McpClient::ReadDirectory(
     StoreEtagBody(key, result_json);
     if (mode != "bypass") CacheIfHinted(key, result_json, auth_context);
     return DeserializeReadDirectoryResult(result_json);
+}
+
+SkillReadResult McpClient::ReadSkill(
+    std::string_view uri, const CacheableRequestOptions& options)
+{
+    SkillReadResult result;
+    auto get = GetSkill(uri, options);
+    result.skill = std::move(get.skill);
+
+    std::string limits_error;
+    if (!CheckSkillLimits(result.skill, limits_error)) {
+        SkillDiagnostic diagnostic;
+        diagnostic.uri = result.skill.uri;
+        diagnostic.reason = "size_mismatch";
+        result.diagnostics.push_back(std::move(diagnostic));
+        return result;
+    }
+
+    if (auto* manifest = std::get_if<std::vector<SkillResource>>(&result.skill.resources)) {
+        for (const auto& file : *manifest) {
+            auto read = ReadResource(file.uri, options);
+            std::string bytes;
+            for (const auto& content : read.contents) {
+                if (auto* text = std::get_if<TextResourceContents>(&content)) {
+                    bytes = text->text;
+                    break;
+                }
+                if (auto* blob = std::get_if<BlobResourceContents>(&content)) {
+                    bytes = blob->blob;
+                    break;
+                }
+            }
+            std::string file_error;
+            if (!VerifyFileBytes(file, bytes, file_error)) {
+                SkillDiagnostic diagnostic;
+                diagnostic.uri = file.uri;
+                diagnostic.reason = file_error.find("size") != std::string::npos
+                    ? "size_mismatch" : "digest_mismatch";
+                result.diagnostics.push_back(std::move(diagnostic));
+                continue;
+            }
+            SkillFileContent content;
+            content.uri = file.uri;
+            content.bytes = std::move(bytes);
+            result.files.push_back(std::move(content));
+        }
+    }
+
+    std::string frontmatter_error;
+    if (!VerifyFrontmatter(result.skill, result.skill.frontmatter, frontmatter_error)) {
+        SkillDiagnostic diagnostic;
+        diagnostic.uri = result.skill.uri;
+        diagnostic.reason = "frontmatter_mismatch";
+        result.diagnostics.push_back(std::move(diagnostic));
+    }
+    return result;
+}
+
+SkillDirectoryReadResult McpClient::ReadSkillDirectory(
+    std::string_view uri, const CacheableRequestOptions& options)
+{
+    SkillDirectoryReadResult result;
+    std::optional<std::string> cursor;
+    for (size_t page = 0; page < kMaxListPages; ++page) {
+        auto directory = ReadDirectory(uri, cursor, options);
+        for (const auto& child : directory.resources) {
+            constexpr std::string_view kSkillSuffix = "/SKILL.md";
+            if (child.uri.size() < kSkillSuffix.size() ||
+                child.uri.compare(child.uri.size() - kSkillSuffix.size(),
+                    kSkillSuffix.size(), kSkillSuffix) != 0) {
+                continue;
+            }
+            auto skill = ReadSkill(child.uri, options);
+            if (skill.diagnostics.empty()) {
+                result.skills.push_back(std::move(skill));
+            } else {
+                for (auto& diagnostic : skill.diagnostics)
+                    result.diagnostics.push_back(std::move(diagnostic));
+            }
+        }
+        if (!directory.next_cursor || directory.next_cursor->empty())
+            return result;
+        cursor = std::move(directory.next_cursor);
+    }
+    throw McpError(McpErrorCode::ProtocolViolation,
+        "skill directory pagination did not converge within " +
+        std::to_string(kMaxListPages) + " pages");
 }
 
 GetTaskResult McpClient::CallToolAsTask(
