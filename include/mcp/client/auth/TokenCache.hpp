@@ -59,7 +59,8 @@ struct OAuthMetadata {
     std::vector<std::string> token_endpoint_auth_methods_supported;
     bool authorization_response_iss_parameter_supported{false};
 
-    [[nodiscard]] static std::optional<OAuthMetadata> Discover(std::string_view server_url);
+    [[nodiscard]] static std::optional<OAuthMetadata> Discover(
+        std::string_view server_url, bool allow_legacy_fallback = true);
 };
 
 struct OAuthTokenResponse {
