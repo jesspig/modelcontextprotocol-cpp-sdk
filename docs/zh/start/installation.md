@@ -59,7 +59,7 @@ find_package(mcp CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE mcp::mcp-client)
 ```
 
-安装导出的是 `mcpTargets.cmake` 加包版本文件（`COMPATIBILITY SameMajorVersion`，版本号取自 `include/mcp/McpVersion.hpp` 的 `kSdkVersion`），同时生成 pkg-config 描述文件。`find_package` 会替你 `find_dependency(Threads)`，并在本库启用了 OpenSSL 时 `find_dependency(OpenSSL)`（`cmake/mcpConfig.cmake.in`）。
+安装导出的是 `mcpTargets.cmake` 加包版本文件（`COMPATIBILITY SameMajorVersion`，版本号取自 `include/mcp/McpVersion.hpp` 的 `kSdkVersion`）。`find_package` 会替你 `find_dependency(Threads)`，并在本库启用了 OpenSSL 时 `find_dependency(OpenSSL)`（`cmake/mcpConfig.cmake.in`）。
 
 ## 静态库清单
 

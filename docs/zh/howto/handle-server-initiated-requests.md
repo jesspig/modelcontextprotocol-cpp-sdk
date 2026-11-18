@@ -1,6 +1,6 @@
 # 承接服务端发起的请求
 
-服务端不只会回你的调用，它也会**主动问你**：要补充信息（elicitation）、要你给一段生成结果（sampling，已废弃）、要你的工作目录清单（roots，已废弃）。这一页讲客户端侧要挂哪些回调、SDK 替你自动做了什么、以及什么时候必须自己动手。签名与字段表见 [/zh/reference/client](/zh/reference/client)，反问的服务端侧写法见 [/zh/howto/collect-user-input](/zh/howto/collect-user-input)。
+服务端会**主动反问**：补充信息（elicitation）、生成结果（sampling，已废弃）、工作目录清单（roots，已废弃）。本页讲客户端要挂哪些回调、SDK 自动做了什么、何时必须自己动手。签名与字段表见 [client 参考](/zh/reference/client)，服务端侧写法见 [收集用户输入](/zh/howto/collect-user-input)。
 
 ::: info 两个时代走两条完全不同的路
 legacy（≤ 2025-11-25）时代反问是**独立的 JSON-RPC 请求**，`elicitation/create` 直接打进你的 handler；modern（2026-07-28）时代它变成同一次工具调用的 `input_required` 结果 + `inputResponses` 续轮，SDK 默认把这个来回**自动跑完**，你的 handler 仍然只是被调一次。

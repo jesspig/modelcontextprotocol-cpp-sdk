@@ -1,6 +1,6 @@
 # Installation and Integration
 
-How to build this repository from scratch and how to consume the SDK from your own C++17 project. Every library is static; there are no runtime DLL dependencies.
+Build this repository from scratch, then consume the SDK from your own C++17 project. Every library is static; there are no runtime DLL dependencies.
 
 ## Requirements
 
@@ -9,7 +9,7 @@ How to build this repository from scratch and how to consume the SDK from your o
 | CMake | 3.28 | `cmake_minimum_required(VERSION 3.28...4.2)`, see `CMakeLists.txt` |
 | Generator | Ninja | The presets declare `generator: "Ninja"` (`CMakePresets.json`); only Ninja is validated by this repository |
 | C++ standard | C++17 | Every library sets `target_compile_features(... PUBLIC cxx_std_17)` |
-| Compiler | MSVC / Clang / GCC / clang-cl | Clang is auto-detected on Windows and Linux (`cmake/CompilerOptions.cmake`); with MSVC only, pass `-DCMAKE_CXX_COMPILER=cl` explicitly |
+| Compiler | MSVC / Clang / GCC / clang-cl | Clang is auto-detected on Windows and Linux (top-level `CMakeLists.txt`); with MSVC only, pass `-DCMAKE_CXX_COMPILER=cl` explicitly |
 | Platforms | Windows, Linux, macOS | All three build in CI |
 | OpenSSL | Optional | Controlled by `MCP_WITH_OPENSSL`, see below |
 
@@ -44,7 +44,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Prefer a tag (`0.3.11`) over a branch in `GIT_TAG`; use `master` only when you want the development line. Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
+Prefer a tag (`0.3.11`) over a branch in `GIT_TAG`; use `master` only for the development line. Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
 
 ### Option 2: install, then find_package
 
@@ -59,7 +59,7 @@ find_package(mcp CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE mcp::mcp-client)
 ```
 
-Installation exports `mcpTargets.cmake` with the package version file (`COMPATIBILITY SameMajorVersion`; the version comes from `kSdkVersion` in `include/mcp/McpVersion.hpp`) and a pkg-config description. `find_package` calls `find_dependency(Threads)` for you and `find_dependency(OpenSSL)` when the library was built with OpenSSL (`cmake/mcpConfig.cmake.in`). Exported targets carry the `mcp::` namespace (`CMakeLists.txt`).
+Installation exports `mcpTargets.cmake` with the package version file (`COMPATIBILITY SameMajorVersion`; the version comes from `kSdkVersion` in `include/mcp/McpVersion.hpp`). `find_package` calls `find_dependency(Threads)` for you and `find_dependency(OpenSSL)` when the library was built with OpenSSL (`cmake/mcpConfig.cmake.in`). Exported targets carry the `mcp::` namespace (`CMakeLists.txt`).
 
 ## Static library inventory
 
@@ -68,10 +68,10 @@ Installation exports `mcpTargets.cmake` with the package version file (`COMPATIB
 | `mcp-core` | JSON-RPC, types, error codes, logging, spans | — |
 | `mcp-transport` | Transports, platform IO, public process API | `mcp-core` |
 | `mcp-protocol` | Session engine and dual-era codecs | `mcp-transport` |
-| `mcp-server` | Server facade | `mcp-protocol` |
-| `mcp-client` | Client facade | `mcp-protocol` |
-| `mcp-http` | HTTP server substrate, session and event stores | `mcp-transport` |
-| `mcp-ext` | apps, server card, DPoP, triggers extensions | `mcp-core` |
+| `mcp-server` | Server facade | `mcp-protocol`, `mcp-ext` |
+| `mcp-client` | Client facade | `mcp-protocol`, `mcp-ext` |
+| `mcp-http` | HTTP server substrate, session and event stores | `mcp-transport`, `mcp-ext` |
+| `mcp-ext` | apps, server card, DPoP, triggers extensions | `mcp-core`, `mcp-transport` |
 
 All seven targets are `STATIC` (`CMakeLists.txt` and the `add_library(mcp-* STATIC)` lines).
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect: configure prints `[mcp] SDK version: 0.3.11` plus the OpenSSL decision; the build completes without errors; `ctest` passes in full (currently 18 test targets, 1021 registered cases on Windows). To verify linking only, build a minimal executable that just includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
+Expect configure to print `[mcp] SDK version: 0.3.11` plus the OpenSSL decision, the build to complete without errors, and `ctest` to pass in full (currently 18 test targets, 1021 registered cases on Windows). To verify linking only, build a minimal executable that includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
 
 ## Next steps
 

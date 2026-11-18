@@ -1,6 +1,6 @@
 # 调用工具与读取资源
 
-`tools/call` 与 `resources/read` 是客户端最常用的两条出站路径，形状相似但失败语义完全不同：工具层失败是一个正常响应里的 `isError` 字段，协议层失败才抛 `McpError`。签名与字段表只在 [/zh/reference/client](/zh/reference/client) 与 [/zh/reference/types](/zh/reference/types) 维护，本篇只讲操作与判读。
+`tools/call` 与 `resources/read` 形状相似但失败语义不同：工具层失败是正常响应里的 `isError` 字段，协议层失败才抛 `McpError`。本篇只讲操作与判读；签名与字段表见 [client 参考](/zh/reference/client)、[types 参考](/zh/reference/types)。
 
 ## 前置条件
 
@@ -90,7 +90,7 @@
 
 ## 完整代码
 
-可编译的完整文件是 `docs/snippets/call-tools-and-read-resources.cpp`，区域名依次为 `list-tools`、`read-content`、`required-arguments`、`call-tool`、`progress`、`list-resources`、`read-resource`、`cache-modes`、`subscribe-updates`；`progress` 区域演示 `RequestOptions::on_progress`（非空即自动登记进度 token 并在返回时摘除，同时续期该请求的超时，`src/client/McpClient.cpp`）。
+可编译的完整文件是 `docs/snippets/call-tools-and-read-resources.cpp`，区域名依次为 `list-tools`、`read-content`、`required-arguments`、`call-tool`、`progress`、`list-resources`、`read-resource`、`cache-modes`、`subscribe-updates`；其中 `progress` 区域的进度帧会续期该请求的超时（`src/client/McpClient.cpp`）。
 
 ## 验证
 

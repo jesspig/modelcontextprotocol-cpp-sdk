@@ -28,7 +28,7 @@
 | `MissingRequiredClientCapability` | -32021 | 客户端缺必需能力，`data.requiredCapabilities` 指明缺哪个 | `VerifyCapability` 校验、服务端要求 sampling/elicitation/tasks |
 | `UnsupportedProtocolVersion` | -32022 | 协商版本不被支持，`data.supported`/`data.requested` | `_meta.protocolVersion` 未支持、HTTP 版本头不符、`server/discover` 探测被拒 |
 | `UrlElicitationRequired` | -32042 | 协议定义：必须走 URL 型 elicitation | 见下方专节；**SDK 内无抛出点** |
-| `ResourceNotFound` | -32002 | 协议保留：资源不可读 | 见下方专节；**SDK 内无抛出点** |
+| `ResourceNotFound` | -32002 | 协议保留：资源不可读；**已废弃**（`[[deprecated("since 0.3.11, removed in 0.4.0; use InvalidParams")]]`） | 见下方专节；**SDK 内无抛出点**；现代时代出站重映射为 `InvalidParams` |
 | `ConnectionClosed` | -32000 | 连接或句柄已关闭 | socket/HTTP 读到底、`HttpClient` 已关闭、关闭时 pending 请求被中止 |
 | `RequestTimeout` | -32001 | 请求超时 | 会话层 deadline 到期（默认 60s）、HTTP 读写超时、URL elicitation 看门狗 |
 | `RequestCancelled` | -32800 | 请求被取消，`data.reason` 可选 | 对端 `notifications/cancelled`、本地 `CancelRequest` 或 `RequestHandle::Cancel` |
@@ -43,7 +43,7 @@
 ### 三个没有抛出点的码
 
 ::: warning
-`UrlElicitationRequired`（-32042）、`ResourceNotFound`（-32002）、`TaskNotFound`（-32006）在 SDK 生产代码里**没有任何抛出点**，仅出现在两处纯登记位置：类目文案分支（`include/mcp/ErrorCodes.hpp`）与服务端已知码白名单 `IsKnownMcpErrorCode`（`src/server/McpServer.cpp`）。
+`UrlElicitationRequired`（-32042）、`ResourceNotFound`（-32002）、`TaskNotFound`（-32006）在 SDK 生产代码里**没有任何抛出点**，仅出现在纯登记位置：类目文案分支（`include/mcp/ErrorCodes.hpp`）与服务端已知码白名单 `IsKnownMcpErrorCode`（`src/server/McpServer.cpp`）；`ResourceNotFound` 另作为废弃码参与现代时代的出站重映射（见下文）。
 :::
 
 "未命中"类语义在 SDK 内一律走 `InvalidParams`：task、tool、resource、prompt、skill 五类未命中都抛这个码，集中在 `src/server/McpServer.cpp`。URL 型 elicitation 也不产生 -32042，服务端直接发 `mode:"url"` 的 elicitation 请求；客户端未声明 elicitation 能力时改抛 `MissingRequiredClientCapability`——两处同在 `src/server/McpServer.cpp`。
@@ -73,10 +73,11 @@ bool aborted = ec == std::errc::connection_aborted;  // 覆盖 5 个码
 `MakeWireCodec` 以 `protocol_version >= kLatestProtocolVersion`（`"2026-07-28"`）选 `Rev2026Codec`，否则 `Rev2025Codec`（`src/protocol/WireCodec.cpp`）。重映射只作用于**出站错误响应的编码处**：`McpSessionHandler::SendErrorResponse` 与三个响应投递分支（`src/protocol/McpSessionHandler.cpp`）。本地 `McpError` 对象、日志与 `data` 都不受影响。
 :::
 
-### 被改写的三个码
+### 被改写的四个码
 
 | 码 | 旧时代出站 | 现代时代出站 | 是否记告警 |
 |---|---|---|---|
+| `ResourceNotFound`（-32002） | 原样 | `InvalidParams`（-32602） | 是，`Warning` 级 |
 | `RequestTimeout`（-32001） | 原样 | `InternalError`（-32603） | 是，`Warning` 级 |
 | `ConnectionRefused`（-32003） | 原样 | `InternalError`（-32603） | 是，`Warning` 级 |
 | `TlsHandshakeFailed`（-32004） | 原样 | `InternalError`（-32603） | 是，`Warning` 级 |
@@ -85,7 +86,7 @@ bool aborted = ec == std::errc::connection_aborted;  // 覆盖 5 个码
 
 ### 原样透传的码
 
--32020、-32021、-32022、-32042 不在 `switch` 分支内，两个时代都原样出站；其余内部码（-32000、-32002、-32005、-32006、-32007、-32008、-32009、-32800）同样透传。现代时代的发起方无法从响应码区分超时/拒连/TLS 三类故障，只能靠 message 与对端告警日志。
+-32020、-32021、-32022、-32042 不在 `switch` 分支内，两个时代都原样出站；其余内部码（-32000、-32005、-32006、-32007、-32008、-32009、-32800）同样透传。现代时代的发起方无法从响应码区分超时/拒连/TLS 三类故障，只能靠 message 与对端告警日志。
 
 ## 错误的三种交付形态
 

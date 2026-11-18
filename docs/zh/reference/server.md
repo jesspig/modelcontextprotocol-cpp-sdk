@@ -65,7 +65,7 @@
 协议时代差异（重要）：
 
 - **modern 时代**（协商版本 `>= 2026-07-28`）：两者**不发送** `elicitation/create`，而是抛出实现内部异常 `ElicitationInputRequired`，携带 `inputRequests["elicitation"]`；该异常由 `HandleCallTool` 三条路径捕获并转成 `CallToolResult::input_required`，由客户端 `SetElicitationHandler` / `SetUrlElicitationHandler` 履行。`ElicitUrl` 的 `timeout` 实参在此分支被忽略。
-- **legacy 时代**：先校验客户端能力，缺失即抛 `McpError(MissingRequiredClientCapability)` 且 `data.requiredCapabilities.elicitation` 带 `form`/`url` 空对象。表单模式的「已声明」判定为 `elicitation.form` 存在 **或** 未声明 `url`；URL 模式要求 `elicitation.url` 存在。
+- **legacy 时代**：`Elicit` 先校验客户端能力，缺失即抛 `McpError(MissingRequiredClientCapability)` 且 `data.requiredCapabilities.elicitation` 带 `form`/`url` 空对象。表单模式的「已声明」判定为 `elicitation.form` 存在 **或** 未声明 `url`；`params.mode="url"` 时要求 `elicitation.url` 存在。`ElicitUrl` 不做该预检。
 - 响应里带已知 JSON-RPC 错误码时，`Elicit` 的 future 以 `McpError(code, message)` 结算。
 
 ::: warning

@@ -1,6 +1,6 @@
 # 把耗时工具改造成任务
 
-给一个跑得很慢的工具加上 MCP 任务（tasks）语义：`tools/call` 立刻回一个 `taskId`，真正的执行体在后台跑，客户端用 `tasks/get` 轮询、用 `tasks/cancel` 协作取消、用 `tasks/update` 在 `input_required` 后续跑。签名与字段表只在 [/zh/reference/server](/zh/reference/server)、[/zh/reference/client](/zh/reference/client) 与 [/zh/reference/types](/zh/reference/types) 维护，本页只讲怎么把它们串起来。
+给慢工具加上 MCP 任务（tasks）语义：`tools/call` 立刻回 `taskId`，执行体后台运行，客户端用 `tasks/get` 轮询、`tasks/cancel` 协作取消、`tasks/update` 在 `input_required` 后续跑。本页只讲串联步骤；签名与字段表见 [服务端参考](/zh/reference/server)、[client 参考](/zh/reference/client)、[类型参考](/zh/reference/types)。
 
 ## 前置条件
 

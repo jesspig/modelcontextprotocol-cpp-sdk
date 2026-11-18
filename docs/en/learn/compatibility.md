@@ -17,8 +17,8 @@ This page is the deprecation registry required by the compatibility constitution
 | `McpClient::SetSamplingHandler()` | SEP-2577 | `SetElicitationHandler()` | with the protocol |
 | `McpClient::SetRootsHandler()` | SEP-2577 | none (roots are deprecated in 2026-07-28) | with the protocol |
 | `McpClient::SetLegacyUrlElicitationHandler()` | 0.3.9 | `SetUrlElicitationHandler()` (three-state result) | with the protocol |
-| `ServerOptions::TasksImplicitlyEnabled()` | 0.3.9 | set `enable_tasks_extension=true` explicitly | with the protocol |
-| `ServerOptions::SkillsImplicitlyEnabled()` | 0.3.9 | set `enable_skills_extension=true` explicitly | with the protocol |
+| `ServerOptions::TasksImplicitlyEnabled()` | 0.3.7 | set `enable_tasks_extension=true` explicitly | with the protocol |
+| `ServerOptions::SkillsImplicitlyEnabled()` | 0.3.7 | set `enable_skills_extension=true` explicitly | with the protocol |
 
 ## Expiry checks
 

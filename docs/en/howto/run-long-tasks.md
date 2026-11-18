@@ -1,6 +1,6 @@
 # Turn a Slow Tool into a Task
 
-Add MCP task semantics to a long-running tool: `tools/call` returns a `taskId` immediately, the real work continues in the background, and the client polls with `tasks/get`, cancels cooperatively with `tasks/cancel`, and resumes after `input_required` with `tasks/update`. Signature and field tables live only in [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client) and [/en/reference/types](/en/reference/types); this page only shows how to wire them together.
+Add MCP task semantics to a long-running tool: `tools/call` returns a `taskId` immediately, the real work continues in the background, and the client polls with `tasks/get`, cancels cooperatively with `tasks/cancel`, and resumes after `input_required` with `tasks/update`. Signature and field tables: [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client), [/en/reference/types](/en/reference/types).
 
 ## Prerequisites
 

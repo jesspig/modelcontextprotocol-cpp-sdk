@@ -1,6 +1,6 @@
 # 管住子进程
 
-用 stdio 传输连本地 MCP 服务端时，你其实启动了一个进程，就得负责它的输入输出、终止与回收。这一页讲两件事：**`mcp::Spawn` 能做什么**（与协议无关的通用子进程）、**stdio 传输自己做了什么**（以及它不听 `SpawnOptions` 的话）。传输选型见 [/zh/learn/transports](/zh/learn/transports)。
+stdio 传输连本地服务端时你启动了一个进程，须负责其输入输出、终止与回收。本页讲两件事：**`mcp::Spawn`**（通用子进程）与 **stdio 传输自身的进程管理**（后者不听 `SpawnOptions`）。传输选型见 [/zh/learn/transports](/zh/learn/transports)。
 
 ::: info 两条路径不是一条
 stdio 传输走内部平台层创建进程，**不经过** `mcp::Spawn`；两者共用底层平台辅助，但入口与选项各自独立。别指望往 `SpawnOptions` 里填字段能影响 stdio 传输的行为，也别指望 stdio 传输帮你管非 MCP 的进程——那种活儿直接用 `Spawn`。

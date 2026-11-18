@@ -1,6 +1,6 @@
 # Report Progress
 
-Tell the caller how far a slow request has gotten before it returns: the server reads the `progressToken` carried by the request, emits `notifications/progress` with `McpServer::SendProgress`, and the client receives it in `RequestOptions::on_progress`. Signature and field tables live only in [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client) and [/en/reference/types](/en/reference/types); this page only covers the procedure.
+Tell the caller how far a slow request has gotten before it returns: the server reads the `progressToken` carried by the request, emits `notifications/progress` with `McpServer::SendProgress`, and the client receives it in `RequestOptions::on_progress`. Signature and field tables: [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client), [/en/reference/types](/en/reference/types).
 
 ::: info Division of labour with tasks and logs
 Progress is a **transient heartbeat inside one request**: the token stops meaning anything once the request returns. Use [/en/howto/run-long-tasks](/en/howto/run-long-tasks) when the user must be able to check back after disconnecting, and [/en/howto/send-log-notifications](/en/howto/send-log-notifications) for human-readable log lines.

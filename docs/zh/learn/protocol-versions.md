@@ -66,7 +66,7 @@
 | `skills/get` | 拒绝 | 可用 | 同上 |
 | `resources/directory/read` | 拒绝 | 可用 | 还需声明目录读取 |
 
-覆盖 27 个方法名。三处易误读：任务三方法在两套白名单里都出现，是**双时代交集**，而非「仅旧时代」；`tasks/result` 与 `tasks/list` 才是仅旧时代；`server/extensions/list` 是双时代公共成员，过去被记为「不属于任何时代」是错的。
+覆盖 27 个方法名。三处易误读：任务三方法在两套白名单里都出现，是**双时代交集**，而非「仅旧时代」；`tasks/result` 与 `tasks/list` 才是仅旧时代；`server/extensions/list` 是双时代公共成员。
 
 ## 双时代可用性矩阵：通知
 
@@ -76,7 +76,7 @@
 | 仅旧时代（3） | `notifications/initialized`、`notifications/elicitation/complete`、`notifications/roots/list_changed` |
 | 仅现代时代（1） | `notifications/subscriptions/acknowledged` |
 
-覆盖 18 个通知名。六个任务通知与触发器事件通知都在公共集合内（服务端确实在发），过去「任务通知只属旧时代、其余五个不在任何集合」的记法是错的。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。
+覆盖 18 个通知名。六个任务通知与触发器事件通知都在公共集合内（服务端确实在发）。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。
 
 ## `_meta` 的位置与强制性
 

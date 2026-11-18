@@ -1,6 +1,6 @@
 # 给 HTTP 服务端加防护
 
-把一个 `StreamableHttpServerTransport` 从「本地能跑」变成「能被公网打」：Bearer 校验、`WWW-Authenticate` 挑战与元数据端点、DPoP、Host/Origin 白名单、体积上限，以及 `Mcp-Param-*` 头与 body 的一致性。协议层会话行为见 [/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server)，客户端侧的 OAuth 见 [/zh/howto/add-oauth-to-a-client](/zh/howto/add-oauth-to-a-client)。
+把一个 `StreamableHttpServerTransport` 武装到可公网部署：Bearer 校验、`WWW-Authenticate` 挑战与元数据端点、DPoP、Host/Origin 白名单、体积上限、`Mcp-Param-*` 头与 body 一致性。协议层会话见 [/zh/howto/run-a-streamable-http-server](/zh/howto/run-a-streamable-http-server)，客户端 OAuth 见 [/zh/howto/add-oauth-to-a-client](/zh/howto/add-oauth-to-a-client)。
 
 ## 前置条件
 

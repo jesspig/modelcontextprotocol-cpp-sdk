@@ -1,6 +1,6 @@
 # 向用户收集输入
 
-服务端在一次工具调用里向用户要结构化输入（`form`）或把人支到站外页面完成确认（`url`），只需 `McpServer::Elicit` 与 `McpServer::ElicitUrl` 两个入口；真正的难点是会话定位与两个协议时代的不同行为。签名与字段表在 [/zh/reference/server](/zh/reference/server) 与 [/zh/reference/types](/zh/reference/types) 维护，机制原理见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions) 与 [/zh/howto/request-extra-input](/zh/howto/request-extra-input)。
+服务端用 `McpServer::Elicit`（`form` 结构化输入）与 `McpServer::ElicitUrl`（`url` 站外确认）在一次工具调用里向用户要输入；难点是会话定位与两时代的行为差异。签名与字段表见 [服务端参考](/zh/reference/server)、[类型参考](/zh/reference/types)，机制见 [协议版本](/zh/learn/protocol-versions)、[MRTR](/zh/howto/request-extra-input)。
 
 ## 前置条件
 
@@ -71,7 +71,7 @@ handler 的骨架是「先回读、再发问」：现代时代 `Elicit` 不直�
 
 ## 完整代码
 
-服务端标识与选项、两个工具的注册、客户端两个 handler、一次端到端调用，全部在上面五个步骤里按区域给出；可编译的完整文件是 `docs/snippets/collect-user-input.cpp`，各区域名依次为 `form-schema`、`read-back`、`outcome`、`form-tool-handler`、`url-tool-handler`、`server-options`、`server-registration`、`client-handlers`、`end-to-end`。
+可编译的完整文件是 `docs/snippets/collect-user-input.cpp`（代码已按区域分散在上面各步骤），区域名依次为 `form-schema`、`read-back`、`outcome`、`form-tool-handler`、`url-tool-handler`、`server-options`、`server-registration`、`client-handlers`、`end-to-end`。
 
 ## 验证
 

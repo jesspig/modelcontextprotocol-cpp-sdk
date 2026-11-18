@@ -48,7 +48,7 @@ auto client = McpClient::Create(
     std::move(transport_pair.client), cl_opts);
 ```
 
-对应 `:39-44`。`ConnectMode::Auto` 会先探测再协商（内存传输属于 stdio 类，探测失败回退 `initialize`，见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)）；`McpClient::Create` 内部完成 `initialize` 与 `notifications/initialized`，所以拿到的客户端已经是可用状态。
+对应 `:39-44`。`ConnectMode::Auto` 会先探测再协商（内存传输属于 stdio 类，探测失败回退 `initialize`，见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)）；`McpClient::Create` 内部完成整轮握手——本例即 `server/discover`，回退或 `Legacy` 档位才是 `initialize` 与 `notifications/initialized`——所以拿到的客户端已经是可用状态。
 
 ## 客户端读取协商结果
 
@@ -58,7 +58,7 @@ std::cout << "Server: " << client->GetServerInfo().name
 std::cout << "Protocol: " << client->GetNegotiatedProtocolVersion() << std::endl;
 ```
 
-对应 `examples/SimpleClient/main.cpp:46-48`。这两个读取是**免费的**：值来自 `initialize` 结果的缓存，不会发请求。排查「谈成了哪个时代」时，先看 `GetNegotiatedProtocolVersion()`，再决定后面该按哪套语义读行为。
+对应 `examples/SimpleClient/main.cpp:46-48`。这两个读取是**免费的**：值来自协商结果的缓存，不会发请求。排查「谈成了哪个时代」时，先看 `GetNegotiatedProtocolVersion()`，再决定后面该按哪套语义读行为。
 
 ## 列工具与调用工具
 

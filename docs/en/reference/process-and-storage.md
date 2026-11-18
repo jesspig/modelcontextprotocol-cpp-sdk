@@ -236,6 +236,7 @@ The transport-side usage of `HttpServer`/`EventStore`/`SessionStore` and the ful
 | `sse_keep_alive_ms` | `int` | `0` (no heartbeat thread) | Only `> 0` starts the KeepAlive thread, which heartbeats every SSE client at that interval |
 | `bind_host` | `std::string` | `""` → `INADDR_ANY` | Accepts bracketed IPv6 literals; an unparseable value throws `std::runtime_error("HttpServer: invalid bind_host: ...")`; the `listen` backlog is fixed at 16 |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes` (4 MiB) | Decided from `Content-Length` before reading, over the limit answers 413; `nullopt` falls back to the same constant |
+| `header_read_budget` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 10s (`kHeaderReadBudget`, an implementation-internal constant) | Total budget for reading the request header block; expiry disconnects as a bad request |
 
 The fields are declared in `include/mcp/http/HttpServer.hpp`; Host/Origin validation, the callback trigger points and the body-size decision are in `src/http/HttpServerImpl.cpp`.
 

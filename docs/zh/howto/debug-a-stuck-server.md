@@ -1,6 +1,6 @@
 # 排查卡住的服务端
 
-请求发出去、石沉大海。这一页把「没有响应」拆成可判定的三类成因，并给出每种情况最短的定位手段：内部日志、日志汇、span 钩子、conformance 复现。协议语义本身见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
+「没有响应」可分为三类成因，对应定位手段：内部日志、日志汇、span 钩子、conformance 复现。协议语义见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
 
 ## 先分类：三种「没反应」
 

@@ -32,7 +32,7 @@
 | 采样（sampling） | 服务端发起、客户端应答 | 可调用但已废弃（SEP-2577），新代码用 elicitation | [/zh/reference/client](/zh/reference/client) |
 | 根目录（roots） | 客户端应答 | 可调用但已废弃（SEP-2577） | [/zh/reference/client](/zh/reference/client) |
 
-采样与根目录的废弃标记落在客户端的设置入口上（`McpClient::SetSamplingHandler`、`McpClient::SetRootsHandler` 带 `[[deprecated]]`），字段与旧时代的线路行为都还在：**没有「已移除」**，在旧时代连接上它们仍然工作。现代时代里 `sampling/createMessage` 不再作为独立请求存在，只能作为多轮往返（MRTR）的输入请求出现，且服务端会先确认客户端声明过采样能力。详见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
+采样与根目录的废弃标记落在客户端的设置入口上（`McpClient::SetSamplingHandler`、`McpClient::SetRootsHandler` 带 `[[deprecated]]`），字段与旧时代的线路行为都还在，在旧时代连接上它们仍然工作。现代时代里 `sampling/createMessage` 不再作为独立请求存在，只能作为多轮往返（MRTR）的输入请求出现，且服务端会先确认客户端声明过采样能力。详见 [/zh/learn/protocol-versions](/zh/learn/protocol-versions)。
 
 ## 两个协议时代
 

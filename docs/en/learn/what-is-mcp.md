@@ -1,8 +1,8 @@
 # What is MCP
 
-The Model Context Protocol is an open standard that specifies how LLM applications discover and invoke external data sources and tools. It defines message shapes and method semantics only: it does not pin an implementation language, does not say how a host assembles context, and does not prescribe how a server stores data.
+The Model Context Protocol is an open standard specifying how LLM applications discover and invoke external data sources and tools. It defines message shapes and method semantics only: no implementation language, no rule for how a host assembles context, and no prescription for how a server stores data.
 
-Pages at this layer answer "what is this, why is it designed this way, where does this SDK draw the line". How to write the code belongs to the reference and how-to layers — start at [/en/reference/index](/en/reference/index).
+Pages here answer "what is this, why is it designed this way, where does this SDK draw the line". Writing the code belongs to the reference and how-to layers — start at [/en/reference/index](/en/reference/index).
 
 ## The Three Roles
 
@@ -12,11 +12,11 @@ Pages at this layer answer "what is this, why is it designed this way, where doe
 | Client | Maintains exactly one connection to one server and relays messages in both directions | Yes: `McpClient` |
 | Server | Exposes capabilities and answers requests from the peer | Yes: `McpServer` |
 
-A host typically holds several clients at once, each connected to a different server. The client is an internal connector inside the host, not the user-facing application — this is the most common point of confusion when first meeting the protocol.
+A host typically holds several clients at once, each connected to a different server. The client is an internal connector inside the host, not the user-facing application — the most common point of confusion when first meeting the protocol.
 
 ## The Message Layer
 
-Every exchange between client and server is a JSON-RPC 2.0 message, expressed by four structs in `include/mcp/JsonRpc.hpp`: request (carries `id`), notification (no `id`), success response, error response. Protocol method names, error codes and capability declarations are all built on those four envelopes, so any extension method the SDK does not model can still be sent verbatim through `SendRequest`.
+Every client–server exchange is a JSON-RPC 2.0 message, expressed by four structs in `include/mcp/JsonRpc.hpp`: request (carries `id`), notification (no `id`), success response, error response. Protocol method names, error codes and capability declarations all build on those four envelopes, so any extension method the SDK does not model can still be sent verbatim through `SendRequest`.
 
 ## Capability Support Matrix
 
@@ -32,11 +32,11 @@ Every exchange between client and server is a JSON-RPC 2.0 message, expressed by
 | Sampling | Server asks, client answers | Callable but deprecated (SEP-2577); new code should use elicitation | [/en/reference/client](/en/reference/client) |
 | Roots | Client answers | Callable but deprecated (SEP-2577) | [/en/reference/client](/en/reference/client) |
 
-The deprecation for sampling and roots sits on the client-side setters (`McpClient::SetSamplingHandler` and `McpClient::SetRootsHandler` carry `[[deprecated]]`); the option fields and the legacy-era wire behaviour are still present. **Nothing was removed** — on a legacy-era connection they still work. In the modern era `sampling/createMessage` no longer exists as a standalone request and can only surface as an input request inside a multi-round-trip interaction, and the server first checks that the client declared the sampling capability. See [/en/learn/protocol-versions](/en/learn/protocol-versions).
+The sampling and roots deprecation sits on the client-side setters (`McpClient::SetSamplingHandler` and `McpClient::SetRootsHandler` carry `[[deprecated]]`); the option fields and legacy-era wire behaviour remain. **Nothing was removed** — on a legacy-era connection they still work. In the modern era `sampling/createMessage` is no longer a standalone request and can only surface as an input request inside a multi-round-trip interaction, with the server first checking that the client declared the sampling capability. See [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
 ## Two Protocol Eras
 
-This SDK supports five protocol versions spanning two eras: the legacy era handshakes with `initialize` and lets the server send reverse requests directly, while the modern era (from `2026-07-28`) uses `server/discover`, per-request `_meta`, multi-round-trip interactions and subscription streams. Any statement about capability availability is meaningless without naming the era. The version matrix is maintained in exactly one place: [/en/learn/protocol-versions](/en/learn/protocol-versions).
+This SDK supports five protocol versions across two eras: the legacy era handshakes with `initialize` and lets the server send reverse requests directly; the modern era (from `2026-07-28`) uses `server/discover`, per-request `_meta`, multi-round-trip interactions and subscription streams. Any capability-availability statement is meaningless without naming the era. The version matrix is maintained in one place: [/en/learn/protocol-versions](/en/learn/protocol-versions).
 
 ## How This SDK Positions Itself
 
@@ -87,7 +87,7 @@ Implementation notes on the official Ruby SDK (`mcp` gem, `main` branch as of 20
 
 ### Unsupported Protocol Features
 
-The following items are explicitly declared unsupported; when a peer sends them, the SDK degrades gracefully (ignores the unknown field or falls back to the baseline path) instead of failing the session.
+The following items are explicitly unsupported; when a peer sends them, the SDK degrades gracefully (ignores the unknown field or falls back to the baseline path) rather than failing the session.
 
 - **Apps UI rendering** — server-pushed UI components are not rendered and pass through as opaque data only.
 - **Full sampling** — sampling is legacy partial only: the deprecated `sampling_handler` covers basic form and single-content sampling, and the modern 2026 era is not treated as a complete sampling capability; full sampling is out of scope for this round and is not counted as a Tier 1 parity closure item.

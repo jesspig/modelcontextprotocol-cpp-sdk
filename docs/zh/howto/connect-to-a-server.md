@@ -1,6 +1,6 @@
 # 连接到一个服务端
 
-`McpClient::Create()` 一次调用把「建立传输 → 版本协商 → 起消息线程」全做完，返回时会话已经可用；难点在于分清 `IClientTransport` 与 `ITransport` 两个类型，以及理解三档协商各自发出什么包。签名与字段表只在 [/zh/reference/client](/zh/reference/client) 维护，本篇只讲操作流程。
+`McpClient::Create()` 一次调用完成「建立传输 → 版本协商 → 起消息线程」，返回时会话已可用；难点是分清 `IClientTransport` 与 `ITransport`，以及理解三档协商各发什么包。本篇只讲操作流程；签名与字段表见 [client 参考](/zh/reference/client)。
 
 ## 前置条件
 

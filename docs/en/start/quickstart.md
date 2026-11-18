@@ -1,6 +1,6 @@
 # Quick Start
 
-Get a server and a client talking in five minutes: register a tool, list tools, call a tool, read the result back. Everything runs in one process over the in-memory transport, so no external host is required.
+Get a server and client talking in five minutes: register a tool, list and call it, then read the result back. Both ends run in one process over the in-memory transport, so no external host is required.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Response: Hello, MCP!
 Done!
 ```
 
-Note the second line: the in-process `InMemoryTransport` pair lets the client probe `server/discover` in the default `Auto` mode, and a successful probe negotiates the modern era (`2026-07-28`). If the handshake goes through `initialize`, the negotiated result can only land in the legacy era (at most `2025-11-25`) — see [Protocol Versions](/en/learn/protocol-versions).
+The second line matters: the in-process `InMemoryTransport` pair lets the client probe `server/discover` in the default `Auto` mode, and a successful probe negotiates the modern era (`2026-07-28`). A handshake through `initialize` can only land in the legacy era (at most `2025-11-25`) — see [Protocol Versions](/en/learn/protocol-versions).
 
 ## 2. Write a minimal server
 
@@ -83,7 +83,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect: a clean build and the full suite passing (currently 18 test targets, 1021 registered cases on Windows). When you only touched an example, build just that target: `cmake --build --preset debug --target SimpleClient`.
+Expect a clean build and the full suite passing (currently 18 test targets, 1021 registered cases on Windows). For an example-only change, build just that target: `cmake --build --preset debug --target SimpleClient`.
 
 ## Common failures
 

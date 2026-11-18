@@ -1,6 +1,6 @@
 # Transports
 
-A transport only moves JSON-RPC envelopes to the peer; it never arbitrates protocol semantics — every era decision happens in the codec layer, see [/en/learn/architecture](/en/learn/architecture). This page covers selection, where the stateful/stateless line falls, where session ids come from, and how the transport category changes version-negotiation fallback. Field tables live in [/en/reference/transports](/en/reference/transports).
+A transport only moves JSON-RPC envelopes to the peer; it never arbitrates protocol semantics — every era decision happens in the codec layer (see [/en/learn/architecture](/en/learn/architecture)). This page covers selection, the stateful/stateless boundary, session-id origin, and how transport category changes version-negotiation fallback. Field tables live in [/en/reference/transports](/en/reference/transports).
 
 ## The Five Transports
 
@@ -12,7 +12,7 @@ A transport only moves JSON-RPC envelopes to the peer; it never arbitrates proto
 | WebSocket | `WebSocketClientTransport` | none | bidirectional frames over TCP | when the peer only offers WebSocket |
 | InMemory | both halves of `InMemoryTransport::CreatePair()` | same | two in-process queues wired together | unit tests and same-process assembly |
 
-Two facts that must be stated plainly: **SSE and WebSocket have client implementations only**. The server-side SSE stream is served by `StreamableHttpServerTransport` on the same endpoint when `enable_legacy_sse` is turned on (off by default; while off no GET route is registered at all, so the listen stream and event replay are unavailable). There is no standalone "SSE server class". Treating InMemory as a network substitute, or expecting to connect to this SDK's server over WebSocket, fails at the very first step because the class does not exist.
+Two facts worth stating plainly: **SSE and WebSocket have client implementations only**. The server-side SSE stream is served by `StreamableHttpServerTransport` on the same endpoint when `enable_legacy_sse` is on (off by default; while off, no GET route is registered, so the listen stream and event replay are unavailable). There is no standalone "SSE server class". Treating InMemory as a network substitute, or connecting to this SDK's server over WebSocket, fails immediately because the class does not exist.
 
 ## How to Choose
 
@@ -22,12 +22,12 @@ Two facts that must be stated plainly: **SSE and WebSocket have client implement
 
 ## Stateful and Stateless
 
-The dividing line is whether the server keeps session state across requests.
+The dividing line is whether the server keeps session state across requests:
 
 - **Stateful**: the server stores the negotiated version, peer capabilities, initialization status and subscription table per session; later requests must carry the same session identifier or they are judged expired.
 - **Stateless**: each request is handled in isolation and the server retains nothing; the request carries all of its own context (the modern era does this with per-request `_meta` holding version and client info, see [/en/learn/protocol-versions](/en/learn/protocol-versions)).
 
-The Streamable HTTP server is stateless by default (`StreamableHttpServerOptions::stateless` defaults to `true`); the HTTP client is stateful by default (`HttpClientTransportOptions::stateless` defaults to `false`), and the two must agree or the client keeps sending a session header the server never recognises. stdio, SSE, WebSocket and InMemory have no notion of a mode: one connection is one session, which is equivalent to stateful.
+The Streamable HTTP server is stateless by default (`StreamableHttpServerOptions::stateless` defaults to `true`); the HTTP client is stateful by default (`HttpClientTransportOptions::stateless` defaults to `false`). The two must agree, or the client keeps sending a session header the server never recognises. stdio, SSE, WebSocket and InMemory have no mode: one connection is one session, equivalent to stateful.
 
 ## Where the Session ID Comes From
 
@@ -45,8 +45,8 @@ Session capacity and idle reclamation are configured on the server's session sto
 
 `ITransport::IsStateless()` is the only channel through which a transport discloses its mode; the server reads it once at construction and narrows functionality accordingly:
 
-- **Multi-round-trip interactions are unavailable**: with a stateless transport `McpServer::IsMrtrSupported()` returns `false` outright — MRTR requires the server to remember "this round is waiting for whose input", and a stateless server cannot. Collecting input repeatedly through elicitation demands a stateful server.
-- **The notification delivery path changes**: no SSE broadcast and no append to the event store; only responses tied to a pending request are delivered as JSON.
+- **Multi-round-trip interactions are unavailable**: with a stateless transport `McpServer::IsMrtrSupported()` returns `false` outright — MRTR requires remembering "this round is waiting for whose input", which a stateless server cannot do. Repeated elicitation therefore demands a stateful server.
+- **The notification delivery path changes**: no SSE broadcast and no event-store append; only responses tied to a pending request are delivered as JSON.
 - **A batch of methods is rejected additionally in stateless mode**: while the request's version header is not pinned to the legacy era, `ping`, `logging/setLevel`, `resources/subscribe` and `resources/unsubscribe` all answer "method not found"; `initialize` is rejected too, but only when the version header is a modern one — a request explicitly pinned to a legacy version may still handshake. Reverse requests (user input collection, sampling, roots) are not covered by this gate: whether they may be sent is decided by the protocol era, see [/en/learn/protocol-versions](/en/learn/protocol-versions).
 - **Version headers must agree**: in stateless mode, a request whose version header differs from the version inside `_meta` is judged a header mismatch.
 
@@ -62,7 +62,7 @@ The default Auto mode probes `server/discover` first, and what happens on a fail
 | second rejection on the corrective retry | hard error, no further fallback | same |
 | any other error code | fall back to `initialize` | fall back to `initialize` |
 
-"stdio-like" is decided from the runtime type and covers exactly two shapes: the in-process transport and the stdio client session transport. Everything else counts as a network transport. The rationale: a local process is either alive or dead, so an unreachable probe almost always means the peer does not know the method; a failed network probe may be packet loss, latency or a broken peer, and falling back silently would mask the real fault — so it throws instead. The corrective retry has a one-shot budget and a second rejection is fatal, which prevents the two ends from probing each other in a loop.
+"stdio-like" is decided from the runtime type and covers exactly two shapes: the in-process transport and the stdio client session transport; everything else is a network transport. Rationale: a local process is either alive or dead, so an unreachable probe almost always means the peer does not know the method; a failed network probe may be packet loss, latency or a broken peer, and a silent fallback would mask the real fault, so it throws. The corrective retry is one-shot and a second rejection is fatal, preventing the two ends from probing each other in a loop.
 
 The three connect modes and which era each lands in are covered in [/en/learn/protocol-versions](/en/learn/protocol-versions).
 

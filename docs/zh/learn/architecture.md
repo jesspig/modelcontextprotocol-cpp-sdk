@@ -23,7 +23,7 @@ mcp-core ──┬── mcp-transport ──┬── mcp-protocol ──┬─
 | `mcp-server` | `mcp-protocol`、`mcp-ext` | `McpServer` 门面、注册 API、任务存储 |
 | `mcp-client` | `mcp-protocol`、`mcp-ext` | `McpClient` 门面、版本协商、OAuth 与令牌缓存 |
 
-`mcp-ext` 是被常见描述漏掉的一环：它不是可选组件，服务端、客户端与 HTTP 三个目标都直接依赖它，链接任一门面时必然一起进二进制。
+`mcp-ext` 不是可选组件：服务端、客户端与 HTTP 三个目标都直接依赖它，链接任一门面时必然一起进二进制。
 
 ## 门面与引擎
 

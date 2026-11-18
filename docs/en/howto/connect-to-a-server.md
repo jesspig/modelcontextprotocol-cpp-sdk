@@ -1,6 +1,6 @@
 # Connect to a Server
 
-`McpClient::Create()` does everything in one call — attach a transport, negotiate the protocol version, start the message thread — so the session is ready when it returns. The tricky part is telling `IClientTransport` apart from `ITransport`, and knowing which packets each negotiation mode actually sends. Signatures and field tables live only in [/en/reference/client](/en/reference/client); this page covers the procedure.
+`McpClient::Create()` does everything in one call — attach a transport, negotiate the protocol version, start the message thread — so the session is ready when it returns. The tricky part is telling `IClientTransport` apart from `ITransport`, and knowing which packets each negotiation mode actually sends. Signatures and field tables: [/en/reference/client](/en/reference/client).
 
 ## Prerequisites
 

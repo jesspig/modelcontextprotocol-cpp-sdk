@@ -1,6 +1,6 @@
 # Call Tools and Read Resources
 
-`tools/call` and `resources/read` are the two outbound paths a client uses most. They look alike but fail differently: a tool-level failure is an `isError` field inside a normal result, while only a protocol-level failure throws `McpError`. Signatures and field tables live only in [/en/reference/client](/en/reference/client) and [/en/reference/types](/en/reference/types); this page covers the procedure and how to read the outcomes.
+`tools/call` and `resources/read` are the two outbound paths a client uses most. They look alike but fail differently: a tool-level failure is an `isError` field inside a normal result, while only a protocol-level failure throws `McpError`. Signatures and field tables: [/en/reference/client](/en/reference/client), [/en/reference/types](/en/reference/types).
 
 ## Prerequisites
 

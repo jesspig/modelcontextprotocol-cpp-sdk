@@ -1,6 +1,6 @@
 # Send Protocol Log Notifications
 
-Stream log lines produced while the server works to the connected MCP client via `notifications/message`: declare the `logging` capability, filter by level, and emit from inside or outside a handler. Signature and field tables live only in [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client) and [/en/reference/types](/en/reference/types); this page only covers the procedure.
+Stream log lines produced while the server works to the connected MCP client via `notifications/message`: declare the `logging` capability, filter by level, and emit from inside or outside a handler. Signature and field tables: [/en/reference/server](/en/reference/server), [/en/reference/client](/en/reference/client), [/en/reference/types](/en/reference/types).
 
 ## Prerequisites
 

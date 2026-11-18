@@ -48,7 +48,7 @@ auto client = McpClient::Create(
     std::move(transport_pair.client), cl_opts);
 ```
 
-From `:39-44`. `ConnectMode::Auto` probes first and then negotiates (the in-memory transport counts as stdio-like, so a failed probe falls back to `initialize` — see [/en/learn/protocol-versions](/en/learn/protocol-versions)); `McpClient::Create` performs `initialize` and `notifications/initialized` internally, so the client you receive is already usable.
+From `:39-44`. `ConnectMode::Auto` probes first and then negotiates (the in-memory transport counts as stdio-like, so a failed probe falls back to `initialize` — see [/en/learn/protocol-versions](/en/learn/protocol-versions)); `McpClient::Create` performs the full handshake internally — here `server/discover`; only fallback or `Legacy` mode use `initialize` and `notifications/initialized` — so the client you receive is already usable.
 
 ## Reading the negotiation result
 
@@ -58,7 +58,7 @@ std::cout << "Server: " << client->GetServerInfo().name
 std::cout << "Protocol: " << client->GetNegotiatedProtocolVersion() << std::endl;
 ```
 
-From `examples/SimpleClient/main.cpp:46-48`. Both reads are **free**: the values come from the cached `initialize` result and issue no request. When you wonder "which era did we agree on?", look at `GetNegotiatedProtocolVersion()` first — it decides how to interpret everything after it.
+From `examples/SimpleClient/main.cpp:46-48`. Both reads are **free**: the values come from the cached negotiation result and issue no request. `GetNegotiatedProtocolVersion()` decides how to interpret everything after it, so check it first.
 
 ## Listing tools and calling a tool
 
@@ -72,7 +72,7 @@ for (const auto& t : tools.tools) {
 }
 ```
 
-From `examples/SimpleClient/main.cpp:50-56`. `ListTools()` fetches **one page** (more exist whenever `next_cursor` is set); use `ListToolsAll()` to collect everything. `t.description` is a `std::optional<std::string>`, and the ternary avoids printing an empty option.
+From `examples/SimpleClient/main.cpp:50-56`. `ListTools()` without a cursor auto-paginates to the last page (up to 64 pages, equivalent to `ListToolsAll()`; pass a cursor explicitly for manual paging — see [/en/howto/call-tools-and-read-resources](/en/howto/call-tools-and-read-resources)); `t.description` is a `std::optional<std::string>`, and the ternary avoids printing an empty option.
 
 ```cpp
 JsonValue args((JsonValue::Object{{"text", JsonValue("Hello, MCP!")}}));
@@ -84,7 +84,7 @@ for (const auto& content : result.content) {
 }
 ```
 
-From `:59-65`. Three idioms worth calling out:
+From `:59-65`:
 
 - The second `CallTool(name, arguments)` parameter is a `std::optional<JsonValue>`; the example builds it inline with `JsonValue::Object{...}`.
 - `result.content` is a `std::vector<ContentVariant>` — a variant array of mixed content types — so you must **test with `std::get_if<TextContent>` before touching `.text`**; assuming everything is text breaks on images or resource links.

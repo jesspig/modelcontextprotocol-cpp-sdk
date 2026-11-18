@@ -312,4 +312,4 @@
 - `include/mcp/Capabilities.hpp`、`include/mcp/Implementation.hpp`、`include/mcp/McpTypes.hpp`、`include/mcp/Methods.hpp`
 - `include/mcp/Log.hpp`、`include/mcp/SpanHooks.hpp`、`include/mcp/CancelToken.hpp`
 - `include/mcp/ErrorCodes.hpp`、`include/mcp/McpError.hpp`、`include/mcp/server/McpTaskStore.hpp`（`TaskState`/`TaskStatus`）
-- `include/mcp/Methods.hpp`、`include/mcp/ProtocolVersion.hpp`、`include/mcp/McpVersion.hpp`
+- `include/mcp/ProtocolVersion.hpp`、`include/mcp/McpVersion.hpp`

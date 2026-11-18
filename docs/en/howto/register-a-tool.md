@@ -1,6 +1,6 @@
 # Register a tool
 
-`McpServer::RegisterTool` turns a local function into an MCP tool: once registered, clients can discover it through `tools/list`, invoke it through `tools/call`, and have their arguments checked against the `inputSchema` you declare. Signature and field tables live only in [/en/reference/server](/en/reference/server) and [/en/reference/types](/en/reference/types); this page covers how to wire them together.
+`McpServer::RegisterTool` turns a local function into an MCP tool: once registered, clients can discover it through `tools/list`, invoke it through `tools/call`, and have their arguments checked against the `inputSchema` you declare. Signature and field tables: [/en/reference/server](/en/reference/server), [/en/reference/types](/en/reference/types).
 
 ## Prerequisites
 

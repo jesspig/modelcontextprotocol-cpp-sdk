@@ -1,6 +1,6 @@
 # 发送协议日志通知
 
-把服务端执行途中产生的日志行，用 MCP 的 `notifications/message` 推给正在连接的客户端：声明 `logging` 能力、按级别过滤、在 handler 内外两种位置发帧。签名与字段表只在 [/zh/reference/server](/zh/reference/server)、[/zh/reference/client](/zh/reference/client) 与 [/zh/reference/types](/zh/reference/types) 维护，本页只讲操作步骤。
+用 `notifications/message` 把服务端执行途中的日志行推给客户端：声明 `logging` 能力、按级别过滤、在 handler 内外两种位置发帧。本页只讲操作步骤；签名与字段表见 [服务端参考](/zh/reference/server)、[client 参考](/zh/reference/client)、[类型参考](/zh/reference/types)。
 
 ## 前置条件
 
