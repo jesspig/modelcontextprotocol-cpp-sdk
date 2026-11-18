@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 实验开关
-description: 服务端 8 开关与客户端 4 开关：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器已实现语义与构造期同步、DPoP 门在传输侧而非 ServerOptions、interceptor 为无门控别名。
-tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容]
-timestamp: 2026-11-18T16:15:39+08:00
+description: 服务端 8 开关与客户端 4 开关：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器已实现语义与构造期同步、DPoP 门在传输侧而非 ServerOptions、interceptor 为无门控别名；澄清 enable_file_input 不等于 files 上传下载扩展。
+tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容, files]
+timestamp: 2026-11-19T01:12:29+08:00
 resource: include/mcp/server/ServerOptions.hpp
 ---
 
@@ -25,6 +25,9 @@ resource: include/mcp/server/ServerOptions.hpp
 | `enable_progressive_discovery` | `tools/list` 支持 `query` 子串过滤 + `pageSize`（1–100）翻页，不再走缓存全量；`subscriptions/listen` 即刷并持开，`list_changed` 按订阅缓冲 | 原路：`tools/list` 走缓存全量返回；`listen` 与 `list_changed` 走原广播路径 |
 | `enable_file_input` | `tools/call` 的 `arguments` 内 `file://`/`resource://` 引用对象按范围切片并内联小文件；`http(s)://` 只透传；越界与超限回错误结果 | 参数原样透传，不做任何引用解析 |
 | `enable_triggers_events` | `RegisterTrigger` 注册表 + `EmitTriggerEvent` 按类型匹配，经订阅过滤投递 `notifications/triggers/event`，命中项的 webhook 失败只记 `Warning` 不抛 | `EmitTriggerEvent` 直接返回（事件静默丢弃）；注册/注销本身不限门 |
+
+> [!note] `enable_file_input` ≠ `io.modelcontextprotocol/files` 扩展
+> `enable_file_input` 只是 `tools/call` 参数 `arguments` 内 `file://`/`resource://` 引用的内联解析能力（本地参数处理）。官方 `io.modelcontextprotocol/files` 扩展（2026-11-10 早期草案，依赖协议版本 `2026-07-28+`，目前无参考实现、目标年底稳定）定义的是客户端与工具之间文件上传/下载的独立协议，本仓库尚未支持该扩展，勿将两者等同；预研结论见 `.handoff/discussions/2026-11-18-files-research.md`。
 
 客户端：
 
