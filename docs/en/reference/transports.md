@@ -266,13 +266,19 @@ Declared in `include/mcp/transport/IRequestCanceller.hpp`.
 | `HttpRequest` | `struct { std::string method; std::string path; std::unordered_map<std::string, std::string> headers; std::string body; }` | — | Inbound request view |
 | `HttpResponse` | `struct` with `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`, `"OK"`, rest empty/`false` | The last two fields control directed SSE writes and close-after-write |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | Route body |
-| `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`, `""`, `kMaxHttpBodyBytes`, `header_read_budget = nullopt` | The transport forwards `host`/`allowed_*` here unchanged |
+| `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`, `""` (= `127.0.0.1` loopback; explicit `0.0.0.0`/`::` still binds all interfaces), `kMaxHttpBodyBytes`, `header_read_budget = nullopt` | The transport forwards `host`/`allowed_*` here unchanged |
 | `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`, plus `void Start()` / `void Stop()` | default-constructed options | Not an `ITransport`; independent lifecycle |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | Exact `(method, path)` match |
 | `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | no tag | `SseClientId = uint64_t`; the tagged overload enables directed broadcast and filtering |
 | `BroadcastSse` | `void BroadcastSse(std::string_view event[, const std::function<bool(const std::string&)>& accept])` | all clients | Predicate form filters by tag |
 
 The interface is declared in `include/mcp/http/HttpServer.hpp`; `src/http/HttpServer.cpp` forwards, and `src/http/HttpServerImpl.cpp` does the scheduling.
+
+::: warning HTTP/SSE/202/bind tightening (source compatible, unchanged API signatures)
+- Old behavior: an empty `bind_host` bound `INADDR_ANY` (all interfaces); request/response `Content-Length` used naive multiply-add with duplicate headers resolved by last value; each SSE path split on `\n\n` independently, recognizing only CRLF/LF with inconsistent handling of a trailing `\r` across chunks; HTTP 202 was only logged, so a request's pending could hang.
+- New behavior: an empty `bind_host` binds only the IPv4 loopback `127.0.0.1`, while the default server card endpoint stays `localhost`; `Content-Length` checks multiplication overflow before comparing with the body limit and rejects empty, non-numeric, duplicate/conflicting and out-of-`size_t` values; `Transfer-Encoding` together with `Content-Length` is rejected, and chunk size overflow plus cumulative body limits are unified; SSE uses one incremental parser where CRLF/LF/CR/mixed endings and a trailing `\r` split across chunks are equivalent, blank lines dispatch events and the event limit is unchanged; 202 only acknowledges notifications (an empty body completes immediately), while a request receiving 202 immediately gets `ProtocolViolation (-32005)` on its pending and the connection is closed/drained without replay.
+- How to adapt: set `HttpServerOptions::bind_host = "0.0.0.0"` (or `"::"` for IPv6) explicitly when all-interface listening is required; make servers answer requests with a real JSON-RPC response/error instead of relying on a later GET/SSE after 202; send a single valid `Content-Length` and never combine it with `Transfer-Encoding`; make SSE servers emit standard CRLF/LF blank-line framing instead of relying on bare CR or trailing-CR chunk boundaries. Constructor and option field signatures are unchanged.
+:::
 
 ### `EventStore`
 

@@ -2,6 +2,7 @@
 #include <transport/detail/net/NetIoUtil.hpp>
 #include <transport/detail/net/TlsSocket.hpp>
 #include <mcp/transport/detail/Url.hpp>
+#include <mcp/detail/HttpFraming.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
 
@@ -19,12 +20,6 @@ namespace {
 constexpr std::size_t kMaxHeaderCount = 100;
 constexpr std::size_t kReadChunk = 8 * 1024;
 constexpr std::chrono::milliseconds kMaxConnectTimeout(10000);
-
-int HexValue(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return c - 'A' + 10;
-}
 
 } // anonymous namespace
 
@@ -142,6 +137,8 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
         std::size_t header_bytes = 0;
         std::size_t header_count = 0;
         bool chunked = false;
+        int transfer_encoding_count = 0;
+        int content_length_count = 0;
         bool has_content_length = false;
         std::size_t content_length = 0;
         for (;;) {
@@ -160,27 +157,34 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
             TrimInPlace(value);
             resp.headers[name] = value;
             if (name == "transfer-encoding") {
+                if (++transfer_encoding_count > 1)
+                    throw McpError(McpErrorCode::ProtocolViolation,
+                                   "duplicate Transfer-Encoding");
                 std::string te = ToLower(value);
-                if (te.find("chunked") != std::string::npos) chunked = true;
+                if (te == "chunked") chunked = true;
                 else throw McpError(McpErrorCode::ProtocolViolation,
                                     "unsupported transfer encoding: " + value);
             } else if (name == "content-length") {
-                if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                if (++content_length_count > 1)
+                    throw McpError(McpErrorCode::ProtocolViolation,
+                                   "duplicate Content-Length");
+                auto parsed = ParseCheckedDecimal(value, max_body_bytes_);
+                if (parsed.error != HttpNumberError::None) {
+                    if (parsed.error == HttpNumberError::LimitExceeded)
+                        throw McpError(McpErrorCode::ProtocolViolation,
+                                       "HTTP response body exceeds size limit");
                     throw McpError(McpErrorCode::ProtocolViolation, "malformed Content-Length");
-                unsigned long long parsed;
-                try {
-                    parsed = std::stoull(value);
-                } catch (const std::out_of_range&) {
-                    throw McpError(McpErrorCode::ProtocolViolation, "Content-Length out of range");
                 }
-                if (parsed > max_body_bytes_)
-                    throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
-                content_length = static_cast<std::size_t>(parsed);
+                content_length = parsed.value;
                 has_content_length = true;
             } else if (name == "connection") {
                 if (ToLower(value).find("close") != std::string::npos) keep_alive = false;
             }
         }
+
+        if (chunked && has_content_length)
+            throw McpError(McpErrorCode::ProtocolViolation,
+                           "response has both Transfer-Encoding and Content-Length");
 
         if (IsRedirectStatus(resp.status_code) &&
             current.redirect_policy != HttpRedirectPolicy::NoFollow) {
@@ -219,10 +223,6 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
                 continue;
             }
         }
-
-        if (chunked && has_content_length)
-            throw McpError(McpErrorCode::ProtocolViolation,
-                           "response has both Transfer-Encoding and Content-Length");
 
         if (chunked) {
             ReadChunkedBody(resp, body_cb, deadline);
@@ -345,10 +345,10 @@ void HttpClient::ReadChunkedBody(HttpResponseInfo& resp,
         std::size_t semicolon = size_line.find(';');
         std::string hex = (semicolon == std::string::npos) ? size_line : size_line.substr(0, semicolon);
         TrimInPlace(hex);
-        if (hex.empty() || hex.size() > 8 || hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+        auto parsed_chunk = ParseCheckedHex(hex, (std::numeric_limits<std::size_t>::max)());
+        if (parsed_chunk.error != HttpNumberError::None)
             throw McpError(McpErrorCode::ProtocolViolation, "malformed chunk size line");
-        std::size_t chunk_len = 0;
-        for (char c : hex) chunk_len = chunk_len * 16 + static_cast<std::size_t>(HexValue(c));
+        std::size_t chunk_len = parsed_chunk.value;
 
         if (chunk_len == 0) {
             for (;;) {
@@ -386,7 +386,7 @@ void HttpClient::ReadUntilEof(HttpResponseInfo& resp, const std::chrono::steady_
                          : tcp_->Read(buffer, sizeof(buffer), remaining);
         }
         if (n > 0) {
-            if (resp.body.size() + n > max_body_bytes_)
+            if (n > max_body_bytes_ - resp.body.size())
                 throw McpError(McpErrorCode::ProtocolViolation, "HTTP response body exceeds size limit");
             resp.body.append(buffer, n);
             continue;

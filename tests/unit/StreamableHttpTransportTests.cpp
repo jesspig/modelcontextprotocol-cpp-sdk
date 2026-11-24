@@ -933,6 +933,102 @@ TEST(StreamableHttpTransportTest, ImmediatePostWhileRequestInFlight) {
     mock.Stop();
 }
 
+TEST(StreamableHttpTransportTest, RequestReceiving202FailsPendingWithProtocolError) {
+    auto port = PickFreePort(kTestBasePort + 1655);
+    HttpServer mock(port);
+    mock.SetHandler("POST", "/mcp", [](const HttpRequest&, HttpResponse& resp) {
+        resp.status_code = 202;
+        resp.status_text = "Accepted";
+        resp.body.clear();
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.enable_listen_stream = false;
+    StreamableHttpClientTransport client(opts);
+    auto session = client.Connect();
+    ASSERT_NE(session, nullptr);
+
+    JsonRpcRequest request;
+    request.method = "tools/call";
+    request.id = int64_t{77};
+    session->SendMessageAsync(std::move(request));
+
+    std::atomic<int> error_code{0};
+    auto& channel = session->GetMessageChannel();
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (ec) return;
+        if (auto* error = AsError(msg))
+            error_code.store(static_cast<int>(error->error.code));
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (error_code.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_EQ(error_code.load(), -32005);
+
+    session->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, EmptyBody202NotificationDoesNotPolluteNextResponse) {
+    auto port = PickFreePort(kTestBasePort + 1656);
+    HttpServer mock(port);
+    std::atomic<int> notifications{0};
+    mock.SetHandler("POST", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
+        auto method = req.headers.find("mcp-method");
+        if (method != req.headers.end() && method->second == "notifications/message") {
+            notifications.fetch_add(1);
+            resp.status_code = 202;
+            resp.status_text = "Accepted";
+            resp.body.clear();
+            return;
+        }
+        resp.body = R"({"jsonrpc":"2.0","id":88,"result":{}})";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.enable_listen_stream = false;
+    StreamableHttpClientTransport client(opts);
+    auto session = client.Connect();
+    ASSERT_NE(session, nullptr);
+
+    JsonRpcNotification note;
+    note.method = "notifications/message";
+    session->SendMessageAsync(std::move(note));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (notifications.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_GE(notifications.load(), 1);
+
+    JsonRpcRequest request;
+    request.method = "tools/list";
+    request.id = int64_t{88};
+    session->SendMessageAsync(std::move(request));
+
+    std::atomic<bool> got_response{false};
+    auto& channel = session->GetMessageChannel();
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (ec) return;
+        if (auto* response = AsResponse(msg)) {
+            if (response->id == RequestId{int64_t{88}}) got_response.store(true);
+        }
+    });
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got_response.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(got_response.load());
+
+    session->Close();
+    mock.Stop();
+}
+
 TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
     auto port = PickFreePort(kTestBasePort + 1550);
     HttpServer mock(port);

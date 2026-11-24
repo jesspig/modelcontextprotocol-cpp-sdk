@@ -7,6 +7,8 @@
 
 #include <transport/detail/net/TcpSocket.hpp>
 #include <transport/detail/net/HttpClient.hpp>
+#include <mcp/detail/HttpFraming.hpp>
+#include <mcp/detail/SseEventParser.hpp>
 #include <mcp/McpError.hpp>
 #include "TestServerUtil.hpp"
 
@@ -17,6 +19,7 @@
 #include <cstddef>
 #include <functional>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -546,4 +549,149 @@ TEST(HttpClientTest, ChunkedBodyTooLargeThrows) {
     req.url = "http://127.0.0.1:" + std::to_string(server.Port()) + "/";
     req.max_response_bytes = 32;
     EXPECT_THROW(client.Request(req), mcp::McpError);
+}
+
+TEST(HttpFramingTest, CheckedDecimalOverflowBeforeLimit) {
+    const auto overflow = mcp::detail::ParseCheckedDecimal(
+        "18446744073709551616", (std::numeric_limits<std::size_t>::max)());
+    EXPECT_EQ(overflow.error, mcp::detail::HttpNumberError::Overflow);
+
+    const auto far_overflow = mcp::detail::ParseCheckedDecimal(
+        std::string(64, '9'), (std::numeric_limits<std::size_t>::max)());
+    EXPECT_EQ(far_overflow.error, mcp::detail::HttpNumberError::Overflow);
+
+    const auto limit = mcp::detail::ParseCheckedDecimal("4194305", 4194304);
+    EXPECT_EQ(limit.error, mcp::detail::HttpNumberError::LimitExceeded);
+
+    const auto at_limit = mcp::detail::ParseCheckedDecimal("4194304", 4194304);
+    EXPECT_EQ(at_limit.error, mcp::detail::HttpNumberError::None);
+    EXPECT_EQ(at_limit.value, std::size_t{4194304});
+
+    EXPECT_EQ(mcp::detail::ParseCheckedDecimal("", 100).error,
+              mcp::detail::HttpNumberError::Empty);
+    EXPECT_EQ(mcp::detail::ParseCheckedDecimal("12x", 100).error,
+              mcp::detail::HttpNumberError::InvalidDigit);
+}
+
+TEST(HttpFramingTest, CheckedHexRejectsOverflow) {
+    const auto overflow = mcp::detail::ParseCheckedHex(
+        "FFFFFFFFFFFFFFFFF", (std::numeric_limits<std::size_t>::max)());
+    EXPECT_EQ(overflow.error, mcp::detail::HttpNumberError::Overflow);
+    const auto valid = mcp::detail::ParseCheckedHex("00000010", 16);
+    EXPECT_EQ(valid.error, mcp::detail::HttpNumberError::None);
+    EXPECT_EQ(valid.value, std::size_t{16});
+}
+
+TEST(HttpClientTest, InvalidAndDuplicateContentLengthRejected) {
+    struct Case {
+        const char* headers;
+    };
+    const Case cases[] = {
+        {"Content-Length: \r\n"},
+        {"Content-Length: 12x\r\n"},
+        {"Content-Length: 18446744073709551616\r\n"},
+        {"Content-Length: 4\r\nContent-Length: 5\r\n"},
+    };
+    for (const auto& item : cases) {
+        TcpTestServer server([&](int fd) {
+            SendRaw(fd, std::string("HTTP/1.1 200 OK\r\n") + item.headers + "\r\n");
+        });
+        net::HttpClient client;
+        net::HttpRequestSpec req;
+        req.method = "GET";
+        req.url = "http://127.0.0.1:" + std::to_string(server.Port()) + "/";
+        EXPECT_THROW(client.Request(req), mcp::McpError);
+    }
+}
+
+TEST(HttpClientTest, ChunkSizeOverflowRejected) {
+    TcpTestServer server([](int fd) {
+        RecvLine(fd);
+        for (;;) {
+            std::string h = RecvLine(fd);
+            if (h == "\r\n" || h == "\n" || h.empty()) break;
+        }
+        SendRaw(fd, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                    "FFFFFFFFFFFFFFFFF\r\n0\r\n\r\n");
+    });
+    net::HttpClient client;
+    net::HttpRequestSpec req;
+    req.method = "GET";
+    req.url = "http://127.0.0.1:" + std::to_string(server.Port()) + "/";
+    EXPECT_THROW(client.Request(req), mcp::McpError);
+}
+
+namespace {
+
+std::vector<mcp::detail::SseEvent> FeedEveryByte(const std::string& stream,
+                                                 std::size_t max_bytes) {
+    mcp::detail::SseIncrementalParser parser(max_bytes);
+    std::vector<mcp::detail::SseEvent> events;
+    for (char c : stream) {
+        auto fed = parser.Feed(std::string_view(&c, 1));
+        for (auto& evt : fed.events) events.push_back(std::move(evt));
+    }
+    for (auto& evt : parser.Flush().events) events.push_back(std::move(evt));
+    return events;
+}
+
+} // namespace
+
+TEST(SseParserTest, LineEndingsAndArbitraryChunksProduceSameEvents) {
+    const std::string crlf = "id: 1\r\ndata: first\r\ndata: second\r\n\r\n: ping\r\n\r\n";
+    const std::string lf = "id: 1\ndata: first\ndata: second\n\n: ping\n\n";
+    const std::string cr = "id: 1\rdata: first\rdata: second\r\r: ping\r\r";
+    const std::string mixed = "id: 1\rdata: first\ndata: second\r\n\r: ping\r\n\r";
+
+    auto expected = FeedEveryByte(crlf, 1024);
+    ASSERT_EQ(expected.size(), std::size_t{1});
+    EXPECT_EQ(expected[0].id, "1");
+    EXPECT_EQ(expected[0].data, "first\nsecond");
+
+    for (const auto& stream : {lf, cr, mixed}) {
+        auto whole = mcp::detail::SseIncrementalParser(1024).Feed(stream).events;
+        auto split = FeedEveryByte(stream, 1024);
+        ASSERT_EQ(whole.size(), std::size_t{1});
+        ASSERT_EQ(split.size(), std::size_t{1});
+        EXPECT_EQ(split[0].id, expected[0].id);
+        EXPECT_EQ(split[0].data, expected[0].data);
+    }
+}
+
+TEST(SseParserTest, TrailingCrRetainedAcrossChunks) {
+    mcp::detail::SseIncrementalParser parser(1024);
+    auto first = parser.Feed("data: abc\r");
+    EXPECT_TRUE(first.events.empty());
+    auto second = parser.Feed("\nid: 9\r");
+    EXPECT_TRUE(second.events.empty());
+    auto third = parser.Feed("\n\n");
+    ASSERT_EQ(third.events.size(), std::size_t{1});
+    EXPECT_EQ(third.events[0].data, "abc");
+    EXPECT_EQ(third.events[0].id, "9");
+}
+
+TEST(SseParserTest, CommentsAndAllFieldsFollowOneRule) {
+    mcp::detail::SseIncrementalParser parser(4096);
+    auto fed = parser.Feed(": comment\n"
+                           "event: endpoint\n"
+                           "id: e-1\n"
+                           "retry: 250\n"
+                           "data: one\n"
+                           "data: two\n"
+                           ": another\n"
+                           "data:\n"
+                           "\n");
+    ASSERT_EQ(fed.events.size(), std::size_t{1});
+    EXPECT_EQ(fed.events[0].event_type, "endpoint");
+    EXPECT_EQ(fed.events[0].id, "e-1");
+    ASSERT_TRUE(fed.events[0].retry_ms.has_value());
+    EXPECT_EQ(*fed.events[0].retry_ms, uint64_t{250});
+    EXPECT_EQ(fed.events[0].data, "one\ntwo\n");
+}
+
+TEST(SseParserTest, EventSizeLimitEnforced) {
+    mcp::detail::SseIncrementalParser parser(8);
+    auto fed = parser.Feed("data: 1234567890\n\n");
+    EXPECT_TRUE(fed.limit_exceeded);
+    EXPECT_TRUE(fed.events.empty());
 }

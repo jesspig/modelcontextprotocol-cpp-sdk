@@ -113,24 +113,15 @@ struct SseBlockParseResult {
 
 SseBlockParseResult ParseSseBlock(const std::string& block) {
     SseBlockParseResult result;
-    detail::ForEachSseLine(block, [&result](std::string_view line) {
-        detail::SseFieldLine field;
-        if (!detail::ParseSseFieldLine(line, field)) return;
-        if (field.name == "data") {
-            detail::AppendSseData(result.data, field.value);
-        } else if (field.name == "id") {
-            result.event_id = std::string(field.value);
-        } else if (field.name == "retry") {
-            if (!field.value.empty() &&
-                field.value.find_first_not_of("0123456789") ==
-                    std::string_view::npos) {
-                try {
-                    result.retry_ms = std::stoull(std::string(field.value));
-                } catch (...) {
-                }
-            }
-        }
-    });
+    detail::SseIncrementalParser parser{(std::numeric_limits<std::size_t>::max)()};
+    auto fed = parser.Feed(block);
+    auto flushed = parser.Flush(true);
+    for (auto& evt : flushed.events) fed.events.push_back(std::move(evt));
+    for (const auto& evt : fed.events) {
+        if (!evt.id.empty()) result.event_id = evt.id;
+        if (evt.retry_ms.has_value()) result.retry_ms = evt.retry_ms;
+        detail::AppendSseData(result.data, evt.data);
+    }
     if (!result.data.empty()) {
         try {
             result.message = DeserializeMessage(result.data);
@@ -139,6 +130,14 @@ SseBlockParseResult ParseSseBlock(const std::string& block) {
         }
     }
     return result;
+}
+
+JsonRpcMessage Make202ForRequestError(const RequestId& id) {
+    JsonRpcErrorResponse err;
+    err.id = id;
+    err.error.code = McpErrorCode::ProtocolViolation;
+    err.error.message = "HTTP 202 Accepted is only valid for notifications";
+    return JsonRpcMessage(std::move(err));
 }
 
 ListenState ListenStateForStatusCode(int status_code) {
@@ -631,7 +630,7 @@ private:
             listen_request_ = nullptr;
             return finish(ListenState::Streaming);
         }
-        std::string pending;
+        detail::SseIncrementalParser parser(SseEventLimit());
         std::array<char, 4096> buf;
         for (;;) {
             if (!running_) break;
@@ -645,23 +644,21 @@ private:
             DWORD nwant = navail < buf.size() ? navail : static_cast<DWORD>(buf.size());
             if (!WinHttpReadData(hRequest, buf.data(), nwant, &nread) || nread == 0)
                 break;
-            pending.append(buf.data(), nread);
-            if (pending.size() > SseEventLimit()) {
+            auto fed = parser.Feed(std::string_view(buf.data(), nread));
+            if (fed.limit_exceeded) {
                 MCP_LOG(Error, "Listen SSE stream exceeded max SSE event size");
                 break;
             }
-            size_t pos;
             bool channel_closed = false;
-            while ((pos = pending.find("\n\n")) != std::string::npos) {
-                std::string block = pending.substr(0, pos);
-                pending.erase(0, pos + 2);
-                if (!ProcessListenBlock(block)) {
+            for (const auto& evt : fed.events) {
+                if (!ProcessListenEvent(evt)) {
                     channel_closed = true;
                     break;
                 }
             }
             if (channel_closed) break;
         }
+        for (const auto& evt : parser.Flush().events) ProcessListenEvent(evt);
         listen_request_ = nullptr;
         return finish(ListenState::Streaming);
     }
@@ -677,20 +674,21 @@ private:
         retry_ms_ = retry_ms;
     }
 
-    bool ProcessListenBlock(const std::string& block) {
-        auto parsed = streamable_http_client_impl::ParseSseBlock(block);
-        if (!parsed.event_id.empty()) {
+    bool ProcessListenEvent(const detail::SseEvent& evt) {
+        if (!evt.id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
-            last_event_id_ = parsed.event_id;
+            last_event_id_ = evt.id;
         }
-        StoreRetryMs(parsed.retry_ms);
-        if (parsed.data.empty()) return true;
-        if (parsed.data.size() > SseEventLimit()) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
+        StoreRetryMs(evt.retry_ms);
+        if (evt.data.empty()) return true;
+        if (evt.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
             return true;
         }
-        if (parsed.message && channel_) {
-            return channel_->Send(std::move(*parsed.message));
+        try {
+            if (channel_) return channel_->Send(DeserializeMessage(evt.data));
+        } catch (...) {
+            MCP_LOG(Error, "HTTP SSE event parse failed");
         }
         return true;
     }
@@ -1009,6 +1007,10 @@ private:
                 DWORD eread = 0;
                 while (WinHttpReadData(hRequest, ebuf.data(), ebuf.size(), &eread) && eread > 0) {
                     err_body.append(ebuf.data(), eread);
+                    if (err_body.size() > detail::kMaxMessageSize) {
+                        MCP_LOG(Error, "HTTP error body exceeded max message size");
+                        break;
+                    }
                     eread = 0;
                 }
                 bool retry = false;
@@ -1079,16 +1081,25 @@ private:
 
             if (status_ok && status_code == 202)
             {
-                bool had_id = false;
-                try {
-                    auto jv = JsonValue::Parse(current_body);
-                    had_id = jv.Contains("id");
-                } catch (...) {
-                }
-                if (had_id) {
+                if (post_request_id.has_value()) {
                     MCP_LOG(Warning, "HTTP POST returned 202 for a request; response lost");
+                    if (running_ && channel_)
+                        (void)channel_->Send(
+                        streamable_http_client_impl::Make202ForRequestError(*post_request_id));
                 } else {
                     MCP_LOG(Info, "HTTP POST accepted (202)");
+                }
+                std::array<char, 4096> dbuf;
+                DWORD dread = 0;
+                std::size_t drained = 0;
+                while (WinHttpReadData(hRequest, dbuf.data(), dbuf.size(), &dread) &&
+                       dread > 0) {
+                    drained += dread;
+                    if (drained > detail::kMaxMessageSize) {
+                        MCP_LOG(Error, "HTTP 202 body exceeded max message size");
+                        break;
+                    }
+                    dread = 0;
                 }
                 WinHttpCloseHandle(hRequest);
                 WinHttpCloseHandle(hConnect);
@@ -1110,7 +1121,7 @@ private:
                 std::optional<RequestId> request_id = post_request_id;
                 SetActivePost(post_key);
                 bool resolved = false;
-                std::string sse_body;
+                detail::SseIncrementalParser parser(SseEventLimit());
                 std::array<char, 4096> sbuf;
                 for (;;) {
                     if (!post_key.empty() && IsRequestCancelled(post_key)) break;
@@ -1126,12 +1137,11 @@ private:
                                                         : static_cast<DWORD>(sbuf.size());
                     if (!WinHttpReadData(hRequest, sbuf.data(), swant, &sread) || sread == 0)
                         break;
-                    sse_body.append(sbuf.data(), sread);
-                    if (sse_body.size() > SseEventLimit()) {
+                    auto fed = parser.Feed(std::string_view(sbuf.data(), sread));
+                    if (fed.limit_exceeded) {
                         sse_request_ = nullptr;
                         ClearActivePost(post_key);
                         ClearRequestCancelled(post_key);
-                        sse_body.clear();
                         MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
                         NotifyError("HTTP SSE event exceeded max SSE event size");
                         WinHttpCloseHandle(hRequest);
@@ -1139,13 +1149,12 @@ private:
                         WinHttpCloseHandle(hSession);
                         return;
                     }
-                    size_t pos;
-                    while ((pos = sse_body.find("\n\n")) != std::string::npos) {
-                        std::string block = sse_body.substr(0, pos);
-                        sse_body.erase(0, pos + 2);
-                        if (DispatchSseBlock(block, is_initialize, request_id))
-                            resolved = true;
+                    for (const auto& evt : fed.events) {
+                        if (DispatchSseEvent(evt, is_initialize, request_id)) resolved = true;
                     }
+                }
+                for (const auto& evt : parser.Flush().events) {
+                    if (DispatchSseEvent(evt, is_initialize, request_id)) resolved = true;
                 }
                 sse_request_ = nullptr;
                 const bool cancelled = !post_key.empty() && IsRequestCancelled(post_key);
@@ -1179,9 +1188,6 @@ private:
                 DWORD read = 0;
                 while (WinHttpReadData(hRequest, buf.data(), buf.size(), &read) && read > 0) {
                     resp_body.append(buf.data(), read);
-                    read = 0;
-                }
-                if (!resp_body.empty()) {
                     if (resp_body.size() > detail::kMaxMessageSize) {
                         MCP_LOG(Error, "HTTP response exceeded max message size");
                         NotifyError("HTTP response exceeded max message size");
@@ -1190,6 +1196,9 @@ private:
                         WinHttpCloseHandle(hSession);
                         return;
                     }
+                    read = 0;
+                }
+                if (!resp_body.empty()) {
                     if (is_initialize) {
                         if (auto v = streamable_http_client_impl::NegotiatedVersionFromResponse(
                                 resp_body)) {
@@ -1313,7 +1322,7 @@ private:
         }
         std::optional<RequestId> wanted = request_id;
         bool matched = false;
-        std::string pending;
+        detail::SseIncrementalParser parser(SseEventLimit());
         std::array<char, 4096> buf;
         auto deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(kHttpTimeoutMs);
@@ -1330,16 +1339,21 @@ private:
             DWORD nwant = navail < buf.size() ? navail : static_cast<DWORD>(buf.size());
             if (!WinHttpReadData(hRequest, buf.data(), nwant, &nread) || nread == 0)
                 break;
-            pending.append(buf.data(), nread);
-            if (pending.size() > SseEventLimit()) {
+            auto fed = parser.Feed(std::string_view(buf.data(), nread));
+            if (fed.limit_exceeded) {
                 MCP_LOG(Error, "Resume SSE stream exceeded max SSE event size");
                 break;
             }
-            size_t pos;
-            while ((pos = pending.find("\n\n")) != std::string::npos) {
-                std::string block = pending.substr(0, pos);
-                pending.erase(0, pos + 2);
-                if (DispatchSseBlock(block, learn_version, wanted)) {
+            for (const auto& evt : fed.events) {
+                if (DispatchSseEvent(evt, learn_version, wanted)) {
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (!matched) {
+            for (const auto& evt : parser.Flush().events) {
+                if (DispatchSseEvent(evt, learn_version, wanted)) {
                     matched = true;
                     break;
                 }
@@ -1349,39 +1363,39 @@ private:
         return finish(matched);
     }
 
-    bool DispatchSseBlock(const std::string& block, bool learn_version,
+    bool DispatchSseEvent(const detail::SseEvent& evt, bool learn_version,
                           const std::optional<RequestId>& request_id) {
-        auto parsed = streamable_http_client_impl::ParseSseBlock(block);
-        if (!parsed.event_id.empty()) {
+        if (!evt.id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
-            last_event_id_ = parsed.event_id;
+            last_event_id_ = evt.id;
         }
-        StoreRetryMs(parsed.retry_ms);
-        if (parsed.data.empty()) return false;
-        if (parsed.data.size() > SseEventLimit()) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
-            NotifyError("HTTP SSE block exceeded max SSE event size");
+        StoreRetryMs(evt.retry_ms);
+        if (evt.data.empty()) return false;
+        if (evt.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
+            NotifyError("HTTP SSE event exceeded max SSE event size");
             return false;
         }
-        if (learn_version && parsed.message) {
+        if (learn_version) {
             if (auto v = streamable_http_client_impl::NegotiatedVersionFromResponse(
-                    parsed.data)) {
+                    evt.data)) {
                 StoreNegotiatedVersion(std::move(*v));
             }
         }
-        if (parsed.message) {
+        try {
+            JsonRpcMessage message = DeserializeMessage(evt.data);
             bool matches = false;
             if (request_id.has_value()) {
-                if (auto* response = AsResponse(*parsed.message)) {
+                if (auto* response = AsResponse(message)) {
                     matches = (response->id == *request_id);
-                } else if (auto* error = AsError(*parsed.message)) {
+                } else if (auto* error = AsError(message)) {
                     matches = (error->id.has_value() && *error->id == *request_id);
                 }
             }
-            DeliverIncoming(std::move(*parsed.message));
+            DeliverIncoming(std::move(message));
             return matches;
-        } else {
-            MCP_LOG(Error, "HTTP SSE block parse failed");
+        } catch (...) {
+            MCP_LOG(Error, "HTTP SSE event parse failed");
             return false;
         }
     }
@@ -1720,7 +1734,7 @@ private:
             if (!running_) return ListenState::Connecting;
             listen_client_ = client.get();
         }
-        std::string pending;
+        detail::SseIncrementalParser parser(SseEventLimit());
         bool stream_active = false;
         bool read_error = false;
         detail::net::HttpResponseInfo resp;
@@ -1730,18 +1744,18 @@ private:
                     stream_active = true;
                     listen_state_ = ListenState::Streaming;
                 }
-                pending.append(chunk.data(), chunk.size());
-                if (pending.size() > SseEventLimit()) {
+                auto fed = parser.Feed(chunk);
+                if (fed.limit_exceeded) {
                     MCP_LOG(Error, "Listen SSE stream exceeded max SSE event size");
                     throw ListenAbort{};
                 }
-                size_t pos;
-                while ((pos = pending.find("\n\n")) != std::string::npos) {
-                    std::string block = pending.substr(0, pos);
-                    pending.erase(0, pos + 2);
-                    if (!ProcessListenBlock(block)) throw ListenAbort{};
+                for (const auto& evt : fed.events) {
+                    if (!ProcessListenEvent(evt)) throw ListenAbort{};
                 }
             });
+            for (const auto& evt : parser.Flush().events) {
+                if (!ProcessListenEvent(evt)) break;
+            }
         } catch (const ListenAbort&) {
         } catch (const std::exception&) {
             read_error = true;
@@ -1769,20 +1783,21 @@ private:
         retry_ms_ = retry_ms;
     }
 
-    bool ProcessListenBlock(const std::string& block) {
-        auto parsed = streamable_http_client_impl::ParseSseBlock(block);
-        if (!parsed.event_id.empty()) {
+    bool ProcessListenEvent(const detail::SseEvent& evt) {
+        if (!evt.id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
-            last_event_id_ = parsed.event_id;
+            last_event_id_ = evt.id;
         }
-        StoreRetryMs(parsed.retry_ms);
-        if (parsed.data.empty()) return true;
-        if (parsed.data.size() > SseEventLimit()) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
+        StoreRetryMs(evt.retry_ms);
+        if (evt.data.empty()) return true;
+        if (evt.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
             return true;
         }
-        if (parsed.message && channel_) {
-            return channel_->Send(std::move(*parsed.message));
+        try {
+            if (channel_) return channel_->Send(DeserializeMessage(evt.data));
+        } catch (...) {
+            MCP_LOG(Error, "HTTP SSE event parse failed");
         }
         return true;
     }
@@ -1909,7 +1924,7 @@ private:
             detail::net::HttpClient client;
             detail::net::HttpResponseInfo resp;
             std::string full_body;
-            std::string sse_pending;
+            detail::SseIncrementalParser parser(SseEventLimit());
             bool post_resolved = false;
             SetActivePost(post_key, &client);
             try {
@@ -1918,18 +1933,19 @@ private:
                     if (full_body.size() > detail::kMaxMessageSize) {
                         throw PostBodyTooLarge{};
                     }
-                    sse_pending.append(chunk.data(), chunk.size());
-                    if (sse_pending.size() > SseEventLimit()) {
+                    auto fed = parser.Feed(chunk);
+                    if (fed.limit_exceeded) {
                         throw PostBodyTooLarge{};
                     }
-                    size_t pos;
-                    while ((pos = sse_pending.find("\n\n")) != std::string::npos) {
-                        std::string block = sse_pending.substr(0, pos);
-                        sse_pending.erase(0, pos + 2);
-                        if (DispatchSseBlock(block, is_initialize, post_request_id))
+                    for (const auto& evt : fed.events) {
+                        if (DispatchSseEvent(evt, is_initialize, post_request_id))
                             post_resolved = true;
                     }
                 });
+                for (const auto& evt : parser.Flush().events) {
+                    if (DispatchSseEvent(evt, is_initialize, post_request_id))
+                        post_resolved = true;
+                }
             } catch (const PostBodyTooLarge&) {
                 ClearActivePost(&client);
                 MCP_LOG(Error, "HTTP response exceeded max message size");
@@ -2022,17 +2038,15 @@ private:
 
             if (resp.status_code == 202)
             {
-                bool had_id = false;
-                try {
-                    auto jv = JsonValue::Parse(body);
-                    had_id = jv.Contains("id");
-                } catch (...) {
-                }
-                if (had_id) {
+                if (post_request_id.has_value()) {
                     MCP_LOG(Warning, "HTTP POST returned 202 for a request; response lost");
+                    if (running_ && channel_)
+                        (void)channel_->Send(
+                        streamable_http_client_impl::Make202ForRequestError(*post_request_id));
                 } else {
                     MCP_LOG(Info, "HTTP POST accepted (202)");
                 }
+                client.Close();
                 return;
             }
 
@@ -2119,24 +2133,29 @@ private:
         }
         SetActivePost(http_detail::KeyFromId(request_id), resume_client.get());
         bool matched = false;
-        std::string pending;
+        detail::SseIncrementalParser parser(SseEventLimit());
         std::optional<RequestId> wanted = request_id;
         try {
             resume_client->Request(resume_req, [&](std::string_view chunk) {
-                pending.append(chunk.data(), chunk.size());
-                if (pending.size() > SseEventLimit()) {
+                auto fed = parser.Feed(chunk);
+                if (fed.limit_exceeded) {
                     throw PostBodyTooLarge{};
                 }
-                size_t pos;
-                while ((pos = pending.find("\n\n")) != std::string::npos) {
-                    std::string block = pending.substr(0, pos);
-                    pending.erase(0, pos + 2);
-                    if (DispatchSseBlock(block, learn_version, wanted)) {
+                for (const auto& evt : fed.events) {
+                    if (DispatchSseEvent(evt, learn_version, wanted)) {
                         matched = true;
                         throw ResumeMatched{};
                     }
                 }
             });
+            if (!matched) {
+                for (const auto& evt : parser.Flush().events) {
+                    if (DispatchSseEvent(evt, learn_version, wanted)) {
+                        matched = true;
+                        break;
+                    }
+                }
+            }
         } catch (const ResumeMatched&) {
         } catch (const PostBodyTooLarge&) {
             MCP_LOG(Error, "HTTP resume stream exceeded max message size");
@@ -2150,39 +2169,39 @@ private:
         return matched;
     }
 
-    bool DispatchSseBlock(const std::string& block, bool learn_version,
+    bool DispatchSseEvent(const detail::SseEvent& evt, bool learn_version,
                           const std::optional<RequestId>& request_id) {
-        auto parsed = streamable_http_client_impl::ParseSseBlock(block);
-        if (!parsed.event_id.empty()) {
+        if (!evt.id.empty()) {
             std::lock_guard<std::mutex> lk(last_event_id_mutex_);
-            last_event_id_ = parsed.event_id;
+            last_event_id_ = evt.id;
         }
-        StoreRetryMs(parsed.retry_ms);
-        if (parsed.data.empty()) return false;
-        if (parsed.data.size() > SseEventLimit()) {
-            MCP_LOG(Error, "HTTP SSE block exceeded max SSE event size");
-            NotifyError("HTTP SSE block exceeded max SSE event size");
+        StoreRetryMs(evt.retry_ms);
+        if (evt.data.empty()) return false;
+        if (evt.data.size() > SseEventLimit()) {
+            MCP_LOG(Error, "HTTP SSE event exceeded max SSE event size");
+            NotifyError("HTTP SSE event exceeded max SSE event size");
             return false;
         }
-        if (learn_version && parsed.message) {
+        if (learn_version) {
             if (auto v = streamable_http_client_impl::NegotiatedVersionFromResponse(
-                    parsed.data)) {
+                    evt.data)) {
                 StoreNegotiatedVersion(std::move(*v));
             }
         }
-        if (parsed.message) {
+        try {
+            JsonRpcMessage message = DeserializeMessage(evt.data);
             bool matches = false;
             if (request_id.has_value()) {
-                if (auto* response = AsResponse(*parsed.message)) {
+                if (auto* response = AsResponse(message)) {
                     matches = (response->id == *request_id);
-                } else if (auto* error = AsError(*parsed.message)) {
+                } else if (auto* error = AsError(message)) {
                     matches = (error->id.has_value() && *error->id == *request_id);
                 }
             }
-            DeliverIncoming(std::move(*parsed.message));
+            DeliverIncoming(std::move(message));
             return matches;
-        } else {
-            MCP_LOG(Error, "HTTP SSE block parse failed");
+        } catch (...) {
+            MCP_LOG(Error, "HTTP SSE event parse failed");
             return false;
         }
     }

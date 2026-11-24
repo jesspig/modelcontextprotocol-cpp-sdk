@@ -17,6 +17,8 @@
 
 namespace mcp {
 
+inline constexpr std::string_view kDefaultBindHost = "127.0.0.1";
+
 struct HttpRequest {
     std::string method;
     std::string path;

@@ -63,52 +63,6 @@ std::string ResolveEndpoint(const std::string& server_url, const std::string& en
     return base + "/" + endpoint;
 }
 
-struct SseEvent {
-    std::string event_type;
-    std::string data;
-    std::string id;
-    std::optional<uint64_t> retry_ms;
-};
-
-std::size_t FindSseBlockBoundary(const std::string& buffer, std::size_t& terminator_bytes) {
-    std::size_t lf = buffer.find("\n\n");
-    std::size_t crlf = buffer.find("\r\n\r\n");
-    if (lf == std::string::npos && crlf == std::string::npos) return std::string::npos;
-    if (crlf != std::string::npos && (lf == std::string::npos || crlf < lf)) {
-        terminator_bytes = 4;
-        return crlf;
-    }
-    terminator_bytes = 2;
-    return lf;
-}
-
-SseEvent ParseSseEvent(const std::string& block) {
-    SseEvent evt;
-    evt.event_type = "message";
-
-    detail::ForEachSseLine(block, [&evt](std::string_view line) {
-        detail::SseFieldLine field;
-        if (!detail::ParseSseFieldLine(line, field) || !field.has_payload) return;
-
-        if (field.name == "event") {
-            evt.event_type = std::string(field.value);
-        } else if (field.name == "data") {
-            detail::AppendSseData(evt.data, field.value);
-        } else if (field.name == "id") {
-            evt.id = std::string(field.value);
-        } else if (field.name == "retry") {
-            if (!field.value.empty() &&
-                field.value.find_first_not_of("0123456789") == std::string_view::npos) {
-                try {
-                    evt.retry_ms = std::stoull(std::string(field.value));
-                } catch (...) {
-                }
-            }
-        }
-    });
-    return evt;
-}
-
 class SseClientSessionTransport final : public TransportBase {
 public:
     SseClientSessionTransport(SseClientTransportOptions options,
@@ -118,6 +72,7 @@ public:
         , http_client_(std::make_unique<detail::net::HttpClient>())
         , post_client_(std::make_unique<detail::net::HttpClient>())
         , options_(std::move(options))
+        , sse_parser_(SseEventLimit())
     {
         AdoptLifecycle(std::move(lifecycle), generation);
     }
@@ -189,24 +144,15 @@ private:
                 if (chunk.empty() || !IsGenerationActive()) return;
                 reconnect_attempts = 0;
 
-                sse_buffer_.append(chunk.data(), chunk.size());
-
-                if (sse_buffer_.size() > SseEventLimit()) {
-                    sse_buffer_.clear();
+                auto fed = sse_parser_.Feed(chunk);
+                if (fed.limit_exceeded) {
+                    sse_parser_ = detail::SseIncrementalParser(SseEventLimit());
                     NotifyError("SSE event size exceeds maximum allowed size");
                     running_.store(false);
                     http_client_->Close();
                     return;
                 }
-
-                std::size_t terminator_bytes = 0;
-                std::size_t pos = 0;
-                while ((pos = FindSseBlockBoundary(sse_buffer_, terminator_bytes)) !=
-                       std::string::npos) {
-                    auto block = sse_buffer_.substr(0, pos);
-                    sse_buffer_.erase(0, pos + terminator_bytes);
-                    DispatchSseEvent(block);
-                }
+                for (const auto& evt : fed.events) DispatchSseEvent(evt);
             };
 
             try {
@@ -241,9 +187,8 @@ private:
         return true;
     }
 
-    void DispatchSseEvent(const std::string& block) {
+    void DispatchSseEvent(const detail::SseEvent& evt) {
         if (!IsGenerationActive()) return;
-        auto evt = ParseSseEvent(block);
         if (evt.retry_ms.has_value()) {
             retry_ms_ = evt.retry_ms;
         }
@@ -277,25 +222,9 @@ private:
     }
 
     void FlushSseBuffer() {
-        if (sse_buffer_.empty())
-            return;
-        std::string pending = std::move(sse_buffer_);
-        sse_buffer_.clear();
-        auto last_nl = pending.find_last_of('\n');
-        if (last_nl == std::string::npos)
-            return;
-        std::string_view complete(pending.data(), last_nl);
-        bool resumable = false;
-        detail::ForEachSseLine(complete, [&resumable](std::string_view line) {
-            detail::SseFieldLine field;
-            if (!detail::ParseSseFieldLine(line, field) || !field.has_payload)
-                return;
-            if (field.name == "id" || field.name == "retry")
-                resumable = true;
-        });
-        if (!resumable)
-            return;
-        DispatchSseEvent(std::string(complete));
+        auto flushed = sse_parser_.Flush();
+        sse_parser_ = detail::SseIncrementalParser(SseEventLimit());
+        for (const auto& evt : flushed.events) DispatchSseEvent(evt);
     }
 
     void SendLoop() {
@@ -346,7 +275,8 @@ private:
     std::unique_ptr<detail::net::HttpClient> post_client_;
     SseClientTransportOptions options_;
     std::string endpoint_url_;
-    std::string sse_buffer_;
+    detail::SseIncrementalParser sse_parser_{
+        (std::numeric_limits<std::size_t>::max)()};
     std::string last_event_id_;
     std::optional<uint64_t> retry_ms_;
 

@@ -266,13 +266,19 @@ WebSocket 握手行为收紧（源码兼容，旧 API 签名不变）：旧行�
 | `HttpRequest` | `struct { std::string method; std::string path; std::unordered_map<std::string, std::string> headers; std::string body; }` | — | 入站请求视图 |
 | `HttpResponse` | `struct`，含 `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`、`"OK"`、其余空/`false` | 后两字段控制 SSE 定向与写完即断 |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | 路由处理体 |
-| `HttpServerOptions` | `struct`，含 `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`、`""`、`kMaxHttpBodyBytes`、`header_read_budget = nullopt` | 传输层把 `host`/`allowed_*` 原样转发到此 |
+| `HttpServerOptions` | `struct`，含 `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`、`""`（= `127.0.0.1` loopback；显式 `0.0.0.0`/`::` 仍可全网监听）、`kMaxHttpBodyBytes`、`header_read_budget = nullopt` | 传输层把 `host`/`allowed_*` 原样转发到此 |
 | `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`，配 `void Start()` / `void Stop()` | 选项默认构造 | 非 `ITransport`，独立生命周期 |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | `(method, path)` 精确匹配 |
 | `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | 无 tag | `SseClientId = uint64_t`；带 tag 版本供定向广播与过滤 |
 | `BroadcastSse` | `void BroadcastSse(std::string_view event[, const std::function<bool(const std::string&)>& accept])` | 全发 | 谓词版按 tag 过滤 |
 
 接口声明在 `include/mcp/http/HttpServer.hpp`，转发层在 `src/http/HttpServer.cpp`，实际调度在 `src/http/HttpServerImpl.cpp`。
+
+::: warning HTTP/SSE/202/bind 行为收紧（源码兼容，旧 API 签名不变）
+- 旧行为：`bind_host` 为空时绑定 `INADDR_ANY`（全网）；请求与响应的 `Content-Length` 用朴素乘加、重复头以最后值覆盖；SSE 各路径自行按 `\n\n` 分块，只有 CRLF/LF 被识别且跨块末尾 `\r` 处理不一致；HTTP 202 无论请求还是通知都只记日志，请求的 pending 可能悬挂。
+- 新行为：`bind_host` 为空只绑定 IPv4 loopback `127.0.0.1`，默认卡片端点仍是 `localhost`；`Content-Length` 先做乘法溢出检查再比 body 上限，空值/非数字/重复冲突/超 `size_t` 确定拒绝，`Transfer-Encoding` 与 `Content-Length` 共存拒绝，chunk size 溢出与累计上限统一；SSE 共用增量解析器，CRLF/LF/单独 CR/混合换行与跨块末尾 `\r` 等价，空行派发、事件上限不变；202 仅确认通知（空 body 直接完成），请求收到 202 立即投递 `ProtocolViolation (-32005)` 并关闭/排空连接，不自动重放。
+- 受影响怎么改：需要全网监听时显式设置 `HttpServerOptions::bind_host = "0.0.0.0"`（IPv6 用 `"::"`）；依赖请求收到 202 后由后续 GET/SSE 补响应的下游应改为让服务端返回正式 JSON-RPC 响应或错误；依赖重复/非法 framing 被宽容的下游应发送合规的单 `Content-Length` 且不同时出现 `Transfer-Encoding`；依赖裸 CR 或跨块尾 `\r` 旧行为的 SSE 服务端应发出标准 CRLF/LF 空行分帧。旧的 `SseClientTransport`/`HttpClientTransportOptions` 构造与 `HttpServerOptions` 字段签名均不变。
+:::
 
 ### `EventStore`
 
