@@ -2,6 +2,8 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpError.hpp>
 
+#include "SchemaValidation.hpp"
+
 #include <cmath>
 #include <cstddef>
 #include <regex>

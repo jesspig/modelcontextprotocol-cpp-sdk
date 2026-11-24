@@ -1,9 +1,9 @@
 ---
 type: Class
 title: FileTaskStore
-description: 文件持久化任务存储：CRUD、AdvanceTaskWithInput、追加句柄关闭后阈值压缩（best-effort）、损坏文件备份 .corrupt、新字段（statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs/inputRequests/inputResponses）持久化。
-tags: [storage, 任务, 原子写入, 回滚, tasks-extension]
-timestamp: 2026-11-18T14:08:29+08:00
+description: 文件持久化任务存储：CRUD、AdvanceTaskWithInput、追加句柄关闭后阈值压缩（best-effort）、中间行损坏备份 .corrupt 后原子重建、末行截断按合法前缀原子重写、新字段持久化。
+tags: [storage, 任务, 原子写入, 回滚, 损坏恢复, tasks-extension]
+timestamp: 2026-11-24T23:00:00+08:00
 resource: include/mcp/storage/FileTaskStore.hpp
 ---
 
@@ -25,9 +25,9 @@ resource: include/mcp/storage/FileTaskStore.hpp
 
 ## 持久化格式
 
-**JSONL 追加 + 阈值压缩**：每条变更追加一行 `{"task_id":"...", "state":{...任务全字段...}}` 或 `{"task_id":"...", "removed":true}`（临时文件名 `<path>.tmp.<pid>.<counter>.<salt>` 语义同 `WriteAtomic` 家族）；追加句柄在独立作用域内关闭后才计数并触发压缩，避免 Windows 上存储自身的句柄阻止 `rename`（UCRT `ofstream` 只共享 `FILE_SHARE_READ|FILE_SHARE_WRITE`，无 `FILE_SHARE_DELETE`）；追加后待处理记录数超过 `kMinCompactThreshold(64) + 存活数×2` 时自动压缩为全量快照（`CompactLocked`），析构 `Flush` 亦压缩。压缩为 **best-effort**：失败只记 Error 日志并把 `pending_records_` 归零，本次追加仍返回成功，避免一次压缩失败让任务会话后续每次写入都抛 `McpError(InternalError)`。旧格式 `{"tasks": {...}}` 单对象文件仍可读（自动识别），且容忍**末尾截断记录**（半行忽略，中途坏行备份 `.corrupt` 后清空重建）。反序列化容缺：缺字段的旧记录仍可读，未知键忽略。状态字段含 `owner`（会话锚定）、`ttl_ms` 等新字段。
+**JSONL 追加 + 阈值压缩**：每条变更追加一行 `{"task_id":"...", "state":{...任务全字段...}}` 或 `{"task_id":"...", "removed":true}`；临时文件 `<path>.tmp.<pid>.<counter>.<salt>` 独占创建、no-follow、创建即收紧权限（详见 [/concepts/storage.md](../concepts/storage.md)）；追加句柄在独立作用域内关闭后才计数并触发压缩，避免 Windows 上存储自身的句柄阻止 `rename`（UCRT `ofstream` 只共享 `FILE_SHARE_READ|FILE_SHARE_WRITE`，无 `FILE_SHARE_DELETE`）；追加后待处理记录数超过 `kMinCompactThreshold(64) + 存活数×2` 时自动压缩为全量快照（`CompactLocked`），析构 `Flush` 亦压缩。压缩为 **best-effort**：失败只记 Error 日志并把 `pending_records_` 归零，本次追加仍返回成功，避免一次压缩失败让任务会话后续每次写入都抛 `McpError(InternalError)`。旧格式 `{"tasks": {...}}` 单对象文件仍可读（自动识别）；反序列化容缺：缺字段的旧记录仍可读，未知键忽略。状态字段含 `owner`（会话锚定）、`ttl_ms` 等新字段。
 
-损坏文件：加载遇坏行把原文件复制为 `<path>.corrupt`（overwrite）后清空重建，复制失败仅记 Error。
+**损坏恢复**：`LoadTasks` 先把记录解析到临时 map，全部验证成功才 `swap` 到 `tasks_`，中途不污染内存。中间行解析失败（或坏行后仍有合法完整行）时先把原文件**字节一致**复制为 `<path>.corrupt`（overwrite），再以恢复出的合法前缀经 `WriteAtomic` 原子重写规范文件；备份失败保留原文件、不发布内存并抛 `McpError(InternalError)`，绝不用空库覆盖证据。末行残片（文件不以 `\n` 结尾且解析失败）只忽略残片并按合法前缀原子重写，避免下一次加载重复忽略；重写失败明确抛错，不伪报恢复成功。备份/重建成功后待处理计数归零。
 
 ## 相关页面
 

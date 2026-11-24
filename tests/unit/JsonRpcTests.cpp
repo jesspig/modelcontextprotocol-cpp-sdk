@@ -3,7 +3,23 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <string_view>
+
 using namespace mcp;
+
+namespace {
+
+void ExpectInvalidMessage(std::string_view payload) {
+    try {
+        (void)DeserializeMessage(payload);
+        ADD_FAILURE() << "expected McpError for " << payload;
+    } catch (const McpError& e) {
+        EXPECT_EQ(e.Code(), McpErrorCode::InvalidRequest);
+    }
+}
+
+} // namespace
 
 TEST(JsonRpcTest, RequestIdIntRoundTrip) {
     RequestId id{int64_t(42)};
@@ -186,4 +202,61 @@ TEST(JsonRpcTest, ErrorDataCodeStaysWithinInt32Range) {
         EXPECT_NE(std::string(e.what()).find("-9999999999999"), std::string::npos);
     }
     EXPECT_TRUE(underflow_rejected);
+}
+
+TEST(JsonRpcTest, MalformedEnvelopeShapesAreRejected) {
+    ExpectInvalidMessage(R"([])");
+    ExpectInvalidMessage(R"(42)");
+    ExpectInvalidMessage(R"("ping")");
+    ExpectInvalidMessage(R"(null)");
+    ExpectInvalidMessage(R"({"method":"tools/list","params":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"1.0","method":"tools/list","params":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":2,"method":"tools/list","params":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","method":"tools/list","id":1,"result":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","method":"tools/list","id":1,"error":{"code":-32601,"message":"x"}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","method":"notifications/initialized","result":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","method":"notifications/initialized","error":{"code":-32601,"message":"x"}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32601,"message":"x"}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","method":"tools/list","id":null,"params":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","result":{}})");
+    ExpectInvalidMessage(R"({"jsonrpc":"2.0","id":null,"result":{}})");
+}
+
+TEST(JsonRpcTest, LegalNotificationAndNullIdErrorStayParsable) {
+    auto notif = DeserializeMessage(
+        R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+    EXPECT_TRUE(IsNotification(notif));
+
+    auto err = DeserializeMessage(
+        R"({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid"}})");
+    auto* error = AsError(err);
+    ASSERT_NE(error, nullptr);
+    EXPECT_FALSE(error->id.has_value());
+    EXPECT_EQ(error->error.code, McpErrorCode::InvalidRequest);
+}
+
+TEST(JsonRpcTest, IdTypeMatrixRejectsNonInt64NonString) {
+    const std::string_view shapes[] = {
+        R"(true)", R"(false)", R"(1.5)", R"(1.0)", R"({})", R"([1])", R"(null)",
+    };
+    for (const auto shape : shapes) {
+        ExpectInvalidMessage(std::string(R"({"jsonrpc":"2.0","id":)") +
+            std::string(shape) + R"(,"method":"tools/list","params":{}})");
+        ExpectInvalidMessage(std::string(R"({"jsonrpc":"2.0","id":)") +
+            std::string(shape) + R"(,"result":{}})");
+        if (shape != R"(null)") {
+            ExpectInvalidMessage(std::string(R"({"jsonrpc":"2.0","id":)") +
+                std::string(shape) +
+                R"(,"error":{"code":-32601,"message":"x"}})");
+        }
+    }
+}
+
+TEST(JsonRpcTest, IntegerAndStringIdTextsRemainDistinctVariants) {
+    auto int_id = RequestIdFromJson(JsonValue(int64_t{1}));
+    auto str_id = RequestIdFromJson(JsonValue(std::string("1")));
+    EXPECT_TRUE(std::holds_alternative<int64_t>(int_id));
+    EXPECT_TRUE(std::holds_alternative<std::string>(str_id));
+    EXPECT_NE(int_id, str_id);
+    EXPECT_NE(RequestIdToJson(int_id), RequestIdToJson(str_id));
 }

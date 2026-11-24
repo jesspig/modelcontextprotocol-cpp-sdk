@@ -35,6 +35,8 @@ bool HasCapability(const ClientCapabilities& caps, const std::string& required) 
 
 constexpr char kErrorDataSupported[] = "supported";
 constexpr char kErrorDataRequested[] = "requested";
+constexpr char kRequestIdIntTag[] = "i:";
+constexpr char kRequestIdStringTag[] = "s:";
 
 void AttachTraceFromRequest(SpanEvent& event, const JsonRpcRequest& req) {
     if (!req.meta || !req.meta->IsObject()) return;
@@ -719,9 +721,9 @@ void McpSessionHandler::ResponseWorkerLoop() {
 }
 
 std::string McpSessionHandler::GetRequestIdKey(const RequestId& rid) {
-    if (std::holds_alternative<int64_t>(rid))
-        return std::to_string(std::get<int64_t>(rid));
-    return std::get<std::string>(rid);
+    if (const auto* number = std::get_if<int64_t>(&rid))
+        return std::string(kRequestIdIntTag) + std::to_string(*number);
+    return std::string(kRequestIdStringTag) + std::get<std::string>(rid);
 }
 
 std::string McpSessionHandler::SessionRequestKey(
@@ -891,7 +893,7 @@ McpSessionHandler::RegisteredRequest McpSessionHandler::RegisterRequest(
     pending->cancel_on_timeout = cancel_on_timeout;
     pending->session_id = req.session_id;
 
-    const std::string id_key = std::to_string(id);
+    const std::string id_key = GetRequestIdKey(pending->id);
     const std::string pending_key =
         SessionRequestKey(pending->session_id, id_key);
     std::optional<std::string> pt_key;
@@ -961,7 +963,7 @@ std::shared_ptr<PendingRequest> McpSessionHandler::RemovePendingByRequestId(
         if (it == pending_.end()) {
             for (auto candidate = pending_.begin(); candidate != pending_.end();
                  ++candidate) {
-                if (candidate->second->request_id != request_id) continue;
+                if (GetRequestIdKey(candidate->second->id) != request_id) continue;
                 it = candidate;
                 break;
             }
@@ -1000,14 +1002,19 @@ void McpSessionHandler::SendNotification(std::string_view method, JsonValue para
 void McpSessionHandler::SendMessage(JsonRpcMessage message) {
     SpanScope span;
     if (span_handler_) span = SpanScope(span_handler_, MakeTransportEvent(SpanKind::TransportSend, message));
+    auto self = shared_from_this();
+    auto sent = std::make_shared<std::atomic<bool>>(false);
+    auto do_send = [self, sent](const JsonRpcMessage& filtered) {
+        if (sent->exchange(true)) return;
+        if (self->closed_.load()) return;
+        InvokeSafely([&] { self->transport_->SendMessageAsync(filtered); },
+                     "outgoing-send");
+    };
     if (outgoing_filters_) {
-        auto self = shared_from_this();
-        outgoing_filters_->Execute(message,
-            [self](const JsonRpcMessage& filtered) {
-                if (!self->closed_.load()) self->transport_->SendMessageAsync(filtered);
-            });
+        InvokeSafely([&] { outgoing_filters_->Execute(message, do_send); },
+                     "outgoing-filter");
     } else {
-        transport_->SendMessageAsync(std::move(message));
+        do_send(message);
     }
 }
 
@@ -1145,6 +1152,12 @@ void McpSessionHandler::NotifySubscribers(
 
                     JsonRpcNotification notif = skeleton;
                     notif.session_id = bucket_session;
+                    const std::string version = VersionFor(bucket_session);
+                    if (!version.empty() && IsModernProtocolVersion(version)) {
+                        RequestMeta meta;
+                        meta.protocol_version = version;
+                        notif.meta = SerializeRequestMeta(meta);
+                    }
                     std::string_view sub_id =
                         entry.session_id.empty() ? id : entry.session_id;
                     (*notif.meta)[detail::kMetaSubscriptionIdKey] =
@@ -1164,7 +1177,7 @@ void McpSessionHandler::NotifySubscribers(
     }
 
     for (auto& msg : outgoing) {
-        transport_->SendMessageAsync(std::move(msg));
+        SendMessage(std::move(msg));
     }
 }
 
@@ -1188,9 +1201,11 @@ void McpSessionHandler::HandleCancelled(const JsonRpcNotification& notif) {
 
     std::string target_id_key;
     if (req_id_val->IsInt()) {
-        target_id_key = std::to_string(req_id_val->GetInt());
+        target_id_key = std::string(kRequestIdIntTag) +
+            std::to_string(req_id_val->GetInt());
     } else if (req_id_val->IsString()) {
-        target_id_key = req_id_val->GetString();
+        target_id_key = std::string(kRequestIdStringTag) +
+            req_id_val->GetString();
     } else {
         return;
     }

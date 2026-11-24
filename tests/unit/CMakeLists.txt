@@ -10,6 +10,14 @@ add_executable(mcp-core-tests
 target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-core-tests)
 
+add_executable(mcp-schema-tests JsonSchema2020Tests.cpp)
+target_link_libraries(mcp-schema-tests PRIVATE mcp-core mcp-test-support GTest::gtest_main)
+if(DEFINED MCP_JSON_SCHEMA_SUITE_DIR)
+    target_compile_definitions(mcp-schema-tests PRIVATE
+        MCP_JSON_SCHEMA_SUITE_DIR="${MCP_JSON_SCHEMA_SUITE_DIR}")
+endif()
+mcp_discover_tests(mcp-schema-tests)
+
 add_executable(mcp-wire-codec-tests
     WireCodecTests.cpp
     SessionHandlerTests.cpp

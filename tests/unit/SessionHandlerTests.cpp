@@ -809,6 +809,316 @@ TEST(SessionHandlerTest, TryAddSubscriptionEntryEvictsExpiredEntryAtLimit) {
               SubscriptionAddOutcome::Added);
 }
 
+namespace {
+
+struct HeldPromises {
+    mutable std::mutex mutex;
+    std::vector<std::promise<JsonValue>> promises;
+
+    void Capture(std::promise<JsonValue> promise) {
+        std::lock_guard<std::mutex> lock(mutex);
+        promises.push_back(std::move(promise));
+    }
+
+    std::size_t Count() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return promises.size();
+    }
+};
+
+struct FilterHarness {
+    std::shared_ptr<FilterPipeline> outgoing = std::make_shared<FilterPipeline>();
+    std::vector<SpanEvent> spans;
+    mutable std::mutex span_mutex;
+    std::shared_ptr<McpSessionHandler> client;
+    std::shared_ptr<McpSessionHandler> server;
+
+    explicit FilterHarness(std::string_view era = kLatestProtocolVersion) {
+        auto pair = InMemoryTransport::CreatePair();
+        client = std::make_shared<McpSessionHandler>(
+            std::move(pair.client), MakeWireCodec(era));
+        server = std::make_shared<McpSessionHandler>(
+            std::move(pair.server), MakeWireCodec(era), nullptr, outgoing);
+        server->SetSpanHandler([this](const SpanEvent& event) {
+            std::lock_guard<std::mutex> lock(span_mutex);
+            spans.push_back(event);
+        });
+        client->Start();
+        server->Start();
+    }
+
+    ~FilterHarness() {
+        client->Close();
+        server->Close();
+    }
+
+    std::size_t SendSpanCount() const {
+        std::lock_guard<std::mutex> lock(span_mutex);
+        std::size_t total = 0;
+        for (const auto& event : spans) {
+            if (event.kind == SpanKind::TransportSend &&
+                event.phase == SpanPhase::Begin) {
+                ++total;
+            }
+        }
+        return total;
+    }
+};
+
+} // namespace
+
+TEST(SessionHandlerTest, RequestIdTypeTagsKeepCancelFlagsSeparate) {
+    HeldPromises held;
+    HandlerPair hp;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held](const JsonRpcRequest&, std::promise<JsonValue> promise) {
+            held.Capture(std::move(promise));
+        });
+
+    auto make_request = [](RequestId id) {
+        JsonRpcRequest request;
+        request.id = std::move(id);
+        request.method = methods::kCallTool;
+        request.params = JsonValue(JsonValue::object_tag);
+        request.meta = JsonValue(JsonValue::object_tag);
+        return request;
+    };
+    hp.client->SendMessage(JsonRpcMessage{make_request(RequestId{int64_t{1}})});
+    hp.client->SendMessage(JsonRpcMessage{make_request(RequestId{std::string("1")})});
+
+    std::shared_ptr<std::atomic<bool>> int_flag;
+    std::shared_ptr<std::atomic<bool>> string_flag;
+    for (int attempt = 0; attempt < 100 && (!int_flag || !string_flag); ++attempt) {
+        int_flag = hp.server->GetIncomingCancellationFlag(RequestId{int64_t{1}});
+        string_flag = hp.server->GetIncomingCancellationFlag(RequestId{std::string("1")});
+        if (!int_flag || !string_flag) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    ASSERT_NE(int_flag, nullptr);
+    ASSERT_NE(string_flag, nullptr);
+    EXPECT_NE(int_flag, string_flag);
+    int_flag->store(true);
+    EXPECT_FALSE(string_flag->load());
+}
+
+TEST(SessionHandlerTest, ResponseIdTypeTagPreventsCrossTypeMatch) {
+    HeldPromises held;
+    HandlerPair hp;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held](const JsonRpcRequest&, std::promise<JsonValue> promise) {
+            held.Capture(std::move(promise));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(5000));
+    for (int attempt = 0; attempt < 100 && held.Count() == 0; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(held.Count(), 1u);
+
+    JsonRpcResponse wrong;
+    wrong.id = RequestId{std::string("1")};
+    wrong.result = JsonValue(JsonValue::object_tag);
+    hp.server->SendMessage(JsonRpcMessage{wrong});
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(200)),
+              std::future_status::timeout);
+
+    JsonRpcResponse right;
+    right.id = RequestId{int64_t{1}};
+    right.result = JsonValue(JsonValue::object_tag);
+    right.result["resultType"] = JsonValue("complete");
+    hp.server->SendMessage(JsonRpcMessage{right});
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_EQ(future.get()["resultType"], JsonValue("complete"));
+}
+
+TEST(SessionHandlerTest, CancelIdTypeTagPreventsCrossTypeMatch) {
+    HeldPromises held;
+    HandlerPair hp;
+    hp.server->SetRequestHandler(methods::kCallTool,
+        [&held](const JsonRpcRequest&, std::promise<JsonValue> promise) {
+            held.Capture(std::move(promise));
+        });
+
+    auto future = hp.client->SendRequest(methods::kCallTool,
+        JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::milliseconds(5000));
+    for (int attempt = 0; attempt < 100 && held.Count() == 0; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(held.Count(), 1u);
+
+    hp.client->CancelRequest(RequestId{std::string("1")});
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(200)),
+              std::future_status::timeout);
+    hp.client->CancelRequest(RequestId{int64_t{1}});
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_EQ(future.get()["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::RequestCancelled));
+}
+
+TEST(SessionHandlerTest, NotifySubscribersRoutesBothErasThroughOneFilteredSendEach) {
+    FilterHarness hp;
+    hp.server->SetNegotiatedProtocolVersion("legacy-session", kLegacyProtocolVersion);
+    hp.server->SetNegotiatedProtocolVersion("modern-session", kLatestProtocolVersion);
+
+    std::atomic<int> filter_seen{0};
+    hp.outgoing->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
+        [&filter_seen](const JsonRpcMessage& message, MessageFilterNext next) {
+            if (IsNotification(message)) ++filter_seen;
+            next(message);
+        }));
+
+    struct Received {
+        std::string session;
+        std::string subscription;
+        bool has_version{false};
+        std::string version;
+    };
+    std::vector<Received> received;
+    std::mutex received_mutex;
+    std::promise<void> both;
+    auto both_future = both.get_future();
+    hp.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&](const JsonRpcNotification& notif) {
+            Received item;
+            item.session = notif.session_id;
+            if (notif.meta) {
+                if (auto* sid = notif.meta->Find(kMetaSubscriptionIdKeyLiteral)) {
+                    item.subscription = sid->GetString();
+                }
+                if (auto* pv = notif.meta->Find("io.modelcontextprotocol/protocolVersion")) {
+                    item.has_version = true;
+                    item.version = pv->GetString();
+                }
+            }
+            std::lock_guard<std::mutex> lock(received_mutex);
+            received.push_back(std::move(item));
+            if (received.size() == 2) both.set_value();
+        });
+
+    SubscriptionEntry legacy;
+    legacy.id = "legacy-sub";
+    legacy.session_id = "client-legacy";
+    legacy.filter.tools_list_changed = true;
+    hp.server->AddSubscriptionEntry(std::move(legacy), "legacy-session");
+    SubscriptionEntry modern;
+    modern.id = "modern-sub";
+    modern.session_id = "client-modern";
+    modern.filter.tools_list_changed = true;
+    hp.server->AddSubscriptionEntry(std::move(modern), "modern-session");
+
+    hp.server->NotifySubscribers(notifications::kToolListChanged,
+        JsonValue(JsonValue::object_tag));
+
+    ASSERT_EQ(both_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    std::lock_guard<std::mutex> lock(received_mutex);
+    ASSERT_EQ(received.size(), 2u);
+    for (const auto& item : received) {
+        if (item.session == "legacy-session") {
+            EXPECT_EQ(item.subscription, std::string("client-legacy"));
+            EXPECT_FALSE(item.has_version);
+        } else {
+            EXPECT_EQ(item.session, std::string("modern-session"));
+            EXPECT_EQ(item.subscription, std::string("client-modern"));
+            EXPECT_TRUE(item.has_version);
+            EXPECT_EQ(item.version, std::string(kLatestProtocolVersion));
+        }
+    }
+    EXPECT_EQ(filter_seen.load(), 2);
+    EXPECT_EQ(hp.SendSpanCount(), std::size_t{2});
+}
+
+TEST(SessionHandlerTest, OutgoingFilterRewriteDropAndFailureSendAtMostOnce) {
+    FilterHarness hp;
+    std::atomic<int> filter_seen{0};
+    hp.outgoing->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
+        [&filter_seen](const JsonRpcMessage& message, MessageFilterNext next) {
+            ++filter_seen;
+            const auto* notif = AsNotification(message);
+            if (!notif) {
+                next(message);
+                return;
+            }
+            if (notif->method == notifications::kToolListChanged) {
+                JsonRpcNotification rewritten = *notif;
+                rewritten.method = notifications::kPromptListChanged;
+                rewritten.meta = notif->meta;
+                (*rewritten.meta)[kMetaSubscriptionIdKeyLiteral] =
+                    JsonValue(std::string("rewritten-sub"));
+                next(rewritten);
+                next(rewritten);
+                return;
+            }
+            if (notif->method == notifications::kResourceUpdated) return;
+            if (notif->method == notifications::kTaskStatus)
+                throw std::runtime_error("filter failed");
+            next(message);
+        }));
+
+    std::atomic<int> prompt_count{0};
+    std::atomic<int> tool_count{0};
+    std::atomic<int> resource_count{0};
+    std::atomic<int> task_count{0};
+    std::promise<void> rewritten;
+    auto rewritten_future = rewritten.get_future();
+    hp.client->SetNotificationHandler(notifications::kPromptListChanged,
+        [&](const JsonRpcNotification& notif) {
+            if (notif.meta) {
+                if (auto* sid = notif.meta->Find(kMetaSubscriptionIdKeyLiteral)) {
+                    if (sid->GetString() == "rewritten-sub") ++prompt_count;
+                }
+            }
+            rewritten.set_value();
+        });
+    hp.client->SetNotificationHandler(notifications::kToolListChanged,
+        [&tool_count](const JsonRpcNotification&) { ++tool_count; });
+    hp.client->SetNotificationHandler(notifications::kResourceUpdated,
+        [&resource_count](const JsonRpcNotification&) { ++resource_count; });
+    hp.client->SetNotificationHandler(notifications::kTaskStatus,
+        [&task_count](const JsonRpcNotification&) { ++task_count; });
+
+    SubscriptionEntry entry;
+    entry.id = "filter-sub";
+    entry.filter.tools_list_changed = true;
+    entry.filter.resource_subscriptions = {"uri-x"};
+    hp.server->AddSubscriptionEntry(std::move(entry));
+
+    hp.server->NotifySubscribers(notifications::kToolListChanged,
+        JsonValue(JsonValue::object_tag));
+    JsonValue updated(JsonValue::object_tag);
+    updated["uri"] = JsonValue("uri-x");
+    hp.server->NotifySubscribers(notifications::kResourceUpdated,
+        std::move(updated), std::string("uri-x"));
+    hp.server->NotifySubscribers(notifications::kTaskStatus,
+        JsonValue(JsonValue::object_tag));
+
+    EXPECT_EQ(rewritten_future.wait_for(std::chrono::seconds(3)),
+              std::future_status::ready);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(filter_seen.load(), 3);
+    EXPECT_EQ(prompt_count.load(), 1);
+    EXPECT_EQ(tool_count.load(), 0);
+    EXPECT_EQ(resource_count.load(), 0);
+    EXPECT_EQ(task_count.load(), 0);
+    EXPECT_EQ(hp.SendSpanCount(), std::size_t{3});
+}
+
+TEST(SessionHandlerTest, SendAfterCloseWithFilterDoesNotThrowOrSend) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto filters = std::make_shared<FilterPipeline>();
+    filters->AddFilter(std::make_shared<MessageFilterFuncAdapter>(
+        [](const JsonRpcMessage& message, MessageFilterNext next) { next(message); }));
+    auto handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(kLatestProtocolVersion), nullptr, filters);
+    handler->Start();
+    handler->Close();
+    EXPECT_NO_THROW(handler->SendNotification(notifications::kToolListChanged));
+}
+
 TEST(SessionHandlerTest, MaxTotalTimeoutCapsProgressExtensions) {
     HandlerPair hp;
     hp.client->SetMaxTotalTimeout(std::chrono::seconds(2));
