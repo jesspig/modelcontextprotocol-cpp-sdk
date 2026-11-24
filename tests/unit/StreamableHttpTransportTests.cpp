@@ -5,6 +5,7 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/SessionStore.hpp>
 #include <mcp/ext/DPoP.hpp>
+#include <mcp/Log.hpp>
 #include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
 
@@ -3152,4 +3153,485 @@ TEST(StreamableHttpTransportTest, StatelessRequestsAreIndependentConnections) {
 
     server.Close();
     consumer.join();
+}
+
+namespace session_isolation_test_impl {
+
+using HeaderMap = std::unordered_map<std::string, std::string>;
+
+mcp::detail::net::HttpResponseInfo SendHttp(
+    const std::string& method, uint16_t port, const std::string& body,
+    const HeaderMap& headers)
+{
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = method;
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.body = body;
+    req.timeout = std::chrono::seconds(5);
+    for (const auto& [key, value] : headers) req.headers[key] = value;
+    return client.Request(req);
+}
+
+std::string Bearer(const std::string& token) { return "Bearer " + token; }
+
+int64_t NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void SaveSession(const std::shared_ptr<SessionStore>& store,
+                 const std::string& session_id, int64_t age_ms = 0)
+{
+    SessionRecord record;
+    record.protocol_version = "2025-03-26";
+    record.created_at_ms = NowMs() - age_ms;
+    record.last_seen_ms = record.created_at_ms;
+    store->Save(session_id, record);
+}
+
+StreamableHttpServerOptions AuthOptions(uint16_t port,
+                                        std::shared_ptr<SessionStore> store)
+{
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    opts.session_store = std::move(store);
+    opts.bearer_auth = StreamableHttpServerOptions::BearerAuthConfig{};
+    opts.bearer_auth->resource_metadata_url =
+        "http://127.0.0.1:" + std::to_string(port) +
+        "/.well-known/oauth-protected-resource";
+    opts.bearer_auth->serve_metadata_endpoint = false;
+    opts.bearer_auth->verify = [](const std::string& token) {
+        AuthResult result;
+        result.ok = token == "alice-token" || token == "bob-token" ||
+                    token == "token-super-secret-value";
+        if (token == "alice-token" || token == "token-super-secret-value")
+            result.principal = "alice";
+        if (token == "bob-token") result.principal = "bob";
+        if (result.ok) result.scopes = {"mcp:read"};
+        return result;
+    };
+    return opts;
+}
+
+void SendRawResult(StreamableHttpServerTransport& server, const RequestId& id,
+                   const std::string& session_id, const std::string& winner)
+{
+    JsonRpcResponse response;
+    response.id = id;
+    response.session_id = session_id;
+    JsonValue result(JsonValue::object_tag);
+    result["winner"] = JsonValue(winner);
+    response.result = std::move(result);
+    server.SendMessageAsync(JsonRpcMessage(std::move(response)));
+}
+
+struct LogCapture {
+    std::vector<std::string> records;
+    LogLevel previous{LogLevel::Off};
+    LogCapture() {
+        previous = GetLogLevel();
+        SetLogLevel(LogLevel::Info);
+        SetLogHandler([this](const LogRecord& record) {
+            records.emplace_back(record.message);
+        });
+    }
+    ~LogCapture() {
+        SetLogHandler(nullptr);
+        SetLogLevel(previous);
+    }
+};
+
+} // namespace session_isolation_test_impl
+
+using namespace session_isolation_test_impl;
+
+TEST(SessionIsolationTest, AuthenticatedContextCarriesPrincipalAndRedactedSession) {
+    auto port = PickFreePort(kTestBasePort + 2200);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-context-alice");
+    auto opts = AuthOptions(port, store);
+    std::vector<ServerRequestContext> observed;
+    opts.on_authenticated = [&](const ServerRequestContext& ctx) {
+        observed.push_back(ctx);
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-context-alice"}});
+
+    EXPECT_EQ(resp.status_code, 202);
+    ASSERT_EQ(observed.size(), size_t{1});
+    EXPECT_TRUE(observed[0].IsSessionful());
+    EXPECT_FALSE(observed[0].IsStateless());
+    EXPECT_EQ(observed[0].Principal(), "alice");
+    EXPECT_EQ(observed[0].SessionId(), "sess-context-alice");
+    ASSERT_EQ(observed[0].Scopes().size(), size_t{1});
+    EXPECT_EQ(observed[0].Scopes()[0], "mcp:read");
+    EXPECT_EQ(observed[0].RedactedSession().substr(0, 4), "sid-");
+    EXPECT_EQ(observed[0].CorrelationId().substr(0, 4), "cid-");
+    EXPECT_EQ(observed[0].RedactedSession().find("sess-context-alice"),
+              std::string::npos);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, TwoPrincipalsOnSameSessionFailClosed) {
+    auto port = PickFreePort(kTestBasePort + 2220);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-shared");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto first = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-shared"}});
+    auto conflict = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-shared"}});
+    auto again = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-shared"}});
+
+    EXPECT_EQ(first.status_code, 202);
+    EXPECT_EQ(conflict.status_code, 403);
+    EXPECT_EQ(again.status_code, 202);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, ForgedPrincipalInBodyAndMetaIsIgnored) {
+    auto port = PickFreePort(kTestBasePort + 2240);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-forged");
+    auto opts = AuthOptions(port, store);
+    std::vector<ServerRequestContext> observed;
+    opts.on_authenticated = [&](const ServerRequestContext& ctx) {
+        observed.push_back(ctx);
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    const std::string body = R"({"jsonrpc":"2.0","method":"notifications/initialized",)"
+        R"("params":{"owner":"attacker","principal":"attacker",)"
+        R"("_meta":{"principal":"attacker","owner":"attacker"}}})";
+    auto resp = SendHttp("POST", port, body,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-forged"}});
+
+    EXPECT_EQ(resp.status_code, 202);
+    ASSERT_EQ(observed.size(), size_t{1});
+    EXPECT_EQ(observed[0].Principal(), "alice");
+    server.Close();
+}
+
+TEST(SessionIsolationTest, ExpiredAndRevokedSessionsFailClosed) {
+    auto port = PickFreePort(kTestBasePort + 2260);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-expired", 31 * 60 * 1000);
+    SaveSession(store, "sess-revoked");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto expired = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-expired"}});
+    auto live = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-revoked"}});
+    store->Remove("sess-revoked");
+    auto revoked = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-revoked"}});
+
+    EXPECT_EQ(expired.status_code, 404);
+    EXPECT_EQ(live.status_code, 202);
+    EXPECT_EQ(revoked.status_code, 404);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, StatelessContextIsExplicitlyMarkedWithoutSession) {
+    auto port = PickFreePort(kTestBasePort + 2280);
+    auto opts = AuthOptions(port, nullptr);
+    opts.stateless = true;
+    std::vector<ServerRequestContext> observed;
+    opts.on_authenticated = [&](const ServerRequestContext& ctx) {
+        observed.push_back(ctx);
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")}});
+
+    EXPECT_EQ(resp.status_code, 202);
+    ASSERT_EQ(observed.size(), size_t{1});
+    EXPECT_TRUE(observed[0].IsStateless());
+    EXPECT_FALSE(observed[0].IsSessionful());
+    EXPECT_TRUE(observed[0].SessionId().empty());
+    EXPECT_EQ(observed[0].RedactedSession(), "stateless");
+    EXPECT_EQ(observed[0].Principal(), "alice");
+    server.Close();
+}
+
+TEST(SessionIsolationTest, DeleteRequiresValidCredentialBeforeAnyStoreAccess) {
+    auto port = PickFreePort(kTestBasePort + 2300);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-auth");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-auth"}});
+    auto missing = SendHttp("DELETE", port, "", {{"Mcp-Session-Id", "sess-delete-auth"}});
+    auto invalid = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("wrong-token")},
+         {"Mcp-Session-Id", "sess-delete-auth"}});
+    auto valid = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-auth"}});
+
+    EXPECT_EQ(bind.status_code, 202);
+    EXPECT_EQ(missing.status_code, 401);
+    EXPECT_EQ(invalid.status_code, 401);
+    EXPECT_EQ(valid.status_code, 200);
+    EXPECT_FALSE(store->Load("sess-delete-auth").has_value());
+    server.Close();
+}
+
+TEST(SessionIsolationTest, DeleteByNonOwnerHasNoSideEffect) {
+    auto port = PickFreePort(kTestBasePort + 2320);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-owner");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto foreign = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto still_alive = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto owner = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto gone = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+
+    EXPECT_EQ(bind.status_code, 202);
+    EXPECT_EQ(foreign.status_code, 404);
+    EXPECT_EQ(still_alive.status_code, 202);
+    EXPECT_EQ(owner.status_code, 200);
+    EXPECT_EQ(gone.status_code, 404);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, UnknownAndForeignSessionDeleteAreIndistinguishable) {
+    auto port = PickFreePort(kTestBasePort + 2340);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-known");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-known"}});
+    auto unknown = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-unknown"}});
+    auto foreign = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-delete-known"}});
+
+    EXPECT_EQ(bind.status_code, 202);
+    EXPECT_EQ(unknown.status_code, foreign.status_code);
+    EXPECT_EQ(unknown.body, foreign.body);
+    EXPECT_EQ(unknown.status_code, 404);
+    EXPECT_TRUE(store->Load("sess-delete-known").has_value());
+    server.Close();
+}
+
+TEST(SessionIsolationTest, ConcurrentDeletesDoNotDoubleSideEffects) {
+    auto port = PickFreePort(kTestBasePort + 2360);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-concurrent");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-concurrent"}});
+    ASSERT_EQ(bind.status_code, 202);
+
+    std::atomic<int> ok_count{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back([&] {
+            auto resp = SendHttp("DELETE", port, "",
+                {{"Authorization", Bearer("alice-token")},
+                 {"Mcp-Session-Id", "sess-delete-concurrent"}});
+            if (resp.status_code == 200) ok_count.fetch_add(1);
+        });
+    }
+    for (auto& worker : workers) worker.join();
+
+    EXPECT_GE(ok_count.load(), 1);
+    EXPECT_FALSE(store->Load("sess-delete-concurrent").has_value());
+    server.Close();
+}
+
+TEST(SessionIsolationTest, CloseDuringDeleteDoesNotSelfJoin) {
+    auto port = PickFreePort(kTestBasePort + 2390);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-close");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-close"}});
+    ASSERT_EQ(bind.status_code, 202);
+
+    std::atomic<bool> finished{false};
+    std::thread deleter([&] {
+        try {
+            (void)SendHttp("DELETE", port, "",
+                {{"Authorization", Bearer("alice-token")},
+                 {"Mcp-Session-Id", "sess-delete-close"}});
+        } catch (...) {
+        }
+        finished.store(true);
+    });
+    server.Close();
+    deleter.join();
+    EXPECT_TRUE(finished.load());
+}
+
+TEST(SessionIsolationTest, PendingRequestsWithSameIdDoNotCrosstalk) {
+    auto port = PickFreePort(kTestBasePort + 2380);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-pending-a");
+    SaveSession(store, "sess-pending-b");
+    auto opts = AuthOptions(port, store);
+    opts.request_timeout = std::chrono::seconds(5);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind_a = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-pending-a"}});
+    auto bind_b = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-pending-b"}});
+    ASSERT_EQ(bind_a.status_code, 202);
+    ASSERT_EQ(bind_b.status_code, 202);
+    for (int i = 0; i < 2; ++i) {
+        std::promise<void> drained;
+        auto drained_future = drained.get_future();
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code, JsonRpcMessage) {
+                try { drained.set_value(); } catch (...) {}
+            });
+        drained_future.wait();
+    }
+
+    const std::string body = R"({"jsonrpc":"2.0","id":777,"method":"tools/call",)"
+        R"("params":{"name":"probe","arguments":{}}})";
+    mcp::detail::net::HttpResponseInfo result_a;
+    mcp::detail::net::HttpResponseInfo result_b;
+    std::thread caller_a([&] {
+        result_a = SendHttp("POST", port, body,
+            {{"Authorization", Bearer("alice-token")},
+             {"Mcp-Session-Id", "sess-pending-a"}});
+    });
+    std::thread caller_b([&] {
+        result_b = SendHttp("POST", port, body,
+            {{"Authorization", Bearer("bob-token")},
+             {"Mcp-Session-Id", "sess-pending-b"}});
+    });
+
+    std::vector<JsonRpcRequest> received;
+    std::mutex received_mutex;
+    for (int i = 0; i < 2; ++i) {
+        std::promise<void> one;
+        auto one_future = one.get_future();
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (!ec) {
+                    if (auto* req = AsRequest(msg)) {
+                        std::lock_guard<std::mutex> lock(received_mutex);
+                        received.push_back(*req);
+                    }
+                }
+                try { one.set_value(); } catch (...) {}
+            });
+        one_future.wait();
+    }
+    ASSERT_EQ(received.size(), size_t{2});
+    for (auto it = received.rbegin(); it != received.rend(); ++it) {
+        SendRawResult(server, it->id, it->session_id,
+                      it->session_id == "sess-pending-a" ? "alice" : "bob");
+    }
+    caller_a.join();
+    caller_b.join();
+
+    EXPECT_EQ(result_a.status_code, 200);
+    EXPECT_EQ(result_b.status_code, 200);
+    EXPECT_NE(result_a.body.find("alice"), std::string::npos);
+    EXPECT_EQ(result_a.body.find("bob"), std::string::npos);
+    EXPECT_NE(result_b.body.find("bob"), std::string::npos);
+    EXPECT_EQ(result_b.body.find("alice"), std::string::npos);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, LogsRedactCredentialsAndSessionIdentifiers) {
+    auto port = PickFreePort(kTestBasePort + 2400);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-log-secret");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    LogCapture capture;
+    auto resp = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("token-super-secret-value")},
+         {"Mcp-Session-Id", "sess-log-secret"}});
+    EXPECT_EQ(resp.status_code, 202);
+    bool saw_context = false;
+    for (const auto& record : capture.records) {
+        EXPECT_EQ(record.find("token-super-secret-value"), std::string::npos);
+        EXPECT_EQ(record.find("Bearer"), std::string::npos);
+        EXPECT_EQ(record.find("Authorization"), std::string::npos);
+        EXPECT_EQ(record.find("sess-log-secret"), std::string::npos);
+        if (record.find("correlation=cid-") != std::string::npos &&
+            record.find("session=sid-") != std::string::npos) {
+            saw_context = true;
+        }
+    }
+    EXPECT_TRUE(saw_context);
+    server.Close();
 }

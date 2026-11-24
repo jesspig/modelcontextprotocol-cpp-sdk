@@ -16,6 +16,7 @@ public:
     explicit FileTaskStore(std::filesystem::path storage_path);
     ~FileTaskStore() override;
 
+    using IMcpTaskStore::CreateTask;
     TaskState CreateTask(const std::string& task_id) override;
     TaskState CreateTask(const std::string& task_id,
                           const std::string& owner,
@@ -38,6 +39,8 @@ public:
     bool RemoveTask(const std::string& task_id) override;
     std::vector<std::string> GetExpiredTaskIds(int64_t now_ms) override;
     bool SetTaskOwner(const std::string& task_id, const std::string& owner) override;
+    bool SetTaskScopes(const std::string& task_id,
+                       const std::vector<std::string>& scopes) override;
     bool SetTaskTtl(const std::string& task_id, int64_t ttl_ms) override;
 
 private:

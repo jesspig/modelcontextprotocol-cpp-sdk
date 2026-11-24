@@ -1030,8 +1030,8 @@ bool McpServer::IsTaskOwnedBySession(const TaskState& task,
 }
 
 std::string McpServer::TaskOwnerFor(const JsonRpcRequest& req) const {
+    if (auto principal = AuthenticatedPrincipalFor(req)) return *principal;
     const std::string session = req.session_id.empty() ? session_id_ : req.session_id;
-    if (auto principal = AuthenticatedPrincipalFor(session)) return *principal;
     return session;
 }
 
@@ -1061,9 +1061,37 @@ std::optional<std::string> McpServer::AuthenticatedPrincipalFor(
     return std::nullopt;
 }
 
+std::optional<std::string> McpServer::AuthenticatedPrincipalFor(
+    const JsonRpcRequest& req) const
+{
+    if (req.request_context && !req.request_context->Principal().empty())
+        return std::string(req.request_context->Principal());
+    return AuthenticatedPrincipalFor(req.session_id);
+}
+
+std::vector<std::string> McpServer::AuthorizedScopesFor(
+    const JsonRpcRequest& req) const
+{
+    if (!req.request_context) return {};
+    return req.request_context->Scopes();
+}
+
+bool McpServer::TaskScopeAllows(const TaskState& task,
+                                const JsonRpcRequest& req) const
+{
+    if (task.authorized_scopes.empty()) return true;
+    const auto current = AuthorizedScopesFor(req);
+    if (current.empty()) return true;
+    for (const auto& recorded : task.authorized_scopes) {
+        if (std::find(current.begin(), current.end(), recorded) != current.end())
+            return true;
+    }
+    return false;
+}
+
 void McpServer::RequireTaskPrincipal(const JsonRpcRequest& req) const {
     if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion(req.session_id))) return;
-    if (AuthenticatedPrincipalFor(req.session_id)) return;
+    if (AuthenticatedPrincipalFor(req)) return;
     MCP_LOG(Warning, "task access denied: no authenticated principal");
     throw McpError(McpErrorCode::TaskNotFound,
         "task access requires an authenticated principal");
@@ -1623,7 +1651,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
-                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req))) {
+                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req)) || !TaskScopeAllows(*task, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1677,7 +1705,7 @@ void McpServer::WireTaskHandlers() {
                         return;
                     }
                     auto existing = store->GetTask(params.task_id);
-                    if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                    if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req)) || !TaskScopeAllows(*existing, req)) {
                         p.set_exception(std::make_exception_ptr(
                             McpError(McpErrorCode::InvalidParams,
                                      "task not found: " + params.task_id)));
@@ -1845,7 +1873,7 @@ void McpServer::WireTaskHandlers() {
                     return;
                 }
                 auto target = store->GetTask(params.task_id);
-                if (!target || !IsTaskOwnedBySession(*target, TaskOwnerFor(req))) {
+                if (!target || !IsTaskOwnedBySession(*target, TaskOwnerFor(req)) || !TaskScopeAllows(*target, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1921,7 +1949,7 @@ void McpServer::WireTaskHandlers() {
                 CancelTaskRequestParams params;
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
                 auto existing = store->GetTask(params.task_id);
-                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req)) || !TaskScopeAllows(*existing, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1984,7 +2012,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
-                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req))) {
+                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req)) || !TaskScopeAllows(*task, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -2007,7 +2035,7 @@ void McpServer::WireTaskHandlers() {
                 JsonValue tasks_arr(JsonValue::array_tag);
                 auto all_tasks = store->GetAllTasks();
                 for (const auto& t : all_tasks) {
-                    if (!IsTaskOwnedBySession(t, owner)) continue;
+                    if (!IsTaskOwnedBySession(t, owner) || !TaskScopeAllows(t, req)) continue;
                     JsonValue entry(JsonValue::object_tag);
                     entry[detail::kTaskId] = t.task_id;
                     entry["status"] = TaskStatusToWireString(t.status);
@@ -2042,7 +2070,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto existing = store->GetTask(params.task_id);
-                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req)) || !TaskScopeAllows(*existing, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::TaskNotFound,
                                  "task not found: " + params.task_id)));
@@ -2240,6 +2268,7 @@ void McpServer::HandleCallTool(
         params = DeserializeCallToolRequestParams(*req.params);
     }
     const std::string task_owner = TaskOwnerFor(req);
+    const auto task_scopes = AuthorizedScopesFor(req);
     if (req.meta) {
         RequestMeta incoming;
         try {
@@ -2576,7 +2605,7 @@ void McpServer::HandleCallTool(
             };
             TaskStatus terminal_status = TaskStatus::Completed;
             try {
-                store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
+                store->CreateTask(task_id, task_owner, task_scopes, kDefaultTaskTtlMs);
                 (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
                 if (cancel_flag->load()) {
                     (void)store->SetTaskStatus(task_id, TaskStatus::Cancelled);
@@ -2612,7 +2641,7 @@ void McpServer::HandleCallTool(
             std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
             running_task_cancel_flags_[task_id] = cancel_flag;
         }
-        store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
+        store->CreateTask(task_id, task_owner, task_scopes, kDefaultTaskTtlMs);
         (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
         (void)store->SetTaskStatus(task_id, TaskStatus::Working);
         if (modern) {

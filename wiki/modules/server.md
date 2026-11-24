@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-11-18T16:15:39+08:00
+timestamp: 2026-11-24T23:00:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -56,6 +56,7 @@ resource: src/server/McpServer.cpp
 - `SendLoggingMessage` 的 wire `level` 为**官方字符串**（`SerializeLoggingLevel`，如 `"debug"`/`"error"`）——原数字直写 bug 由官方 conformance 捕获并修正
 - `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全；构造多参 `cancellation_flag` 供任务化执行传入协作取消标志
 - 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；modern 统一发 `notifications/tasks`（`SerializeDetailedTask` 完整载荷，经 `NotifySubscribers` 与 HTTP listen tag 按 `taskIds` 过滤），legacy 发 `notifications/tasks/*`（`SendNotification` 广播）；`tasks/delete` 为 modern-only owner 校验删除入口；principal 绑定接口 `SetSessionPrincipal`/`ClearSessionPrincipal`/`SetDefaultPrincipal`
+- `ServerRequestContext`（[ServerRequestContext.hpp](../../include/mcp/ServerRequestContext.hpp)）经 `JsonRpcRequest::request_context` 传入，`RequestContext::Identity()` 供 handler 读取；显式区分 sessionful/stateless，owner 解析优先取上下文 principal，再取会话绑定与默认 principal。`TaskState::authorized_scopes` 随任务持久化，访问时与当前 principal 的作用域比对，旧空作用域记录兼容放行
 - `ElicitUrl(url, message, timeout=600s, session_id={})`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`；会话解析见 [/classes/mcp-server.md](../classes/mcp-server.md)
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - `resources/read` 两轮遍历（[McpServer.cpp](../../src/server/McpServer.cpp)）：第一轮**静态资源优先**（跳过 `is_template`，`uri_pattern == uri` 精确匹配调 `handler(uri)`）；未命中再逐模板 `detail::UriTemplate::Parse` + `Match`，命中调 `template_handler(uri, variables)`（变量名→pct-decoded 值，[McpServer.hpp](../../include/mcp/server/McpServer.hpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`。命中分支同样回填 `resources/read` 的 cache hint

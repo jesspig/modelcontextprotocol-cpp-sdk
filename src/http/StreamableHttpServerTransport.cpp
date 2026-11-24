@@ -98,6 +98,20 @@ private:
     std::atomic<size_t>& counter;
 };
 
+struct DeleteInflightGuard {
+    DeleteInflightGuard(std::mutex& mutex, std::unordered_set<std::string>& set,
+                        std::string key)
+        : mutex(mutex), set(set), key(std::move(key)) {}
+    ~DeleteInflightGuard() {
+        std::lock_guard<std::mutex> lock(mutex);
+        set.erase(key);
+    }
+private:
+    std::mutex& mutex;
+    std::unordered_set<std::string>& set;
+    std::string key;
+};
+
 std::string SseEscapeData(std::string_view data) {
     std::string out;
     out.reserve(data.size());
@@ -570,15 +584,50 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
                 resp.headers["content-type"] = "application/json";
                 return;
             }
-            auto session_id = GetMcpHeader(req, "mcp-session-id");
-            if (session_id && !session_id->empty() && !HasSession(*session_id)) {
+            AuthResult auth;
+            if (!AuthorizeRequest(req, resp, auth)) return;
+            auto session_header = GetMcpHeader(req, "mcp-session-id");
+            const std::string session_id = session_header.value_or("");
+            auto ctx = BuildRequestContext(auth, session_id);
+            LogRequestLifecycle("delete.begin", ctx);
+            const auto deny = [&resp]() {
                 resp.status_code = 404;
                 resp.status_text = "Not Found";
                 resp.body = R"({"jsonrpc":"2.0","error":{"code":-32009,"message":"Session expired"}})";
                 resp.headers["content-type"] = "application/json";
+            };
+            if (options_.bearer_auth &&
+                (session_id.empty() || !VerifySessionOwner(ctx))) {
+                LogRequestLifecycle("delete.denied", ctx);
+                deny();
                 return;
             }
-            if (session_id && !session_id->empty()) EraseSession(*session_id);
+            if (session_id.empty()) {
+                resp.status_code = 200;
+                resp.status_text = "OK";
+                resp.body = "{}";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(delete_mutex_);
+                if (!deletes_in_flight_.insert(session_id).second) {
+                    LogRequestLifecycle("delete.concurrent_noop", ctx);
+                    resp.status_code = 200;
+                    resp.status_text = "OK";
+                    resp.body = "{}";
+                    resp.headers["content-type"] = "application/json";
+                    return;
+                }
+            }
+            DeleteInflightGuard guard(delete_mutex_, deletes_in_flight_, session_id);
+            if (!HasSession(session_id)) {
+                LogRequestLifecycle("delete.denied", ctx);
+                deny();
+                return;
+            }
+            EraseSession(session_id);
+            LogRequestLifecycle("delete.completed", ctx);
             resp.status_code = 200;
             resp.status_text = "OK";
             resp.body = "{}";
@@ -624,14 +673,22 @@ void StreamableHttpServerTransport::Close() {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_responses_.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(session_owner_mutex_);
+        session_owners_.clear();
+    }
     if (channel_) channel_->Close();
     SetDisconnected();
 }
 
 bool StreamableHttpServerTransport::AuthorizeRequest(
-    const HttpRequest& req, HttpResponse& resp)
+    const HttpRequest& req, HttpResponse& resp, AuthResult& auth_out)
 {
-    if (!options_.bearer_auth) return true;
+    auth_out = AuthResult{};
+    if (!options_.bearer_auth) {
+        auth_out.ok = true;
+        return true;
+    }
     const auto& config = *options_.bearer_auth;
 
     if (config.enable_dpop) {
@@ -699,6 +756,7 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
                 return false;
             }
         }
+        auth_out = result;
         resp.headers["dpop-nonce"] = DPoPCurrentServerNonce();
         return true;
     }
@@ -735,7 +793,54 @@ bool StreamableHttpServerTransport::AuthorizeRequest(
             return false;
         }
     }
+    auth_out = result;
     return true;
+}
+
+ServerRequestContext StreamableHttpServerTransport::BuildRequestContext(
+    const AuthResult& auth, std::string_view session_id) const
+{
+    if (options_.stateless || session_id.empty())
+        return ServerRequestContext::Stateless(auth.principal, auth.scopes);
+    return ServerRequestContext::Sessionful(
+        std::string(session_id), auth.principal, auth.scopes);
+}
+
+bool StreamableHttpServerTransport::BindSessionPrincipal(
+    const ServerRequestContext& ctx)
+{
+    if (options_.bearer_auth && ctx.IsSessionful()) {
+        if (ctx.Principal().empty()) return false;
+        std::lock_guard<std::mutex> lock(session_owner_mutex_);
+        auto it = session_owners_.find(std::string(ctx.SessionId()));
+        if (it != session_owners_.end() && it->second != ctx.Principal())
+            return false;
+        session_owners_[std::string(ctx.SessionId())] = std::string(ctx.Principal());
+    }
+    if (options_.on_authenticated) options_.on_authenticated(ctx);
+    return true;
+}
+
+bool StreamableHttpServerTransport::VerifySessionOwner(
+    const ServerRequestContext& ctx) const
+{
+    if (!options_.bearer_auth) return true;
+    if (!ctx.IsSessionful() || ctx.Principal().empty()) return false;
+    std::lock_guard<std::mutex> lock(session_owner_mutex_);
+    auto it = session_owners_.find(std::string(ctx.SessionId()));
+    return it != session_owners_.end() && it->second == ctx.Principal();
+}
+
+void StreamableHttpServerTransport::LogRequestLifecycle(
+    std::string_view event, const ServerRequestContext& ctx,
+    std::string_view detail) const
+{
+    std::string message = "http.request event=" + std::string(event) +
+        " correlation=" + ctx.CorrelationId() +
+        " session=" + ctx.RedactedSession() +
+        " state=" + (ctx.IsSessionful() ? "sessionful" : "stateless");
+    if (!detail.empty()) message += " detail=" + std::string(detail);
+    MCP_LOG(Info, message);
 }
 
 void StreamableHttpServerTransport::HandleMetadataRequest(HttpResponse& resp) {
@@ -798,9 +903,10 @@ void StreamableHttpServerTransport::HandleServerCardRequest(HttpResponse& resp) 
 }
 
 std::string StreamableHttpServerTransport::PendingKey(
-    std::string_view session_id, const std::string& request_id) {
-    return std::to_string(session_id.size()) + ":" +
-           std::string(session_id) + request_id;
+    std::string_view session_id, std::string_view owner,
+    const std::string& request_id) {
+    return std::to_string(session_id.size()) + ":" + std::string(session_id) +
+           std::to_string(owner.size()) + ":" + std::string(owner) + request_id;
 }
 
 bool StreamableHttpServerTransport::ResolveSession(
@@ -934,42 +1040,35 @@ void StreamableHttpServerTransport::EraseSession(const std::string& session_id) 
         std::lock_guard<std::mutex> lock(session_state_mutex_);
         sessions_.erase(session_id);
     }
+    {
+        std::lock_guard<std::mutex> lock(session_owner_mutex_);
+        session_owners_.erase(session_id);
+    }
     if (session_store_) session_store_->Remove(session_id);
     if (event_store_) event_store_->Clear(session_id);
 
-    const auto prefix = PendingKey(session_id, "");
+    std::vector<std::string> doomed_keys;
     std::vector<PendingResponse> abandoned;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         for (auto it = pending_responses_.begin(); it != pending_responses_.end();) {
-            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+            if (it->second.session_id == session_id) {
+                doomed_keys.push_back(it->first);
                 abandoned.push_back(std::move(it->second));
                 it = pending_responses_.erase(it);
             } else {
                 ++it;
             }
         }
-        for (auto it = request_stream_frames_.begin(); it != request_stream_frames_.end();) {
-            if (it->first.compare(0, prefix.size(), prefix) == 0)
-                it = request_stream_frames_.erase(it);
-            else
-                ++it;
-        }
-        for (auto it = hold_open_requests_.begin(); it != hold_open_requests_.end();) {
-            if (it->compare(0, prefix.size(), prefix) == 0)
-                it = hold_open_requests_.erase(it);
-            else
-                ++it;
-        }
-        for (auto it = listen_filters_.begin(); it != listen_filters_.end();) {
-            if (it->first.compare(0, prefix.size(), prefix) == 0)
-                it = listen_filters_.erase(it);
-            else
-                ++it;
+        for (const auto& key : doomed_keys) {
+            request_stream_frames_.erase(key);
+            hold_open_requests_.erase(key);
+            listen_filters_.erase(key);
         }
         for (auto it = progress_token_routes_.begin();
              it != progress_token_routes_.end();) {
-            if (it->second.compare(0, prefix.size(), prefix) == 0)
+            if (std::find(doomed_keys.begin(), doomed_keys.end(), it->second) !=
+                doomed_keys.end())
                 it = progress_token_routes_.erase(it);
             else
                 ++it;
@@ -1106,7 +1205,8 @@ bool StreamableHttpServerTransport::ValidateParamHeaders(
 void StreamableHttpServerTransport::HandlePost(
     const HttpRequest& req, HttpResponse& resp)
 {
-    if (!AuthorizeRequest(req, resp)) return;
+    AuthResult auth;
+    if (!AuthorizeRequest(req, resp, auth)) return;
 
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     if (proto_ver.has_value() && !proto_ver->empty() &&
@@ -1199,7 +1299,22 @@ void StreamableHttpServerTransport::HandlePost(
                         session_id, resp)) {
         return;
     }
+    auto request_context = std::make_shared<ServerRequestContext>(
+        BuildRequestContext(auth, session_id));
+    if (!BindSessionPrincipal(*request_context)) {
+        LogRequestLifecycle("post.binding_rejected", *request_context);
+        resp.status_code = 403;
+        resp.status_text = "Forbidden";
+        resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session binding rejected"}})";
+        resp.headers["content-type"] = "application/json";
+        return;
+    }
+    LogRequestLifecycle("post.accepted", *request_context);
     MutableMessageSessionId(msg) = session_id;
+    if (auto* inbound_request = std::get_if<JsonRpcRequest>(&msg))
+        inbound_request->request_context = request_context;
+    else if (auto* inbound_notification = std::get_if<JsonRpcNotification>(&msg))
+        inbound_notification->request_context = request_context;
     if (is_initialize && !session_id.empty())
         resp.headers["mcp-session-id"] = session_id;
 
@@ -1304,7 +1419,8 @@ void StreamableHttpServerTransport::HandlePost(
             inflight_guard.emplace(stateless_inflight_);
         }
         auto id_str = RequestIdToString(*req_id);
-        const auto pending_key = PendingKey(session_id, id_str);
+        const auto pending_owner = std::string(request_context->Principal());
+        const auto pending_key = PendingKey(session_id, pending_owner, id_str);
         std::string hold_version = response_version;
         bool hold_open = IsModernProtocolVersion(hold_version);
         std::optional<std::string> hold_token;
@@ -1328,7 +1444,17 @@ void StreamableHttpServerTransport::HandlePost(
         auto future = promise->get_future();
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
-            pending_responses_[pending_key] = PendingResponse{*req_id, promise};
+            const auto [_, inserted] = pending_responses_.emplace(
+                pending_key,
+                PendingResponse{*req_id, session_id, pending_owner, promise});
+            if (!inserted) {
+                LogRequestLifecycle("post.pending_conflict", *request_context);
+                resp.status_code = 409;
+                resp.status_text = "Conflict";
+                resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"duplicate request id for session owner"}})";
+                resp.headers["content-type"] = "application/json";
+                return;
+            }
             if (hold_open) {
                 hold_open_requests_.insert(pending_key);
                 if (hold_token) progress_token_routes_[*hold_token] = pending_key;
@@ -1457,10 +1583,22 @@ void StreamableHttpServerTransport::HandlePost(
 void StreamableHttpServerTransport::HandleGet(
     const HttpRequest& req, HttpResponse& resp)
 {
-    if (!AuthorizeRequest(req, resp)) return;
+    AuthResult auth;
+    if (!AuthorizeRequest(req, resp, auth)) return;
 
     std::string session_id;
     if (!ResolveSession(req, false, {}, session_id, resp)) return;
+    auto request_context = std::make_shared<ServerRequestContext>(
+        BuildRequestContext(auth, session_id));
+    if (!BindSessionPrincipal(*request_context)) {
+        LogRequestLifecycle("get.binding_rejected", *request_context);
+        resp.status_code = 403;
+        resp.status_text = "Forbidden";
+        resp.body = R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"session binding rejected"}})";
+        resp.headers["content-type"] = "application/json";
+        return;
+    }
+    LogRequestLifecycle("get.accepted", *request_context);
 
     auto proto_ver = GetMcpHeader(req, "mcp-protocol-version");
     if (proto_ver.has_value() && !proto_ver->empty() &&
@@ -1519,11 +1657,23 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
 
     const auto match_pending = [&](const RequestId& id) -> std::string {
         std::string id_str = RequestIdToString(id);
-        auto key = PendingKey(message_session, id_str);
-        if (pending_responses_.find(key) != pending_responses_.end()) return key;
+        std::string owner;
+        if (!message_session.empty()) {
+            std::lock_guard<std::mutex> owner_lock(session_owner_mutex_);
+            auto it = session_owners_.find(message_session);
+            if (it != session_owners_.end()) owner = it->second;
+        }
+        auto key = PendingKey(message_session, owner, id_str);
+        auto found = pending_responses_.find(key);
+        if (found != pending_responses_.end() &&
+            found->second.session_id == message_session &&
+            found->second.owner == owner) {
+            return key;
+        }
         if (!message_session.empty()) return {};
         std::string matched_key;
         for (const auto& [candidate_key, entry] : pending_responses_) {
+            (void)entry;
             if (candidate_key.size() < id_str.size()) continue;
             if (candidate_key.compare(candidate_key.size() - id_str.size(),
                                       id_str.size(), id_str) != 0) {
@@ -1695,11 +1845,17 @@ bool StreamableHttpServerTransport::TryBufferRequestStreamNotification(
 {
     auto* notif = AsNotification(message);
     if (!notif) return false;
+    std::string notif_owner;
+    if (!notif->session_id.empty()) {
+        std::lock_guard<std::mutex> owner_lock(session_owner_mutex_);
+        auto it = session_owners_.find(notif->session_id);
+        if (it != session_owners_.end()) notif_owner = it->second;
+    }
     std::lock_guard<std::mutex> lock(pending_mutex_);
     if (hold_open_requests_.empty()) return false;
     const auto session_prefix = notif->session_id.empty()
         ? std::string{}
-        : PendingKey(notif->session_id, "");
+        : PendingKey(notif->session_id, notif_owner, "");
     const auto belongs = [&session_prefix](const std::string& key) {
         return session_prefix.empty() ||
                key.compare(0, session_prefix.size(), session_prefix) == 0;

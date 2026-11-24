@@ -32,6 +32,7 @@ enum class TaskStatus {
 struct TaskState {
     std::string task_id;
     std::string owner;
+    std::vector<std::string> authorized_scopes;
     TaskStatus status{TaskStatus::Pending};
     std::optional<JsonValue> result;
     std::optional<std::string> error_message;
@@ -96,6 +97,23 @@ public:
         (void)owner;
         return false;
     }
+    virtual TaskState CreateTask(const std::string& task_id,
+                                 const std::string& owner,
+                                 const std::vector<std::string>& scopes,
+                                 std::optional<int64_t> ttl_ms)
+    {
+        TaskState state = CreateTask(task_id, owner, ttl_ms);
+        if (!scopes.empty()) (void)SetTaskScopes(task_id, scopes);
+        state.authorized_scopes = scopes;
+        return state;
+    }
+    [[nodiscard]] virtual bool SetTaskScopes(const std::string& task_id,
+                                             const std::vector<std::string>& scopes)
+    {
+        (void)task_id;
+        (void)scopes;
+        return false;
+    }
     [[nodiscard]] virtual bool SetTaskTtl(const std::string& task_id, int64_t ttl_ms)
     {
         (void)task_id;
@@ -106,6 +124,7 @@ public:
 
 class InMemoryTaskStore : public IMcpTaskStore {
 public:
+    using IMcpTaskStore::CreateTask;
     TaskState CreateTask(const std::string& task_id) override {
         std::lock_guard<std::mutex> lock(mutex_);
         if (tasks_.count(task_id) > 0) {
@@ -199,6 +218,15 @@ public:
         auto it = tasks_.find(task_id);
         if (it == tasks_.end()) return false;
         it->second.owner = owner;
+        return true;
+    }
+
+    bool SetTaskScopes(const std::string& task_id,
+                       const std::vector<std::string>& scopes) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        it->second.authorized_scopes = scopes;
         return true;
     }
 

@@ -101,7 +101,7 @@
 | `RequiresRequestScopedNotifications` | `bool ... const override` | `true` | 恒为真（硬编码） |
 | `IsStateless` | `bool IsStateless() const override` | 取 `options_.stateless` | 无状态模式的判定源 |
 | `ValidateMcpHeaders` | `static bool ValidateMcpHeaders(const std::string&, const std::string&, const JsonValue&, std::string& error_out)` | — | SEP-2243 头与请求体一致性校验 |
-| `AuthResult` | `struct { bool ok{false}; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false` | `BearerAuthConfig::verify` 的返回载体 |
+| `AuthResult` | `struct { bool ok{false}; std::string principal; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false`、`principal` 空 | `BearerAuthConfig::verify` 的返回载体；`principal` 是服务端唯一可信身份来源，不从请求头以外的参数读取 |
 
 ### `StreamableHttpServerOptions`
 
@@ -125,6 +125,7 @@
 | `max_sse_replay_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes`（1 MiB） | 会话模式 GET 流按 `Last-Event-ID` 回放时的字节预算，从最新事件向前截取 |
 | `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s（`kDefaultHttpRequestTimeout`） | POST 等待处理器响应的截止；`0` 无限期等待，超时回 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | 未设置时无鉴权门，行为不变 |
+| `on_authenticated` | `ServerAuthenticatedCallback`（`void(const ServerRequestContext&)`） | 未设置 | 认证与会话解析成功后回调；会话模式下若同 ID 绑定不同 principal 则拒绝（403），回调不触发。用于把 principal 传给 `McpServer::SetSessionPrincipal` |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | 未设置 | 按方法/工具名解析 `Mcp-Param-*` 头注解；未设置时跳过参数头校验 |
 | `enable_server_card` | `bool` | `false` | 注册 `GET /server-card` 发现端点 |
 | `server_card` | `std::optional<ext::ServerCard>` | `std::nullopt` | 未提供时由 `BuildDefaultServerCard()` 生成 |
@@ -144,6 +145,8 @@
 | `enable_dpop` | `bool` | `false` | DPoP 证明校验（实验特性，需 OpenSSL） |
 
 接口与 Options 声明在 `include/mcp/transport/StreamableHttpServerTransport.hpp`；路由、头校验与 server-card 端点在 `src/http/StreamableHttpServerTransport.cpp`，Host/Origin 与绑定行为在 `src/http/HttpServerImpl.cpp`。
+
+启用 `bearer_auth` 时，POST/GET 先完成令牌校验，再由 `ServerRequestContext` 统一携带会话状态（`sessionful`/`stateless`）、principal 与授权作用域；同一会话绑定第二个 principal 返回 403，缺失/过期/撤销会话返回 404。pending 登记以「会话 + owner + 请求 id」为原子键，取消、超时、完成与并发同 ID 均按该键移除，避免串线。DELETE 在查询 store、判断会话存在与执行删除之前完成鉴权与 owner 校验；无凭证/错凭证返回 401，跨 owner 与未知会话返回同一 404 `Session expired` 响应，不泄露存在性。`MCP_LOG_LEVEL>=3` 时生命周期日志只写脱敏字段 `correlation=cid-<hex>` 与 `session=sid-<hex>`（stateless 为 `session=stateless`），不写令牌、授权头或正文。未配置 `bearer_auth` 的传输保持旧行为。
 
 ## Streamable HTTP 客户端
 

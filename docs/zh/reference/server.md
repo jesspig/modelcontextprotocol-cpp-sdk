@@ -96,6 +96,8 @@
 
 任务 owner 只能由上述 principal 注入接口提供：modern 任务操作在缺少 principal 时失败关闭（`TaskNotFound`），不从 `params`、`_meta`、`taskId` 或客户端自报字段读取 owner；legacy 任务在无 principal 时回退到会话 id 以保持旧线协议行为。跨 owner 的 get/update/cancel/delete/list 与不存在任务返回同一拒绝语义。任务预算常量 `kMaxTasksPerPrincipal`(10000)、`kMaxTaskResultBytes`(8388608)、`kMaxTaskNotificationBytes`(1048576)、`kMaxTaskIdsPerSubscription`(1024) 定义在 `include/mcp/server/McpTaskStore.hpp`。
 
+`ServerRequestContext`（`include/mcp/ServerRequestContext.hpp`）是服务端内部请求上下文，随 `JsonRpcRequest::request_context` 传递，显式标记 `sessionful`/`stateless` 并携带 authenticated principal 与授权作用域；`RequestContext::Identity()` 供 handler 读取，handler 不得从原始 header 或 `params` 重建信任。owner 解析优先取上下文 principal，其次才是会话绑定与默认 principal，因此 stateless 任务无需活动会话也能按记录 owner 与当前 principal 重新授权。`TaskState::authorized_scopes` 随任务持久化（旧记录为空时兼容放行），访问时与当前请求作用域比对，无交集即按不存在处理。上下文的 `CorrelationId()`/`RedactedSession()` 生成脱敏关联字段，不暴露会话 id 或 principal 原文。
+
 ## 客户端状态查询
 
 | 符号 | 签名/类型 | 默认值/返回 | 说明 |

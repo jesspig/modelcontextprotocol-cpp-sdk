@@ -101,7 +101,7 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `RequiresRequestScopedNotifications` | `bool ... const override` | `true` | Hard-coded true |
 | `IsStateless` | `bool IsStateless() const override` | takes `options_.stateless` | Source of the stateless decision |
 | `ValidateMcpHeaders` | `static bool ValidateMcpHeaders(const std::string&, const std::string&, const JsonValue&, std::string& error_out)` | — | SEP-2243 header/body consistency check |
-| `AuthResult` | `struct { bool ok{false}; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false` | Return payload of `BearerAuthConfig::verify` |
+| `AuthResult` | `struct { bool ok{false}; std::string principal; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false`, empty `principal` | Return payload of `BearerAuthConfig::verify`; `principal` is the only trusted server-side identity and is never inferred from params |
 
 ### `StreamableHttpServerOptions`
 
@@ -125,6 +125,7 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `max_sse_replay_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` (1 MiB) | Byte budget when the session-mode GET stream replays from `Last-Event-ID`, truncated from the newest event backwards |
 | `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s (`kDefaultHttpRequestTimeout`) | Deadline for the POST wait on the handler's response; `0` waits forever, expiry answers 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | Without it there is no auth gate and behaviour is unchanged |
+| `on_authenticated` | `ServerAuthenticatedCallback` (`void(const ServerRequestContext&)`) | unset | Invoked after authentication and session resolution; in session mode a second principal on the same session is rejected (403) and the callback is not invoked. Use it to forward the principal to `McpServer::SetSessionPrincipal` |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | unset | Resolves `Mcp-Param-*` header annotations per method/tool; when unset parameter-header validation is skipped |
 | `enable_server_card` | `bool` | `false` | Registers the `GET /server-card` discovery endpoint |
 | `server_card` | `std::optional<ext::ServerCard>` | `std::nullopt` | `BuildDefaultServerCard()` is used when absent |
@@ -144,6 +145,8 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `enable_dpop` | `bool` | `false` | DPoP proof validation (experimental, requires OpenSSL) |
 
 The interface and Options are declared in `include/mcp/transport/StreamableHttpServerTransport.hpp`; routing, header validation and the server-card endpoint are in `src/http/StreamableHttpServerTransport.cpp`, and Host/Origin plus binding behaviour in `src/http/HttpServerImpl.cpp`.
+
+With `bearer_auth` enabled, POST/GET validate the token first, then `ServerRequestContext` carries the session state (`sessionful`/`stateless`), principal and authorized scopes. Binding a second principal to the same session is rejected with 403; missing, expired or revoked sessions return 404. Pending entries are registered under an atomic `(session, owner, request id)` key and removed by the same key on cancellation, timeout, completion and concurrent same-ID requests. DELETE authenticates and verifies the owner before querying the store, testing existence or erasing anything: absent/invalid credentials return 401, while cross-owner and unknown sessions share the same 404 `Session expired` response and do not reveal existence. At `MCP_LOG_LEVEL>=3`, lifecycle records contain only redacted fields `correlation=cid-<hex>` and `session=sid-<hex>` (`session=stateless` in stateless mode), never tokens, authorization headers or bodies. Transports without `bearer_auth` keep the legacy behaviour.
 
 ## Streamable HTTP client
 

@@ -96,6 +96,8 @@ Declared in `include/mcp/server/McpServer.hpp`; delivery and era routing are in 
 
 Task owners may only come from the principal injection APIs above: modern task operations fail closed (`TaskNotFound`) when no principal is bound and never read an owner from `params`, `_meta`, `taskId`, or client-reported fields; legacy tasks fall back to the session id when no principal is present to preserve the old wire behavior. Cross-owner get/update/cancel/delete/list and unknown tasks share one rejection semantic. Budget constants `kMaxTasksPerPrincipal` (10000), `kMaxTaskResultBytes` (8388608), `kMaxTaskNotificationBytes` (1048576), and `kMaxTaskIdsPerSubscription` (1024) live in `include/mcp/server/McpTaskStore.hpp`.
 
+`ServerRequestContext` (`include/mcp/ServerRequestContext.hpp`) is the internal server request context carried by `JsonRpcRequest::request_context`. It explicitly marks `sessionful`/`stateless` and carries the authenticated principal plus authorized scopes; `RequestContext::Identity()` exposes it to handlers, which must not rebuild trust from raw headers or params. Owner resolution prefers the context principal, then the session binding, then the default principal, so stateless tasks are re-authorized against the persisted owner and the current principal without an active session. `TaskState::authorized_scopes` is persisted with the task (empty for legacy records, which remain allowed) and compared with the current request scopes on access; no overlap is treated as not found. `CorrelationId()` and `RedactedSession()` produce redacted correlation fields without exposing raw session ids or principal names.
+
 ## Client state queries
 
 | Symbol | Signature/Type | Default/Returns | Notes |

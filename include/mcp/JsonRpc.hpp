@@ -4,8 +4,10 @@
 #include <mcp/ErrorCodes.hpp>
 
 #include <mcp/JsonValue.hpp>
+#include <mcp/ServerRequestContext.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -27,6 +29,7 @@ struct JsonRpcRequest {
     std::optional<JsonValue> params;
     std::optional<JsonValue> meta;
     std::string session_id;
+    std::shared_ptr<const ServerRequestContext> request_context;
 };
 
 struct JsonRpcNotification {
@@ -35,6 +38,7 @@ struct JsonRpcNotification {
     std::optional<JsonValue> params;
     std::optional<JsonValue> meta;
     std::string session_id;
+    std::shared_ptr<const ServerRequestContext> request_context;
 };
 
 struct JsonRpcResponse {

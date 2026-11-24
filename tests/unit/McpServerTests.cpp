@@ -6661,3 +6661,130 @@ TEST(McpServerTest, TaskCountBeyondBudgetIsRejected) {
     server->Close();
     client->Close();
 }
+
+namespace server_request_context_test_impl {
+
+JsonRpcMessage SubmitRawRequest(
+    const std::shared_ptr<ITransport>& server_transport,
+    const std::shared_ptr<ITransport>& client_transport,
+    JsonRpcRequest request)
+{
+    std::promise<void> done;
+    auto future = done.get_future();
+    JsonRpcMessage reply;
+    std::thread reader([&] {
+        client_transport->GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage message) {
+                if (!ec) reply = std::move(message);
+                try { done.set_value(); } catch (...) {}
+            });
+    });
+    if (!server_transport->GetMessageChannel().Send(std::move(request))) {
+        client_transport->GetMessageChannel().Close();
+    } else if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        client_transport->GetMessageChannel().Close();
+    }
+    if (reader.joinable()) reader.join();
+    return reply;
+}
+
+} // namespace server_request_context_test_impl
+
+using namespace server_request_context_test_impl;
+
+TEST(ServerRequestContextTest, CorrelationIsStableRedactedAndPrincipalSpecific) {
+    auto alice_session = ServerRequestContext::Sessionful(
+        "sess-raw-identifier", "alice", {"mcp:read"});
+    auto alice_again = ServerRequestContext::Sessionful(
+        "sess-raw-identifier", "alice", {"mcp:read"});
+    auto bob_same_session = ServerRequestContext::Sessionful(
+        "sess-raw-identifier", "bob", {"mcp:read"});
+    auto alice_stateless = ServerRequestContext::Stateless(
+        "alice", {"mcp:read"});
+
+    EXPECT_EQ(alice_session.CorrelationId(), alice_again.CorrelationId());
+    EXPECT_NE(alice_session.CorrelationId(), bob_same_session.CorrelationId());
+    EXPECT_NE(alice_session.CorrelationId(), alice_stateless.CorrelationId());
+    EXPECT_EQ(alice_session.RedactedSession().substr(0, 4), "sid-");
+    EXPECT_EQ(alice_stateless.RedactedSession(), "stateless");
+    EXPECT_EQ(alice_session.RedactedSession().find("sess-raw-identifier"),
+              std::string::npos);
+    EXPECT_EQ(alice_session.CorrelationId().find("alice"), std::string::npos);
+    EXPECT_EQ(alice_session.CorrelationId().find("sess-raw-identifier"),
+              std::string::npos);
+}
+
+TEST(McpServerTest, StatelessTaskOwnerAndScopesFromRequestContext) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto store = std::make_shared<InMemoryTaskStore>();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
+    auto server = McpServer::Create(pair.server, sopts);
+    server->SetDefaultPrincipal("fallback-principal");
+    server->RegisterTool("context_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            return result;
+        });
+
+    CallToolRequestParams call_params;
+    call_params.name = "context_task";
+    JsonRpcRequest create_request;
+    create_request.id = int64_t(4242);
+    create_request.method = methods::kCallTool;
+    create_request.params = SerializeCallToolRequestParams(call_params);
+    create_request.meta = SerializeRequestMeta(MetaWithTasksExtension());
+    create_request.request_context = std::make_shared<ServerRequestContext>(
+        ServerRequestContext::Stateless(
+            "context-alice", std::vector<std::string>{"mcp:read"}));
+    auto create_reply = SubmitRawRequest(
+        pair.server, pair.client, std::move(create_request));
+    auto* create_response = AsResponse(create_reply);
+    ASSERT_NE(create_response, nullptr) << SerializeMessage(create_reply);
+    ASSERT_FALSE(create_response->result.Contains("code"));
+    auto created = DeserializeCreateTaskResult(create_response->result);
+    ASSERT_FALSE(created.task_id.empty());
+    auto stored = store->GetTask(created.task_id);
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->owner, "context-alice");
+    ASSERT_EQ(stored->authorized_scopes.size(), size_t{1});
+    EXPECT_EQ(stored->authorized_scopes[0], "mcp:read");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    JsonRpcRequest replay_request;
+    replay_request.id = int64_t(4243);
+    replay_request.method = methods::kGetTask;
+    replay_request.params = SerializeGetTaskRequestParams(get_params);
+    replay_request.meta = SerializeRequestMeta(MetaWithTasksExtension());
+    replay_request.request_context = std::make_shared<ServerRequestContext>(
+        ServerRequestContext::Stateless(
+            "context-bob", std::vector<std::string>{"mcp:read"}));
+    auto replay_reply = SubmitRawRequest(
+        pair.server, pair.client, std::move(replay_request));
+    auto* replay_error = AsError(replay_reply);
+    ASSERT_NE(replay_error, nullptr) << SerializeMessage(replay_reply);
+    EXPECT_EQ(static_cast<int64_t>(replay_error->error.code),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    JsonRpcRequest narrowed_request;
+    narrowed_request.id = int64_t(4244);
+    narrowed_request.method = methods::kGetTask;
+    narrowed_request.params = SerializeGetTaskRequestParams(get_params);
+    narrowed_request.meta = SerializeRequestMeta(MetaWithTasksExtension());
+    narrowed_request.request_context = std::make_shared<ServerRequestContext>(
+        ServerRequestContext::Stateless(
+            "context-alice", std::vector<std::string>{"mcp:write"}));
+    auto narrowed_reply = SubmitRawRequest(
+        pair.server, pair.client, std::move(narrowed_request));
+    auto* narrowed_error = AsError(narrowed_reply);
+    ASSERT_NE(narrowed_error, nullptr) << SerializeMessage(narrowed_reply);
+    EXPECT_EQ(static_cast<int64_t>(narrowed_error->error.code),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    server->Close();
+}
