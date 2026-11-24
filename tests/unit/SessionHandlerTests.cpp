@@ -1675,3 +1675,33 @@ TEST(SessionHandlerTest, ResponseQueueRejectsBeyondCapacity) {
               std::future_status::ready);
     EXPECT_FALSE(first.get().Contains("code"));
 }
+
+TEST(SessionHandlerTest, ConcurrentCloseHasSingleOwnerAndWakesPending) {
+    auto transport = std::make_shared<RecordingCancellerTransport>();
+    auto handler = std::make_shared<McpSessionHandler>(
+        transport, MakeWireCodec(kLatestProtocolVersion));
+    handler->SetNegotiatedProtocolVersion(kLatestProtocolVersion);
+    handler->Start();
+
+    auto pending = handler->SendRequest(
+        methods::kCallTool, JsonValue(JsonValue::object_tag), ModernMeta(),
+        std::chrono::seconds(30));
+
+    std::atomic<int> returned{0};
+    std::vector<std::thread> closers;
+    for (int index = 0; index < 8; ++index) {
+        closers.emplace_back([&]() {
+            handler->Close();
+            returned.fetch_add(1);
+        });
+    }
+    for (auto& closer : closers) closer.join();
+
+    EXPECT_EQ(returned.load(), 8);
+    EXPECT_FALSE(handler->IsRunning());
+    ASSERT_EQ(pending.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    auto result = pending.get();
+    ASSERT_TRUE(result.Contains("code"));
+    EXPECT_EQ(result["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::ConnectionClosed));
+}

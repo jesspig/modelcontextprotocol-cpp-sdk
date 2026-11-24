@@ -37,6 +37,8 @@ namespace {
 
 constexpr std::chrono::milliseconds kSseClientIdleTimeout(5 * 60 * 1000);
 constexpr int kMaxReconnectAttempts = 2;
+constexpr std::chrono::milliseconds kSseConnectWait(5000);
+constexpr std::chrono::milliseconds kSseCloseWait(5000);
 
 std::string ResolveEndpoint(const std::string& server_url, const std::string& endpoint) {
     if (endpoint.find("://") != std::string::npos)
@@ -109,12 +111,15 @@ SseEvent ParseSseEvent(const std::string& block) {
 
 class SseClientSessionTransport final : public TransportBase {
 public:
-    SseClientSessionTransport(SseClientTransportOptions options)
+    SseClientSessionTransport(SseClientTransportOptions options,
+                              std::shared_ptr<detail::SessionLifecycle> lifecycle,
+                              uint64_t generation)
         : TransportBase()
         , http_client_(std::make_unique<detail::net::HttpClient>())
         , post_client_(std::make_unique<detail::net::HttpClient>())
         , options_(std::move(options))
     {
+        AdoptLifecycle(std::move(lifecycle), generation);
     }
 
     ~SseClientSessionTransport() override {
@@ -125,33 +130,34 @@ public:
         if (running_.exchange(true))
             return;
 
+        SetConnected();
         sse_thread_ = std::thread([this] { SseReadLoop(); });
         send_thread_ = std::thread([this] { SendLoop(); });
-        SetConnected();
     }
 
     void Close() override {
-        if (running_.exchange(false)) {
-            {
-                std::lock_guard<std::mutex> lock(send_mutex_);
-                send_cv_.notify_one();
-            }
+        if (close_entered_.exchange(true)) return;
+        running_.store(false);
+        BeginShutdown();
+        if (channel_) channel_->Close();
 
-            if (post_client_)
-                post_client_->Close();
-            if (http_client_)
-                http_client_->Close();
+        {
+            std::lock_guard<std::mutex> lock(send_mutex_);
+            send_cv_.notify_one();
         }
+
+        if (post_client_)
+            post_client_->Close();
+        if (http_client_)
+            http_client_->Close();
 
         detail::JoinThreadSafely(send_thread_);
         detail::JoinThreadSafely(sse_thread_);
-
-        if (channel_) channel_->Close();
-        SetDisconnected();
+        CompleteShutdown();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
-        if (!running_)
+        if (!running_ || !IsGenerationActive())
             return;
 
         std::string body = SerializeMessage(std::move(message));
@@ -180,7 +186,7 @@ private:
             }
 
             auto body_cb = [this, &reconnect_attempts](std::string_view chunk) {
-                if (chunk.empty()) return;
+                if (chunk.empty() || !IsGenerationActive()) return;
                 reconnect_attempts = 0;
 
                 sse_buffer_.append(chunk.data(), chunk.size());
@@ -236,6 +242,7 @@ private:
     }
 
     void DispatchSseEvent(const std::string& block) {
+        if (!IsGenerationActive()) return;
         auto evt = ParseSseEvent(block);
         if (evt.retry_ms.has_value()) {
             retry_ms_ = evt.retry_ms;
@@ -346,6 +353,7 @@ private:
     std::thread sse_thread_;
     std::thread send_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> close_entered_{false};
 
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
@@ -396,8 +404,18 @@ SseClientTransport::~SseClientTransport() = default;
 std::string_view SseClientTransport::Name() const { return options_.name; }
 
 std::shared_ptr<ITransport> SseClientTransport::Connect() {
-    auto session = std::make_shared<SseClientSessionTransport>(options_);
+    std::lock_guard<std::mutex> lock(connect_mutex_);
+    auto previous = std::move(current_);
+    uint64_t previous_generation = current_generation_;
+    if (previous) {
+        previous->Close();
+        lifecycle_->WaitClosed(previous_generation, kSseCloseWait);
+    }
+    uint64_t generation = lifecycle_->BeginConnect(kSseConnectWait);
+    auto session = std::make_shared<SseClientSessionTransport>(options_, lifecycle_, generation);
     session->Start();
+    current_generation_ = generation;
+    current_ = session;
     return session;
 }
 

@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -40,6 +42,11 @@ public:
 private:
     StdioClientTransportOptions options_;
     std::optional<int64_t> pid_;
+    std::shared_ptr<detail::SessionLifecycle> lifecycle_ =
+        std::make_shared<detail::SessionLifecycle>();
+    std::shared_ptr<ITransport> current_;
+    uint64_t current_generation_ = 0;
+    std::mutex connect_mutex_;
 };
 
 } // namespace mcp

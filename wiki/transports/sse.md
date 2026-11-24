@@ -3,7 +3,7 @@ type: Transport
 title: SSE 客户端传输
 description: 服务端推送事件流（GET）+ POST 消息通道，支持 Last-Event-ID 断线回放与退避重连。
 tags: [transport, sse, 重连]
-timestamp: 2026-11-18T20:55:40+08:00
+timestamp: 2026-11-25T00:25:00+08:00
 resource: src/transport/SseClientTransport.cpp
 ---
 
@@ -15,7 +15,8 @@ resource: src/transport/SseClientTransport.cpp
 
 - 持有**两个独立自研 HttpClient**（[detail/net/HttpClient](../../src/transport/detail/net/HttpClient.hpp)，基于 TcpSocket/TlsSocket 的阻塞 HTTP/1.1）：`http_client_`（GET SSE 流）+ `post_client_`（POST 消息）
 - `Start()`：SSE 读线程 + 发送线程双线程，启动即 `SetConnected()`
-- `Close()`：notify 发送线程 → 关两个 client（**靠关客户端解除阻塞**）→ **无条件** `JoinThreadSafely(send_thread_ / sse_thread_)`（读线程可能已自行退出，Close 兜底 join）→ 关通道 → SetDisconnected
+- `Close()`：`running_.exchange(false)` 选唯一 owner → `BeginShutdown()` 进入 `Closing` → 先关 `MessageChannel` 唤醒等待者 → notify 发送线程 → 关两个 client（**靠关客户端解除阻塞**）→ `JoinThreadSafely(send_thread_ / sse_thread_)`（读线程可能已自行退出，Close 兜底 join）→ `CompleteShutdown()` 一次性通知
+- generation：读循环 `DispatchSseEvent` 与 `SendMessageAsync` 均检查 `IsGenerationActive()`；旧 generation 的事件不投递新会话。工厂 `Connect()` 先关闭并等待上一 generation，再启动新会话；`SessionLifecycle` 见 [/concepts/concurrency.md](../concepts/concurrency.md)
 
 ## SSE 协议细节
 

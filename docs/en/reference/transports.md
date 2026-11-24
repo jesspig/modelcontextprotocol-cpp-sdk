@@ -21,12 +21,24 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes |
 |---|---|---|---|
-| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected }` | `Initial` | Three-state machine backed by `std::atomic<int>` |
-| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | Common base of every session-side transport; owns `channel_`/`session_id_` |
-| `SetConnected` | `void SetConnected()` | — | Only `Initial → Connected` succeeds (CAS); otherwise a Warning is logged |
-| `SetDisconnected` | `void SetDisconnected()` | — | Repeat calls fire `on_close_` only once |
+| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected, Closing }` | `Initial` | Four-state machine (the new `Closing` value is appended, so old enum values are unchanged) backed by `std::atomic<int>` |
+| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | Common base of every session-side transport; owns `channel_`/`session_id_` plus `detail::SessionLifecycle` and a generation |
+| `SetConnected` | `void SetConnected()` | — | Only `Initial → Connected` succeeds (CAS); otherwise a Warning is logged; on success the lifecycle advances `Connecting → Open` |
+| `SetDisconnected` | `void SetDisconnected()` | — | Repeat calls fire `on_close_` only once; while `Closing`, the close owner fires it after joins |
 | `GetState` | `TransportState GetState() const` | `Initial` | Atomic read of the current state |
 | `SetOnClose` / `SetOnError` | `void SetOnClose(std::function<void()>)` / `void SetOnError(std::function<void(std::string_view)>)` | unset | Close and error callbacks, written under a lock; read-loop failures surface via `SetOnError` |
+
+### Shutdown order and generation (0.3.13)
+
+All client session transports and the Streamable HTTP server use `detail::SessionLifecycle` (`include/mcp/detail/SessionLifecycle.hpp`) for `Initial → Connecting → Open → Closing → Closed` and generation tracking. One close follows a strict order: enter `Closing` (stop receiving) → close `MessageChannel` to wake waiters → settle pending requests through the existing failure path → close the socket/pipe and interrupt in-flight requests → join with `detail::JoinThreadSafely` (a close from an IO callback detaches instead of self-joining) → fire `on_close_` exactly once.
+
+Callbacks capture the generation at creation time; `Connect` and `Close` are serialized per generation, and message/error/close callbacks from an old generation are dropped once a new generation exists.
+
+::: warning Old behaviour / New behaviour / How to adapt (source compatible, behaviour tightened)
+- Old: repeated `Connect()` on one client factory produced independent sessions that kept sending and receiving.
+- New: a repeated `Connect()` closes and waits for the previous generation to finish closing before starting the new one; old-generation callbacks no longer deliver messages.
+- Affected users: create one transport factory per session when several sessions must coexist; single-session reconnect needs no change.
+:::
 
 ### `IClientTransport`
 

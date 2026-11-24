@@ -239,20 +239,21 @@ void McpSessionHandler::Start() {
 }
 
 void McpSessionHandler::Close() {
-    if (closed_.load()) return;
+    {
+        std::unique_lock<std::mutex> lock(close_mutex_);
+        if (!close_claimed_) {
+            close_claimed_ = true;
+            close_owner_thread_ = std::this_thread::get_id();
+        } else {
+            if (close_owner_thread_ == std::this_thread::get_id()) return;
+            close_cv_.wait_for(lock, kCloseWaitBudget, [this] { return close_done_; });
+            return;
+        }
+    }
+
     closed_.store(true);
     running_.store(false);
-
     transport_->GetMessageChannel().Close();
-
-    detail::JoinThreadSafely(message_loop_thread_);
-    detail::JoinThreadSafely(timeout_thread_);
-
-    {
-        std::lock_guard<std::mutex> lock(response_queue_mutex_);
-    }
-    response_cv_.notify_all();
-    detail::JoinThreadSafely(response_worker_);
 
     std::vector<std::shared_ptr<PendingRequest>> to_fire;
     {
@@ -280,7 +281,22 @@ void McpSessionHandler::Close() {
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(response_queue_mutex_);
+    }
+    response_cv_.notify_all();
+
     transport_->Close();
+
+    detail::JoinThreadSafely(message_loop_thread_);
+    detail::JoinThreadSafely(timeout_thread_);
+    detail::JoinThreadSafely(response_worker_);
+
+    {
+        std::lock_guard<std::mutex> lock(close_mutex_);
+        close_done_ = true;
+    }
+    close_cv_.notify_all();
 }
 
 void McpSessionHandler::MessageLoop() {

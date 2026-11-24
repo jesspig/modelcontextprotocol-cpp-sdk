@@ -4,6 +4,7 @@
 #include <mcp/transport/WebSocketClientTransport.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
+#include <mcp/detail/SessionLifecycle.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/Transport.hpp>
 #include <mcp/JsonRpc.hpp>
@@ -13,6 +14,8 @@
 #include "TestServerUtil.hpp"
 
 #include <transport/detail/net/Sha1.hpp>
+#include <transport/detail/net/TlsSocket.hpp>
+#include <transport/detail/net/WebSocketClient.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -1570,3 +1573,124 @@ TEST(TlsSocketTest, HandshakeAndReadFirstFrame) {
 }
 
 #endif
+
+namespace {
+
+class LifecycleProbeTransport final : public TransportBase {
+public:
+    LifecycleProbeTransport(std::shared_ptr<detail::SessionLifecycle> lifecycle,
+                            uint64_t generation) {
+        AdoptLifecycle(std::move(lifecycle), generation);
+    }
+
+    void Close() override {
+        if (!BeginShutdown()) return;
+        if (channel_) channel_->Close();
+        CompleteShutdown();
+    }
+
+    void SendMessageAsync(JsonRpcMessage) override {}
+
+    [[nodiscard]] bool Active() const { return IsGenerationActive(); }
+};
+
+} // namespace
+
+TEST(TransportLifecycleTest, PhasesAndGenerationInvalidateOldCallbacks) {
+    auto lifecycle = std::make_shared<detail::SessionLifecycle>();
+    uint64_t first = lifecycle->BeginConnect(std::chrono::milliseconds(50));
+    EXPECT_EQ(lifecycle->Phase(), detail::SessionPhase::Connecting);
+
+    auto transport = std::make_shared<LifecycleProbeTransport>(lifecycle, first);
+    transport->SetConnected();
+    EXPECT_EQ(lifecycle->Phase(), detail::SessionPhase::Open);
+    EXPECT_TRUE(transport->Active());
+
+    EXPECT_TRUE(lifecycle->BeginClose(first));
+    EXPECT_FALSE(lifecycle->BeginClose(first));
+    EXPECT_EQ(lifecycle->Phase(), detail::SessionPhase::Closing);
+    EXPECT_FALSE(transport->Active());
+
+    lifecycle->CompleteClose(first);
+    EXPECT_TRUE(lifecycle->WaitClosed(first, std::chrono::milliseconds(50)));
+    EXPECT_EQ(lifecycle->Phase(), detail::SessionPhase::Closed);
+
+    uint64_t second = lifecycle->BeginConnect(std::chrono::milliseconds(50));
+    EXPECT_EQ(second, first + 1);
+    EXPECT_FALSE(lifecycle->IsActive(first));
+    EXPECT_TRUE(lifecycle->IsActive(second));
+}
+
+TEST(TransportLifecycleTest, ConnectWaitsForPriorGenerationToFinishClosing) {
+    auto lifecycle = std::make_shared<detail::SessionLifecycle>();
+    uint64_t first = lifecycle->BeginConnect(std::chrono::milliseconds(50));
+    lifecycle->CompleteConnect(first);
+
+    std::atomic<bool> closing{false};
+    std::thread closer([&]() {
+        EXPECT_TRUE(lifecycle->BeginClose(first));
+        closing.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        lifecycle->CompleteClose(first);
+    });
+    while (!closing.load()) std::this_thread::yield();
+
+    uint64_t second = lifecycle->BeginConnect(std::chrono::seconds(2));
+    closer.join();
+    EXPECT_EQ(second, first + 1);
+    EXPECT_EQ(lifecycle->Phase(), detail::SessionPhase::Connecting);
+    EXPECT_FALSE(lifecycle->IsActive(first));
+}
+
+TEST(TransportLifecycleTest, ConcurrentCloseNotifiesOnceAndJoinsChannel) {
+    auto lifecycle = std::make_shared<detail::SessionLifecycle>();
+    uint64_t generation = lifecycle->BeginConnect(std::chrono::milliseconds(50));
+    auto transport = std::make_shared<LifecycleProbeTransport>(lifecycle, generation);
+    transport->SetConnected();
+
+    std::atomic<int> notifications{0};
+    transport->SetOnClose([&notifications]() { notifications.fetch_add(1); });
+
+    std::vector<std::thread> closers;
+    for (int index = 0; index < 8; ++index) {
+        closers.emplace_back([&transport]() { transport->Close(); });
+    }
+    for (auto& closer : closers) closer.join();
+
+    EXPECT_EQ(notifications.load(), 1);
+    EXPECT_EQ(transport->GetState(), TransportState::Disconnected);
+    EXPECT_FALSE(transport->GetMessageChannel().IsOpen());
+    EXPECT_TRUE(lifecycle->WaitClosed(generation, std::chrono::milliseconds(50)));
+}
+
+TEST(TransportTest, StdioReconnectClosesPreviousGenerationBeforeStartingNewOne) {
+    auto options = StdioHelperOptions({"--sleep", "3000"});
+    StdioClientTransport transport(options);
+    auto first = transport.Connect();
+    ASSERT_NE(first, nullptr);
+    auto* base = dynamic_cast<TransportBase*>(first.get());
+    ASSERT_NE(base, nullptr);
+    ASSERT_EQ(base->GetState(), TransportState::Connected);
+
+    auto second = transport.Connect();
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(base->GetState(), TransportState::Disconnected);
+    EXPECT_FALSE(first->GetMessageChannel().IsOpen());
+
+    second->Close();
+}
+
+TEST(TransportLifecycleTest, ConcurrentSocketCloseIsIdempotent) {
+    detail::net::TlsSocket tls(false);
+    detail::net::WebSocketClient websocket;
+    std::vector<std::thread> closers;
+    for (int index = 0; index < 8; ++index) {
+        closers.emplace_back([&]() {
+            tls.Close();
+            websocket.Close();
+        });
+    }
+    for (auto& closer : closers) closer.join();
+
+    EXPECT_FALSE(tls.IsConnected());
+}

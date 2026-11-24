@@ -311,6 +311,8 @@ namespace {
 
 constexpr DWORD kHttpTimeoutMs = 30000;
 constexpr DWORD kStreamReadSliceMs = 1000;
+constexpr std::chrono::milliseconds kStreamableHttpWinConnectWait(5000);
+constexpr std::chrono::milliseconds kStreamableHttpWinCloseWait(5000);
 
 std::wstring ToWideStr(const std::string& s) {
     if (s.empty()) return {};
@@ -346,10 +348,13 @@ class StreamableHttpSessionTransport : public TransportBase,
                                        public IRequestCanceller {
 public:
     StreamableHttpSessionTransport(
-        HttpClientTransportOptions options)
+        HttpClientTransportOptions options,
+        std::shared_ptr<detail::SessionLifecycle> lifecycle,
+        uint64_t generation)
         : TransportBase()
         , options_(std::move(options))
     {
+        AdoptLifecycle(std::move(lifecycle), generation);
         current_session_id_ = options_.known_session_id;
     }
 
@@ -366,6 +371,8 @@ public:
 
     void Close() override {
         if (!running_.exchange(false)) return;
+        BeginShutdown();
+        if (channel_) channel_->Close();
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
             delete_pending_ = true;
@@ -390,8 +397,7 @@ public:
             WinHttpSetTimeouts(resume_req, 0, 0, 0, 500);
         }
         detail::JoinThreadSafely(send_thread_);
-        if (channel_) channel_->Close();
-        SetDisconnected();
+        CompleteShutdown();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
@@ -1406,6 +1412,7 @@ private:
     }
 
     bool DeliverIncoming(JsonRpcMessage message) {
+        if (!IsGenerationActive()) return false;
         ObserveToolsListResult(message);
         return channel_ && channel_->Send(std::move(message));
     }
@@ -1492,6 +1499,8 @@ std::string GetHeader(const detail::net::HttpResponseInfo& resp,
 namespace {
 
 constexpr int kHttpRequestTimeoutSeconds = 30;
+constexpr std::chrono::milliseconds kStreamableHttpPosixConnectWait(5000);
+constexpr std::chrono::milliseconds kStreamableHttpPosixCloseWait(5000);
 
 struct ListenAbort {};
 
@@ -1503,9 +1512,12 @@ class StreamableHttpSessionTransport : public TransportBase,
                                        public IRequestCanceller {
 public:
     explicit StreamableHttpSessionTransport(
-        HttpClientTransportOptions options)
+        HttpClientTransportOptions options,
+        std::shared_ptr<detail::SessionLifecycle> lifecycle,
+        uint64_t generation)
         : options_(std::move(options))
     {
+        AdoptLifecycle(std::move(lifecycle), generation);
         current_session_id_ = options_.known_session_id;
     }
 
@@ -1519,6 +1531,8 @@ public:
 
     void Close() override {
         if (!running_.exchange(false)) return;
+        BeginShutdown();
+        if (channel_) channel_->Close();
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
             delete_pending_ = true;
@@ -1536,8 +1550,7 @@ public:
         }
         detail::JoinThreadSafely(listen_thread);
         detail::JoinThreadSafely(send_thread_);
-        if (channel_) channel_->Close();
-        SetDisconnected();
+        CompleteShutdown();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
@@ -2231,6 +2244,7 @@ private:
     http_detail::ToolAnnotationCache tool_annotations_;
 
     bool DeliverIncoming(JsonRpcMessage message) {
+        if (!IsGenerationActive()) return false;
         ObserveToolsListResult(message);
         return channel_ && channel_->Send(std::move(message));
     }
@@ -2281,8 +2295,25 @@ std::string_view StreamableHttpClientTransport::Name() const {
 }
 
 std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
-    auto session = std::make_shared<StreamableHttpSessionTransport>(options_);
+#ifdef _WIN32
+    const auto connect_wait = kStreamableHttpWinConnectWait;
+    const auto close_wait = kStreamableHttpWinCloseWait;
+#else
+    const auto connect_wait = kStreamableHttpPosixConnectWait;
+    const auto close_wait = kStreamableHttpPosixCloseWait;
+#endif
+    std::lock_guard<std::mutex> lock(connect_mutex_);
+    auto previous = std::move(current_);
+    uint64_t previous_generation = current_generation_;
+    if (previous) {
+        previous->Close();
+        lifecycle_->WaitClosed(previous_generation, close_wait);
+    }
+    uint64_t generation = lifecycle_->BeginConnect(connect_wait);
+    auto session = std::make_shared<StreamableHttpSessionTransport>(options_, lifecycle_, generation);
     session->Start();
+    current_generation_ = generation;
+    current_ = session;
     return session;
 }
 

@@ -13,9 +13,17 @@ namespace mcp {
 
 namespace {
 
+constexpr std::chrono::milliseconds kWebSocketConnectWait(5000);
+constexpr std::chrono::milliseconds kWebSocketCloseWait(5000);
+
 class WebSocketSessionTransport : public TransportBase {
 public:
-    explicit WebSocketSessionTransport(std::string url);
+    WebSocketSessionTransport(std::string url,
+                              std::shared_ptr<detail::SessionLifecycle> lifecycle,
+                              uint64_t generation)
+        : url_(std::move(url)) {
+        AdoptLifecycle(std::move(lifecycle), generation);
+    }
     ~WebSocketSessionTransport() override;
 
     void Start() override;
@@ -28,17 +36,16 @@ private:
     std::atomic<bool> running_{false};
 };
 
-WebSocketSessionTransport::WebSocketSessionTransport(std::string url)
-    : url_(std::move(url)) {}
-
 WebSocketSessionTransport::~WebSocketSessionTransport() { Close(); }
 
 void WebSocketSessionTransport::Start() {
-    auto weak_self = std::weak_ptr<WebSocketSessionTransport>(std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this()));
+    uint64_t generation = Generation();
+    auto weak_self = std::weak_ptr<WebSocketSessionTransport>(
+        std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this()));
     ws_.SetCallbacks(
-        [weak_self](std::string_view msg) {
+        [weak_self, generation](std::string_view msg) {
             auto self = weak_self.lock();
-            if (!self) return;
+            if (!self || !self->IsGenerationActive()) return;
             try {
                 auto parsed = DeserializeMessage(msg);
                 self->WriteMessage(std::move(parsed));
@@ -47,36 +54,34 @@ void WebSocketSessionTransport::Start() {
                 self->NotifyError(std::string("WebSocket parse error: ") + e.what());
             }
         },
-        [weak_self]() {
+        [weak_self, generation]() {
             auto self = weak_self.lock();
-            if (!self) return;
-            self->running_ = false;
-            self->SetDisconnected();
+            if (!self || !self->IsGenerationActive()) return;
+            self->running_.store(false);
+            self->CompleteShutdown();
         },
-        [weak_self](std::string_view message) {
+        [weak_self, generation](std::string_view message) {
             auto self = weak_self.lock();
-            if (!self) return;
+            if (!self || !self->IsGenerationActive()) return;
             MCP_LOG(Error, std::string("WebSocket error: ") + std::string(message));
             self->NotifyError(message);
         });
 
-    running_ = true;
+    running_.store(true);
     SetConnected();
     ws_.Open(url_, std::chrono::seconds(30), true);
 }
 
 void WebSocketSessionTransport::Close() {
-    running_ = false;
+    if (!BeginShutdown()) return;
+    running_.store(false);
+    if (channel_) channel_->Close();
     ws_.Close();
-    ws_.SetCallbacks(nullptr, nullptr, nullptr);
-    if (channel_)
-        channel_->Close();
-    SetDisconnected();
+    CompleteShutdown();
 }
 
 void WebSocketSessionTransport::SendMessageAsync(JsonRpcMessage message) {
-    if (!running_)
-        return;
+    if (!running_.load() || !IsGenerationActive()) return;
     auto json_str = SerializeMessage(std::move(message));
     ws_.Send(json_str);
 }
@@ -91,8 +96,18 @@ WebSocketClientTransport::~WebSocketClientTransport() = default;
 std::string_view WebSocketClientTransport::Name() const { return name_; }
 
 std::shared_ptr<ITransport> WebSocketClientTransport::Connect() {
-    auto session = std::make_shared<WebSocketSessionTransport>(url_);
+    std::lock_guard<std::mutex> lock(connect_mutex_);
+    auto previous = std::move(current_);
+    uint64_t previous_generation = current_generation_;
+    if (previous) {
+        previous->Close();
+        lifecycle_->WaitClosed(previous_generation, kWebSocketCloseWait);
+    }
+    uint64_t generation = lifecycle_->BeginConnect(kWebSocketConnectWait);
+    auto session = std::make_shared<WebSocketSessionTransport>(url_, lifecycle_, generation);
     session->Start();
+    current_generation_ = generation;
+    current_ = session;
     return session;
 }
 

@@ -3,12 +3,14 @@
 #include <mcp/Export.hpp>
 #include <mcp/JsonRpc.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/SessionLifecycle.hpp>
 #include <mcp/protocol/MessageChannel.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <memory>
 #include <string_view>
 #include <functional>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <system_error>
 #include <exception>
@@ -28,7 +30,7 @@ public:
     virtual void Start() {}
 };
 
-enum class TransportState { Initial, Connected, Disconnected };
+enum class TransportState { Initial, Connected, Disconnected, Closing };
 
 class MCP_API TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase> {
 public:
@@ -57,12 +59,20 @@ protected:
     void NotifyError(std::string_view msg);
     void WriteMessage(JsonRpcMessage message);
 
+    bool BeginShutdown();
+    void CompleteShutdown();
+    void AdoptLifecycle(std::shared_ptr<detail::SessionLifecycle> lifecycle, uint64_t generation);
+    [[nodiscard]] uint64_t Generation() const { return generation_; }
+    [[nodiscard]] bool IsGenerationActive() const;
+
     std::unique_ptr<MessageChannel> channel_;
     std::string session_id_;
     std::atomic<int> state_{0};
     std::function<void()> on_close_;
     std::function<void(std::string_view)> on_error_;
     std::mutex callback_mutex_;
+    std::shared_ptr<detail::SessionLifecycle> lifecycle_;
+    uint64_t generation_ = 0;
 };
 
 class MCP_API IClientTransport {
@@ -74,6 +84,7 @@ public:
 
 inline TransportBase::TransportBase() {
     channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
+    lifecycle_ = std::make_shared<detail::SessionLifecycle>();
 }
 inline TransportBase::~TransportBase() = default;
 
@@ -82,14 +93,49 @@ inline void TransportBase::SetConnected() {
     if (!state_.compare_exchange_strong(expected,
             static_cast<int>(TransportState::Connected))) {
         MCP_LOG(Warning, "transport: SetConnected ignored (state is not Initial)");
+        return;
+    }
+    lifecycle_->CompleteConnect(generation_);
+}
+
+inline bool TransportBase::BeginShutdown() {
+    int current = state_.load();
+    for (;;) {
+        if (current == static_cast<int>(TransportState::Disconnected) ||
+            current == static_cast<int>(TransportState::Closing))
+            return false;
+        if (state_.compare_exchange_weak(current,
+                static_cast<int>(TransportState::Closing)))
+            return true;
     }
 }
 
-inline void TransportBase::SetDisconnected() {
+inline void TransportBase::CompleteShutdown() {
     if (state_.exchange(static_cast<int>(TransportState::Disconnected)) ==
         static_cast<int>(TransportState::Disconnected))
         return;
     NotifyClose();
+    lifecycle_->CompleteClose(generation_);
+}
+
+inline void TransportBase::SetDisconnected() {
+    int current = state_.load();
+    if (current == static_cast<int>(TransportState::Disconnected) ||
+        current == static_cast<int>(TransportState::Closing))
+        return;
+    CompleteShutdown();
+}
+
+inline void TransportBase::AdoptLifecycle(
+    std::shared_ptr<detail::SessionLifecycle> lifecycle, uint64_t generation) {
+    lifecycle_ = std::move(lifecycle);
+    generation_ = generation;
+}
+
+inline bool TransportBase::IsGenerationActive() const {
+    return state_.load() != static_cast<int>(TransportState::Closing) &&
+           state_.load() != static_cast<int>(TransportState::Disconnected) &&
+           lifecycle_->IsActive(generation_);
 }
 
 inline void TransportBase::NotifyClose() {

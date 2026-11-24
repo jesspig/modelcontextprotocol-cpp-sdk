@@ -659,7 +659,30 @@ void StreamableHttpServerTransport::Start() {
 }
 
 void StreamableHttpServerTransport::Close() {
-    if (http_server_) http_server_->Stop();
+    if (!BeginShutdown()) return;
+    if (channel_) channel_->Close();
+
+    std::vector<PendingResponse> abandoned;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        abandoned.reserve(pending_responses_.size());
+        for (auto& [key, entry] : pending_responses_)
+            abandoned.push_back(std::move(entry));
+        pending_responses_.clear();
+        request_stream_frames_.clear();
+        hold_open_requests_.clear();
+        listen_filters_.clear();
+        progress_token_routes_.clear();
+    }
+    for (auto& entry : abandoned) {
+        JsonRpcErrorResponse error;
+        error.id = entry.request_id;
+        error.error.code = McpErrorCode::SessionExpired;
+        error.error.message = "session closed";
+        error.session_id = entry.session_id;
+        entry.promise->set_value(JsonRpcMessage{std::move(error)});
+    }
+
     std::vector<std::string> session_ids;
     {
         std::lock_guard<std::mutex> lock(session_state_mutex_);
@@ -670,15 +693,11 @@ void StreamableHttpServerTransport::Close() {
         for (const auto& id : session_ids) event_store_->Clear(id);
     }
     {
-        std::lock_guard<std::mutex> lock(pending_mutex_);
-        pending_responses_.clear();
-    }
-    {
         std::lock_guard<std::mutex> lock(session_owner_mutex_);
         session_owners_.clear();
     }
-    if (channel_) channel_->Close();
-    SetDisconnected();
+    if (http_server_) http_server_->Stop();
+    CompleteShutdown();
 }
 
 bool StreamableHttpServerTransport::AuthorizeRequest(
@@ -1723,7 +1742,8 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
             wait_method = outgoing->method;
         auto waited = std::chrono::milliseconds(0);
         while (http_server_->SseClientCount() == 0) {
-            if (GetState() == TransportState::Disconnected)
+            if (GetState() == TransportState::Disconnected ||
+                GetState() == TransportState::Closing)
                 break;
             if (waited >= kSseListenerWaitBudget) {
                 MCP_LOG(Warning, "server-initiated message '" + wait_method +

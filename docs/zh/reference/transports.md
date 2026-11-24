@@ -21,12 +21,24 @@
 
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected }` | `Initial` | 三态状态机，底层用 `std::atomic<int>` |
-| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | 所有会话侧传输的公共基类，持有 `channel_`/`session_id_` |
-| `SetConnected` | `void SetConnected()` | — | 仅 `Initial → Connected` 生效（CAS），否则记 Warning 日志 |
-| `SetDisconnected` | `void SetDisconnected()` | — | 重复调用只触发一次 `on_close_` |
+| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected, Closing }` | `Initial` | 四态状态机（新增 `Closing` 追加在末尾，旧枚举值不变），底层用 `std::atomic<int>` |
+| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | 所有会话侧传输的公共基类，持有 `channel_`/`session_id_`，并持有 `detail::SessionLifecycle` 与 generation |
+| `SetConnected` | `void SetConnected()` | — | 仅 `Initial → Connected` 生效（CAS），否则记 Warning 日志；成功后完成生命周期 `Connecting → Open` |
+| `SetDisconnected` | `void SetDisconnected()` | — | 重复调用只触发一次 `on_close_`；`Closing` 期间由关闭 owner 在 join 后统一触发 |
 | `GetState` | `TransportState GetState() const` | `Initial` | 原子读取当前状态 |
 | `SetOnClose` / `SetOnError` | `void SetOnClose(std::function<void()>)` / `void SetOnError(std::function<void(std::string_view)>)` | 未设置 | 关闭与出错回调，加锁写入；读循环失败经 `SetOnError` 上报 |
+
+### 关闭顺序与 generation（0.3.13）
+
+所有客户端会话传输与流式 HTTP 服务端统一使用 `detail::SessionLifecycle`（`include/mcp/detail/SessionLifecycle.hpp`）管理 `Initial → Connecting → Open → Closing → Closed` 与 generation。一次关闭严格按：进入 `Closing` 停接收 → 关 `MessageChannel` 唤醒等待者 → 经既有失败路径结算 pending → 关 socket/pipe 并中断在途请求 → `detail::JoinThreadSafely` join（回调线程内关闭自动 detach，不 self-join）→ 一次性 `on_close_` 通知。
+
+回调捕获创建时 generation；`Connect` 与 `Close` 按 generation 串行，旧 generation 的消息、错误与关闭回调在新 generation 建立后丢弃。
+
+::: warning 旧行为 / 新行为 / 如何改（源码兼容，行为收紧）
+- 旧行为：同一客户端工厂重复 `Connect()` 返回互不干扰的多个会话，旧会话可继续收发。
+- 新行为：重复 `Connect()` 会先关闭并等待上一 generation 完成，再开启新 generation；旧会话回调不再投递消息。
+- 受影响方：需要并存多个会话时，为每个会话单独创建传输工厂实例；单会话重连无需改动。
+:::
 
 ### `IClientTransport`
 

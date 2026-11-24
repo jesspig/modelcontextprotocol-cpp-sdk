@@ -20,6 +20,9 @@ namespace mcp {
 
 namespace {
 
+constexpr std::chrono::milliseconds kStdioConnectWait(5000);
+constexpr std::chrono::milliseconds kStdioCloseWait(5000);
+
 class StdioClientSessionTransport : public TransportBase {
 public:
     StdioClientSessionTransport(
@@ -29,7 +32,9 @@ public:
         std::unique_ptr<detail::PipeHandle> stderr_pipe,
         std::function<void(std::string_view)> on_stderr,
         std::chrono::milliseconds shutdown_timeout,
-        std::optional<std::size_t> max_frame_bytes)
+        std::optional<std::size_t> max_frame_bytes,
+        std::shared_ptr<detail::SessionLifecycle> lifecycle,
+        uint64_t generation)
         : TransportBase()
         , process_(std::move(process))
         , stdin_pipe_(std::move(stdin_pipe))
@@ -40,6 +45,7 @@ public:
         , max_frame_bytes_(max_frame_bytes.value_or(
             detail::kMaxStdioFrameBytes))
     {
+        AdoptLifecycle(std::move(lifecycle), generation);
     }
 
     ~StdioClientSessionTransport() override {
@@ -47,7 +53,8 @@ public:
     }
 
     void Start() override {
-        running_ = true;
+        running_.store(true);
+        SetConnected();
         read_thread_ = std::thread([this]() {
             detail::SetThreadName("mcp-worker");
             ReadThread();
@@ -58,11 +65,12 @@ public:
                 StderrThread();
             });
         }
-        SetConnected();
     }
 
     void Close() override {
         if (!running_.exchange(false)) return;
+        BeginShutdown();
+        if (channel_) channel_->Close();
 
         if (stdin_pipe_) stdin_pipe_->Close();
         if (process_) (void)process_->Terminate(
@@ -72,9 +80,7 @@ public:
 
         detail::JoinThreadSafely(read_thread_);
         detail::JoinThreadSafely(stderr_thread_);
-
-        if (channel_) channel_->Close();
-        SetDisconnected();
+        CompleteShutdown();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
@@ -104,7 +110,7 @@ private:
                 if (stderr_pipe_->IsEof()) break;
                 continue;
             }
-            if (!on_stderr_) continue;
+            if (!on_stderr_ || !IsGenerationActive()) continue;
             try {
                 on_stderr_(std::string_view(buffer, bytes_read));
             } catch (const std::exception& e) {
@@ -155,6 +161,7 @@ private:
 
                 try {
                     auto msg = DeserializeMessage(line);
+                    if (!IsGenerationActive()) break;
                     if (channel_ && !channel_->Send(std::move(msg)))
                         MCP_LOG(Warning, "message dropped: channel closed");
                 } catch (const std::exception& e) {
@@ -206,6 +213,15 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
     info.capture_stderr = static_cast<bool>(options_.on_stderr);
     info.terminate_process_tree = options_.terminate_process_tree;
 
+    std::lock_guard<std::mutex> lock(connect_mutex_);
+    auto previous = std::move(current_);
+    uint64_t previous_generation = current_generation_;
+    if (previous) {
+        previous->Close();
+        lifecycle_->WaitClosed(previous_generation, kStdioCloseWait);
+    }
+    uint64_t generation = lifecycle_->BeginConnect(kStdioConnectWait);
+
     auto created = detail::CreateProcess(info);
     pid_ = created.process->Pid();
 
@@ -216,9 +232,13 @@ std::shared_ptr<ITransport> StdioClientTransport::Connect() {
         std::move(created.stderr_pipe),
         options_.on_stderr,
         options_.shutdown_timeout,
-        options_.max_frame_bytes);
+        options_.max_frame_bytes,
+        lifecycle_,
+        generation);
 
     session->Start();
+    current_generation_ = generation;
+    current_ = session;
     return session;
 }
 
