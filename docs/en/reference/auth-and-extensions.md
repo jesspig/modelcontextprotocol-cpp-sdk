@@ -12,19 +12,21 @@ Declared in `include/mcp/client/auth/OAuthClientProvider.hpp`, implemented in `s
 |---|---|---|---|
 | `server_url` | `std::string` | empty | MCP server URL, the base for metadata discovery and the resource indicator |
 | `redirect_uri` | `std::string` | empty | Authorization callback address, used by registration, the authorization URL and code exchange |
-| `client_id` | `std::optional<std::string>` | `nullopt` | When empty and the server advertises a registration endpoint, dynamic registration runs; when the value itself is an http(s) URL it is fetched as a client metadata document |
+| `client_id` | `std::optional<std::string>` | `nullopt` | When empty and the server advertises a registration endpoint, dynamic registration runs; a URL-shaped value is fetched as a client metadata document only when it is HTTPS with a non-root path and no fragment or userinfo, otherwise authentication entry points reject it |
 | `client_secret` | `std::optional<std::string>` | `nullopt` | Only required by the `client_credentials` branch when no private-key assertion is used |
 | `scopes` | `std::vector<std::string>` | empty | Requested scopes; `StepUpAuthorization` appends in place |
 | `scope_filter` | `std::function<std::vector<std::string>(const std::vector<std::string>&)>` | unset | Called with `scopes` as the input on every scope resolution; unset means use them verbatim |
 | `token_cache` | `std::shared_ptr<ITokenCache>` | `nullptr` | Construction substitutes an `InMemoryTokenCache` when empty |
-| `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 resource indicator; falls back to the normalized `server_url` when unset |
+| `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 resource indicator; falls back to `server_url` when unset and is compared byte-for-byte with metadata `resource` |
 | `application_type` | `std::string` | `"native"` | Dynamic-registration body field; an empty string is sent as `native` |
 | `enable_dpop` | `bool` | `false` | When on, token-endpoint requests carry a `DPoP` header and `Authorization` switches to the `DPoP` scheme |
 | `private_key_pem` | `std::optional<std::string>` | `nullopt` | Signing key for `private_key_jwt` assertions; only effective when the server advertises that auth method |
 | `signing_algorithm` | `std::string` | `"ES256"` | Assertion algorithm name; anything other than `ES256` throws `InvalidParams` while building the assertion |
 | `client_assertion_clock_seconds` | `std::function<int64_t()>` | unset | Clock source for assertion `iat`/`exp`; unset uses `dpop::NowSeconds` |
 | `allowed_authorization_server_origins` | `std::vector<std::string>` | empty | Authorization-server origin allow-list, checked against the issuer and each endpoint; empty means no narrowing |
-| `require_iss_when_advertised` | `bool` | `false` | Takes effect when the server advertises `authorization_response_iss_parameter_supported`: with it true an authorization response missing `iss` fails, with it false the response is accepted per local policy |
+| `require_iss_when_advertised` | `bool` | `true` | Takes effect when the server advertises `authorization_response_iss_parameter_supported`: by default an authorization response with missing, empty or mismatched `iss` fails before code exchange; explicitly setting it to `false` is compatibility-only |
+| `require_pkce_metadata` | `bool` | `true` | By default a metadata document missing `code_challenge_methods_supported` or lacking `S256` rejects the authorization-code flow (the challenge is never dropped); explicitly setting it to `false` restores the old flow |
+| `allow_legacy_metadata_fallback` | `bool` | `false` | By default failed PRM/AS discovery fails closed; explicitly setting it to `true` re-enables direct RFC 8414 fallback and hard-coded `server_url` endpoints |
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | unset | Invoked with the full authorization URL so the caller can open a browser; does not influence the flow outcome |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | unset | Mandatory, otherwise the authorization flow returns `false` immediately; an empty result, a `state` mismatch or an `iss` mismatch all fail |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | unset | Invoked every time tokens land in the cache |
@@ -38,7 +40,7 @@ Declared in the same header; private nested types and members are not user API a
 | Construct/destruct | `explicit OAuthClientProvider(OAuthClientOptions options)` / `~OAuthClientProvider()` | — | Options are taken by value; the token cache is self-created by default |
 | `IsSecureEndpoint` | `static bool IsSecureEndpoint(std::string_view url)` | `bool` | https check, loopback hosts excepted |
 | `IsSameOrigin` | `static bool IsSameOrigin(std::string_view lhs, std::string_view rhs)` | `bool` | Origin (scheme+host+port) comparison; `false` if either side yields no origin |
-| `Authenticate` | `bool Authenticate()` | whether a usable token exists | Discover metadata → register / fetch document as needed → fresh cache returns true → refresh expired tokens, with `invalid_grant`/`invalid_client` falling back to the full authorization flow; cached tokens with a mismatched resource are cleared first |
+| `Authenticate` | `bool Authenticate()` | whether a usable token exists | Strict metadata discovery (no legacy fallback by default) → register / fetch CIMD document as needed → fresh cache returns true → refresh expired tokens, with `invalid_grant`/`invalid_client` falling back to the full authorization flow; cached tokens with a mismatched resource are cleared first |
 | `AuthenticateClientCredentials` | `bool AuthenticateClientCredentials()` | whether tokens were stored | Requires `client_id`, plus `client_secret` when no assertion is used; never runs the code flow |
 | `GetAccessToken` | `std::string GetAccessToken()` | token string, empty when none | When nearing expiry with a refresh token, joins coalesced refreshing (concurrent callers share one refresh); refresh failure throws `InternalError` |
 | `RefreshTokens` | `bool RefreshTokens()` | whether the refresh succeeded | Refreshes directly, no coalescing; both `invalid_grant` and transient failure return `false` |
@@ -49,7 +51,7 @@ Declared in the same header; private nested types and members are not user API a
 | `ApplyDPoPProofHeader` | `void ApplyDPoPProofHeader(const HttpRequestHeaderContext& context, std::map<std::string, std::string>& headers)` | void | Builds the proof from the context method and URL into `headers["DPoP"]`; leaves headers untouched when dpop is off, the method is missing or the URL is unparseable |
 | `ObserveDPoPNonce` / `SetDPoPNonce` | `void ObserveDPoPNonce(std::string_view dpop_nonce)` / `void SetDPoPNonce(std::string nonce)` | void | The former ignores empty strings and anything over 1024 bytes; the latter overwrites unconditionally, ignoring the dpop switch |
 | `StepUpAuthorization` | `bool StepUpAuthorization(const std::vector<std::string>& additional_scopes)` | whether re-authorization succeeded | Append scopes → `Revoke()` → rerun the authorization flow, which drops the current tokens |
-| `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | whether metadata was rebuilt from it | Recognizes only `resource_metadata="…"`; headers over 4096 bytes, non-https URLs, documents over 65536 bytes, resource mismatch or an authorization server outside the allow-list all return `false` |
+| `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | whether metadata was rebuilt from it | Recognizes only `resource_metadata="…"`; headers over 4096 bytes, non-https URLs, documents over 65536 bytes, a metadata `resource` that is not byte-for-byte equal to the configured resource identifier, or an authorization server outside the allow-list all return `false` |
 
 ### PKCE helpers and the OpenSSL dependency boundary
 
@@ -143,7 +145,7 @@ Both builds come from the same `src/ext/DPoP.cpp`, split by `#if defined(MCP_HAV
 | `GetTokens` | `virtual std::optional<TokenContainer> GetTokens() = 0` | — | Non-const member |
 | `StoreBoundIssuer` | `virtual void StoreBoundIssuer(const std::string& issuer)` | empty body (overridable) | Issuer-bound persistence anchor; the provider writes the issuer it first discovers and thereafter rejects any issuer change |
 | `GetBoundIssuer` | `virtual std::optional<std::string> GetBoundIssuer()` | `nullopt` (overridable) | Reads the bound issuer back; the default means no persistence |
-| `OAuthMetadata` | `struct`: issuer, authorization/token/revocation/registration/jwks/resource endpoints and four `*_supported` lists; `static std::optional<OAuthMetadata> Discover(std::string_view server_url)` | empty strings/lists | The last four endpoints and `resource` are `optional`; `Discover` fetches `/.well-known/oauth-authorization-server` and returns empty on failure |
+| `OAuthMetadata` | `struct`: issuer, authorization/token/revocation/registration/jwks/resource endpoints and four `*_supported` lists; `static std::optional<OAuthMetadata> Discover(std::string_view server_url, bool allow_legacy_fallback = false, std::optional<std::string_view> expected_resource = std::nullopt)` | empty strings/lists | The last four endpoints and `resource` are `optional`; PRM must provide a `resource` byte-for-byte equal to the expected resource identifier or it is not used; direct RFC 8414 fallback is off by default |
 | `OAuthTokenResponse` | `struct`: `access_token`/`refresh_token`/`expires_in`/`token_type`/`scope` | `expires_in = 3600`, `token_type = "Bearer"` | Token-endpoint payload carrier |
 | `ClientRegistrationInfo::Register` | `static std::optional<ClientRegistrationInfo> Register(std::string_view registration_endpoint, std::string_view redirect_uri, std::string_view client_name, std::string_view application_type = "native")` | `"native"` | Dynamic client registration entry point |
 

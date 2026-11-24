@@ -60,7 +60,9 @@ struct OAuthMetadata {
     bool authorization_response_iss_parameter_supported{false};
 
     [[nodiscard]] static std::optional<OAuthMetadata> Discover(
-        std::string_view server_url, bool allow_legacy_fallback = true);
+        std::string_view server_url,
+        bool allow_legacy_fallback = false,
+        std::optional<std::string_view> expected_resource = std::nullopt);
 };
 
 struct OAuthTokenResponse {

@@ -40,8 +40,9 @@ struct OAuthClientOptions {
     std::string signing_algorithm{"ES256"};
     std::function<int64_t()> client_assertion_clock_seconds;
     std::vector<std::string> allowed_authorization_server_origins;
-    bool require_iss_when_advertised{false};
-    bool allow_legacy_metadata_fallback{true};
+    bool require_iss_when_advertised{true};
+    bool require_pkce_metadata{true};
+    bool allow_legacy_metadata_fallback{false};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
@@ -143,6 +144,8 @@ private:
     bool IsAllowedAuthorizationServer(const OAuthMetadata& meta) const;
 
     void RequireSecureEndpoint(std::string_view url, std::string_view kind) const;
+
+    void ValidateClientId() const;
 
     void ValidateMetadataEndpoints(const OAuthMetadata& meta) const;
 

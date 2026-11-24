@@ -12,19 +12,21 @@
 |---|---|---|---|
 | `server_url` | `std::string` | 空串 | MCP 服务端 URL，元数据发现与资源指示的基准 |
 | `redirect_uri` | `std::string` | 空串 | 授权回跳地址，注册、授权 URL、码兑换三处都用 |
-| `client_id` | `std::optional<std::string>` | `nullopt` | 为空且服务端广告注册端点时自动动态注册；值本身是 http(s) URL 时按客户端元数据文档去取 |
+| `client_id` | `std::optional<std::string>` | `nullopt` | 为空且服务端广告注册端点时自动动态注册；值本身是 URL 时必须是含非根 path、无 fragment/userinfo 的 HTTPS URL 才会按客户端元数据文档去取，否则认证入口拒绝 |
 | `client_secret` | `std::optional<std::string>` | `nullopt` | 仅 `client_credentials` 分支在无私钥断言时必需 |
 | `scopes` | `std::vector<std::string>` | 空 | 请求范围；`StepUpAuthorization` 就地追加 |
 | `scope_filter` | `std::function<std::vector<std::string>(const std::vector<std::string>&)>` | 未设置 | 每次解析范围都以 `scopes` 为入参回调；未设置即原样使用 |
 | `token_cache` | `std::shared_ptr<ITokenCache>` | `nullptr` | 构造时为空则自建 `InMemoryTokenCache` |
-| `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 资源指示符；未设置回退 `server_url` 的规范化值 |
+| `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 资源指示符；未设置回退 `server_url`，与元数据 `resource` 只做逐字精确比较 |
 | `application_type` | `std::string` | `"native"` | 动态注册请求体字段；空串按 `native` 送出 |
 | `enable_dpop` | `bool` | `false` | 打开后 token 端点请求带 `DPoP` 头，`Authorization` 改用 `DPoP` 方案 |
 | `private_key_pem` | `std::optional<std::string>` | `nullopt` | `private_key_jwt` 断言签名密钥；仅当服务端广告该认证方式才生效 |
 | `signing_algorithm` | `std::string` | `"ES256"` | 断言签名算法名；非 `ES256` 时生成断言抛 `InvalidParams` |
 | `client_assertion_clock_seconds` | `std::function<int64_t()>` | 未设置 | 断言 `iat`/`exp` 的时钟源；未设置用 `dpop::NowSeconds` |
 | `allowed_authorization_server_origins` | `std::vector<std::string>` | 空 | 授权服务器 origin 白名单，比对 issuer 与各端点；空表示不收窄 |
-| `require_iss_when_advertised` | `bool` | `false` | 服务端广告 `authorization_response_iss_parameter_supported` 时生效：为真则授权响应缺 `iss` 即失败，为假则按本地策略放行 |
+| `require_iss_when_advertised` | `bool` | `true` | 服务端广告 `authorization_response_iss_parameter_supported` 时生效：默认授权响应缺 `iss`、空 `iss` 或值不匹配均在换码前失败；显式设为 `false` 仅用于兼容旧流程 |
+| `require_pkce_metadata` | `bool` | `true` | 默认为真时元数据缺失 `code_challenge_methods_supported` 或未列 `S256` 即拒绝授权码流（不省略 challenge）；显式设为 `false` 才恢复旧流程 |
+| `allow_legacy_metadata_fallback` | `bool` | `false` | 默认为假时 PRM/AS 元数据发现失败即拒绝；显式设为 `true` 才允许 RFC 8414 直连回退与 `server_url` 硬编码端点 |
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | 未设置 | 拿到完整授权 URL 后回调，供外部打开浏览器；不影响流程判定 |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | 未设置 | 必须提供，否则授权流程直接 `false`；返回空、`state` 不符、`iss` 不符均失败 |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | 未设置 | 每次令牌落缓存后回调 |
@@ -38,7 +40,7 @@
 | 构造/析构 | `explicit OAuthClientProvider(OAuthClientOptions options)` / `~OAuthClientProvider()` | — | 选项按值接管；令牌缓存缺省自建 |
 | `IsSecureEndpoint` | `static bool IsSecureEndpoint(std::string_view url)` | `bool` | https 判定，回环地址例外 |
 | `IsSameOrigin` | `static bool IsSameOrigin(std::string_view lhs, std::string_view rhs)` | `bool` | 源（scheme+host+port）比对，任一侧取不出源即 `false` |
-| `Authenticate` | `bool Authenticate()` | 是否拿到可用令牌 | 发现元数据 → 按需注册/取文档 → 未过期缓存直接 true → 有过期令牌则刷新，`invalid_grant`/`invalid_client` 回落完整授权流；资源不符的缓存先清掉 |
+| `Authenticate` | `bool Authenticate()` | 是否拿到可用令牌 | 严格发现元数据（默认无 legacy 回退）→ 按需注册/取 CIMD 文档 → 未过期缓存直接 true → 有过期令牌则刷新，`invalid_grant`/`invalid_client` 回落完整授权流；资源不符的缓存先清掉 |
 | `AuthenticateClientCredentials` | `bool AuthenticateClientCredentials()` | 令牌是否入库 | 需 `client_id`；无断言时还需 `client_secret`；不发授权码流 |
 | `GetAccessToken` | `std::string GetAccessToken()` | 令牌串，无令牌为空串 | 临期且有 refresh token 时走合并刷新（并发共享一次刷新）；刷新失败抛 `InternalError` |
 | `RefreshTokens` | `bool RefreshTokens()` | 是否刷新成功 | 直接刷新，不合并；`invalid_grant` 与临时失败都返回 `false` |
@@ -49,7 +51,7 @@
 | `ApplyDPoPProofHeader` | `void ApplyDPoPProofHeader(const HttpRequestHeaderContext& context, std::map<std::string, std::string>& headers)` | void | 按上下文的方法与 URL 造证明写入 `headers["DPoP"]`；未开 dpop、缺方法或 URL 不可解析则原样不动 |
 | `ObserveDPoPNonce` / `SetDPoPNonce` | `void ObserveDPoPNonce(std::string_view dpop_nonce)` / `void SetDPoPNonce(std::string nonce)` | void | 前者空串或超过 1024 字节忽略；后者无条件覆盖，不看 dpop 开关 |
 | `StepUpAuthorization` | `bool StepUpAuthorization(const std::vector<std::string>& additional_scopes)` | 是否重新授权成功 | 追加范围 → `Revoke()` → 重跑授权流，会清掉当前令牌 |
-| `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | 是否据此重建了元数据 | 只认 `resource_metadata="…"`；头部超 4096 字节、URL 非 https、文档超 65536 字节、资源不符、授权服务器不在白名单，一律 `false` |
+| `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | 是否据此重建了元数据 | 只认 `resource_metadata="…"`；头部超 4096 字节、URL 非 https、文档超 65536 字节、元数据 `resource` 与配置资源标识不逐字相等、授权服务器不在白名单，一律 `false` |
 
 ### PKCE 辅助与 OpenSSL 依赖边界
 
@@ -143,7 +145,7 @@ provider 不被其他公共头引用，三个钩子由调用方在 `HttpClientTr
 | `GetTokens` | `virtual std::optional<TokenContainer> GetTokens() = 0` | — | 非 const 成员 |
 | `StoreBoundIssuer` | `virtual void StoreBoundIssuer(const std::string& issuer)` | 空实现（可覆写） | 按 issuer 绑定的持久锚点；provider 首次发现 issuer 即写入，之后 issuer 变更一律拒绝 |
 | `GetBoundIssuer` | `virtual std::optional<std::string> GetBoundIssuer()` | `nullopt`（可覆写） | 读回绑定 issuer；默认实现表示不持久化 |
-| `OAuthMetadata` | `struct`：issuer、authorization/token/revocation/registration/jwks/resource 端点与四类 `*_supported` 列表；`static std::optional<OAuthMetadata> Discover(std::string_view server_url)` | 端点串空、列表空 | 后四个端点与 `resource` 为 `optional`；`Discover` 取 `/.well-known/oauth-authorization-server`，失败返回空 |
+| `OAuthMetadata` | `struct`：issuer、authorization/token/revocation/registration/jwks/resource 端点与四类 `*_supported` 列表；`static std::optional<OAuthMetadata> Discover(std::string_view server_url, bool allow_legacy_fallback = false, std::optional<std::string_view> expected_resource = std::nullopt)` | 端点串空、列表空 | 后四个端点与 `resource` 为 `optional`；PRM 必须提供与期望资源标识逐字相等的 `resource`，否则不采用；RFC 8414 直连回退默认关闭 |
 | `OAuthTokenResponse` | `struct`：`access_token`/`refresh_token`/`expires_in`/`token_type`/`scope` | `expires_in = 3600`、`token_type = "Bearer"` | 令牌端点响应载荷 |
 | `ClientRegistrationInfo::Register` | `static std::optional<ClientRegistrationInfo> Register(std::string_view registration_endpoint, std::string_view redirect_uri, std::string_view client_name, std::string_view application_type = "native")` | `"native"` | DCR 出口 |
 
