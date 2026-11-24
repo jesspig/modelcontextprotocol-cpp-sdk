@@ -14,6 +14,11 @@ JsonValue SerializeSubscriptionFilter(const SubscriptionFilter& v) {
         for (const auto& s : v.resource_subscriptions) arr.push_back(JsonValue(s));
         obj["resourceSubscriptions"] = JsonValue(std::move(arr));
     }
+    if (!v.task_ids.empty()) {
+        JsonValue::Array arr;
+        for (const auto& id : v.task_ids) arr.push_back(JsonValue(id));
+        obj[detail::kTaskIds] = JsonValue(std::move(arr));
+    }
     return obj;
 }
 
@@ -27,6 +32,14 @@ SubscriptionFilter DeserializeSubscriptionFilter(const JsonValue& j) {
         std::vector<std::string> vec;
         for (const auto& sv : subs->GetArray()) vec.push_back(sv.GetString());
         v.resource_subscriptions = std::move(vec);
+    }
+    auto* ids = j.Find(detail::kTaskIds);
+    if (ids && ids->IsArray()) {
+        std::vector<std::string> vec;
+        for (const auto& sv : ids->GetArray()) {
+            if (sv.IsString()) vec.push_back(sv.GetString());
+        }
+        v.task_ids = std::move(vec);
     }
     return v;
 }

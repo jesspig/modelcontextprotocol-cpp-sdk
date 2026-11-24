@@ -410,6 +410,12 @@ StreamableHttpServerTransport::ParseListenFilter(const JsonRpcRequest& req) {
             if (entry.IsString()) filter.resource_uris.push_back(entry.GetString());
         }
     }
+    auto* ids = section->Find(detail::kTaskIds);
+    if (ids && ids->IsArray()) {
+        for (const auto& entry : ids->GetArray()) {
+            if (entry.IsString()) filter.task_ids.push_back(entry.GetString());
+        }
+    }
     return filter;
 }
 
@@ -426,6 +432,12 @@ std::string StreamableHttpServerTransport::EncodeListenTag(
         for (const auto& uri : filter.resource_uris)
             uris.push_back(JsonValue(uri));
         tag["resourceSubscriptions"] = JsonValue(std::move(uris));
+    }
+    if (!filter.task_ids.empty()) {
+        JsonValue::Array ids;
+        for (const auto& id : filter.task_ids)
+            ids.push_back(JsonValue(id));
+        tag[detail::kTaskIds] = JsonValue(std::move(ids));
     }
     return JsonValue(std::move(tag)).Dump();
 }
@@ -458,12 +470,14 @@ bool StreamableHttpServerTransport::IsListenFilteredNotification(
     return method == notifications::kToolListChanged ||
            method == notifications::kPromptListChanged ||
            method == notifications::kResourceListChanged ||
-           method == notifications::kResourceUpdated;
+           method == notifications::kResourceUpdated ||
+           method == notifications::kTasks;
 }
 
 bool StreamableHttpServerTransport::ListenTagAccepts(
     const std::string& tag, const std::string& method,
-    const std::optional<std::string>& resource_uri) {
+    const std::optional<std::string>& resource_uri,
+    const std::optional<std::string>& task_id) {
     if (tag.empty()) return true;
     JsonValue tag_doc;
     try {
@@ -491,6 +505,16 @@ bool StreamableHttpServerTransport::ListenTagAccepts(
         if (!subs || !subs->IsArray()) return false;
         for (const auto& entry : subs->GetArray()) {
             if (entry.IsString() && entry.GetString() == *resource_uri)
+                return true;
+        }
+        return false;
+    }
+    if (method == notifications::kTasks) {
+        if (!task_id) return false;
+        auto* ids = tag_doc.Find(detail::kTaskIds);
+        if (!ids || !ids->IsArray()) return false;
+        for (const auto& entry : ids->GetArray()) {
+            if (entry.IsString() && entry.GetString() == *task_id)
                 return true;
         }
         return false;
@@ -1563,10 +1587,17 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
 
     std::string broadcast_method;
     std::optional<std::string> broadcast_resource;
+    std::optional<std::string> broadcast_task_id;
     if (const auto* outgoing = AsNotification(message)) {
         broadcast_method = outgoing->method;
         if (broadcast_method == notifications::kResourceUpdated)
             broadcast_resource = UpdatedResourceUri(*outgoing);
+        if (broadcast_method == notifications::kTasks && outgoing->params &&
+                outgoing->params->IsObject()) {
+            if (auto* id = outgoing->params->Find(detail::kTaskId);
+                    id && id->IsString())
+                broadcast_task_id = id->GetString();
+        }
     }
     auto event_data = BuildSseEvent(std::move(message));
     if (!options_.stateless) {
@@ -1585,17 +1616,17 @@ void StreamableHttpServerTransport::SendMessageAsync(JsonRpcMessage message) {
         if (!message_session.empty()) {
             http_server_->BroadcastSse(event_data,
                 [session = message_session, filtered,
-                 method = broadcast_method, resource = broadcast_resource](
-                    const std::string& tag) {
+                 method = broadcast_method, resource = broadcast_resource,
+                 task_id = broadcast_task_id](const std::string& tag) {
                     if (!TagMatchesSession(tag, session)) return false;
                     if (!filtered) return true;
-                    return ListenTagAccepts(tag, method, resource);
+                    return ListenTagAccepts(tag, method, resource, task_id);
                 });
         } else if (filtered) {
             http_server_->BroadcastSse(event_data,
-                [method = broadcast_method, resource = broadcast_resource](
-                    const std::string& tag) {
-                    return ListenTagAccepts(tag, method, resource);
+                [method = broadcast_method, resource = broadcast_resource,
+                 task_id = broadcast_task_id](const std::string& tag) {
+                    return ListenTagAccepts(tag, method, resource, task_id);
                 });
         } else {
             http_server_->BroadcastSse(event_data);

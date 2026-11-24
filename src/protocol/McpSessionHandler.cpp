@@ -10,6 +10,7 @@
 #include <mcp/Content.hpp>
 #include <mcp/ProtocolVersion.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cassert>
 #include <cstdint>
@@ -1130,6 +1131,14 @@ void McpSessionHandler::NotifySubscribers(
                                 }
                             }
                         }
+                    } else if (notification_type == notifications::kTasks) {
+                        const JsonValue* params = skeleton.params
+                            ? skeleton.params->Find(detail::kTaskId) : nullptr;
+                        should_notify = params && params->IsString() &&
+                            (entry.filter.task_ids.empty() ||
+                             std::find(entry.filter.task_ids.begin(),
+                                 entry.filter.task_ids.end(),
+                                 params->GetString()) != entry.filter.task_ids.end());
                     } else if (notification_type == notifications::kTaskStatus ||
                                notification_type == notifications::kTaskWorking ||
                                notification_type == notifications::kTaskCompleted ||

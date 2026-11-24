@@ -267,6 +267,7 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kGetTask` / `kUpdateTask` / `kCancelTask` | `"tasks/get"` / `"tasks/update"` / `"tasks/cancel"` | both eras (task switch required) |
 | `kGetTaskPayload` / `kLegacyGetTaskPayload` | both `"tasks/result"` | legacy only; `kLegacy*` is a same-value alias |
 | `kListTasks` / `kLegacyListTasks` | both `"tasks/list"` | legacy only; as above |
+| `kDeleteTask` | `"tasks/delete"` | modern only; removes a task after the owner check |
 | `kListSkills` / `kGetSkill` | `"skills/list"` / `"skills/get"` | modern only |
 | `kSetLoggingLevel` | `"logging/setLevel"` | legacy only |
 | `kListExtensions` | `"server/extensions/list"` | both eras |
@@ -284,7 +285,8 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kRootsListChanged` | `"notifications/roots/list_changed"` | legacy only; the client additionally requires a negotiated version of at least `2025-06-18` |
 | `kElicitationComplete` | `"notifications/elicitation/complete"` | legacy only |
 | `kSubscriptionsAcknowledged` | `"notifications/subscriptions/acknowledged"` | modern only |
-| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`, `"…/working"`, `"…/completed"`, `"…/failed"`, `"…/cancelled"`, `"…/input_required"` | both eras |
+| `kTasks` | `"notifications/tasks"` | modern only; `params` is a full `DetailedTask`, filterable by `taskIds` subscriptions |
+| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`, `"…/working"`, `"…/completed"`, `"…/failed"`, `"…/cancelled"`, `"…/input_required"` | legacy only; modern no longer sends or accepts these |
 | `kTriggersEvent` | `"notifications/triggers/event"` | both eras |
 
 ### Protocol version constants

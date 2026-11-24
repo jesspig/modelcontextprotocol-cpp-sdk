@@ -1110,20 +1110,33 @@ TEST(SessionHandlerTest, ModernSessionRejectsLegacyOnlyNotification) {
               std::future_status::timeout);
 }
 
-TEST(SessionHandlerTest, ModernSessionAcceptsTaskStatusNotification) {
+TEST(SessionHandlerTest, ModernSessionAcceptsTasksV2AndDropsLegacyStatusNotification) {
     HandlerPair hp;
 
     std::promise<void> observed_promise;
     auto observed_future = observed_promise.get_future();
-    hp.server->SetNotificationHandler(notifications::kTaskStatus,
+    hp.server->SetNotificationHandler(notifications::kTasks,
         [&observed_promise](const JsonRpcNotification&) {
             observed_promise.set_value();
         });
+    std::promise<void> legacy_promise;
+    auto legacy_future = legacy_promise.get_future();
+    hp.server->SetNotificationHandler(notifications::kTaskStatus,
+        [&legacy_promise](const JsonRpcNotification&) {
+            legacy_promise.set_value();
+        });
 
+    JsonValue detail(JsonValue::object_tag);
+    detail["taskId"] = JsonValue("task-1");
+    detail["status"] = JsonValue("working");
+    detail["createdAt"] = JsonValue("2026-11-24T00:00:00Z");
+    hp.client->SendNotification(notifications::kTasks, std::move(detail));
     hp.client->SendNotification(notifications::kTaskStatus, {});
 
     EXPECT_EQ(observed_future.wait_for(std::chrono::seconds(3)),
               std::future_status::ready);
+    EXPECT_EQ(legacy_future.wait_for(std::chrono::milliseconds(500)),
+              std::future_status::timeout);
 }
 
 TEST(SessionHandlerTest, OutcomeChannelSeparatesResultFromError) {

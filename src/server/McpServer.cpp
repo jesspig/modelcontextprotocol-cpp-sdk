@@ -1,6 +1,7 @@
 #include <mcp/JsonValue.hpp>
 #include <mcp/server/McpServer.hpp>
 #include <mcp/server/RequestState.hpp>
+#include <mcp/server/McpTaskStore.hpp>
 #include <mcp/Content.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/McpVersion.hpp>
@@ -1004,13 +1005,19 @@ void McpServer::EmitLoggingMessage(LoggingLevel level, std::string_view data) {
 
 void McpServer::SendTaskStatus(std::string_view task_id, TaskStatus status) {
     std::string owner;
+    std::optional<TaskState> stored;
     if (options_.task_store) {
-        auto task = options_.task_store->GetTask(std::string(task_id));
-        if (task) owner = task->owner;
+        stored = options_.task_store->GetTask(std::string(task_id));
+        if (stored) owner = stored->owner;
+    }
+    const bool modern =
+        IsModernProtocolVersion(handler_->NegotiatedProtocolVersion(owner));
+    if (modern && stored) {
+        SendTaskDetail(*stored);
+        return;
     }
     SendTaskNotification(*handler_, notifications::kTaskStatus, task_id, status,
-        IsModernProtocolVersion(handler_->NegotiatedProtocolVersion(owner)),
-        owner);
+        modern, owner);
 }
 
 std::string McpServer::MakeTaskId(std::string_view owner) const {
@@ -1023,7 +1030,78 @@ bool McpServer::IsTaskOwnedBySession(const TaskState& task,
 }
 
 std::string McpServer::TaskOwnerFor(const JsonRpcRequest& req) const {
-    return req.session_id.empty() ? session_id_ : req.session_id;
+    const std::string session = req.session_id.empty() ? session_id_ : req.session_id;
+    if (auto principal = AuthenticatedPrincipalFor(session)) return *principal;
+    return session;
+}
+
+void McpServer::SetSessionPrincipal(std::string_view session_id,
+                                    std::string_view principal) {
+    std::lock_guard<std::mutex> lock(task_principal_mutex_);
+    session_principals_[std::string(session_id)] = std::string(principal);
+}
+
+void McpServer::ClearSessionPrincipal(std::string_view session_id) {
+    std::lock_guard<std::mutex> lock(task_principal_mutex_);
+    session_principals_.erase(std::string(session_id));
+}
+
+void McpServer::SetDefaultPrincipal(std::string_view principal) {
+    std::lock_guard<std::mutex> lock(task_principal_mutex_);
+    default_principal_ = std::string(principal);
+}
+
+std::optional<std::string> McpServer::AuthenticatedPrincipalFor(
+    std::string_view session_id) const {
+    const std::string key = session_id.empty() ? session_id_ : std::string(session_id);
+    std::lock_guard<std::mutex> lock(task_principal_mutex_);
+    auto it = session_principals_.find(key);
+    if (it != session_principals_.end() && !it->second.empty()) return it->second;
+    if (!default_principal_.empty()) return default_principal_;
+    return std::nullopt;
+}
+
+void McpServer::RequireTaskPrincipal(const JsonRpcRequest& req) const {
+    if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion(req.session_id))) return;
+    if (AuthenticatedPrincipalFor(req.session_id)) return;
+    MCP_LOG(Warning, "task access denied: no authenticated principal");
+    throw McpError(McpErrorCode::TaskNotFound,
+        "task access requires an authenticated principal");
+}
+
+void McpServer::EnforceTaskBudgets(std::string_view owner) {
+    if (!options_.task_store) return;
+    size_t count = 0;
+    for (const auto& task : options_.task_store->GetAllTasks()) {
+        if (task.owner == owner) ++count;
+    }
+    if (count >= kMaxTasksPerPrincipal) {
+        MCP_LOG(Warning, "task creation denied: per-principal task limit reached");
+        throw McpError(McpErrorCode::TaskNotFound, "task limit reached");
+    }
+}
+
+void McpServer::SendTaskDetail(const TaskState& task, std::string_view session_id) {
+    DetailedTask detail;
+    detail.task_id = task.task_id;
+    detail.status = TaskStatusToWireString(task.status);
+    detail.created_at = task.created_at;
+    detail.last_updated_at = task.last_updated_at;
+    detail.ttl_ms = task.ttl_ms;
+    if (task.status == TaskStatus::Failed) {
+        detail.error = task.result;
+    } else {
+        detail.result = task.result;
+    }
+    detail.input_required = task.input_required;
+    detail.input_requests = task.input_requests;
+    JsonValue wire = SerializeDetailedTask(detail);
+    if (wire.Dump().size() > kMaxTaskNotificationBytes) {
+        MCP_LOG(Warning, "task notification dropped: payload exceeds budget");
+        return;
+    }
+    handler_->NotifySubscribers(notifications::kTasks, std::move(wire),
+                                std::nullopt, session_id);
 }
 
 std::shared_ptr<const ClientCapabilities> McpServer::ClientCapabilitiesFor(
@@ -1526,6 +1604,7 @@ void McpServer::WireTaskHandlers() {
                     p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
                     return;
                 }
+                RequireTaskPrincipal(req);
                 if (modern) {
                     if (auto mcp_name = TryGetMcpName(req)) {
                         try {
@@ -1568,6 +1647,7 @@ void McpServer::WireTaskHandlers() {
                     p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
                     return;
                 }
+                RequireTaskPrincipal(req);
                 if (modern) {
                     if (auto mcp_name = TryGetMcpName(req)) {
                         try {
@@ -1585,6 +1665,10 @@ void McpServer::WireTaskHandlers() {
                 }
                 UpdateTaskRequestParams params;
                 if (req.params) params = DeserializeUpdateTaskRequestParams(*req.params);
+                if (params.result && params.result->Dump().size() > kMaxTaskResultBytes) {
+                    MCP_LOG(Warning, "task result denied: payload exceeds budget");
+                    throw McpError(McpErrorCode::TaskNotFound, "task payload exceeds budget");
+                }
                 if (params.input_responses) {
                     if (params.result) {
                         p.set_exception(std::make_exception_ptr(
@@ -1618,10 +1702,15 @@ void McpServer::WireTaskHandlers() {
                                      std::string("task persist failed: ") + e.what())));
                         return;
                     }
-                    SendTaskNotification(*handler_,
-                        notifications::kTaskWorking,
-                        params.task_id, TaskStatus::Working, modern,
-                        TaskOwnerFor(req));
+                    if (modern) {
+                        if (auto detail_task = store->GetTask(params.task_id))
+                            SendTaskDetail(*detail_task, req.session_id);
+                    } else {
+                        SendTaskNotification(*handler_,
+                            notifications::kTaskWorking,
+                            params.task_id, TaskStatus::Working, false,
+                            TaskOwnerFor(req));
+                    }
                     if (!modern) {
                         UpdateTaskResult r;
                         JsonValue ack = SerializeEmptyResult(r);
@@ -1782,11 +1871,16 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
-                SendTaskNotification(*handler_,
-                    params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
-                    params.task_id,
-                    params.result ? TaskStatus::Completed : TaskStatus::Working,
-                    modern, TaskOwnerFor(req));
+                if (modern) {
+                    if (auto detail_task = store->GetTask(params.task_id))
+                        SendTaskDetail(*detail_task, req.session_id);
+                } else {
+                    SendTaskNotification(*handler_,
+                        params.result ? notifications::kTaskCompleted : notifications::kTaskWorking,
+                        params.task_id,
+                        params.result ? TaskStatus::Completed : TaskStatus::Working,
+                        false, TaskOwnerFor(req));
+                }
                 UpdateTaskResult r;
                 JsonValue ack = SerializeEmptyResult(r);
                 ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
@@ -1808,6 +1902,7 @@ void McpServer::WireTaskHandlers() {
                     p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
                     return;
                 }
+                RequireTaskPrincipal(req);
                 if (modern) {
                     if (auto mcp_name = TryGetMcpName(req)) {
                         try {
@@ -1864,9 +1959,14 @@ void McpServer::WireTaskHandlers() {
                                  std::string("task persist failed: ") + e.what())));
                     return;
                 }
-                SendTaskNotification(*handler_, notifications::kTaskCancelled,
-                    params.task_id, TaskStatus::Cancelled, modern,
-                    TaskOwnerFor(req));
+                if (modern) {
+                    if (auto detail_task = store->GetTask(params.task_id))
+                        SendTaskDetail(*detail_task, req.session_id);
+                } else {
+                    SendTaskNotification(*handler_, notifications::kTaskCancelled,
+                        params.task_id, TaskStatus::Cancelled, false,
+                        TaskOwnerFor(req));
+                }
                 CancelTaskResult r;
                 JsonValue ack = SerializeEmptyResult(r);
                 ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
@@ -1916,6 +2016,55 @@ void McpServer::WireTaskHandlers() {
                 }
                 result["tasks"] = std::move(tasks_arr);
                 p.set_value(std::move(result));
+            });
+
+        handler_->SetRequestHandler(methods::kDeleteTask,
+            [this, store](const JsonRpcRequest& req, std::promise<JsonValue> p) {
+                if (!options_.enable_tasks_extension) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound,
+                                 "tasks extension is disabled")));
+                    return;
+                }
+                if (!IsModernProtocolVersion(
+                        handler_->NegotiatedProtocolVersion(req.session_id))) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::MethodNotFound,
+                                 "tasks/delete is only available in 2026 and later protocol versions")));
+                    return;
+                }
+                if (!TasksExtensionDeclared(GetClientCapabilities(req.session_id),
+                        handler_->ExtractIncomingMeta(req).client_capabilities)) {
+                    p.set_exception(std::make_exception_ptr(MissingTasksExtensionError()));
+                    return;
+                }
+                RequireTaskPrincipal(req);
+                GetTaskRequestParams params;
+                if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
+                auto existing = store->GetTask(params.task_id);
+                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::TaskNotFound,
+                                 "task not found: " + params.task_id)));
+                    return;
+                }
+                try {
+                    if (!store->RemoveTask(params.task_id)) {
+                        p.set_exception(std::make_exception_ptr(
+                            McpError(McpErrorCode::TaskNotFound,
+                                     "task not found: " + params.task_id)));
+                        return;
+                    }
+                } catch (const std::exception& e) {
+                    p.set_exception(std::make_exception_ptr(
+                        McpError(McpErrorCode::InternalError,
+                                 std::string("task persist failed: ") + e.what())));
+                    return;
+                }
+                CancelTaskResult r;
+                JsonValue ack = SerializeEmptyResult(r);
+                ack[detail::kResultType] = JsonValue(detail::kCompleteValue);
+                p.set_value(std::move(ack));
             });
     }
 }
@@ -2348,6 +2497,8 @@ void McpServer::HandleCallTool(
     if (task_declared && options_.task_store && tasks_declared &&
         options_.enable_tasks_extension) {
         const bool modern = modern_era;
+        RequireTaskPrincipal(req);
+        EnforceTaskBudgets(task_owner);
         const bool required_task =
             tool_def.execution->task_support == TaskSupport::Required;
 
@@ -2464,8 +2615,12 @@ void McpServer::HandleCallTool(
         store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
         (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
         (void)store->SetTaskStatus(task_id, TaskStatus::Working);
-        SendTaskNotification(*handler_, notifications::kTaskStatus,
-            task_id, TaskStatus::Working, modern, task_owner);
+        if (modern) {
+            if (auto detail_task = store->GetTask(task_id)) SendTaskDetail(*detail_task);
+        } else {
+            SendTaskNotification(*handler_, notifications::kTaskStatus,
+                task_id, TaskStatus::Working, false, task_owner);
+        }
 
         CreateTaskResult created;
         created.task_id = task_id;
@@ -2480,6 +2635,15 @@ void McpServer::HandleCallTool(
         auto fut = std::async(std::launch::async,
             [this, tool, ctx = std::move(ctx), store, task_id, cancel_flag, modern,
              task_owner]() mutable {
+                auto notify_status = [&](TaskStatus status) {
+                    if (modern) {
+                        if (auto detail_task = store->GetTask(task_id))
+                            SendTaskDetail(*detail_task);
+                    } else {
+                        SendTaskNotification(*handler_, notifications::kTaskStatus,
+                            task_id, status, false, task_owner);
+                    }
+                };
                 auto retire_task = [this, &task_id]() {
                     std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
                     running_task_cancel_flags_.erase(task_id);
@@ -2498,15 +2662,13 @@ void McpServer::HandleCallTool(
                             " vanished before status notification");
                         return;
                     }
-                    SendTaskNotification(*handler_, notifications::kTaskStatus,
-                        task_id, stored->status, modern, task_owner);
+                    notify_status(stored->status);
                 };
                 auto finish = [&](TaskStatus status, bool notify) {
                     const bool applied = store->SetTaskStatus(task_id, status);
                     if (notify) {
                         if (applied) {
-                            SendTaskNotification(*handler_, notifications::kTaskStatus,
-                                task_id, status, modern, task_owner);
+                            notify_status(status);
                         } else {
                             announce_stored_status();
                         }
@@ -2521,8 +2683,7 @@ void McpServer::HandleCallTool(
                     if (data) error_payload[detail::kData] = std::move(*data);
                     const bool applied = store->FailTask(task_id, error_payload);
                     if (applied) {
-                        SendTaskNotification(*handler_, notifications::kTaskStatus,
-                            task_id, TaskStatus::Failed, modern, task_owner);
+                        notify_status(TaskStatus::Failed);
                     } else {
                         announce_stored_status();
                     }

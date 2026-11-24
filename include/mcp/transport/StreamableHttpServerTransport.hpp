@@ -154,6 +154,7 @@ private:
         bool prompts{false};
         bool resources{false};
         std::vector<std::string> resource_uris;
+        std::vector<std::string> task_ids;
     };
     static ListenFilter ParseListenFilter(const JsonRpcRequest& req);
     static std::string EncodeListenTag(const ListenFilter& filter,
@@ -161,7 +162,8 @@ private:
     static bool IsListenFilteredNotification(const std::string& method);
     static bool ListenTagAccepts(const std::string& tag,
                                  const std::string& method,
-                                 const std::optional<std::string>& resource_uri);
+                                 const std::optional<std::string>& resource_uri,
+                                 const std::optional<std::string>& task_id = std::nullopt);
 
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;
