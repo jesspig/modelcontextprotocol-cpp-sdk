@@ -16,10 +16,13 @@
 
 #include <array>
 #include <condition_variable>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <thread>
 #include <set>
@@ -29,7 +32,27 @@
 #include <mutex>
 #include <shared_mutex>
 #include <type_traits>
+#include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#undef SendMessage
+#undef GetMessage
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/time.h>
+#endif
+#endif
 
 #if defined(MCP_HAVE_OPENSSL)
 #include <openssl/rand.h>
@@ -504,6 +527,7 @@ CallToolResult MakeToolIsErrorResult(std::string text) {
 
 constexpr int64_t kFileInputMaxBytes = 8 * 1024 * 1024;
 constexpr int64_t kFileInputInlineMaxBytes = 256 * 1024;
+constexpr std::size_t kMaxFileInputRoots = 64;
 
 bool HasFileInputPrefix(std::string_view s, std::string_view prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
@@ -527,10 +551,14 @@ bool IsFileInputRefObject(const JsonValue& node) {
 }
 
 bool SliceFileInputRange(const std::string& full, int64_t offset, int64_t length,
-    std::string& out, std::string& error)
+    int64_t max_bytes, std::string& out, std::string& error)
 {
     int64_t size = static_cast<int64_t>(full.size());
     if (offset < 0 || length < 0 || offset > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    if (length > size - offset) {
         error = "file input range out of bounds";
         return false;
     }
@@ -539,14 +567,768 @@ bool SliceFileInputRange(const std::string& full, int64_t offset, int64_t length
         error = "file input range out of bounds";
         return false;
     }
-    if (end - offset > kFileInputMaxBytes) {
-        error = "file input exceeds maximum size of 8MB";
+    if (end - offset > max_bytes) {
+        error = "file input exceeds maximum size";
         return false;
     }
     out = full.substr(static_cast<size_t>(offset),
         static_cast<size_t>(end - offset));
     return true;
 }
+
+using FileInputPathParts = std::vector<std::string>;
+
+std::string FileInputLowerAscii(std::string_view value) {
+    std::string result(value);
+    for (char& c : result) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return result;
+}
+
+std::string FileInputComparePart(std::string_view value) {
+#if defined(_WIN32)
+    return FileInputLowerAscii(value);
+#else
+    return std::string(value);
+#endif
+}
+
+bool FileInputIsDrivePart(const std::string& part) {
+    return part.size() == 2 &&
+        ((part[0] >= 'A' && part[0] <= 'Z') ||
+         (part[0] >= 'a' && part[0] <= 'z')) && part[1] == ':';
+}
+
+FileInputPathParts FileInputPathPartsFrom(const std::filesystem::path& path) {
+    FileInputPathParts parts;
+    for (const auto& component : path) {
+        std::string part = component.string();
+        if (part.empty() || part == "/" || part == "\\") continue;
+#if defined(_WIN32)
+        if (part == "\\\\?") continue;
+        constexpr std::string_view prefix = "\\\\?\\";
+        if (part.size() >= prefix.size() &&
+            part.compare(0, prefix.size(), prefix) == 0) {
+            part.erase(0, prefix.size());
+            if (part.empty()) continue;
+        }
+#endif
+        parts.push_back(std::move(part));
+    }
+    return parts;
+}
+
+bool FileInputCanonicalParts(
+    const std::filesystem::path& path, FileInputPathParts& parts)
+{
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (ec) return false;
+    parts = FileInputPathPartsFrom(canonical);
+    return !parts.empty();
+}
+
+bool FileInputIsPrefix(
+    const FileInputPathParts& prefix, const FileInputPathParts& parts)
+{
+    if (prefix.size() > parts.size()) return false;
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+        if (FileInputComparePart(prefix[i]) != FileInputComparePart(parts[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int FileInputHexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool FileInputDecodeHex(std::string_view raw, std::string& decoded) {
+    decoded.clear();
+    decoded.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] != '%') {
+            decoded.push_back(raw[i]);
+            continue;
+        }
+        if (i + 2 >= raw.size()) return false;
+        const int high = FileInputHexDigit(raw[i + 1]);
+        const int low = FileInputHexDigit(raw[i + 2]);
+        if (high < 0 || low < 0) return false;
+        decoded.push_back(static_cast<char>(high * 16 + low));
+        i += 2;
+    }
+    return true;
+}
+
+bool FileInputIsReservedDeviceName(const std::string& part) {
+    const std::size_t dot = part.find('.');
+    const std::string base =
+        FileInputLowerAscii(dot == std::string::npos ? part : part.substr(0, dot));
+    if (base == "con" || base == "prn" || base == "aux" || base == "nul") {
+        return true;
+    }
+    return base.size() == 4 && (base.compare(0, 3, "com") == 0 ||
+        base.compare(0, 3, "lpt") == 0) && base[3] >= '1' && base[3] <= '9';
+}
+
+bool FileInputIsSensitivePart(const std::string& part) {
+    static constexpr std::array<std::string_view, 34> kNames = {
+        ".env", ".git", ".svn", ".hg", ".bzr", ".ssh", ".aws", ".azure",
+        ".kube", ".docker", ".npmrc", ".pypirc", ".netrc", "_netrc",
+        ".htpasswd", ".git-credentials", ".gitconfig", "credentials",
+        "credentials.json", "token.json", ".token", "id_rsa", "id_ed25519",
+        "id_ecdsa", "id_dsa", "secrets.json", ".git-credential-store",
+        ".aws-credentials", ".kube-config", ".docker-config.json",
+        "authorized_keys", "known_hosts", "shadow", "passwd"
+    };
+    static constexpr std::array<std::string_view, 9> kExtensions = {
+        ".pem", ".key", ".pfx", ".p12", ".jks", ".keystore", ".truststore",
+        ".kdbx", ".gpg"
+    };
+    const std::string lower = FileInputLowerAscii(part);
+    for (auto name : kNames) {
+        if (lower == name) return true;
+    }
+    if (lower.size() > 5 && lower.compare(0, 5, ".env.") == 0) return true;
+    if (lower.size() > 4 &&
+        lower.compare(lower.size() - 4, 4, ".env") == 0) return true;
+    for (auto extension : kExtensions) {
+        if (lower.size() > extension.size() &&
+            lower.compare(lower.size() - extension.size(),
+                extension.size(), extension) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool FileInputIsSensitive(const FileInputPathParts& parts) {
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (FileInputIsSensitivePart(parts[i])) return true;
+        if (FileInputLowerAscii(parts[i]) == ".config" && i + 1 < parts.size() &&
+            FileInputLowerAscii(parts[i + 1]) == "gcloud") {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool FileInputParseUri(std::string_view uri, FileInputPathParts& parts) {
+    constexpr std::string_view scheme = "file://";
+    if (!HasFileInputPrefix(uri, scheme)) return false;
+    const std::string_view rest = uri.substr(scheme.size());
+    for (char c : rest) {
+        if (c == '\0' || c == '?' || c == '#' || c == '\\') return false;
+    }
+    const std::size_t slash = rest.find('/');
+    if (slash == std::string_view::npos) return false;
+    const std::string_view authority = rest.substr(0, slash);
+    bool drive_authority = false;
+    if (!authority.empty() && FileInputLowerAscii(authority) != "localhost") {
+        if (!FileInputIsDrivePart(std::string(authority))) return false;
+        drive_authority = true;
+    }
+    const std::string_view raw = rest.substr(slash);
+    if (raw.empty() || raw[0] != '/' || (raw.size() > 1 && raw[1] == '/')) {
+        return false;
+    }
+    if (!drive_authority && raw.size() > 2 &&
+        ((raw[1] >= 'A' && raw[1] <= 'Z') ||
+         (raw[1] >= 'a' && raw[1] <= 'z')) && raw[2] == ':') {
+        if (raw.size() < 4 || raw[3] != '/') return false;
+    }
+    std::string decoded;
+    if (drive_authority) {
+        if (!FileInputDecodeHex(authority, decoded)) return false;
+        std::string tail;
+        if (!FileInputDecodeHex(raw.substr(1), tail)) return false;
+        decoded += "/" + tail;
+    } else if (!FileInputDecodeHex(raw.substr(1), decoded)) {
+        return false;
+    }
+    if (decoded.empty() || decoded.back() == '/') return false;
+    if (decoded.find_first_of(std::string("\0?#\\%", 4)) != std::string::npos) {
+        return false;
+    }
+    std::size_t start = 0;
+    while (start < decoded.size()) {
+        const std::size_t end = decoded.find('/', start);
+        const std::size_t stop = end == std::string::npos ? decoded.size() : end;
+        if (stop == start) return false;
+        std::string part = decoded.substr(start, stop - start);
+        if (part == "." || part == ".." ||
+            (!FileInputIsDrivePart(part) && part.find(':') != std::string::npos) ||
+            FileInputIsReservedDeviceName(part) ||
+            FileInputIsSensitivePart(part)) {
+            return false;
+        }
+        parts.push_back(std::move(part));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return !parts.empty();
+}
+
+std::filesystem::path FileInputBuildPath(const FileInputPathParts& parts) {
+#if defined(_WIN32)
+    if (!parts.empty() && FileInputIsDrivePart(parts[0])) {
+        std::filesystem::path result(parts[0] + "\\");
+        for (std::size_t i = 1; i < parts.size(); ++i) result /= parts[i];
+        return result;
+    }
+    std::filesystem::path result("\\");
+    for (const auto& part : parts) result /= part;
+    return result;
+#else
+    std::filesystem::path result("/");
+    for (const auto& part : parts) result /= part;
+    return result;
+#endif
+}
+
+#if defined(_WIN32)
+
+class FileInputHandle {
+public:
+    explicit FileInputHandle(HANDLE handle = INVALID_HANDLE_VALUE)
+        : handle_(handle) {}
+    ~FileInputHandle() {
+        if (handle_ != INVALID_HANDLE_VALUE) ::CloseHandle(handle_);
+    }
+    FileInputHandle(const FileInputHandle&) = delete;
+    FileInputHandle& operator=(const FileInputHandle&) = delete;
+    HANDLE Get() const { return handle_; }
+    void Reset(HANDLE handle) {
+        if (handle_ != INVALID_HANDLE_VALUE) ::CloseHandle(handle_);
+        handle_ = handle;
+    }
+    HANDLE Release() {
+        HANDLE result = handle_;
+        handle_ = INVALID_HANDLE_VALUE;
+        return result;
+    }
+private:
+    HANDLE handle_;
+};
+
+bool FileInputOpenWin(
+    const std::filesystem::path& path, bool directory, FileInputHandle& handle)
+{
+    const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS |
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN;
+    HANDLE raw = ::CreateFileW(path.wstring().c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, flags, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!::GetFileInformationByHandle(raw, &info) ||
+        ::GetFileType(raw) != FILE_TYPE_DISK ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (directory && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) ||
+        (!directory && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
+        ::CloseHandle(raw);
+        return false;
+    }
+    handle.Reset(raw);
+    return true;
+}
+
+bool FileInputHandlePathMatches(
+    HANDLE handle, const FileInputPathParts& expected)
+{
+    wchar_t buffer[4096];
+    const DWORD length = ::GetFinalPathNameByHandleW(handle, buffer, 4096,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (length == 0 || length >= 4096) return false;
+    const auto parts = FileInputPathPartsFrom(
+        std::filesystem::path(std::wstring(buffer, length)));
+    if (parts.size() != expected.size()) return false;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (FileInputComparePart(parts[i]) !=
+            FileInputComparePart(expected[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool FileInputRangeBounds(
+    int64_t size, int64_t offset, int64_t length, int64_t max_bytes,
+    int64_t& count, std::string& error)
+{
+    if (offset < 0 || length < 0 || offset > size || length > size - offset) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    const int64_t end = length == 0 ? size : offset + length;
+    if (end < offset || end > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    if (end - offset > max_bytes) {
+        error = "file input exceeds maximum size";
+        return false;
+    }
+    count = end - offset;
+    return true;
+}
+
+bool FileInputReadSecure(const std::filesystem::path& root,
+    const FileInputPathParts& relative, const FileInputPathParts& canonical,
+    int64_t max_bytes, int64_t offset, int64_t length,
+    std::string& out, std::string& error)
+{
+    FileInputHandle directory;
+    if (!FileInputOpenWin(root, true, directory)) {
+        error = "file input open failed";
+        return false;
+    }
+    std::filesystem::path current = root;
+    for (std::size_t i = 0; i + 1 < relative.size(); ++i) {
+        current /= relative[i];
+        FileInputHandle next;
+        if (!FileInputOpenWin(current, true, next)) {
+            error = "file input path rejected";
+            return false;
+        }
+        directory.Reset(next.Release());
+    }
+    current /= relative.back();
+    FileInputHandle file;
+    if (!FileInputOpenWin(current, false, file)) {
+        error = "file input open failed";
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION before{};
+    if (!::GetFileInformationByHandle(file.Get(), &before) ||
+        before.nNumberOfLinks != 1 ||
+        !FileInputHandlePathMatches(file.Get(), canonical)) {
+        error = "file input path rejected";
+        return false;
+    }
+    const int64_t size = (static_cast<int64_t>(before.nFileSizeHigh) << 32) |
+        static_cast<int64_t>(before.nFileSizeLow);
+    if (size < 0 || size > max_bytes) {
+        error = "file input exceeds maximum size";
+        return false;
+    }
+    int64_t count = 0;
+    if (!FileInputRangeBounds(size, offset, length, max_bytes, count, error)) {
+        return false;
+    }
+    LARGE_INTEGER position{};
+    position.QuadPart = offset;
+    if (!::SetFilePointerEx(file.Get(), position, nullptr, FILE_BEGIN)) {
+        error = "file input seek failed";
+        return false;
+    }
+    std::string buffer(static_cast<std::size_t>(count), '\0');
+    std::size_t done = 0;
+    while (done < static_cast<std::size_t>(count)) {
+        const DWORD chunk = static_cast<DWORD>(std::min<int64_t>(
+            count - static_cast<int64_t>(done),
+            std::numeric_limits<DWORD>::max()));
+        DWORD read = 0;
+        if (!::ReadFile(file.Get(), buffer.data() + done, chunk, &read, nullptr) ||
+            read == 0) {
+            error = "file input changed during read";
+            return false;
+        }
+        done += read;
+    }
+    BY_HANDLE_FILE_INFORMATION after{};
+    if (!::GetFileInformationByHandle(file.Get(), &after) ||
+        after.nFileSizeHigh != before.nFileSizeHigh ||
+        after.nFileSizeLow != before.nFileSizeLow ||
+        after.ftLastWriteTime.dwLowDateTime != before.ftLastWriteTime.dwLowDateTime ||
+        after.ftLastWriteTime.dwHighDateTime != before.ftLastWriteTime.dwHighDateTime ||
+        after.nFileIndexHigh != before.nFileIndexHigh ||
+        after.nFileIndexLow != before.nFileIndexLow ||
+        after.nNumberOfLinks != 1) {
+        error = "file input changed during read";
+        return false;
+    }
+    out = std::move(buffer);
+    return true;
+}
+
+#else
+
+class FileInputFd {
+public:
+    explicit FileInputFd(int fd = -1) : fd_(fd) {}
+    ~FileInputFd() {
+        if (fd_ >= 0) ::close(fd_);
+    }
+    FileInputFd(const FileInputFd&) = delete;
+    FileInputFd& operator=(const FileInputFd&) = delete;
+    int Get() const { return fd_; }
+    int Release() {
+        int result = fd_;
+        fd_ = -1;
+        return result;
+    }
+private:
+    int fd_;
+};
+
+bool FileInputStatMatches(const struct stat& before, const struct stat& after) {
+#if defined(__APPLE__)
+    const auto& before_time = before.st_mtimespec;
+    const auto& after_time = after.st_mtimespec;
+#else
+    const auto& before_time = before.st_mtim;
+    const auto& after_time = after.st_mtim;
+#endif
+    return before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+        before.st_size == after.st_size && before.st_nlink == after.st_nlink &&
+        before_time.tv_sec == after_time.tv_sec &&
+        before_time.tv_nsec == after_time.tv_nsec;
+}
+
+bool FileInputHandlePathMatches(int fd, const FileInputPathParts& expected) {
+    char buffer[4096];
+    std::string path;
+#if defined(__APPLE__)
+    if (::fcntl(fd, F_GETPATH, buffer) != -1) {
+        path.assign(buffer);
+    }
+#else
+    const std::string link = "/proc/self/fd/" + std::to_string(fd);
+    const ssize_t length = ::readlink(link.c_str(), buffer, sizeof(buffer));
+    if (length > 0 && static_cast<std::size_t>(length) < sizeof(buffer)) {
+        path.assign(buffer, static_cast<std::size_t>(length));
+    }
+#endif
+    if (path.empty()) return false;
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(
+        std::filesystem::path(path), ec);
+    if (ec) return false;
+    return FileInputPathPartsFrom(canonical) == expected;
+}
+
+bool FileInputRangeBounds(
+    int64_t size, int64_t offset, int64_t length, int64_t max_bytes,
+    int64_t& count, std::string& error)
+{
+    if (offset < 0 || length < 0 || offset > size || length > size - offset) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    const int64_t end = length == 0 ? size : offset + length;
+    if (end < offset || end > size) {
+        error = "file input range out of bounds";
+        return false;
+    }
+    if (end - offset > max_bytes) {
+        error = "file input exceeds maximum size";
+        return false;
+    }
+    count = end - offset;
+    return true;
+}
+
+bool FileInputReadSecure(const std::filesystem::path& root,
+    const FileInputPathParts& relative, const FileInputPathParts& canonical,
+    int64_t max_bytes, int64_t offset, int64_t length,
+    std::string& out, std::string& error)
+{
+    const int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+    int current = ::open(root.c_str(), flags);
+    if (current < 0) {
+        error = "file input open failed";
+        return false;
+    }
+    struct stat root_stat{};
+    if (::fstat(current, &root_stat) != 0 || !S_ISDIR(root_stat.st_mode)) {
+        ::close(current);
+        error = "file input open failed";
+        return false;
+    }
+    for (std::size_t i = 0; i + 1 < relative.size(); ++i) {
+        const int next = ::openat(current, relative[i].c_str(), flags);
+        if (next < 0) {
+            ::close(current);
+            error = "file input path rejected";
+            return false;
+        }
+        ::close(current);
+        current = next;
+        struct stat directory_stat{};
+        if (::fstat(current, &directory_stat) != 0 ||
+            !S_ISDIR(directory_stat.st_mode)) {
+            ::close(current);
+            error = "file input path rejected";
+            return false;
+        }
+    }
+    const int raw_fd = ::openat(current, relative.back().c_str(),
+        O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (current >= 0) ::close(current);
+    if (raw_fd < 0) {
+        error = "file input open failed";
+        return false;
+    }
+    FileInputFd file(raw_fd);
+    struct stat before{};
+    if (::fstat(file.Get(), &before) != 0 || !S_ISREG(before.st_mode) ||
+        before.st_nlink != 1 || before.st_size < 0) {
+        error = "file input rejected";
+        return false;
+    }
+    if (!FileInputHandlePathMatches(file.Get(), canonical)) {
+        error = "file input path rejected";
+        return false;
+    }
+    int64_t count = 0;
+    if (!FileInputRangeBounds(static_cast<int64_t>(before.st_size), offset,
+            length, max_bytes, count, error)) {
+        return false;
+    }
+    std::string buffer(static_cast<std::size_t>(count), '\0');
+    int64_t done = 0;
+    while (done < count) {
+        const ssize_t read = ::pread(file.Get(), buffer.data() + done,
+            static_cast<std::size_t>(count - done),
+            static_cast<off_t>(offset + done));
+        if (read < 0) {
+            if (errno == EINTR) continue;
+            error = "file input read failed";
+            return false;
+        }
+        if (read == 0) {
+            error = "file input changed during read";
+            return false;
+        }
+        done += read;
+    }
+    struct stat after{};
+    if (::fstat(file.Get(), &after) != 0 || !FileInputStatMatches(before, after)) {
+        error = "file input changed during read";
+        return false;
+    }
+    out = std::move(buffer);
+    return true;
+}
+
+#endif
+
+class FileInputBudget {
+public:
+    explicit FileInputBudget(const ServerOptions::FileInputConfig& config)
+        : max_refs_(config.max_refs), max_total_bytes_(config.max_total_bytes) {}
+
+    bool ReserveRef() {
+        if (refs_ >= max_refs_) return false;
+        ++refs_;
+        return true;
+    }
+
+    bool AddBytes(int64_t bytes) {
+        if (bytes < 0 || bytes > max_total_bytes_ - total_bytes_) return false;
+        total_bytes_ += bytes;
+        return true;
+    }
+
+private:
+    std::size_t max_refs_;
+    int64_t max_total_bytes_;
+    std::size_t refs_{0};
+    int64_t total_bytes_{0};
+};
+
+struct FileInputResourceSnapshot {
+    std::string uri_pattern;
+    bool is_template{false};
+    std::function<ReadResourceResult(const std::string&)> handler;
+    std::function<ReadResourceResult(
+        const std::string&, const std::map<std::string, std::string>&)> template_handler;
+};
+
+class FileInputResolver {
+public:
+    FileInputResolver(const ServerOptions::FileInputConfig& config,
+        const std::vector<FileInputResourceSnapshot>& resources,
+        FileInputBudget& budget)
+        : config_(config), resources_(resources), budget_(budget)
+    {
+        if (!config_.allowed_roots.empty() &&
+            config_.allowed_roots.size() <= kMaxFileInputRoots) {
+            for (const auto& root_text : config_.allowed_roots) {
+                FileInputPathParts root;
+                if (!FileInputCanonicalParts(
+                        std::filesystem::path(root_text), root) ||
+                    FileInputIsSensitive(root)) {
+                    continue;
+                }
+                roots_.push_back(std::move(root));
+            }
+        }
+    }
+
+    bool Resolve(const FileRef& ref, JsonValue& node, std::string& error) {
+        if (HasFileInputPrefix(ref.uri, "https://") ||
+            HasFileInputPrefix(ref.uri, "http://")) {
+            return true;
+        }
+        if (HasFileInputPrefix(ref.uri, "resource://")) {
+            return ResolveResource(ref, node, error);
+        }
+        if (HasFileInputPrefix(ref.uri, "file://")) {
+            return ResolveFile(ref, node, error);
+        }
+        return true;
+    }
+
+private:
+    static void Inline(const FileRef& ref, JsonValue& node, std::string content) {
+        JsonValue inlined(JsonValue::object_tag);
+        inlined["uri"] = JsonValue(ref.uri);
+        inlined["content"] = JsonValue(std::move(content));
+        node = std::move(inlined);
+    }
+
+    bool ResolveResource(
+        const FileRef& ref, JsonValue& node, std::string& error)
+    {
+        if (!budget_.ReserveRef()) {
+            error = "file input reference budget exceeded";
+            return false;
+        }
+        bool found = false;
+        ReadResourceResult read;
+        for (const auto& entry : resources_) {
+            if (entry.is_template || entry.uri_pattern != ref.uri) continue;
+            found = true;
+            try {
+                read = entry.handler(ref.uri);
+            } catch (...) {
+                error = "file input resource read failed: " + ref.uri;
+                return false;
+            }
+            break;
+        }
+        if (!found) {
+            for (const auto& entry : resources_) {
+                if (!entry.is_template) continue;
+                std::string template_error;
+                auto tmpl = detail::UriTemplate::Parse(
+                    entry.uri_pattern, template_error);
+                if (!tmpl) continue;
+                auto variables = tmpl->Match(ref.uri);
+                if (!variables) continue;
+                found = true;
+                try {
+                    read = entry.template_handler(ref.uri, *variables);
+                } catch (...) {
+                    error = "file input resource read failed: " + ref.uri;
+                    return false;
+                }
+                break;
+            }
+        }
+        if (!found) {
+            error = "file input resource not found: " + ref.uri;
+            return false;
+        }
+        if (read.input_required) {
+            error = "file input resource requires input: " + ref.uri;
+            return false;
+        }
+        std::string full;
+        for (const auto& content : read.contents) {
+            if (auto* text = std::get_if<TextResourceContents>(&content)) {
+                full += text->text;
+            } else if (auto* blob = std::get_if<BlobResourceContents>(&content)) {
+                full += blob->blob;
+            }
+        }
+        if (!budget_.AddBytes(static_cast<int64_t>(full.size()))) {
+            error = "file input byte budget exceeded";
+            return false;
+        }
+        std::string slice;
+        if (!SliceFileInputRange(full, ref.offset, ref.length,
+                config_.max_file_bytes, slice, error)) {
+            return false;
+        }
+        if (static_cast<int64_t>(slice.size()) <= config_.max_inline_bytes) {
+            Inline(ref, node, std::move(slice));
+        }
+        return true;
+    }
+
+    bool ResolveFile(const FileRef& ref, JsonValue& node, std::string& error) {
+        if (roots_.empty()) {
+            error = "file input has no allowed roots";
+            return false;
+        }
+        if (!budget_.ReserveRef()) {
+            error = "file input reference budget exceeded";
+            return false;
+        }
+        FileInputPathParts relative_full;
+        if (!FileInputParseUri(ref.uri, relative_full)) {
+            error = "file input not allowed: " + ref.uri;
+            return false;
+        }
+        if (FileInputIsSensitive(relative_full)) {
+            error = "file input sensitive path rejected: " + ref.uri;
+            return false;
+        }
+        FileInputPathParts canonical;
+        if (!FileInputCanonicalParts(
+                FileInputBuildPath(relative_full), canonical) ||
+            FileInputIsSensitive(canonical)) {
+            error = "file input not allowed: " + ref.uri;
+            return false;
+        }
+        const FileInputPathParts* selected = nullptr;
+        for (const auto& root : roots_) {
+            if (FileInputIsPrefix(root, relative_full) &&
+                FileInputIsPrefix(root, canonical)) {
+                selected = &root;
+                break;
+            }
+        }
+        if (!selected) {
+            error = "file input not allowed: " + ref.uri;
+            return false;
+        }
+        const FileInputPathParts relative(
+            relative_full.begin() + static_cast<std::ptrdiff_t>(selected->size()),
+            relative_full.end());
+        if (relative.empty()) {
+            error = "file input not allowed: " + ref.uri;
+            return false;
+        }
+        std::string content;
+        if (!FileInputReadSecure(FileInputBuildPath(*selected), relative,
+                canonical, config_.max_file_bytes, ref.offset, ref.length,
+                content, error)) {
+            return false;
+        }
+        if (!budget_.AddBytes(static_cast<int64_t>(content.size()))) {
+            error = "file input byte budget exceeded";
+            return false;
+        }
+        if (static_cast<int64_t>(content.size()) <= config_.max_inline_bytes) {
+            Inline(ref, node, std::move(content));
+        }
+        return true;
+    }
+
+    const ServerOptions::FileInputConfig& config_;
+    const std::vector<FileInputResourceSnapshot>& resources_;
+    FileInputBudget& budget_;
+    std::vector<FileInputPathParts> roots_;
+};
 
 std::string ToolExecutionFailureMessage(const std::string& name) {
     return std::string("Error executing tool ") + name;
@@ -1030,8 +1812,8 @@ bool McpServer::IsTaskOwnedBySession(const TaskState& task,
 }
 
 std::string McpServer::TaskOwnerFor(const JsonRpcRequest& req) const {
+    if (auto principal = AuthenticatedPrincipalFor(req)) return *principal;
     const std::string session = req.session_id.empty() ? session_id_ : req.session_id;
-    if (auto principal = AuthenticatedPrincipalFor(session)) return *principal;
     return session;
 }
 
@@ -1061,9 +1843,37 @@ std::optional<std::string> McpServer::AuthenticatedPrincipalFor(
     return std::nullopt;
 }
 
+std::optional<std::string> McpServer::AuthenticatedPrincipalFor(
+    const JsonRpcRequest& req) const
+{
+    if (req.request_context && !req.request_context->Principal().empty())
+        return std::string(req.request_context->Principal());
+    return AuthenticatedPrincipalFor(req.session_id);
+}
+
+std::vector<std::string> McpServer::AuthorizedScopesFor(
+    const JsonRpcRequest& req) const
+{
+    if (!req.request_context) return {};
+    return req.request_context->Scopes();
+}
+
+bool McpServer::TaskScopeAllows(const TaskState& task,
+                                const JsonRpcRequest& req) const
+{
+    if (task.authorized_scopes.empty()) return true;
+    const auto current = AuthorizedScopesFor(req);
+    if (current.empty()) return true;
+    for (const auto& recorded : task.authorized_scopes) {
+        if (std::find(current.begin(), current.end(), recorded) != current.end())
+            return true;
+    }
+    return false;
+}
+
 void McpServer::RequireTaskPrincipal(const JsonRpcRequest& req) const {
     if (!IsModernProtocolVersion(handler_->NegotiatedProtocolVersion(req.session_id))) return;
-    if (AuthenticatedPrincipalFor(req.session_id)) return;
+    if (AuthenticatedPrincipalFor(req)) return;
     MCP_LOG(Warning, "task access denied: no authenticated principal");
     throw McpError(McpErrorCode::TaskNotFound,
         "task access requires an authenticated principal");
@@ -1623,7 +2433,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
-                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req))) {
+                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req)) || !TaskScopeAllows(*task, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1677,7 +2487,7 @@ void McpServer::WireTaskHandlers() {
                         return;
                     }
                     auto existing = store->GetTask(params.task_id);
-                    if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                    if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req)) || !TaskScopeAllows(*existing, req)) {
                         p.set_exception(std::make_exception_ptr(
                             McpError(McpErrorCode::InvalidParams,
                                      "task not found: " + params.task_id)));
@@ -1845,7 +2655,7 @@ void McpServer::WireTaskHandlers() {
                     return;
                 }
                 auto target = store->GetTask(params.task_id);
-                if (!target || !IsTaskOwnedBySession(*target, TaskOwnerFor(req))) {
+                if (!target || !IsTaskOwnedBySession(*target, TaskOwnerFor(req)) || !TaskScopeAllows(*target, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1921,7 +2731,7 @@ void McpServer::WireTaskHandlers() {
                 CancelTaskRequestParams params;
                 if (req.params) params = DeserializeCancelTaskRequestParams(*req.params);
                 auto existing = store->GetTask(params.task_id);
-                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req)) || !TaskScopeAllows(*existing, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -1984,7 +2794,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto task = store->GetTask(params.task_id);
-                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req))) {
+                if (!task || !IsTaskOwnedBySession(*task, TaskOwnerFor(req)) || !TaskScopeAllows(*task, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
                                  "task not found: " + params.task_id)));
@@ -2007,7 +2817,7 @@ void McpServer::WireTaskHandlers() {
                 JsonValue tasks_arr(JsonValue::array_tag);
                 auto all_tasks = store->GetAllTasks();
                 for (const auto& t : all_tasks) {
-                    if (!IsTaskOwnedBySession(t, owner)) continue;
+                    if (!IsTaskOwnedBySession(t, owner) || !TaskScopeAllows(t, req)) continue;
                     JsonValue entry(JsonValue::object_tag);
                     entry[detail::kTaskId] = t.task_id;
                     entry["status"] = TaskStatusToWireString(t.status);
@@ -2042,7 +2852,7 @@ void McpServer::WireTaskHandlers() {
                 GetTaskRequestParams params;
                 if (req.params) params = DeserializeGetTaskRequestParams(*req.params);
                 auto existing = store->GetTask(params.task_id);
-                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req))) {
+                if (!existing || !IsTaskOwnedBySession(*existing, TaskOwnerFor(req)) || !TaskScopeAllows(*existing, req)) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::TaskNotFound,
                                  "task not found: " + params.task_id)));
@@ -2240,6 +3050,7 @@ void McpServer::HandleCallTool(
         params = DeserializeCallToolRequestParams(*req.params);
     }
     const std::string task_owner = TaskOwnerFor(req);
+    const auto task_scopes = AuthorizedScopesFor(req);
     if (req.meta) {
         RequestMeta incoming;
         try {
@@ -2299,9 +3110,27 @@ void McpServer::HandleCallTool(
                      "tool not found: " + params.name)));
         return;
     }
+    auto tool = it->second;
+    std::vector<FileInputResourceSnapshot> file_input_resources;
+    if (options_.enable_file_input && params.arguments) {
+        for (const auto& entry : resources_) {
+            FileInputResourceSnapshot snapshot;
+            snapshot.uri_pattern = entry.uri_pattern;
+            snapshot.is_template = entry.is_template;
+            snapshot.handler = entry.handler;
+            snapshot.template_handler = entry.template_handler;
+            file_input_resources.push_back(std::move(snapshot));
+        }
+    }
+    registry_lock.unlock();
 
     if (options_.enable_file_input && params.arguments) {
         std::optional<std::string> file_input_error;
+        const ServerOptions::FileInputConfig config = options_.file_input_config
+            ? *options_.file_input_config
+            : ServerOptions::FileInputConfig{};
+        FileInputBudget budget(config);
+        FileInputResolver resolver(config, file_input_resources, budget);
         std::function<void(JsonValue&)> resolve_file_input = [&](JsonValue& node) {
             if (file_input_error) return;
             if (node.IsArray()) {
@@ -2310,143 +3139,17 @@ void McpServer::HandleCallTool(
             }
             if (!IsFileInputRefObject(node)) {
                 if (node.IsObject()) {
-                    for (auto& entry : node.GetObject()) resolve_file_input(entry.second);
+                    for (auto& entry : node.GetObject()) {
+                        resolve_file_input(entry.second);
+                    }
                 }
                 return;
             }
-            FileRef ref = DeserializeFileRef(node);
-            if (HasFileInputPrefix(ref.uri, "https://") ||
-                HasFileInputPrefix(ref.uri, "http://")) {
-                return;
+            const FileRef ref = DeserializeFileRef(node);
+            std::string error;
+            if (!resolver.Resolve(ref, node, error)) {
+                file_input_error = std::move(error);
             }
-            std::string full;
-            bool have_content = false;
-            if (HasFileInputPrefix(ref.uri, "resource://")) {
-                bool found = false;
-                ReadResourceResult read;
-                for (const auto& entry : resources_) {
-                    if (entry.is_template) continue;
-                    if (entry.uri_pattern != ref.uri) continue;
-                    found = true;
-                    try {
-                        read = entry.handler(ref.uri);
-                    } catch (...) {
-                        file_input_error = "file input resource read failed: " + ref.uri;
-                        return;
-                    }
-                    break;
-                }
-                if (!found) {
-                    for (const auto& entry : resources_) {
-                        if (!entry.is_template) continue;
-                        std::string template_error;
-                        auto tmpl = detail::UriTemplate::Parse(
-                            entry.uri_pattern, template_error);
-                        if (!tmpl) continue;
-                        auto variables = tmpl->Match(ref.uri);
-                        if (!variables) continue;
-                        found = true;
-                        try {
-                            read = entry.template_handler(ref.uri, *variables);
-                        } catch (...) {
-                            file_input_error =
-                                "file input resource read failed: " + ref.uri;
-                            return;
-                        }
-                        break;
-                    }
-                }
-                if (!found) {
-                    file_input_error = "file input resource not found: " + ref.uri;
-                    return;
-                }
-                if (read.input_required) {
-                    file_input_error = "file input resource requires input: " + ref.uri;
-                    return;
-                }
-                for (const auto& c : read.contents) {
-                    if (auto* t = std::get_if<TextResourceContents>(&c)) full += t->text;
-                    else if (auto* b = std::get_if<BlobResourceContents>(&c)) full += b->blob;
-                }
-                std::string slice_error;
-                if (!SliceFileInputRange(full, ref.offset, ref.length, full, slice_error)) {
-                    file_input_error = std::move(slice_error);
-                    return;
-                }
-                have_content = true;
-            } else if (HasFileInputPrefix(ref.uri, "file://")) {
-                std::string raw = ref.uri.substr(7);
-                if (raw.size() > 2 && raw[0] == '/' &&
-                    ((raw[1] >= 'A' && raw[1] <= 'Z') ||
-                     (raw[1] >= 'a' && raw[1] <= 'z')) && raw[2] == ':') {
-                    raw.erase(0, 1);
-                }
-                std::error_code canon_ec;
-                std::filesystem::path canon = std::filesystem::weakly_canonical(
-                    std::filesystem::path(raw), canon_ec);
-                if (canon_ec) {
-                    file_input_error = "file input not allowed: " + ref.uri;
-                    return;
-                }
-                bool allowed = false;
-                for (int i = 0; i < 2; ++i) {
-                    std::error_code dir_ec;
-                    std::filesystem::path dir = (i == 0)
-                        ? std::filesystem::temp_directory_path(dir_ec)
-                        : std::filesystem::current_path(dir_ec);
-                    if (dir_ec) continue;
-                    std::error_code dir_canon_ec;
-                    std::filesystem::path cdir =
-                        std::filesystem::weakly_canonical(dir, dir_canon_ec);
-                    if (dir_canon_ec) cdir = dir;
-                    auto rel = canon.lexically_relative(cdir);
-                    if (!rel.empty() && *rel.begin() != "..") {
-                        allowed = true;
-                        break;
-                    }
-                }
-                if (!allowed) {
-                    file_input_error = "file input not allowed: " + ref.uri;
-                    return;
-                }
-                std::ifstream file(canon, std::ios::binary);
-                if (!file) {
-                    file_input_error = "file input not found: " + ref.uri;
-                    return;
-                }
-                file.seekg(0, std::ios::end);
-                int64_t total = static_cast<int64_t>(file.tellg());
-                if (total < 0) total = 0;
-                if (ref.offset < 0 || ref.length < 0 || ref.offset > total) {
-                    file_input_error = "file input range out of bounds";
-                    return;
-                }
-                int64_t end = (ref.length == 0) ? total : ref.offset + ref.length;
-                if (end < ref.offset || end > total) {
-                    file_input_error = "file input range out of bounds";
-                    return;
-                }
-                if (end - ref.offset > kFileInputMaxBytes) {
-                    file_input_error = "file input exceeds maximum size of 8MB";
-                    return;
-                }
-                full.resize(static_cast<size_t>(end - ref.offset));
-                file.seekg(static_cast<std::streamoff>(ref.offset), std::ios::beg);
-                if (!full.empty()) {
-                    file.read(full.data(), static_cast<std::streamsize>(full.size()));
-                    auto got = static_cast<size_t>(file.gcount());
-                    if (got < full.size()) full.resize(got);
-                }
-                have_content = true;
-            } else {
-                return;
-            }
-            if (!have_content) return;
-            if (static_cast<int64_t>(full.size()) > kFileInputInlineMaxBytes) return;
-            JsonValue inlined(JsonValue::object_tag);
-            inlined["uri"] = JsonValue(ref.uri);
-            inlined["content"] = JsonValue(std::move(full));
-            node = std::move(inlined);
         };
         resolve_file_input(*params.arguments);
         if (file_input_error) {
@@ -2467,8 +3170,6 @@ void McpServer::HandleCallTool(
     auto ctx = RequestContext<CallToolRequestParams>(
         *this, req, std::move(params), std::move(log_fn), cancel_flag,
         handler_->IsJuly2026OrLater(req.session_id), req.session_id);
-
-    auto tool = it->second;
 
     if (options_.max_tool_input_elements &&
         ToolInputElementCount(ctx.Params().arguments) > *options_.max_tool_input_elements) {
@@ -2503,7 +3204,6 @@ void McpServer::HandleCallTool(
             tool_def.execution->task_support == TaskSupport::Required;
 
         if (modern && required_task) {
-            registry_lock.unlock();
             CallToolResult first_result;
             bool first_failed = false;
             JsonValue first_error(JsonValue::object_tag);
@@ -2576,7 +3276,7 @@ void McpServer::HandleCallTool(
             };
             TaskStatus terminal_status = TaskStatus::Completed;
             try {
-                store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
+                store->CreateTask(task_id, task_owner, task_scopes, kDefaultTaskTtlMs);
                 (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
                 if (cancel_flag->load()) {
                     (void)store->SetTaskStatus(task_id, TaskStatus::Cancelled);
@@ -2612,7 +3312,7 @@ void McpServer::HandleCallTool(
             std::lock_guard<std::mutex> lock(running_task_flags_mutex_);
             running_task_cancel_flags_[task_id] = cancel_flag;
         }
-        store->CreateTask(task_id, task_owner, kDefaultTaskTtlMs);
+        store->CreateTask(task_id, task_owner, task_scopes, kDefaultTaskTtlMs);
         (void)store->BindTaskTool(task_id, tool_def.name, ctx.Params().arguments);
         (void)store->SetTaskStatus(task_id, TaskStatus::Working);
         if (modern) {

@@ -7,6 +7,9 @@
 
 #include <transport/detail/net/WebSocketClient.hpp>
 #include <transport/detail/net/Sha1.hpp>
+#include <mcp/transport/detail/Limits.hpp>
+#include <mcp/transport/detail/Url.hpp>
+#include <mcp/test/McpTimeout.hpp>
 #include "TestServerUtil.hpp"
 
 #include <gtest/gtest.h>
@@ -204,6 +207,13 @@ bool WaitFor(Predicate pred, int timeout_ms = 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return pred();
+}
+
+bool WaitUntilRelease(const std::atomic<bool>& released) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!released.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return released.load();
 }
 
 class WsEchoServer {
@@ -537,4 +547,267 @@ TEST(WebSocketClientTest, PingPong) {
     ASSERT_TRUE(WaitFor([&] { return handshake_done.load(); }));
     EXPECT_TRUE(WaitFor([&] { return got_pong.load(); }));
     client.Close();
+}
+
+TEST(WebSocketClientTest, ChunkedHandshakeEntersOpenOnlyAfterFullAccept) {
+    std::atomic<bool> request_seen{false};
+    std::atomic<bool> release{false};
+    std::atomic<bool> response_sent{false};
+    WsEchoServer server([&](int fd) {
+        std::string key;
+        if (!ReadHandshakeRequest(fd, key)) return;
+        request_seen.store(true);
+        if (!WaitUntilRelease(release)) return;
+        std::string accept =
+            net::Base64Encode(net::Sha1Raw(key + std::string(kWebSocketGuid)));
+        std::string response = "HTTP/1.1 101 Switching Protocols\r\n"
+                               "Upgrade: websocket\r\n"
+                               "Connection: Upgrade\r\n"
+                               "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+        std::size_t offset = 0;
+        while (offset < response.size()) {
+            std::size_t chunk = std::min<std::size_t>(7, response.size() - offset);
+            SendRaw(fd, std::string_view(response).substr(offset, chunk));
+            offset += chunk;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        response_sent.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    });
+
+    net::WebSocketClient client;
+    client.SetCallbacks([](std::string_view) {}, []() {}, [](std::string_view) {});
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Closed);
+    client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp");
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Connecting);
+    ASSERT_TRUE(WaitFor([&] { return request_seen.load(); }));
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Connecting);
+    release.store(true);
+    ASSERT_TRUE(WaitFor([&] { return response_sent.load(); }));
+    ASSERT_TRUE(WaitFor([&] {
+        return client.State() == net::WebSocketClient::HandshakeState::Open;
+    }));
+    client.Close();
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Closed);
+}
+
+TEST(WebSocketClientTest, WrongSecWebSocketAcceptRejectedOnce) {
+    WsEchoServer server([](int fd) {
+        std::string key;
+        if (!ReadHandshakeRequest(fd, key)) return;
+        SendRaw(fd, "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Accept: YWJjZA==\r\n\r\n");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    });
+
+    std::promise<std::string> error;
+    auto error_future = error.get_future();
+    std::atomic<int> close_count{0};
+    net::WebSocketClient client;
+    client.SetCallbacks([](std::string_view) {},
+                        [&] { close_count.fetch_add(1); },
+                        [&](std::string_view message) {
+                            try { error.set_value(std::string(message)); } catch (...) {}
+                        });
+    client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp");
+    ASSERT_EQ(error_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_NE(error_future.get().find("Sec-WebSocket-Accept"), std::string::npos);
+    EXPECT_TRUE(WaitFor([&] { return close_count.load() == 1; }));
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Closed);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(close_count.load(), 1);
+    client.Close();
+}
+
+TEST(WebSocketClientTest, ConnectingQueueBoundedAndOrdered) {
+    constexpr std::size_t kLimit = mcp::detail::kMaxWebSocketHandshakeQueueMessages;
+    std::atomic<bool> request_seen{false};
+    std::atomic<bool> release{false};
+    std::atomic<int> queue_errors{0};
+    std::mutex frames_mutex;
+    std::vector<std::string> frames;
+    WsEchoServer server([&](int fd) {
+        std::string key;
+        if (!ReadHandshakeRequest(fd, key)) return;
+        request_seen.store(true);
+        if (!WaitUntilRelease(release)) return;
+        SendHandshakeResponse(fd, key);
+        for (;;) {
+            std::string payload;
+            int opcode = 0;
+            if (!ReadClientFrame(fd, payload, opcode)) break;
+            if (opcode != 0x1) continue;
+            std::lock_guard<std::mutex> lock(frames_mutex);
+            frames.push_back(std::move(payload));
+        }
+    });
+
+    net::WebSocketClient client;
+    client.SetCallbacks([](std::string_view) {}, []() {},
+                        [&](std::string_view message) {
+                            if (message.find("queue full") != std::string_view::npos)
+                                queue_errors.fetch_add(1);
+                        });
+    client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp");
+    ASSERT_TRUE(WaitFor([&] { return request_seen.load(); }));
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Connecting);
+    for (std::size_t i = 0; i < kLimit + 3; ++i)
+        client.Send("m" + std::to_string(i));
+    EXPECT_GE(queue_errors.load(), 3);
+    release.store(true);
+    ASSERT_TRUE(WaitFor([&] {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        return frames.size() >= kLimit;
+    }));
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        ASSERT_EQ(frames.size(), kLimit);
+        for (std::size_t i = 0; i < kLimit; ++i)
+            EXPECT_EQ(frames[i], "m" + std::to_string(i));
+    }
+    client.Close();
+}
+
+TEST(WebSocketClientTest, CloseBeforeHandshakeCompletesInterruptsRead) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        std::atomic<bool> request_seen{false};
+        WsEchoServer server([&](int fd) {
+            std::string key;
+            if (!ReadHandshakeRequest(fd, key)) return;
+            request_seen.store(true);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        });
+        std::atomic<int> close_count{0};
+        net::WebSocketClient client;
+        client.SetCallbacks([](std::string_view) {},
+                            [&] { close_count.fetch_add(1); },
+                            [](std::string_view) {});
+        client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp",
+                    std::chrono::seconds(10));
+        ASSERT_TRUE(WaitFor([&] { return request_seen.load(); }));
+        EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Connecting);
+        client.Close();
+        EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Closed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        EXPECT_EQ(close_count.load(), 1);
+    });
+}
+
+TEST(WebSocketClientTest, RedirectSecurityMatrix) {
+    using mcp::detail::IsSafeWebSocketRedirect;
+    EXPECT_TRUE(IsSafeWebSocketRedirect("ws://example.com/mcp", "ws://example.com/next"));
+    EXPECT_TRUE(IsSafeWebSocketRedirect("ws://example.com:8080/mcp",
+                                        "wss://example.com:8080/next"));
+    EXPECT_TRUE(IsSafeWebSocketRedirect("ws://example.com/mcp", "wss://example.com/next"));
+    EXPECT_TRUE(IsSafeWebSocketRedirect("wss://example.com/next", "wss://example.com/mcp"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("wss://example.com/mcp", "ws://example.com/next"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("ws://example.com/mcp", "ws://other.example/next"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("ws://example.com:8080/mcp",
+                                         "wss://example.com:4443/next"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("ws://user@example.com/mcp",
+                                         "ws://example.com/next"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("ws://example.com/mcp",
+                                         "ws://user@example.com/next"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("ws://example.com/mcp", "not-a-url"));
+    EXPECT_FALSE(IsSafeWebSocketRedirect("ws://example.com/mcp", "http://example.com/next"));
+}
+
+TEST(WebSocketClientTest, RedirectFollowsSamePortWithFreshKey) {
+    std::promise<std::string> first_key;
+    std::promise<std::string> second_key;
+    auto first_future = first_key.get_future();
+    auto second_future = second_key.get_future();
+    std::atomic<int> connections{0};
+    WsEchoServer server([&](int fd) {
+        int connection = connections.fetch_add(1) + 1;
+        std::string key;
+        if (!ReadHandshakeRequest(fd, key)) return;
+        if (connection == 1) {
+            try { first_key.set_value(key); } catch (...) {}
+            SendRaw(fd, "HTTP/1.1 302 Found\r\nLocation: /next\r\n"
+                        "Content-Length: 0\r\n\r\n");
+            return;
+        }
+        try { second_key.set_value(key); } catch (...) {}
+        SendHandshakeResponse(fd, key);
+        for (;;) {
+            std::string payload;
+            int opcode = 0;
+            if (!ReadClientFrame(fd, payload, opcode)) break;
+            if (opcode == 0x1) SendServerFrame(fd, 0x1, payload);
+        }
+    });
+
+    std::promise<std::string> echo;
+    auto echo_future = echo.get_future();
+    net::WebSocketClient client;
+    client.SetCallbacks([&](std::string_view text) {
+                            try { echo.set_value(std::string(text)); } catch (...) {}
+                        },
+                        []() {}, [](std::string_view) {});
+    client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp");
+    ASSERT_EQ(first_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(second_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_NE(first_future.get(), second_future.get());
+    ASSERT_TRUE(WaitFor([&] {
+        return client.State() == net::WebSocketClient::HandshakeState::Open;
+    }));
+    client.Send("redirected");
+    ASSERT_EQ(echo_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_EQ(echo_future.get(), "redirected");
+    client.Close();
+}
+
+TEST(WebSocketClientTest, TotalHandshakeDeadlineCoversResponseWait) {
+    MCP_RUN_WITH_TIMEOUT([&] {
+        std::atomic<bool> request_seen{false};
+        WsEchoServer server([&](int fd) {
+            std::string key;
+            if (!ReadHandshakeRequest(fd, key)) return;
+            request_seen.store(true);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        });
+        std::promise<std::string> error;
+        auto error_future = error.get_future();
+        std::atomic<int> close_count{0};
+        net::WebSocketClient client;
+        client.SetCallbacks([](std::string_view) {},
+                            [&] { close_count.fetch_add(1); },
+                            [&](std::string_view message) {
+                                try { error.set_value(std::string(message)); } catch (...) {}
+                            });
+        client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp",
+                    std::chrono::milliseconds(300));
+        ASSERT_TRUE(WaitFor([&] { return request_seen.load(); }));
+        ASSERT_EQ(error_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        EXPECT_NE(error_future.get().find("timed out"), std::string::npos);
+        EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Closed);
+        EXPECT_EQ(close_count.load(), 1);
+    });
+}
+
+TEST(WebSocketClientTest, RedirectChainStopsAtBound) {
+    std::atomic<int> requests{0};
+    WsEchoServer server([&](int fd) {
+        std::string key;
+        if (!ReadHandshakeRequest(fd, key)) return;
+        requests.fetch_add(1);
+        SendRaw(fd, "HTTP/1.1 302 Found\r\nLocation: /hop\r\n"
+                    "Content-Length: 0\r\n\r\n");
+    });
+    std::promise<std::string> error;
+    auto error_future = error.get_future();
+    net::WebSocketClient client;
+    client.SetCallbacks([](std::string_view) {}, []() {},
+                        [&](std::string_view message) {
+                            try { error.set_value(std::string(message)); } catch (...) {}
+                        });
+    client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp",
+                std::chrono::seconds(5));
+    ASSERT_EQ(error_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_NE(error_future.get().find("too many redirects"), std::string::npos);
+    EXPECT_LE(requests.load(), mcp::detail::kMaxWebSocketRedirects + 1);
+    EXPECT_EQ(client.State(), net::WebSocketClient::HandshakeState::Closed);
 }

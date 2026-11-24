@@ -37,15 +37,16 @@ void StdioServerTransport::Start() {
 }
 
 void StdioServerTransport::Close() {
-    if (running_.exchange(false)) {
-        if (stdin_pipe_) stdin_pipe_->Close();
-        if (stdout_pipe_) stdout_pipe_->Close();
-    }
-
-    detail::JoinThreadSafely(read_thread_);
+    if (!BeginShutdown()) return;
+    running_.store(false);
 
     if (channel_) channel_->Close();
-    SetDisconnected();
+
+    if (stdin_pipe_) stdin_pipe_->Close();
+    if (stdout_pipe_) stdout_pipe_->Close();
+
+    detail::JoinThreadSafely(read_thread_);
+    CompleteShutdown();
 }
 
 void StdioServerTransport::SendMessageAsync(JsonRpcMessage message) {

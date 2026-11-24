@@ -96,6 +96,8 @@
 
 任务 owner 只能由上述 principal 注入接口提供：modern 任务操作在缺少 principal 时失败关闭（`TaskNotFound`），不从 `params`、`_meta`、`taskId` 或客户端自报字段读取 owner；legacy 任务在无 principal 时回退到会话 id 以保持旧线协议行为。跨 owner 的 get/update/cancel/delete/list 与不存在任务返回同一拒绝语义。任务预算常量 `kMaxTasksPerPrincipal`(10000)、`kMaxTaskResultBytes`(8388608)、`kMaxTaskNotificationBytes`(1048576)、`kMaxTaskIdsPerSubscription`(1024) 定义在 `include/mcp/server/McpTaskStore.hpp`。
 
+`ServerRequestContext`（`include/mcp/ServerRequestContext.hpp`）是服务端内部请求上下文，随 `JsonRpcRequest::request_context` 传递，显式标记 `sessionful`/`stateless` 并携带 authenticated principal 与授权作用域；`RequestContext::Identity()` 供 handler 读取，handler 不得从原始 header 或 `params` 重建信任。owner 解析优先取上下文 principal，其次才是会话绑定与默认 principal，因此 stateless 任务无需活动会话也能按记录 owner 与当前 principal 重新授权。`TaskState::authorized_scopes` 随任务持久化（旧记录为空时兼容放行），访问时与当前请求作用域比对，无交集即按不存在处理。上下文的 `CorrelationId()`/`RedactedSession()` 生成脱敏关联字段，不暴露会话 id 或 principal 原文。
+
 ## 客户端状态查询
 
 | 符号 | 签名/类型 | 默认值/返回 | 说明 |
@@ -172,7 +174,8 @@
 | `server_card` | `std::optional<ext::ServerCard>` | `nullopt` | 提供则原样校验后返回；否则合成默认卡片 |
 | `enable_etag_cache` | `bool` | `false` | **进程级副作用**：构造期写全局 `SetEtagCacheEnabled`，同进程内其他客户端/服务端的 etag 行为一并受影响 |
 | `enable_progressive_discovery` | `bool` | `false` | 关闭时 `tools/list` 走整表缓存并忽略 `query`/`pageSize`；开启后按页与关键字过滤 |
-| `enable_file_input` | `bool` | `false` | 展开 `arguments` 中的 `FileRef`（`file://`、`resource://`）；单片上限 8MB、内联 256KB（常量 `kFileInputMaxBytes`/`kFileInputInlineMaxBytes`） |
+| `enable_file_input` | `bool` | `false` | 展开 `arguments` 中的 `FileRef`（`file://`、`resource://`）；`http(s)://` 原样透传；关闭时参数原样透传，双 era 语义不变 |
+| `file_input_config` | `std::optional<FileInputConfig>` | `nullopt` | `FileInputConfig` 含 `allowed_roots`（根目录白名单，空即拒绝全部本地文件）、`max_refs`（默认 16）、`max_file_bytes`（默认 8 MiB）、`max_total_bytes`（默认 8 MiB，单次工具调用累计）、`max_inline_bytes`（默认 256 KiB）；未配置时本地与资源引用仍按请求级预算执行，但无根目录可放行 |
 | `enable_triggers_events` | `bool` | `false` | `EmitTriggerEvent` 在此为假时静默返回（注册/注销不受控） |
 | `TasksImplicitlyEnabled()` | `[[deprecated]] bool`（方法） | 计算值 | 已废弃的隐式推导（`enable_tasks_extension \|\| task_store`），改为显式置 `enable_tasks_extension` |
 | `SkillsImplicitlyEnabled()` | `[[deprecated]] bool`（方法） | `enable_skills_extension` | 已废弃，改显式置 `enable_skills_extension` |

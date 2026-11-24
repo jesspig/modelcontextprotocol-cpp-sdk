@@ -184,6 +184,12 @@ private:
     std::string TaskOwnerFor(const JsonRpcRequest& req) const;
     [[nodiscard]] std::optional<std::string> AuthenticatedPrincipalFor(
         std::string_view session_id) const;
+    [[nodiscard]] std::optional<std::string> AuthenticatedPrincipalFor(
+        const JsonRpcRequest& req) const;
+    [[nodiscard]] std::vector<std::string> AuthorizedScopesFor(
+        const JsonRpcRequest& req) const;
+    [[nodiscard]] bool TaskScopeAllows(const TaskState& task,
+                                       const JsonRpcRequest& req) const;
     void RequireTaskPrincipal(const JsonRpcRequest& req) const;
     void SendTaskDetail(const TaskState& task, std::string_view session_id = {});
     void EnforceTaskBudgets(std::string_view owner);

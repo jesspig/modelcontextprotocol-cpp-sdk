@@ -20,9 +20,9 @@ public:
     {}
 
     void Close() override {
-        if (GetState() == TransportState::Disconnected) return;
+        if (!BeginShutdown()) return;
         recv_channel_->Close();
-        SetDisconnected();
+        CompleteShutdown();
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {

@@ -46,6 +46,12 @@ JsonValue SerializeTaskState(const TaskState& state) {
     JsonValue::Object obj;
     obj["task_id"] = JsonValue(state.task_id);
     obj["owner"] = JsonValue(state.owner);
+    if (!state.authorized_scopes.empty()) {
+        JsonValue::Array scopes;
+        for (const auto& scope : state.authorized_scopes)
+            scopes.push_back(JsonValue(scope));
+        obj["authorized_scopes"] = JsonValue(std::move(scopes));
+    }
     obj["status"] = JsonValue(static_cast<int64_t>(state.status));
     if (state.result) obj[detail::kResult] = *state.result;
     if (state.error_message) obj["error_message"] = JsonValue(*state.error_message);
@@ -68,6 +74,11 @@ TaskState DeserializeTaskState(const JsonValue& j) {
     TaskState state;
     if (auto* v = j.Find("task_id")) state.task_id = v->GetString();
     if (auto* v = j.Find("owner"); v && v->IsString()) state.owner = v->GetString();
+    if (auto* v = j.Find("authorized_scopes"); v && v->IsArray()) {
+        for (const auto& scope : v->GetArray()) {
+            if (scope.IsString()) state.authorized_scopes.push_back(scope.GetString());
+        }
+    }
     if (auto* v = j.Find("status")) state.status = static_cast<TaskStatus>(v->GetInt());
     if (auto* v = j.Find("result"); v && !v->IsNull())
         state.result = *v;
@@ -449,6 +460,31 @@ bool FileTaskStore::SetTaskOwner(const std::string& task_id,
         original = it->second;
         updated = original;
         updated.owner = owner;
+        it->second = updated;
+    }
+    if (!AppendRecord(task_id, updated)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::SetTaskScopes(const std::string& task_id,
+                                  const std::vector<std::string>& scopes)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    TaskState updated;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        original = it->second;
+        updated = original;
+        updated.authorized_scopes = scopes;
         it->second = updated;
     }
     if (!AppendRecord(task_id, updated)) {

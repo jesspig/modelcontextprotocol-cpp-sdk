@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-11-24T23:55:18+08:00
+timestamp: 2026-11-25T01:44:25+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -34,6 +34,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 - **跨进程文件锁**：每操作独立句柄阻塞排他锁（Win32 `LockFileEx` / POSIX `flock`），同进程多线程与其他进程在同一会话上串行
 - 读取边界：缺失或不可读 JSONL 文件视为空存储；坏行或缺少字段的尾行跳过，读取不会因为单条损坏记录抛出
 - 写入边界：会话锁内**每次追加都扫描 JSONL** 校验 `next_id`/`count`；日志缺失、截断、裁剪、cursor 缺失/损坏/超前/落后或追加成功但 cursor 未落盘时一律从日志重建；`max_id` 触及 `uint64` 上限时拒绝追加；目录创建、文件锁、追加或 `Clear` 失败抛异常；cursor 落盘失败只记日志（下次从日志重建，不产生重复 id）；超过 `kMaxEventsPerSession`（10000）事件经 `WriteAtomic` 全量重写裁剪，写失败抛错
+- 回放读取边界：`Last-Event-ID` 回放组装遵循与客户端相同的 SSE 行规则（共享 [SseEventParser.hpp](../../include/mcp/detail/SseEventParser.hpp)：CRLF/LF/CR/混合换行、空行分帧、注释不派发），回放仍受单事件 1 MiB、回放 1 MiB / 512 条与监听等待 2s 预算（`kMaxSseEventBytes`/`kMaxSseReplayEvents`/`kSseListenerWaitBudget`），超限改为可分类错误并要求重建监听，不伪造成功
 
 ## SessionStore 会话记录抽象
 

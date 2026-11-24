@@ -20,6 +20,7 @@
 
 #include <http/HttpServerImpl.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/detail/HttpFraming.hpp>
 #include <mcp/detail/StringUtils.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
 #include <mcp/transport/detail/Limits.hpp>
@@ -185,7 +186,7 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
         auto* v4 = reinterpret_cast<sockaddr_in*>(&addr);
         v4->sin_family = AF_INET;
         v4->sin_port = htons(port);
-        v4->sin_addr.s_addr = htonl(INADDR_ANY);
+        v4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     } else {
         std::string host = options.bind_host;
         if (host.size() >= 2 && host.front() == '[' && host.back() == ']')
@@ -217,13 +218,13 @@ void Impl::Start(uint16_t port, const HandlerMap& handlers,
                  reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
     MCP_LOG(Info, std::string("binding ") +
-        (options.bind_host.empty() ? std::string("0.0.0.0") : options.bind_host) +
+        (options.bind_host.empty() ? std::string(kDefaultBindHost) : options.bind_host) +
         ":" + std::to_string(port));
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr),
               family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
         CloseFd(fd);
         throw std::runtime_error("HttpServer: bind failed on " +
-                                 (options.bind_host.empty() ? std::string("0.0.0.0") : options.bind_host) +
+                                 (options.bind_host.empty() ? std::string(kDefaultBindHost) : options.bind_host) +
                                  ":" + std::to_string(port) + ": " +
                                  SocketErrorText(LastSocketError()));
     }
@@ -685,18 +686,13 @@ Impl::HeaderResult Impl::ReadHeaderBlock(
 
     auto cl = headers.find("content-length");
     if (cl != headers.end()) {
-        if (cl->second.empty())
-            return HeaderResult::BadRequest;
         std::size_t body_limit = options_.max_request_body_bytes.value_or(kMaxBodyBytes);
-        std::size_t n = 0;
-        for (char c : cl->second) {
-            if (c < '0' || c > '9')
-                return HeaderResult::BadRequest;
-            n = n * 10 + static_cast<std::size_t>(c - '0');
-            if (n > body_limit)
-                return HeaderResult::PayloadTooLarge;
-        }
-        content_length_out = n;
+        auto parsed = ParseCheckedDecimal(cl->second, body_limit);
+        if (parsed.error == HttpNumberError::LimitExceeded)
+            return HeaderResult::PayloadTooLarge;
+        if (parsed.error != HttpNumberError::None)
+            return HeaderResult::BadRequest;
+        content_length_out = parsed.value;
     }
     if (headers.find("transfer-encoding") != headers.end())
         return HeaderResult::BadRequest;

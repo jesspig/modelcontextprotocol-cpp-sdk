@@ -96,6 +96,8 @@ Declared in `include/mcp/server/McpServer.hpp`; delivery and era routing are in 
 
 Task owners may only come from the principal injection APIs above: modern task operations fail closed (`TaskNotFound`) when no principal is bound and never read an owner from `params`, `_meta`, `taskId`, or client-reported fields; legacy tasks fall back to the session id when no principal is present to preserve the old wire behavior. Cross-owner get/update/cancel/delete/list and unknown tasks share one rejection semantic. Budget constants `kMaxTasksPerPrincipal` (10000), `kMaxTaskResultBytes` (8388608), `kMaxTaskNotificationBytes` (1048576), and `kMaxTaskIdsPerSubscription` (1024) live in `include/mcp/server/McpTaskStore.hpp`.
 
+`ServerRequestContext` (`include/mcp/ServerRequestContext.hpp`) is the internal server request context carried by `JsonRpcRequest::request_context`. It explicitly marks `sessionful`/`stateless` and carries the authenticated principal plus authorized scopes; `RequestContext::Identity()` exposes it to handlers, which must not rebuild trust from raw headers or params. Owner resolution prefers the context principal, then the session binding, then the default principal, so stateless tasks are re-authorized against the persisted owner and the current principal without an active session. `TaskState::authorized_scopes` is persisted with the task (empty for legacy records, which remain allowed) and compared with the current request scopes on access; no overlap is treated as not found. `CorrelationId()` and `RedactedSession()` produce redacted correlation fields without exposing raw session ids or principal names.
+
 ## Client state queries
 
 | Symbol | Signature/Type | Default/Returns | Notes |
@@ -172,7 +174,8 @@ The queries are declared in `include/mcp/server/McpServer.hpp` and `RequestConte
 | `server_card` | `std::optional<ext::ServerCard>` | `nullopt` | Used verbatim (after validation) when provided; otherwise a default card is synthesized |
 | `enable_etag_cache` | `bool` | `false` | **Process-wide side effect**: the constructor calls `SetEtagCacheEnabled`, changing etag behaviour of every client/server in the same process |
 | `enable_progressive_discovery` | `bool` | `false` | When off, `tools/list` serves a whole-table cache and ignores `query`/`pageSize`; when on, filtering and paging apply |
-| `enable_file_input` | `bool` | `false` | Expands `FileRef` entries (`file://`, `resource://`) inside `arguments`; 8MB per slice, 256KB inline (`kFileInputMaxBytes`/`kFileInputInlineMaxBytes`) |
+| `enable_file_input` | `bool` | `false` | Expands `FileRef` entries (`file://`, `resource://`) inside `arguments`; `http(s)://` passes through unchanged; with the flag off, arguments pass through verbatim in both eras |
+| `file_input_config` | `std::optional<FileInputConfig>` | `nullopt` | `FileInputConfig` carries `allowed_roots` (root allowlist; empty rejects every local file), `max_refs` (16 by default), `max_file_bytes` (8 MiB), `max_total_bytes` (8 MiB, accumulated per tool call), and `max_inline_bytes` (256 KiB). Without configuration, request-level budgets still apply, but no root can be authorised |
 | `enable_triggers_events` | `bool` | `false` | `EmitTriggerEvent` returns silently while this is off (register/unregister are not gated) |
 | `TasksImplicitlyEnabled()` | `[[deprecated]] bool` (method) | computed | Deprecated implicit derivation (`enable_tasks_extension \|\| task_store`); set `enable_tasks_extension` explicitly instead |
 | `SkillsImplicitlyEnabled()` | `[[deprecated]] bool` (method) | `enable_skills_extension` | Deprecated; set `enable_skills_extension` explicitly instead |

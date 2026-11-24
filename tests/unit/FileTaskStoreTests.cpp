@@ -794,3 +794,22 @@ TEST_F(FileTaskStoreTest, InMemoryStorePreservesOwnerAndLegacyRecords) {
     EXPECT_TRUE(store.RemoveTask("owned-task"));
     EXPECT_FALSE(store.GetTask("owned-task").has_value());
 }
+
+TEST_F(FileTaskStoreTest, PersistsOwnerAndAuthorizedScopesAcrossInstances) {
+    {
+        FileTaskStore store(store_path);
+        store.CreateTask("scoped-task", "stateless-principal",
+            std::vector<std::string>{"mcp:read", "tasks:write"}, 300000);
+    }
+    {
+        FileTaskStore store(store_path);
+        auto task = store.GetTask("scoped-task");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_EQ(task->owner, "stateless-principal");
+        ASSERT_EQ(task->authorized_scopes.size(), size_t{2});
+        EXPECT_EQ(task->authorized_scopes[0], "mcp:read");
+        EXPECT_EQ(task->authorized_scopes[1], "tasks:write");
+        ASSERT_TRUE(task->ttl_ms.has_value());
+        EXPECT_EQ(*task->ttl_ms, 300000);
+    }
+}
