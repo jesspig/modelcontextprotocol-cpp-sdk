@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-11-25T01:44:25+08:00
+timestamp: 2026-11-25T04:21:25+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -58,6 +58,11 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 - `FileTaskStore` 的压缩失败是 **best-effort**：`AppendRecord` 只记 Error 日志并把 `pending_records_` 归零，仍返回 `true`；只有追加本身（打开/写入/flush）失败才回滚内存并抛 `McpError(InternalError)`；加载期的损坏备份、恢复重建与截断重写失败则**明确抛错**，不返回伪成功，也不以空库覆盖证据
 - token 刷新失败不回退旧 token
 - `FileTokenCache` 的机密写入经 `WriteAtomicSecure`（失败抛 `McpError(InternalError)`，向 `StoreTokens`/`Save` 调用方传播）；析构内的 `Save` 捕获异常仅记 Error，避免进程终止；加载前校验文件属主与权限（组/其他可读即拒绝加载）
+
+## T-20 回归核验（2026-11-25）
+
+- `FileTaskStoreTest.CreateTask` 在本机 Windows / clang-cl / Debug / OpenSSL 未探到档单独复跑 1/1 通过；全量 ctest 中同为通过。历史失败的四条归因已闭环：① fixture 用 `std::filesystem::temp_directory_path()` 拼测试名文件名，多工作树共用系统 Temp 会并发踩踏（本轮 `TEMP`/`TMP` 隔离到工作树 `.tmp`）；② Windows UCRT `ofstream` 无 `FILE_SHARE_DELETE`，旧 `AppendRecord` 在自身句柄未关时压缩导致 `MoveFileEx` 失败（提交 `8963366` 改为先关句柄再压缩）；③ `AtomicJsonFile` 临时名 `<path>.tmp.<pid>.<counter>.<salt>` 以 `CREATE_NEW` 独占创建并拒链接/目录；④ 压缩改 best-effort，失败只记日志不污染后续写入。
+- 守护用例 `AutomaticCompactionAcrossThresholdKeepsWritesSucceeding` 与 Windows 专属 `CompactionFailureKeepsSubsequentWritesSucceeding` 在旧实现下均复现 `task store: failed to persist task`，修复后通过；损坏备份/截断重写失败路径由 `MiddleLineCorruptionBacksUpAndRebuildsRecoveredPrefix`、`TruncatedTailRewriteFailureThrowsAndKeepsOriginal` 守护。本轮全量 ctest 1242/1242、三轮不稳定用例复跑均通过，未放宽断言、未改失败基线。证据见 `.handoff/evidence/T-20/`。
 
 ## 相关页面
 
