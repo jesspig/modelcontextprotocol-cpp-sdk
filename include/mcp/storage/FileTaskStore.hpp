@@ -41,12 +41,17 @@ public:
     bool SetTaskTtl(const std::string& task_id, int64_t ttl_ms) override;
 
 private:
+    enum class LoadResult { Clean, Truncated, Corrupt };
+
     bool Flush();
     bool AppendRecord(const std::string& task_id, const TaskState& state);
     bool AppendRemoval(const std::string& task_id);
     bool CompactLocked();
     void LoadTasks();
-    void LoadRecords(const std::string& content);
+    LoadResult LoadRecords(const std::string& content,
+                           std::unordered_map<std::string, TaskState>& target,
+                           size_t& pending);
+    bool RewriteRecovered(const std::unordered_map<std::string, TaskState>& target);
     void BackupCorruptFile();
 
     std::mutex write_mutex_;

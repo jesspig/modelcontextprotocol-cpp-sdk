@@ -1,12 +1,18 @@
 #include <mcp/storage/FileTokenCache.hpp>
+#include <mcp/McpError.hpp>
+#include <mcp/detail/AtomicJsonFile.hpp>
 
 #include <fstream>
 #include <gtest/gtest.h>
 #include <mcp/test/McpTestInfo.hpp>
+#include <cstdlib>
 #include <filesystem>
+#include <vector>
 #ifndef _WIN32
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#include <windows.h>
 #endif
 
 using namespace mcp;
@@ -196,5 +202,116 @@ TEST_F(FileTokenCacheTest, NoTemporaryFilesLeftBehind) {
         }
     }
     EXPECT_EQ(leftovers, 0);
+}
+#endif
+
+static std::string ReadAtomicBytes(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file),
+                       std::istreambuf_iterator<char>());
+}
+
+static int CountAtomicTemps(const std::filesystem::path& path) {
+    auto parent = path.parent_path();
+    auto prefix = path.filename().string() + ".tmp.";
+    int count = 0;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(parent, ec)) {
+        if (entry.path().filename().string().rfind(prefix, 0) == 0) ++count;
+    }
+    return count;
+}
+
+TEST_F(FileTokenCacheTest, AtomicWriteFailureStagesKeepOldOrCompleteNew) {
+    const std::string old_content = R"({"version":"old"})";
+    const std::string new_content = R"({"version":"new"})";
+    const std::vector<detail::AtomicWriteStage> stages = {
+        detail::AtomicWriteStage::Create,
+        detail::AtomicWriteStage::Write,
+        detail::AtomicWriteStage::Flush,
+        detail::AtomicWriteStage::Rename,
+        detail::AtomicWriteStage::ParentSync,
+    };
+    for (auto stage : stages) {
+        {
+            std::ofstream file(cache_path, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(file.is_open());
+            file << old_content;
+        }
+        detail::SetAtomicWriteFailureInjection(stage);
+        bool ok = detail::WriteAtomic(cache_path, new_content);
+        detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::None);
+
+        EXPECT_FALSE(ok);
+        auto content = ReadAtomicBytes(cache_path);
+        EXPECT_TRUE(content == old_content || content == new_content);
+        if (stage == detail::AtomicWriteStage::ParentSync) {
+            EXPECT_EQ(content, new_content);
+        } else {
+            EXPECT_EQ(content, old_content);
+        }
+        EXPECT_EQ(CountAtomicTemps(cache_path), 0);
+    }
+}
+
+TEST_F(FileTokenCacheTest, AtomicSecureWriteFailureThrowsAndCleansTemp) {
+    const std::string old_content = R"({"version":"old"})";
+    {
+        std::ofstream file(cache_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << old_content;
+    }
+    detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::Rename);
+    EXPECT_THROW((void)detail::WriteAtomicSecure(cache_path, R"({"version":"new"})"), McpError);
+    detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::None);
+    EXPECT_EQ(ReadAtomicBytes(cache_path), old_content);
+    EXPECT_EQ(CountAtomicTemps(cache_path), 0);
+}
+
+TEST_F(FileTokenCacheTest, AtomicWriteRejectsDirectoryTarget) {
+    auto directory = cache_path.string() + ".dir";
+    ASSERT_TRUE(std::filesystem::create_directory(directory));
+    EXPECT_FALSE(detail::WriteAtomic(std::filesystem::path(directory), std::string("payload")));
+    std::error_code ec;
+    std::filesystem::remove(directory, ec);
+}
+
+#ifndef _WIN32
+TEST_F(FileTokenCacheTest, AtomicWriteRejectsSymlinkTarget) {
+    auto victim = cache_path.string() + ".victim";
+    {
+        std::ofstream file(victim, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << "keep";
+    }
+    ASSERT_EQ(::symlink(victim.c_str(), cache_path.c_str()), 0);
+    EXPECT_FALSE(detail::WriteAtomic(cache_path, "changed"));
+    EXPECT_EQ(ReadAtomicBytes(victim), "keep");
+    std::error_code ec;
+    std::filesystem::remove(cache_path, ec);
+    std::filesystem::remove(victim, ec);
+}
+#else
+TEST_F(FileTokenCacheTest, AtomicWriteRejectsReparsePointTarget) {
+    auto directory = cache_path.string() + ".dir";
+    ASSERT_TRUE(std::filesystem::create_directory(directory));
+    auto link = cache_path.string() + ".link";
+    std::wstring target(directory.begin(), directory.end());
+    std::wstring link_name(link.begin(), link.end());
+    if (!::CreateSymbolicLinkW(link_name.c_str(), target.c_str(),
+                               SYMBOLIC_LINK_FLAG_DIRECTORY)) {
+        std::wstring command = L"cmd /c mklink /J \"" + link_name +
+            L"\" \"" + target + L"\"";
+        if (::_wsystem(command.c_str()) != 0) {
+            std::error_code ec;
+            std::filesystem::remove(directory, ec);
+            GTEST_SKIP() << "symbolic link and junction creation unavailable";
+        }
+    }
+    EXPECT_FALSE(detail::WriteAtomic(std::filesystem::path(link), std::string("payload")));
+    EXPECT_EQ(CountAtomicTemps(std::filesystem::path(link)), 0);
+    std::error_code ec;
+    std::filesystem::remove(link, ec);
+    std::filesystem::remove(directory, ec);
 }
 #endif
