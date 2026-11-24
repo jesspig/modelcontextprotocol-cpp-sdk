@@ -279,6 +279,10 @@ bool TlsSocket::IsConnected() const {
     return ssl_ != nullptr && tcp_.IsConnected() && !eof_;
 }
 
+std::optional<std::string> TlsSocket::PeerAddress() const {
+    return tcp_.PeerAddress();
+}
+
 #else
 
 TlsSocket::TlsSocket(bool) {}
@@ -309,6 +313,10 @@ bool TlsSocket::IsEof() const {
 
 bool TlsSocket::IsConnected() const {
     return false;
+}
+
+std::optional<std::string> TlsSocket::PeerAddress() const {
+    return tcp_.PeerAddress();
 }
 
 #endif

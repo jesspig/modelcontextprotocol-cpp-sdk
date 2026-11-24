@@ -30,6 +30,27 @@
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | 未设置 | 拿到完整授权 URL 后回调，供外部打开浏览器；不影响流程判定 |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | 未设置 | 必须提供，否则授权流程直接 `false`；返回空、`state` 不符、`iss` 不符均失败 |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | 未设置 | 每次令牌落缓存后回调 |
+| `outbound_origin_allowlist` | `std::optional<std::vector<std::string>>` | `nullopt` | 显式追加授权 origin（scheme://host[:port]）；与 `server_url`、`redirect_uri`、`allowed_authorization_server_origins` 一同构成出站 allowlist，元数据响应不能自行扩张 |
+| `loopback_port_exceptions` | `std::vector<std::pair<std::string, std::uint16_t>>` | 空 | 追加精确的回环 host+port 例外；由配置派生出的回环 origin 会自动登记对应例外，其他回环端口一律拒绝 |
+| `dns_resolver` | `std::shared_ptr<mcp::detail::net::IUrlSecurityResolver>` | 空 | 出站连接前的 DNS resolver 注入点；空则用系统 `getaddrinfo`。测试用 fake resolver，不访问公网 |
+| `allow_cross_origin_redirect` | `bool` | `false` | 默认拒绝跨 origin 重定向；显式打开后仍需命中 allowlist，且跨 origin 时删除 `Authorization`/`Cookie`/secret 头 |
+
+### 出站网络安全策略（SSRF）
+
+所有 OAuth 出站请求（PRM、AS 元数据、CIMD、DCR 注册、token、refresh、吊销、挑战元数据；JWKS 仅解析不发起请求）都走统一策略入口：
+
+1. **origin allowlist**：只接受调用方显式配置的 scheme/host/port，按 scheme 规范化默认端口（http 80、https 443）后精确比较；拒绝 userinfo、`%` 编码 host、纯数字/十六进制编码地址、非法端口。
+2. **DNS 后地址策略**：连接前解析全部 A/AAAA 答案（上限 16），逐条拒绝 loopback、private、link-local、multicast、unspecified、保留地址与 IPv4-mapped IPv6；答案中任一地址非法即整组拒绝。回环仅在精确 host+port 例外下允许。
+3. **防重绑定**：把校验通过的地址集合绑定到实际连接；连接建立后在发送任何字节前以 `getpeername()` 复核 peer 是否仍在该集合中，不符即关闭连接并抛 `ProtocolViolation`。`HttpRequestSpec::peer_address_override` 是测试用的 peer 观察注入点。
+4. **逐跳重定向**：每跳重新执行 scheme + origin allowlist + DNS + 地址策略；默认拒绝跨 origin，超预算（5 跳）失败关闭；跨 origin 删除 `Authorization`、`Cookie`、`client_secret`、`registration_access_token` 等敏感头。当前 HTTP 客户端无代理路径，因此不存在绕过已验证地址的代理分支。
+
+旧行为 → 新行为 → 受影响调用方改法：以前未知 origin/私网地址可被请求，现在连接前拒绝；需要显式放行的部署把 origin 加进 `allowed_authorization_server_origins` 或 `outbound_origin_allowlist`，本地回环 fixture 用 `loopback_port_exceptions` 或由 `server_url` 自动登记。跨域重定向从「同源外放行且只删 Authorization」收紧为默认全拒绝；依赖跨域跳转的调用方需同时命中 allowlist 并显式设置 `allow_cross_origin_redirect = true`。
+
+### DCR `client_secret` 统一解析
+
+`ResolveClientSecret()` 是唯一解析入口，固定优先级：显式 `client_secret` → DCR 注册响应中的 `client_secret` → 按 issuer/client_id/resource 作用域隔离的既有缓存值。空值、控制字符或超过 4096 字节即失败关闭并抛 `InvalidParams`，异常与日志只写来源类别不写值；临时副本用 `detail::SecureClear` 在失败路径清零。缓存键由 `SecretCacheKey(issuer, client_id, resource)` 生成，不同 issuer 或 principal 不会复用同一 secret。
+
+旧行为 → 新行为 → 受影响调用方改法：以前 DCR 响应里的 `client_secret` 被解析进注册信息却未用于客户端认证，现在会参与 `client_secret_post`/`client_secret_basic`；同时设置显式 secret 时仍以显式值为准。非法 secret 以前以空值发送，现在抛 `InvalidParams`；依赖空 secret 的旧注册响应需提供合法值或改走 `private_key_jwt`。
 
 ### `OAuthClientProvider` 公开方法
 
@@ -40,6 +61,8 @@
 | 构造/析构 | `explicit OAuthClientProvider(OAuthClientOptions options)` / `~OAuthClientProvider()` | — | 选项按值接管；令牌缓存缺省自建 |
 | `IsSecureEndpoint` | `static bool IsSecureEndpoint(std::string_view url)` | `bool` | https 判定，回环地址例外 |
 | `IsSameOrigin` | `static bool IsSameOrigin(std::string_view lhs, std::string_view rhs)` | `bool` | 源（scheme+host+port）比对，任一侧取不出源即 `false` |
+| `SecretCacheKey` | `static std::string SecretCacheKey(std::string_view issuer, std::string_view client_id, std::string_view resource)` | 隔离键 | 按 issuer / client_id / resource 生成 secret 缓存键 |
+| `ResolveClientSecret` | `std::optional<std::string> ResolveClientSecret() const` | 解析后的 secret，无来源则 `nullopt` | 统一入口；非法值抛 `InvalidParams`，错误文本不含 secret |
 | `Authenticate` | `bool Authenticate()` | 是否拿到可用令牌 | 严格发现元数据（默认无 legacy 回退）→ 按需注册/取 CIMD 文档 → 未过期缓存直接 true → 有过期令牌则刷新，`invalid_grant`/`invalid_client` 回落完整授权流；资源不符的缓存先清掉 |
 | `AuthenticateClientCredentials` | `bool AuthenticateClientCredentials()` | 令牌是否入库 | 需 `client_id`；无断言时还需 `client_secret`；不发授权码流 |
 | `GetAccessToken` | `std::string GetAccessToken()` | 令牌串，无令牌为空串 | 临期且有 refresh token 时走合并刷新（并发共享一次刷新）；刷新失败抛 `InternalError` |

@@ -30,6 +30,27 @@ Declared in `include/mcp/client/auth/OAuthClientProvider.hpp`, implemented in `s
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | unset | Invoked with the full authorization URL so the caller can open a browser; does not influence the flow outcome |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | unset | Mandatory, otherwise the authorization flow returns `false` immediately; an empty result, a `state` mismatch or an `iss` mismatch all fail |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | unset | Invoked every time tokens land in the cache |
+| `outbound_origin_allowlist` | `std::optional<std::vector<std::string>>` | `nullopt` | Explicitly appends authorized origins (`scheme://host[:port]`); together with `server_url`, `redirect_uri` and `allowed_authorization_server_origins` it forms the outbound allow-list, which metadata responses cannot expand |
+| `loopback_port_exceptions` | `std::vector<std::pair<std::string, std::uint16_t>>` | empty | Adds exact loopback host+port exceptions; exceptions for configured loopback origins are derived automatically, every other loopback port is rejected |
+| `dns_resolver` | `std::shared_ptr<mcp::detail::net::IUrlSecurityResolver>` | empty | Resolver injection point used before every outbound connection; empty uses the system `getaddrinfo`. Tests inject a fake resolver and never touch public DNS |
+| `allow_cross_origin_redirect` | `bool` | `false` | Cross-origin redirects are rejected by default; enabling them still requires an allow-list hit and drops `Authorization`/`Cookie`/secret headers on origin changes |
+
+### Outbound network security policy (SSRF)
+
+Every OAuth outbound request (PRM, AS metadata, CIMD, DCR registration, token, refresh, revocation, challenge metadata; JWKS is parsed but never fetched) goes through one policy entry point:
+
+1. **Origin allow-list**: only caller-configured scheme/host/port values are accepted, compared exactly after normalizing default ports (http 80, https 443); userinfo, `%`-encoded hosts, numeric/hex encoded addresses and invalid ports are rejected.
+2. **Address policy after DNS**: all A/AAAA answers (at most 16) are resolved before connecting and each is checked; loopback, private, link-local, multicast, unspecified and reserved addresses plus IPv4-mapped IPv6 are rejected, and one bad answer rejects the whole set. Loopback is only allowed with an exact host+port exception.
+3. **Rebinding binding**: the validated address set is bound to the actual connection; after connect and before sending any bytes, `getpeername()` must still report an address from that set, otherwise the connection is closed and `ProtocolViolation` is thrown. `HttpRequestSpec::peer_address_override` is the test seam for peer observation.
+4. **Per-hop redirects**: each hop re-runs scheme + origin allow-list + DNS + address policy; cross-origin redirects are rejected by default, exceeding the budget (5 hops) fails closed, and `Authorization`, `Cookie`, `client_secret`, `registration_access_token` and similar headers are dropped on origin changes. The HTTP client has no proxy path, so no proxy branch can bypass a validated address.
+
+Old behavior → new behavior → affected callers: unknown origins and private addresses used to be reachable; they are now rejected before connect. Deployments needing explicit access must add the origin to `allowed_authorization_server_origins` or `outbound_origin_allowlist`, and local loopback fixtures use `loopback_port_exceptions` (or the exception derived from `server_url`). Cross-origin redirects used to be followed with only `Authorization` stripped; they are now rejected by default — callers that rely on them must both authorize the origin and set `allow_cross_origin_redirect = true`.
+
+### Unified DCR `client_secret` resolution
+
+`ResolveClientSecret()` is the single entry point with a fixed priority: explicit `client_secret` → the `client_secret` from the DCR registration response → a previously stored value isolated by issuer/client_id/resource. Empty values, control characters and values over 4096 bytes fail closed with `InvalidParams`; exceptions and log records name only the source category, never the value, and temporary copies are zeroed by `detail::SecureClear` on failure paths. Cache keys come from `SecretCacheKey(issuer, client_id, resource)`, so a secret cannot cross issuer or principal boundaries.
+
+Old behavior → new behavior → affected callers: a DCR `client_secret` used to be parsed into the registration record but never used for client authentication; it now participates in `client_secret_post`/`client_secret_basic`, while an explicit secret still takes precedence. Invalid secrets used to be sent as empty values; they now throw `InvalidParams`, so old registration responses relying on an empty secret must supply a valid value or switch to `private_key_jwt`.
 
 ### `OAuthClientProvider` public methods
 
@@ -40,6 +61,8 @@ Declared in the same header; private nested types and members are not user API a
 | Construct/destruct | `explicit OAuthClientProvider(OAuthClientOptions options)` / `~OAuthClientProvider()` | — | Options are taken by value; the token cache is self-created by default |
 | `IsSecureEndpoint` | `static bool IsSecureEndpoint(std::string_view url)` | `bool` | https check, loopback hosts excepted |
 | `IsSameOrigin` | `static bool IsSameOrigin(std::string_view lhs, std::string_view rhs)` | `bool` | Origin (scheme+host+port) comparison; `false` if either side yields no origin |
+| `SecretCacheKey` | `static std::string SecretCacheKey(std::string_view issuer, std::string_view client_id, std::string_view resource)` | isolation key | Builds the secret cache key from issuer / client_id / resource |
+| `ResolveClientSecret` | `std::optional<std::string> ResolveClientSecret() const` | resolved secret, `nullopt` when absent | Unified entry point; invalid values throw `InvalidParams` and messages never contain the secret |
 | `Authenticate` | `bool Authenticate()` | whether a usable token exists | Strict metadata discovery (no legacy fallback by default) → register / fetch CIMD document as needed → fresh cache returns true → refresh expired tokens, with `invalid_grant`/`invalid_client` falling back to the full authorization flow; cached tokens with a mismatched resource are cleared first |
 | `AuthenticateClientCredentials` | `bool AuthenticateClientCredentials()` | whether tokens were stored | Requires `client_id`, plus `client_secret` when no assertion is used; never runs the code flow |
 | `GetAccessToken` | `std::string GetAccessToken()` | token string, empty when none | When nearing expiry with a refresh token, joins coalesced refreshing (concurrent callers share one refresh); refresh failure throws `InternalError` |

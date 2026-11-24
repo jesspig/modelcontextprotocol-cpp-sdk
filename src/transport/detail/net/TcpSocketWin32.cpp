@@ -301,4 +301,27 @@ void TcpSocket::Close() {
     if (fd != INVALID_SOCKET) ::closesocket(fd);
 }
 
+std::optional<std::string> TcpSocket::PeerAddress() const {
+    SOCKET fd = fd_.load();
+    if (closed_.load() || fd == INVALID_SOCKET) return std::nullopt;
+    struct sockaddr_storage storage;
+    int length = sizeof(storage);
+    if (::getpeername(fd, reinterpret_cast<struct sockaddr*>(&storage), &length) != 0)
+        return std::nullopt;
+    std::array<char, 64> text{};
+    DWORD text_length = static_cast<DWORD>(text.size());
+    if (storage.ss_family == AF_INET) {
+        auto* addr = reinterpret_cast<const struct sockaddr_in*>(&storage);
+        if (InetNtopA(AF_INET, &addr->sin_addr, text.data(), text_length) == nullptr)
+            return std::nullopt;
+    } else if (storage.ss_family == AF_INET6) {
+        auto* addr = reinterpret_cast<const struct sockaddr_in6*>(&storage);
+        if (InetNtopA(AF_INET6, &addr->sin6_addr, text.data(), text_length) == nullptr)
+            return std::nullopt;
+    } else {
+        return std::nullopt;
+    }
+    return std::string(text.data());
+}
+
 }}} // namespace mcp::detail::net

@@ -1,5 +1,6 @@
 #pragma once
 #include <mcp/McpTypes.hpp>
+#include <mcp/transport/detail/UrlSecurityPolicy.hpp>
 
 #include <memory>
 #include <mutex>
@@ -63,6 +64,12 @@ struct OAuthMetadata {
         std::string_view server_url,
         bool allow_legacy_fallback = false,
         std::optional<std::string_view> expected_resource = std::nullopt);
+
+    [[nodiscard]] static std::optional<OAuthMetadata> DiscoverWithPolicy(
+        std::string_view server_url,
+        bool allow_legacy_fallback,
+        std::optional<std::string_view> expected_resource,
+        std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> policy);
 };
 
 struct OAuthTokenResponse {
@@ -85,6 +92,13 @@ struct ClientRegistrationInfo {
         std::string_view redirect_uri,
         std::string_view client_name,
         std::string_view application_type = "native");
+
+    [[nodiscard]] static std::optional<ClientRegistrationInfo> RegisterWithPolicy(
+        std::string_view registration_endpoint,
+        std::string_view redirect_uri,
+        std::string_view client_name,
+        std::string_view application_type,
+        std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> policy);
 };
 
 } // namespace mcp

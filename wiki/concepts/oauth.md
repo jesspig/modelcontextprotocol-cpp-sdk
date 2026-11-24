@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、private_key_jwt 客户端断言（ES256，aud 取 issuer）、RFC 8707 资源指示符与 audience 绑定、RFC 9207 授权响应 iss 校验与 token 响应「存在即校验」、发行者绑定、刷新合并与重入短路、吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, rfc7523, cimd, bearer, audience, private_key_jwt]
-timestamp: 2026-11-24T21:30:00+08:00
+timestamp: 2026-11-24T22:40:00+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -41,6 +41,13 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - 客户端认证方法（发送侧）：`none`、`client_secret_post`（`client_secret` 随表单）与 `private_key_jwt`——`UsesClientAssertion()` 要求 `OAuthClientOptions::private_key_pem` 非空**且**已发现元数据的 `token_endpoint_auth_methods_supported`（新字段，`ParseMetadataJson` 提取、`HandleAuthChallenge` 回填上限 128）含 `private_key_jwt`；命中时 `ApplyClientAuthentication` 向 `client_credentials`、授权码交换、`refresh_token` 三个令牌请求追加 `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer` 与 ES256 签名的 `client_assertion`，且不再发送 `client_secret`（`AuthenticateClientCredentials` 的 `client_secret` 必填校验同步放宽，见 [OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）。断言由 `CreateClientAssertion` 构造：头 `{alg:ES256,typ:JWT}`，载荷 `{iss,sub,aud,jti,iat,exp}`（`iss`/`sub` = `client_id`，**`aud` = metadata `issuer`，缺失时才回退 `token_endpoint`**——RFC 7523 §3 第 3 条规定 `aud` 的确切字符串由 AS 与 JWT 颁发方带外约定、token endpoint URL 仅为 MAY 选项，官方 conformance referee 以 issuer identifier 为约定值；`exp = iat+60`，`jti` 取 `ext::dpop::GenerateNonce(16)`，`iat` 走可注入钩子 `client_assertion_clock_seconds`、缺省取 `ext::dpop::NowSeconds()`），载荷经 `JsonValue` 构造（键有序、转义可靠），签名复用 `mcp::ext::dpop::detail::SignEs256JwtWithPem`（PEM 私钥解析 → P-256 校验 → ES256 签名，见 [DPoP.hpp](../../include/mcp/ext/DPoP.hpp)）。`signing_algorithm` 非 `ES256`、`client_id`/`audience`/`private_key_pem` 缺失、PEM 不可解析或非 P-256 一律抛 `McpError(InvalidParams)`；无 OpenSSL 时签名抛 `InternalError`（与 DPoP 同语义，详见 [/concepts/dpop.md](/concepts/dpop.md)）。`jwt-bearer`（授权方断言）仍不支持，`token_endpoint_auth_method` 仍仅信息采纳不构造断言
 - `VerifyResourceMatch` 改为逐字精确比较：元数据 `resource` 字段缺失/空放行，存在时必须与配置资源标识（`OAuthClientOptions::resource`，未设则 `server_url`）**完全相等**；scheme+host 前缀、子串、通配符、尾斜杠与 fragment 差异一概拒绝并抛 `McpError(InternalError)`；`OAuthMetadata::Discover` 同样要求 PRM `resource` 逐字匹配，否则不采用该 PRM 路径
 - `HandleAuthChallenge`（RFC 9728）不再抛异常、失败一律返回 false：长度上限（整头 4096、metadata URL 2048、响应体 64KB）、`IsSafeHttpUrl`（http/https、≤2048 字符、无控制字符）卡住 metadata URL 与回填的 issuer/authorization_endpoint/token_endpoint（非法直接拒绝），`VerifyResourceMatch` 失败转 false，数组字段设上限（scopes/response_types/grant_types ≤128、code_challenge_methods ≤8），全程 try/catch 兜底
+
+## 出站网络安全策略与 DCR secret（T-05）
+
+- **统一策略入口**：`mcp::detail::net::UrlSecurityPolicy`（[UrlSecurityPolicy.hpp](../../include/mcp/transport/detail/UrlSecurityPolicy.hpp)）挂在 `HttpRequestSpec::security_policy` 上，被 PRM / AS 元数据 / CIMD / DCR / token / refresh / 吊销 / 挑战元数据全部复用；JWKS 仅解析进 `OAuthMetadata::jwks_uri`，本 SDK 不发起 JWKS 请求。allowlist 由调用方配置（`server_url`、`redirect_uri`、`allowed_authorization_server_origins`、`outbound_origin_allowlist`）派生，元数据响应无法自我扩张；按 scheme 规范化默认端口后精确比较，拒绝 userinfo、`%` 编码 host、纯数字/十六进制编码地址与非法端口。
+- **DNS 与地址策略**：连接前解析全部 A/AAAA（上限 16），逐条拒绝 loopback / private / link-local / multicast / unspecified / 保留地址与 IPv4-mapped IPv6，任一答案非法整组拒绝；回环仅在 `loopback_port_exceptions`（含由 `server_url` 自动登记项）的精确 host+port 下允许。`TcpSocket::PeerAddress()` / `TlsSocket::PeerAddress()` 提供 `getpeername()`，连接在通过校验后、发送任何字节前复核 peer 是否仍在已校验集合中，消除重绑定窗口；`HttpRequestSpec::peer_address_override` 是测试注入点。本 HTTP 客户端没有代理路径，不存在代理绕过分支。
+- **逐跳重定向**：每跳重新执行 scheme + allowlist + DNS + 地址策略；默认拒绝跨 origin，预算 5 跳（`kMaxHttpRedirects`），跨 origin 时删除 `Authorization` / `Cookie` / `client_secret` / `registration_access_token` 等敏感头。旧行为只删 `Authorization` 且可跟随跨 origin，新行为失败关闭；显式授权需把目标 origin 加入 allowlist 并设置 `allow_cross_origin_redirect = true`。
+- **DCR secret 统一解析**：`OAuthClientProvider::ResolveClientSecret()` 是唯一入口，优先级为显式 `client_secret` → DCR 注册响应 → 按 `SecretCacheKey(issuer, client_id, resource)` 隔离的既有缓存值；`client_secret_post` / `client_secret_basic` 与 `client_credentials` 的必填判定都走该入口（旧实现只读显式值，DCR secret 解析后未参与认证）。空值/控制字符/超 4096 字节抛 `InvalidParams`，异常与日志只写来源类别，临时副本经 `detail::SecureClear` 清零；旧 API 与 T-04 三个兼容开关均未改动，`Discover` / `Register` 原签名保留并新增带 policy 的同名异名入口 `DiscoverWithPolicy` / `RegisterWithPolicy`。
 
 ## 失败语义
 

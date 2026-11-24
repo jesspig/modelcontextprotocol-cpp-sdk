@@ -2,6 +2,7 @@
 
 #include <transport/detail/net/TcpSocket.hpp>
 #include <mcp/transport/detail/Limits.hpp>
+#include <mcp/transport/detail/UrlSecurityPolicy.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -27,6 +28,8 @@ struct HttpRequestSpec {
     std::optional<std::size_t> max_response_bytes = kMaxHttpResponseBytes;
     HttpRedirectPolicy redirect_policy = HttpRedirectPolicy::SameOriginOnly;
     int max_redirects = kMaxHttpRedirects;
+    std::shared_ptr<const UrlSecurityPolicy> security_policy;
+    std::function<std::optional<std::string>()> peer_address_override;
 };
 
 struct HttpResponseInfo {

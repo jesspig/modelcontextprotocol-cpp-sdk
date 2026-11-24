@@ -5,6 +5,7 @@
 #include <mcp/ext/DPoP.hpp>
 #include <mcp/McpTypes.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
+#include <mcp/transport/detail/UrlSecurityPolicy.hpp>
 
 #include <condition_variable>
 #include <functional>
@@ -47,6 +48,11 @@ struct OAuthClientOptions {
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
     std::function<void(const TokenContainer&)> token_update_handler;
+
+    std::optional<std::vector<std::string>> outbound_origin_allowlist;
+    std::vector<std::pair<std::string, std::uint16_t>> loopback_port_exceptions;
+    std::shared_ptr<mcp::detail::net::IUrlSecurityResolver> dns_resolver;
+    bool allow_cross_origin_redirect{false};
 };
 
 class OAuthClientProvider {
@@ -57,6 +63,11 @@ public:
     [[nodiscard]] static bool IsSecureEndpoint(std::string_view url);
 
     [[nodiscard]] static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
+
+    [[nodiscard]] static std::string SecretCacheKey(
+        std::string_view issuer, std::string_view client_id, std::string_view resource);
+
+    [[nodiscard]] std::optional<std::string> ResolveClientSecret() const;
 
     [[nodiscard]] bool Authenticate();
 
@@ -145,6 +156,10 @@ private:
 
     void RequireSecureEndpoint(std::string_view url, std::string_view kind) const;
 
+    [[nodiscard]] std::string SecretScope() const;
+
+    void RememberClientSecret(const std::string& secret);
+
     void ValidateClientId() const;
 
     void ValidateMetadataEndpoints(const OAuthMetadata& meta) const;
@@ -183,6 +198,8 @@ private:
     std::optional<OAuthMetadata> metadata_;
     std::optional<ClientRegistrationInfo> registration_;
     std::optional<std::string> bound_issuer_;
+    std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> network_policy_;
+    std::map<std::string, std::string> client_secret_cache_;
 
     mutable std::recursive_mutex state_mutex_;
     std::mutex auth_flow_mutex_;
