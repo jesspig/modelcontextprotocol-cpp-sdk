@@ -285,13 +285,16 @@ TEST(SkillSafetyTest, LocalPathRejectsAbsoluteTraversalAndSymlinkEscape) {
     EXPECT_TRUE(ResolveSkillLocalPath(root.u8string(), "notes/SKILL.md", resolved, error));
     EXPECT_TRUE(error.empty());
 
-    const fs::path outside = root.parent_path() / "skill-safety-outside";
+    const fs::path outside = fs::absolute(root.parent_path() / "skill-safety-outside");
+    fs::remove(root / "escape", ec);
     fs::create_directories(outside, ec);
     fs::create_directory_symlink(outside, root / "escape", ec);
     if (ec) GTEST_SKIP() << "symlink creation not permitted on this host";
     error.clear();
     EXPECT_FALSE(ResolveSkillLocalPath(root.u8string(), "escape/SKILL.md", resolved, error));
     EXPECT_NE(error.find("symbolic"), std::string::npos);
+    fs::remove(root / "escape", ec);
+    fs::remove_all(outside, ec);
 }
 
 TEST(SkillSafetyTest, ClientDecodesBlobBeforeSizeAndDigestVerification) {

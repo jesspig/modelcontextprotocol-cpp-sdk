@@ -1,0 +1,107 @@
+name: Hardening gates
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [develop, 'release/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [parser, http, sse, websocket, schema]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Install clang and libFuzzer
+        run: sudo apt-get update && sudo apt-get install -y clang libssl-dev
+      - name: Configure fuzz harnesses
+        run: >
+          CC=clang CXX=clang++ cmake -S . -B build/fuzz -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=fuzzer-no-link -fno-omit-frame-pointer -O1"
+          -DMCP_BUILD_TESTS=OFF -DMCP_BUILD_FUZZ=ON -DMCP_WITH_OPENSSL=OFF
+      - name: Build harness
+        run: cmake --build build/fuzz --target mcp-fuzz-${{ matrix.kind }}
+      - name: Run 10-minute campaign
+        run: |
+          mkdir -p "fuzz-artifacts/${{ matrix.kind }}/corpus"
+          cp tests/fuzz/corpus/${{ matrix.kind }}/* "fuzz-artifacts/${{ matrix.kind }}/corpus/"
+          ./build/fuzz/tests/fuzz/mcp-fuzz-${{ matrix.kind }} \
+            -max_total_time=600 -timeout=5 -max_len=4096 -seed=20261125 \
+            -dict=tests/fuzz/${{ matrix.kind }}.dict \
+            -artifact_prefix="fuzz-artifacts/${{ matrix.kind }}/" \
+            -print_final_stats=1 "fuzz-artifacts/${{ matrix.kind }}/corpus" 2>&1 | tee "fuzz-${{ matrix.kind }}.log"
+          test "$(grep -c 'ERROR:' "fuzz-${{ matrix.kind }}.log")" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-${{ matrix.kind }}
+          path: |
+            fuzz-${{ matrix.kind }}.log
+            fuzz-artifacts/${{ matrix.kind }}
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitize: [address, thread]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Install clang and OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y clang libssl-dev
+      - name: Configure sanitizer
+        run: >
+          CC=clang CXX=clang++ cmake -S . -B build/${{ matrix.sanitize }} -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug -DMCP_BUILD_TESTS=ON
+          -DMCP_SANITIZE=${{ matrix.sanitize }} -DMCP_WERROR=OFF
+      - name: Build sanitizer configuration
+        run: cmake --build build/${{ matrix.sanitize }}
+      - name: Run full ctest
+        env:
+          ASAN_OPTIONS: halt_on_error=1:detect_leaks=1:abort_on_error=1:print_stacktrace=1:symbolize=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1:symbolize=1
+          TSAN_OPTIONS: halt_on_error=1:history_size=7:second_deadlock_stack=1
+        run: ctest --test-dir build/${{ matrix.sanitize }} --output-on-failure -j2
+
+  stress-and-performance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Install clang and OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y clang libssl-dev time
+      - name: Configure release
+        run: >
+          CC=clang CXX=clang++ cmake --preset release
+          -DMCP_WITH_OPENSSL=AUTO -DMCP_WERROR=OFF
+      - name: Build release
+        run: cmake --build --preset release
+      - name: Stress tests
+        run: ctest --test-dir build/release --output-on-failure -R '^StressTest\.'
+      - name: Transport bench (five rounds)
+        run: |
+          for round in 1 2 3 4 5; do
+            /usr/bin/time -v ./build/release/tests/bench/mcp-transport-bench \
+              --iterations 200 --concurrency 4 > "bench-round-${round}.csv" \
+              2> "bench-round-${round}.rss"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress-performance
+          path: bench-round-*

@@ -50,6 +50,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
+option(MCP_BUILD_FUZZ "Build libFuzzer harnesses (Clang/GCC only)" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
 option(MCP_BUILD_CONFORMANCE "Build conformance server fixture (examples/conformance/server)" OFF)
 option(MCP_BUILD_DOCS_SNIPPETS "Build documentation snippets for syntax validation" OFF)
@@ -290,9 +291,13 @@ if(MCP_BUILD_TESTS)
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
         mcp-event-store-tests mcp-streamable-http-tests mcp-websocket-tests
         mcp-integration-tests mcp-conformance-tests mcp-uri-template-tests
-        mcp-process-tests)
+        mcp-process-tests mcp-stress-tests)
         mcp_enable_werror(${_t})
     endforeach()
+endif()
+
+if(MCP_BUILD_FUZZ)
+    add_subdirectory(tests/fuzz)
 endif()
 
 if(MCP_BUILD_EXAMPLES)

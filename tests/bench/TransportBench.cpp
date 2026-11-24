@@ -218,6 +218,7 @@ struct LatencyStats {
     double mean_ms = 0;
     double p50_ms = 0;
     double p95_ms = 0;
+    double p99_ms = 0;
     double max_ms = 0;
 };
 
@@ -233,6 +234,8 @@ LatencyStats ComputeStats(std::vector<double> samples) {
     stats.p50_ms = samples[samples.size() / 2];
     std::size_t p95_index = (samples.size() * 95) / 100;
     stats.p95_ms = samples[p95_index < samples.size() ? p95_index : samples.size() - 1];
+    std::size_t p99_index = (samples.size() * 99) / 100;
+    stats.p99_ms = samples[p99_index < samples.size() ? p99_index : samples.size() - 1];
     return stats;
 }
 
@@ -270,6 +273,7 @@ void RunHeaderParseScenario(BenchServer& server, const Options& opt) {
     Report("header_parse", "min_ms", stats.min_ms, "ms");
     Report("header_parse", "p50_ms", stats.p50_ms, "ms");
     Report("header_parse", "p95_ms", stats.p95_ms, "ms");
+    Report("header_parse", "p99_ms", stats.p99_ms, "ms");
     Report("header_parse", "max_ms", stats.max_ms, "ms");
     Report("header_parse", "mean_ms", stats.mean_ms, "ms");
     Report("header_parse", "throughput", total_ms > 0 ? static_cast<double>(opt.iterations) * 1000.0 / total_ms : 0.0,
@@ -345,6 +349,7 @@ void RunConcurrencyScenario(BenchServer& server, const Options& opt) {
     Report("concurrency", "min_ms", stats.min_ms, "ms");
     Report("concurrency", "p50_ms", stats.p50_ms, "ms");
     Report("concurrency", "p95_ms", stats.p95_ms, "ms");
+    Report("concurrency", "p99_ms", stats.p99_ms, "ms");
     Report("concurrency", "max_ms", stats.max_ms, "ms");
     Report("concurrency", "max_over_p50", stats.p50_ms > 0 ? stats.max_ms / stats.p50_ms : 0.0, "ratio");
 }

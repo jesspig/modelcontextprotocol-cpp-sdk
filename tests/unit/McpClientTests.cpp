@@ -2986,10 +2986,11 @@ TEST(McpClientTest, ConcurrentNegotiationSnapshotIsTornFree) {
     for (int i = 0; i < 3; ++i) {
         readers.emplace_back([&] {
             for (int n = 0; n < 400; ++n) {
-                bool has_tools = client->GetServerCapabilities().tools.has_value();
-                const std::string& name = client->GetServerInfo().name;
-                auto instructions = client->GetInstructions();
-                auto version = client->GetNegotiatedProtocolVersion();
+                const auto snapshot = client->CurrentNegotiationSnapshot();
+                bool has_tools = snapshot->capabilities.tools.has_value();
+                const std::string& name = snapshot->server_info.name;
+                auto instructions = snapshot->instructions;
+                auto version = snapshot->negotiated_version;
                 bool consistent_v1 = !has_tools && name == "server-v1" &&
                     instructions && *instructions == "instructions-v1";
                 bool consistent_v2 = has_tools && name == "server-v2" &&
