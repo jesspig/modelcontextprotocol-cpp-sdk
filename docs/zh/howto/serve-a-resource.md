@@ -71,7 +71,7 @@ handler 里抛 `McpError` 会原样编码成 JSON-RPC 错误响应；抛其它�
 
 把资源以链接形式回给客户端时用 `ResourceLink`：`name` 与 `uri` 缺失、非字符串或空串都会让解析侧抛 `InvalidParams`，`size` 为负同样拒收（`src/core/Content.cpp`）——注册资源时用的名字与 URI 必须非空，同一套约束会在对端解析你的链接时生效。
 
-客户端只想读一个文件的某一段时用 `FileRef`：`enable_file_input` 打开后，工具参数里的 `{"uri","offset","length"}` 会先按同一条两段匹配规则读整份资源再切片。`offset`／`length` 缺省为 0，一旦给了就必须是整数或整数值浮点且落在 int64 范围内，否则 `DeserializeFailed`（`include/mcp/McpTypes.hpp`）。
+客户端只想读一个文件的某一段时用 `FileRef`：`enable_file_input` 打开后，工具参数里的 `{"uri","offset","length"}` 会先按同一条两段匹配规则读整份资源再切片。`offset`／`length` 缺省为 0，一旦给了就必须是整数或整数值浮点且落在 int64 范围内，否则 `DeserializeFailed`（`include/mcp/McpTypes.hpp`）。`resource://` 引用由注册快照中的资源 handler 在锁外读取；`file://` 引用只接受 `ServerOptions::file_input_config.allowed_roots` 中按路径组件匹配的路径，敏感文件、链接替换与畸形 URI 一律返回 `is_error`，`http(s)://` 仍原样透传；单次工具调用的引用数与累计字节受请求级预算约束。
 
 ## 完整代码
 

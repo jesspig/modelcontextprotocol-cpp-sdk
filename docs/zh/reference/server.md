@@ -174,7 +174,8 @@
 | `server_card` | `std::optional<ext::ServerCard>` | `nullopt` | 提供则原样校验后返回；否则合成默认卡片 |
 | `enable_etag_cache` | `bool` | `false` | **进程级副作用**：构造期写全局 `SetEtagCacheEnabled`，同进程内其他客户端/服务端的 etag 行为一并受影响 |
 | `enable_progressive_discovery` | `bool` | `false` | 关闭时 `tools/list` 走整表缓存并忽略 `query`/`pageSize`；开启后按页与关键字过滤 |
-| `enable_file_input` | `bool` | `false` | 展开 `arguments` 中的 `FileRef`（`file://`、`resource://`）；单片上限 8MB、内联 256KB（常量 `kFileInputMaxBytes`/`kFileInputInlineMaxBytes`） |
+| `enable_file_input` | `bool` | `false` | 展开 `arguments` 中的 `FileRef`（`file://`、`resource://`）；`http(s)://` 原样透传；关闭时参数原样透传，双 era 语义不变 |
+| `file_input_config` | `std::optional<FileInputConfig>` | `nullopt` | `FileInputConfig` 含 `allowed_roots`（根目录白名单，空即拒绝全部本地文件）、`max_refs`（默认 16）、`max_file_bytes`（默认 8 MiB）、`max_total_bytes`（默认 8 MiB，单次工具调用累计）、`max_inline_bytes`（默认 256 KiB）；未配置时本地与资源引用仍按请求级预算执行，但无根目录可放行 |
 | `enable_triggers_events` | `bool` | `false` | `EmitTriggerEvent` 在此为假时静默返回（注册/注销不受控） |
 | `TasksImplicitlyEnabled()` | `[[deprecated]] bool`（方法） | 计算值 | 已废弃的隐式推导（`enable_tasks_extension \|\| task_store`），改为显式置 `enable_tasks_extension` |
 | `SkillsImplicitlyEnabled()` | `[[deprecated]] bool`（方法） | `enable_skills_extension` | 已废弃，改显式置 `enable_skills_extension` |

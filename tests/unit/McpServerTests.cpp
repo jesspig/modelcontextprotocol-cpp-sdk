@@ -4891,6 +4891,55 @@ std::string WriteFileInputTemp(
     return std::string("file://") + path.generic_string();
 }
 
+std::filesystem::path MakeFileInputRoot(
+    const std::string& name, std::vector<std::filesystem::path>& tracked)
+{
+    auto root = std::filesystem::temp_directory_path() / name;
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    tracked.push_back(root);
+    return root;
+}
+
+ServerOptions::FileInputConfig MakeFileInputConfig(
+    const std::filesystem::path& root, std::size_t max_refs = 16,
+    int64_t max_file_bytes = 8 * 1024 * 1024,
+    int64_t max_total_bytes = 8 * 1024 * 1024,
+    int64_t max_inline_bytes = 256 * 1024)
+{
+    ServerOptions::FileInputConfig config;
+    config.allowed_roots = {root.string()};
+    config.max_refs = max_refs;
+    config.max_file_bytes = max_file_bytes;
+    config.max_total_bytes = max_total_bytes;
+    config.max_inline_bytes = max_inline_bytes;
+    return config;
+}
+
+std::string WriteFileInputAt(
+    const std::filesystem::path& directory,
+    const std::string& name, const std::string& data)
+{
+    auto path = directory / name;
+    FILE* file = std::fopen(path.string().c_str(), "wb");
+    if (file) {
+        if (!data.empty()) std::fwrite(data.data(), 1, data.size(), file);
+        std::fclose(file);
+    }
+    return std::string("file://") + path.generic_string();
+}
+
+JsonValue MakeFileInputRef(
+    const std::string& uri, int64_t offset = 0, int64_t length = 0)
+{
+    JsonValue ref(JsonValue::object_tag);
+    ref["uri"] = JsonValue(uri);
+    if (offset != 0) ref["offset"] = JsonValue(offset);
+    if (length != 0) ref["length"] = JsonValue(length);
+    return ref;
+}
+
 struct FileInputEnv {
     std::unique_ptr<McpServer> server;
     std::shared_ptr<McpSessionHandler> client;
@@ -4898,13 +4947,15 @@ struct FileInputEnv {
     std::vector<std::filesystem::path> files;
 };
 
-FileInputEnv MakeFileInputEnv(bool enabled) {
+FileInputEnv MakeFileInputEnv(
+    bool enabled, ServerOptions::FileInputConfig config = {}) {
     FileInputEnv env;
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
     sopts.server_info = Implementation{"test-server", "1.0.0"};
     sopts.protocol_version = std::string(kLatestProtocolVersion);
     sopts.enable_file_input = enabled;
+    sopts.file_input_config = std::move(config);
     env.server = McpServer::Create(std::move(pair.server), sopts);
     env.captured = std::make_shared<std::optional<JsonValue>>();
     auto captured = env.captured;
@@ -4955,13 +5006,14 @@ void CloseFileInputEnv(FileInputEnv& env) {
     env.server->Close();
     env.client->Close();
     std::error_code ec;
-    for (const auto& p : env.files) std::filesystem::remove(p, ec);
+    for (const auto& p : env.files) std::filesystem::remove_all(p, ec);
 }
 
 } // namespace
 
 TEST(McpServerTest, FileInputRangeReadInlinesSlice) {
-    auto env = MakeFileInputEnv(true);
+    auto env = MakeFileInputEnv(true,
+        MakeFileInputConfig(std::filesystem::temp_directory_path()));
     std::string uri = WriteFileInputTemp(
         "mcp_file_input_range.txt", "0123456789abcdef", env.files);
     env.server->RegisterResource("file-input-doc", "resource://file-input-doc",
@@ -5010,7 +5062,8 @@ TEST(McpServerTest, FileInputRangeReadInlinesSlice) {
 }
 
 TEST(McpServerTest, FileInputOutOfRangeReturnsIsError) {
-    auto env = MakeFileInputEnv(true);
+    auto env = MakeFileInputEnv(true,
+        MakeFileInputConfig(std::filesystem::temp_directory_path()));
     std::string uri = WriteFileInputTemp(
         "mcp_file_input_range_oob.txt", "abc", env.files);
 
@@ -5032,7 +5085,8 @@ TEST(McpServerTest, FileInputOutOfRangeReturnsIsError) {
 }
 
 TEST(McpServerTest, FileInputOutsideWhitelistRejected) {
-    auto env = MakeFileInputEnv(true);
+    auto env = MakeFileInputEnv(true,
+        MakeFileInputConfig(std::filesystem::temp_directory_path()));
     auto temp_base = std::filesystem::temp_directory_path();
     if (temp_base.filename().empty()) temp_base = temp_base.parent_path();
     auto outside = temp_base.parent_path() /
@@ -5103,6 +5157,340 @@ TEST(McpServerTest, FileInputDisabledByDefault) {
     ASSERT_NE(file_uri, nullptr);
     EXPECT_EQ(file_uri->GetString(), uri);
     EXPECT_FALSE(file_arg->Contains("content"));
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputNoRootsRejectsLocalRef) {
+    auto env = MakeFileInputEnv(true);
+    std::string uri = WriteFileInputTemp(
+        "mcp_file_input_no_roots.txt", "secret", env.files);
+
+    JsonValue args(JsonValue::object_tag);
+    args["file"] = MakeFileInputRef(uri);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("no allowed roots"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputAllowlistComponentBoundary) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_allow_root", tracked);
+    auto sibling = MakeFileInputRoot("mcp_fi_allow_root_sibling", tracked);
+    const std::string inside = WriteFileInputAt(root, "ok.txt", "inside");
+    const std::string outside = WriteFileInputAt(sibling, "bad.txt", "outside");
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    JsonValue good_args(JsonValue::object_tag);
+    good_args["file"] = MakeFileInputRef(inside);
+    auto good_resp = SendFileInputToolCall(env.client, std::move(good_args));
+    ASSERT_FALSE(good_resp.Contains("code"));
+    auto good_result = DeserializeCallToolResult(good_resp);
+    EXPECT_FALSE(good_result.is_error) << FileInputErrorText(good_result);
+    ASSERT_TRUE(env.captured->has_value());
+    auto* good_content = (*env.captured)->Find("file")->Find("content");
+    ASSERT_NE(good_content, nullptr);
+    EXPECT_EQ(good_content->GetString(), "inside");
+
+    *env.captured = std::nullopt;
+    JsonValue bad_args(JsonValue::object_tag);
+    bad_args["file"] = MakeFileInputRef(outside);
+    auto bad_resp = SendFileInputToolCall(env.client, std::move(bad_args));
+    ASSERT_FALSE(bad_resp.Contains("code"));
+    auto bad_result = DeserializeCallToolResult(bad_resp);
+    EXPECT_TRUE(bad_result.is_error);
+    EXPECT_NE(FileInputErrorText(bad_result).find("not allowed"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputSensitiveFilesRejectedInsideRoot) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_sensitive", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::vector<std::string> uris = {
+        WriteFileInputAt(root, ".env", "KEY=secret"),
+        WriteFileInputAt(root, ".env.local", "KEY=secret"),
+        WriteFileInputAt(root, "id_rsa", "PRIVATE KEY"),
+        WriteFileInputAt(root, "server.p12", "CERT"),
+        WriteFileInputAt(root, "credentials.json", "TOKEN")
+    };
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_NE(FileInputErrorText(result).find("sensitive"),
+            std::string::npos) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputSymlinkAndHardLinkRejected) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_links", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::string target_uri = WriteFileInputTemp(
+        "mcp_fi_link_target.txt", "TOPSECRET", env.files);
+    const std::filesystem::path target(target_uri.substr(7));
+    std::error_code ec;
+
+    const auto link = root / "link.txt";
+    std::filesystem::create_symlink(target, link, ec);
+    const bool has_symlink = !ec;
+    if (!has_symlink) ec.clear();
+
+    const auto hard_link = root / "hard.txt";
+    std::filesystem::create_hard_link(target, hard_link, ec);
+    const bool has_hard_link = !ec;
+
+    if (!has_symlink && !has_hard_link) {
+        CloseFileInputEnv(env);
+        GTEST_SKIP() << "link creation not permitted on this platform";
+    }
+    if (has_symlink) env.files.push_back(link);
+    if (has_hard_link) env.files.push_back(hard_link);
+
+    std::vector<std::string> uris;
+    if (has_symlink) uris.push_back(std::string("file://") + link.generic_string());
+    if (has_hard_link) uris.push_back(std::string("file://") + hard_link.generic_string());
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_EQ(FileInputErrorText(result).find("TOPSECRET"),
+            std::string::npos) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputEncodedTraversalAndMalformedUriRejected) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_encoded", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::string base = "file://" + root.generic_string();
+    const std::vector<std::string> uris = {
+        base + "/%252e%252e/secret.txt",
+        base + "/%2e%2e/secret.txt",
+        base + "/%2Fetc%2Fpasswd",
+        base + "/nul%00.txt",
+        base + "/ok.txt?x=1",
+        base + "/ok.txt#fragment",
+        "file://///server/share/secret.txt",
+        "file://server/share/secret.txt"
+    };
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputAdsAndDevicePathsRejected) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_ads", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::vector<std::string> uris = {
+        "file:///C:/Windows/win.ini:stream",
+        "file://localhost/C:/Windows/win.ini:stream",
+        "file:///C:relative.txt",
+        "file:///C:/CON.txt",
+        "file://"
+    };
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputTotalByteBudgetStopsBeforeTool) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_total_budget", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(
+        root, 16, 8 * 1024 * 1024, 4, 256 * 1024));
+    env.files = std::move(tracked);
+
+    const std::string first = WriteFileInputAt(root, "a.txt", "abc");
+    const std::string second = WriteFileInputAt(root, "b.txt", "def");
+    JsonValue args(JsonValue::object_tag);
+    args["a"] = MakeFileInputRef(first);
+    args["b"] = MakeFileInputRef(second);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("byte budget exceeded"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputRefCountBudgetStopsBeforeTool) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_ref_budget", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root, 1));
+    env.files = std::move(tracked);
+
+    const std::string first = WriteFileInputAt(root, "a.txt", "a");
+    const std::string second = WriteFileInputAt(root, "b.txt", "b");
+    JsonValue args(JsonValue::object_tag);
+    args["a"] = MakeFileInputRef(first);
+    args["b"] = MakeFileInputRef(second);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("reference budget exceeded"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputRepeatedReferenceCountsBudget) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_repeat_budget", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(
+        root, 16, 8 * 1024 * 1024, 3, 256 * 1024));
+    env.files = std::move(tracked);
+
+    const std::string uri = WriteFileInputAt(root, "repeat.txt", "ab");
+    JsonValue args(JsonValue::object_tag);
+    args["a"] = MakeFileInputRef(uri);
+    args["b"] = MakeFileInputRef(uri);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("byte budget exceeded"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputResourceHandlerRunsWithoutRegistryLock) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_lock", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    auto* server = env.server.get();
+    static int registered = 0;
+    env.server->RegisterResource("fi-lock-doc", "resource://fi-lock-doc",
+        ResourceOptions{},
+        [server](const std::string& uri) -> ReadResourceResult {
+            const std::string name =
+                "fi-lock-doc-" + std::to_string(registered++);
+            server->RegisterResource(name, "resource://" + name,
+                ResourceOptions{}, [](const std::string&) {
+                    return ReadResourceResult{};
+                });
+            TextResourceContents text;
+            text.uri = uri;
+            text.text = "lockfree";
+            ReadResourceResult result;
+            result.contents = {mcp::ResourceContents{text}};
+            return result;
+        });
+
+    JsonValue args(JsonValue::object_tag);
+    args["doc"] = MakeFileInputRef("resource://fi-lock-doc");
+    MCP_RUN_WITH_TIMEOUT(std::chrono::seconds(5), [&]() {
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_FALSE(result.is_error);
+        ASSERT_TRUE(env.captured->has_value());
+        auto* content = (*env.captured)->Find("doc")->Find("content");
+        ASSERT_NE(content, nullptr);
+        EXPECT_EQ(content->GetString(), "lockfree");
+    });
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputShortReadNeverReturnsPartialContent) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_short_read", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(
+        root, 16, 8 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024));
+    env.files = std::move(tracked);
+
+    const std::string data(128 * 1024, 'A');
+    const std::string uri = WriteFileInputAt(root, "big.txt", data);
+    const std::filesystem::path path(uri.substr(7));
+    std::atomic<bool> done{false};
+    std::thread truncator([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        std::error_code ec;
+        std::filesystem::resize_file(path, 16, ec);
+        done.store(true);
+    });
+
+    JsonValue args(JsonValue::object_tag);
+    args["file"] = MakeFileInputRef(uri, 0, static_cast<int64_t>(data.size()));
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    truncator.join();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    if (!result.is_error) {
+        ASSERT_TRUE(env.captured->has_value());
+        auto* content = (*env.captured)->Find("file")->Find("content");
+        ASSERT_NE(content, nullptr);
+        EXPECT_EQ(content->GetString().size(), data.size());
+    } else {
+        EXPECT_FALSE(env.captured->has_value());
+    }
+    EXPECT_TRUE(done.load());
 
     CloseFileInputEnv(env);
 }

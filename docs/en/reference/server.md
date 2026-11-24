@@ -174,7 +174,8 @@ The queries are declared in `include/mcp/server/McpServer.hpp` and `RequestConte
 | `server_card` | `std::optional<ext::ServerCard>` | `nullopt` | Used verbatim (after validation) when provided; otherwise a default card is synthesized |
 | `enable_etag_cache` | `bool` | `false` | **Process-wide side effect**: the constructor calls `SetEtagCacheEnabled`, changing etag behaviour of every client/server in the same process |
 | `enable_progressive_discovery` | `bool` | `false` | When off, `tools/list` serves a whole-table cache and ignores `query`/`pageSize`; when on, filtering and paging apply |
-| `enable_file_input` | `bool` | `false` | Expands `FileRef` entries (`file://`, `resource://`) inside `arguments`; 8MB per slice, 256KB inline (`kFileInputMaxBytes`/`kFileInputInlineMaxBytes`) |
+| `enable_file_input` | `bool` | `false` | Expands `FileRef` entries (`file://`, `resource://`) inside `arguments`; `http(s)://` passes through unchanged; with the flag off, arguments pass through verbatim in both eras |
+| `file_input_config` | `std::optional<FileInputConfig>` | `nullopt` | `FileInputConfig` carries `allowed_roots` (root allowlist; empty rejects every local file), `max_refs` (16 by default), `max_file_bytes` (8 MiB), `max_total_bytes` (8 MiB, accumulated per tool call), and `max_inline_bytes` (256 KiB). Without configuration, request-level budgets still apply, but no root can be authorised |
 | `enable_triggers_events` | `bool` | `false` | `EmitTriggerEvent` returns silently while this is off (register/unregister are not gated) |
 | `TasksImplicitlyEnabled()` | `[[deprecated]] bool` (method) | computed | Deprecated implicit derivation (`enable_tasks_extension \|\| task_store`); set `enable_tasks_extension` explicitly instead |
 | `SkillsImplicitlyEnabled()` | `[[deprecated]] bool` (method) | `enable_skills_extension` | Deprecated; set `enable_skills_extension` explicitly instead |
