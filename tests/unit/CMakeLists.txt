@@ -5,9 +5,10 @@ add_executable(mcp-core-tests
     McpTypesTests.cpp
     JsonParserTests.cpp
     LogTests.cpp
-    ResponseCacheTests.cpp)
+    ResponseCacheTests.cpp
+    AppsHostBridgeTests.cpp)
 
-target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-test-support GTest::gtest_main)
+target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-ext mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-core-tests)
 
 add_executable(mcp-wire-codec-tests

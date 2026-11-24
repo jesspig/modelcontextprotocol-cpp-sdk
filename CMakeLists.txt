@@ -230,6 +230,7 @@ set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 add_library(mcp-ext STATIC)
 target_sources(mcp-ext PRIVATE
     src/ext/Apps.cpp
+    src/ext/AppsHostBridge.cpp
     src/ext/DPoP.cpp
     src/ext/ServerCard.cpp
     src/ext/ServerCardClient.cpp

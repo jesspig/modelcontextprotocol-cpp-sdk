@@ -209,7 +209,42 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `UiMeta` | `struct { std::string resource_uri; std::vector<std::string> csp; std::vector<std::string> permissions; }` | 空串/空表/空表 | `_meta` 里的 ui 声明 |
 | `ValidateUiMeta` | `void ValidateUiMeta(const UiMeta& meta)` | — | `resource_uri` 非空且必须以 `ui://` 开头，否则抛 `InvalidParams`；`csp`/`permissions` 不校验 |
 
-声明在 `include/mcp/ext/Apps.hpp`，校验在 `src/ext/Apps.cpp`。
+声明在 `include/mcp/ext/Apps.hpp`，校验在 `src/ext/Apps.cpp`。`UiMeta`、`ValidateUiMeta`、`kAppsExtensionId`、`kAppsMimeType` 与 `kAppsUriScheme` 均未改动。
+
+### Apps 宿主桥接
+
+声明在 `include/mcp/ext/AppsHostBridge.hpp`，实现在 `src/ext/AppsHostBridge.cpp`。本节只覆盖宿主与沙箱 UI 之间的 JSON 消息桥，不交付 iframe、WebView、DOM、脚本注入或 UI 渲染器。
+
+| 符号 | 签名/类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `kAppsMessageSchemaVersion` | `std::string_view` | `"2026-07-28"` | 消息唯一受支持 schema version，畸形或缺字段一律拒绝 |
+| `kAppsCapabilityTokenBytes` | `size_t` | `32` | 能力凭证随机字节数；对外为 64 位十六进制串 |
+| `kDefaultAppsCapabilityTtl` | `std::chrono::milliseconds` | `60000` | 凭证默认有效期 |
+| `AppsHostBridgeOptions` | `struct` | 见下 | `ui_meta`（来自 `UiMeta`，含 `resource_uri`/`csp`/`permissions`）、`allowed_origins`（宿主可信 origin 白名单）、`host_allowed_methods`（宿主显式方法白名单）、`max_message_bytes`(65536)、`max_depth`(32)、`max_nodes`(10000)、`max_string_bytes`(65536)、`max_id_bytes`(128)、`max_method_bytes`(128)、`capability_ttl`(60s)、`single_use_sensitive_methods`(`true`) |
+| `AppsPostMessage` | `struct` | schema version 预置、id 空、method 空、params 空 JSON | 只承载 JSON 值、schema version、可选 `request_id`、`method` 与 `params`；无函数/DOM/可执行代码字段 |
+| `AppsMessageContext` | `struct` | `sandbox_verified=false`，其余空串 | 宿主可信上下文：`source_origin`、`target_origin`、`resource_uri`、`sandbox_verified` 与 `capability`，全部由宿主填入 |
+| `AppsSandboxPolicy` | `struct` | 五个禁用标志均 `true`，`csp` 空 | 暴露 opaque origin、禁 `allow-same-origin`、禁顶层导航/弹窗/表单/下载；`csp` 逐项来自 `UiMeta` |
+| `AppsHostBridge::Create` | `static std::unique_ptr<AppsHostBridge> Create(AppsHostBridgeOptions)` | — | 校验 `UiMeta`、预算与 origin/方法合法性；有效权限 = `UiMeta::permissions` ∩ `host_allowed_methods`，空即拒绝一切方法 |
+| `SerializeHostMessage` | `std::string SerializeHostMessage(const AppsPostMessage&, const AppsMessageContext&) const` | — | 宿主→应用序列化；仍校验可信上下文、schema version、方法权限与消息预算 |
+| `ParseAppMessage` | `AppsPostMessage ParseAppMessage(std::string_view, const AppsMessageContext&) const` | — | 应用→宿主解析；先查总字节再解析，逐项校验 origin、sandbox、凭证、schema、方法与 id |
+| `IsMethodAllowed` | `bool IsMethodAllowed(std::string_view, const AppsMessageContext&) const` | — | 只读判定；未知方法、越权、过期/已用凭证均返回 `false` |
+| `CreateCapability` | `std::string CreateCapability(const AppsMessageContext&) const` | — | 签发绑定 `resource_uri`、allowed origins、有效权限、过期时间、消息字节上限与单次使用标志的不透明凭证 |
+| `GetSandboxPolicy` | `AppsSandboxPolicy GetSandboxPolicy() const` | — | 返回固定沙箱禁用标志与来自 `UiMeta` 的 CSP |
+| `NormalizeOrigin` | `bool NormalizeOrigin(std::string_view, std::string&)` | — | 小写 scheme/host，补默认端口（http 80、https 443）后输出 `scheme://host:port`；拒绝 `*`、`null`、userinfo、路径、通配符与非 http(s) |
+| `IsAppsSensitiveMethod` | `bool IsAppsSensitiveMethod(std::string_view)` | — | `tools/call` 与 `resources/read` 为敏感方法，默认不在权限内即拒绝，且要求单次使用凭证 |
+
+信任边界：
+
+- `source_origin`、`target_origin`、`resource_uri`、`sandbox_verified` 只从 `AppsMessageContext` 读取；payload 中同名或 `permissions`/`capability` 字段属于未知顶层键，直接拒绝，不参与任何授权决策。
+- origin 规范化后按 scheme/host/有效端口精确比较，默认端口省略与显式写出等价；目标为 `*`、opaque origin、跨白名单 origin、未证明 sandbox 一律拒绝。
+- 有效权限逐项取 `UiMeta::permissions` 与 `host_allowed_methods` 交集；敏感方法默认拒绝，`single_use_sensitive_methods=true` 时凭证单次使用；凭证 32 字节随机、常量时间比较，绑定 resource/origin/权限/过期/字节上限；过期、重放、跨上下文或权限变更后一律拒绝。
+- JSON 解析先查总字节，再限制深度/节点/单串字节；重复 key、非有限数字、超长 id/method、畸形 schema version 均抛 `McpError`，错误信息只含固定分类器，不回显 payload 内容。
+
+::: warning 旧行为 / 新行为 / 受影响怎么改
+- 旧行为：0.3.13 之前没有 Apps 宿主桥接 API，宿主自行拼接 postMessage，origin、sandbox 与权限无统一强制点。
+- 新行为：新增上述 API，默认失败关闭；任何未证明 sandbox、未列入白名单的 origin、未知方法或未签发凭证的消息均被拒绝。
+- 受影响怎么改：原来自行拼装 postMessage 的宿主改为由宿主侧填入 `AppsMessageContext`（不得从消息 payload 取值），调用 `CreateCapability` 签发凭证，再用 `SerializeHostMessage`/`ParseAppMessage` 走桥；现有 `UiMeta`/`ValidateUiMeta`/Apps MIME 与 URI 常量以及服务端 `ui://` 资源读门不受影响，无需迁移。
+:::
 
 ### Triggers
 
@@ -317,7 +352,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 ## 本页对应源码
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`、`include/mcp/client/auth/TokenCache.hpp`、`include/mcp/storage/FileTokenCache.hpp`、`include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`、`include/mcp/ext/ServerCard.hpp`、`include/mcp/ext/ServerCardClient.hpp`、`include/mcp/ext/Apps.hpp`、`include/mcp/ext/Triggers.hpp`、`include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`、`include/mcp/ext/ServerCard.hpp`、`include/mcp/ext/ServerCardClient.hpp`、`include/mcp/ext/Apps.hpp`、`include/mcp/ext/AppsHostBridge.hpp`、`include/mcp/ext/Triggers.hpp`、`include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`、`include/mcp/ProtocolVersion.hpp`、`include/mcp/McpTypes.hpp`、`include/mcp/transport/StreamableHttpClientTransport.hpp`、`include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`、`src/client/FileTokenCache.cpp`、`src/client/SkillVerify.cpp`、`src/ext/DPoP.cpp`、`src/ext/ServerCard.cpp`、`src/ext/ServerCardClient.cpp`、`src/ext/Apps.cpp`、`src/ext/Triggers.cpp`、`src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`、`src/client/FileTokenCache.cpp`、`src/client/SkillVerify.cpp`、`src/ext/DPoP.cpp`、`src/ext/ServerCard.cpp`、`src/ext/ServerCardClient.cpp`、`src/ext/Apps.cpp`、`src/ext/AppsHostBridge.cpp`、`src/ext/Triggers.cpp`、`src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`、`cmake/OpenSslVersion.cmake`、`CMakeLists.txt`

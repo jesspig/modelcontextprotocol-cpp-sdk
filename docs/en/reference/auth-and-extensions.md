@@ -209,7 +209,42 @@ The server-side API stays in `include/mcp/ext/ServerCard.hpp` with validation an
 | `UiMeta` | `struct { std::string resource_uri; std::vector<std::string> csp; std::vector<std::string> permissions; }` | empty string/tables/tables | The ui declaration carried in `_meta` |
 | `ValidateUiMeta` | `void ValidateUiMeta(const UiMeta& meta)` | — | `resource_uri` must be non-empty and start with `ui://`, otherwise `InvalidParams` is thrown; `csp`/`permissions` are not validated |
 
-Declared in `include/mcp/ext/Apps.hpp`; validation is in `src/ext/Apps.cpp`.
+Declared in `include/mcp/ext/Apps.hpp`; validation is in `src/ext/Apps.cpp`. `UiMeta`, `ValidateUiMeta`, `kAppsExtensionId`, `kAppsMimeType` and `kAppsUriScheme` are unchanged.
+
+### Apps host bridge
+
+Declared in `include/mcp/ext/AppsHostBridge.hpp`, implemented in `src/ext/AppsHostBridge.cpp`. This section covers only the JSON message bridge between a host and a sandboxed UI; no iframe, WebView, DOM, script injection or UI renderer is delivered.
+
+| Symbol | Signature/type | Default | Notes |
+|---|---|---|---|
+| `kAppsMessageSchemaVersion` | `std::string_view` | `"2026-07-28"` | The only supported schema version; malformed or missing values are rejected |
+| `kAppsCapabilityTokenBytes` | `size_t` | `32` | Random bytes in a capability token; exposed as a 64-character hex string |
+| `kDefaultAppsCapabilityTtl` | `std::chrono::milliseconds` | `60000` | Default capability lifetime |
+| `AppsHostBridgeOptions` | `struct` | see below | `ui_meta` (from `UiMeta`: `resource_uri`/`csp`/`permissions`), `allowed_origins` (host-trusted origin allowlist), `host_allowed_methods` (explicit host method allowlist), `max_message_bytes`(65536), `max_depth`(32), `max_nodes`(10000), `max_string_bytes`(65536), `max_id_bytes`(128), `max_method_bytes`(128), `capability_ttl`(60s), `single_use_sensitive_methods`(`true`) |
+| `AppsPostMessage` | `struct` | schema version preset, empty id/method/params | Carries only JSON values, schema version, optional `request_id`, `method` and `params`; no function/DOM/executable-code fields |
+| `AppsMessageContext` | `struct` | `sandbox_verified=false`, other fields empty | Host-trusted context: `source_origin`, `target_origin`, `resource_uri`, `sandbox_verified` and `capability`, all supplied by the host |
+| `AppsSandboxPolicy` | `struct` | all five deny flags `true`, `csp` empty | Exposes opaque origin, bans `allow-same-origin`, top navigation, popups, forms and downloads; `csp` comes verbatim from `UiMeta` |
+| `AppsHostBridge::Create` | `static std::unique_ptr<AppsHostBridge> Create(AppsHostBridgeOptions)` | — | Validates `UiMeta`, budgets and origin/method syntax; effective permissions = `UiMeta::permissions` ∩ `host_allowed_methods`, empty means deny every method |
+| `SerializeHostMessage` | `std::string SerializeHostMessage(const AppsPostMessage&, const AppsMessageContext&) const` | — | Host-to-app serialization; still checks trusted context, schema version, method permission and byte budget |
+| `ParseAppMessage` | `AppsPostMessage ParseAppMessage(std::string_view, const AppsMessageContext&) const` | — | App-to-host parsing; checks total bytes before parsing, then origin, sandbox, capability, schema, method and id |
+| `IsMethodAllowed` | `bool IsMethodAllowed(std::string_view, const AppsMessageContext&) const` | — | Read-only predicate; unknown methods, excess permissions and expired/consumed capabilities return `false` |
+| `CreateCapability` | `std::string CreateCapability(const AppsMessageContext&) const` | — | Issues an opaque token bound to `resource_uri`, allowed origins, effective permissions, expiry, message byte cap and the single-use flag |
+| `GetSandboxPolicy` | `AppsSandboxPolicy GetSandboxPolicy() const` | — | Returns fixed sandbox deny flags plus the CSP from `UiMeta` |
+| `NormalizeOrigin` | `bool NormalizeOrigin(std::string_view, std::string&)` | — | Lowercases scheme/host, supplies the default port (80 for http, 443 for https) and emits `scheme://host:port`; rejects `*`, `null`, userinfo, paths, wildcards and non-HTTP(S) schemes |
+| `IsAppsSensitiveMethod` | `bool IsAppsSensitiveMethod(std::string_view)` | — | `tools/call` and `resources/read` are sensitive: denied unless explicitly permitted, and require a single-use capability |
+
+Trust boundary:
+
+- `source_origin`, `target_origin`, `resource_uri` and `sandbox_verified` are read only from `AppsMessageContext`. Payload fields with those names, plus `permissions` or `capability`, are unknown top-level keys and are rejected; they never take part in an authorization decision.
+- Origins are normalized and compared exactly on scheme/host/effective port; omitting a default port is equivalent to writing it explicitly. A wildcard or opaque target, an origin outside the allowlist, and an unproven sandbox are always rejected.
+- Effective permissions are the intersection of `UiMeta::permissions` and `host_allowed_methods`. Sensitive methods are denied by default; with `single_use_sensitive_methods=true` the capability is single-use. Tokens use 32 unpredictable bytes, are compared in constant time, and are bound to resource/origins/permissions/expiry/byte cap; expiry, replay, cross-context use and permission changes are rejected.
+- JSON parsing checks total bytes first, then depth/node/string budgets. Duplicate keys, non-finite numbers, overlong ids/methods and malformed schema versions throw `McpError` with fixed classifier messages that never echo payload content.
+
+::: warning Old behaviour / new behaviour / how affected callers adapt
+- Old behaviour: before 0.3.13 there was no Apps host bridge API; hosts assembled postMessage themselves with no single enforcement point for origin, sandbox or permissions.
+- New behaviour: the new API fails closed by default; any message without a proven sandbox, with an unlisted origin, an unknown method or an unissued capability is rejected.
+- How to adapt: hosts that assembled postMessage manually should populate `AppsMessageContext` on the host side (never from message payload), call `CreateCapability`, and route traffic through `SerializeHostMessage`/`ParseAppMessage`. `UiMeta`/`ValidateUiMeta`, the Apps MIME and URI constants, and the server `ui://` resource read gate are unchanged and need no migration.
+:::
 
 ### Triggers
 
@@ -317,7 +352,7 @@ Task-shaped guides: [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-c
 ## Source files behind this page
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`, `include/mcp/client/auth/TokenCache.hpp`, `include/mcp/storage/FileTokenCache.hpp`, `include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/ServerCardClient.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/ServerCardClient.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/AppsHostBridge.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`, `include/mcp/ProtocolVersion.hpp`, `include/mcp/McpTypes.hpp`, `include/mcp/transport/StreamableHttpClientTransport.hpp`, `include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/ServerCardClient.cpp`, `src/ext/Apps.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/ServerCardClient.cpp`, `src/ext/Apps.cpp`, `src/ext/AppsHostBridge.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`, `cmake/OpenSslVersion.cmake`, `CMakeLists.txt`
