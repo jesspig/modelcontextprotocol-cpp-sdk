@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <initializer_list>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -188,6 +189,7 @@ TEST(OAuthTest, ClientCredentialsGrant) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
 
     ASSERT_TRUE(provider.AuthenticateClientCredentials());
@@ -256,6 +258,7 @@ TEST(OAuthTest, PrivateKeyJwtClientCredentialsSendsAssertion) {
     opts.private_key_pem = kTestEs256PrivateKeyPem;
     opts.signing_algorithm = "ES256";
     opts.client_assertion_clock_seconds = [] { return int64_t{1700000000}; };
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
 
     try {
@@ -342,6 +345,7 @@ TEST(OAuthTest, PrivateKeyJwtUnadvertisedKeepsClientSecretPost) {
     opts.client_id = "jwt-client";
     opts.client_secret = "test-secret";
     opts.private_key_pem = kTestEs256PrivateKeyPem;
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
 
     ASSERT_TRUE(provider.AuthenticateClientCredentials());
@@ -372,6 +376,8 @@ TEST(OAuthTest, ClientSecretSentOnCodeExchange) {
     opts.redirect_uri = "http://localhost/callback";
     opts.client_id = "confidential-client";
     opts.client_secret = "confidential-secret";
+    opts.allow_legacy_metadata_fallback = true;
+    opts.require_pkce_metadata = false;
     opts.authorization_redirect_handler =
         [&seen_url](std::string_view url) { seen_url = std::string(url); };
     opts.authorization_code_callback =
@@ -425,6 +431,7 @@ TEST(OAuthTest, ClientSecretSentOnRefresh) {
     opts.client_id = "confidential-client";
     opts.client_secret = "confidential-secret";
     opts.token_cache = cache;
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
 
     ASSERT_TRUE(provider.RefreshTokens());
@@ -464,6 +471,7 @@ TEST(OAuthTest, ClientSecretBasicUsedWhenOnlyBasicAdvertised) {
     opts.server_url = issuer;
     opts.client_id = "confidential-client";
     opts.client_secret = "confidential-secret";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
 
     ASSERT_TRUE(provider.AuthenticateClientCredentials());
@@ -501,6 +509,7 @@ TEST(OAuthTest, PrivateKeyJwtUnsupportedAlgorithmRejectsBeforeTokenRequest) {
     opts.client_id = "jwt-client";
     opts.private_key_pem = kTestEs256PrivateKeyPem;
     opts.signing_algorithm = "RS256";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
 
     bool threw = false;
@@ -733,9 +742,10 @@ TEST(OAuthTest, DPoPNonceObservationFeedsNextProof) {
     opts.enable_dpop = true;
 
     OAuthClientProvider provider(opts);
-    provider.ObserveDPoPNonce("");
-    provider.ObserveDPoPNonce(std::string(2048, 'n'));
-    provider.ObserveDPoPNonce("nonce-abc");
+    provider.ObserveDPoPNonce("https://resource.example/mcp", "Bearer", "");
+    provider.ObserveDPoPNonce("https://resource.example/mcp", "Bearer",
+        std::string(2048, 'n'));
+    provider.ObserveDPoPNonce("https://resource.example/mcp", "Bearer", "nonce-abc");
 
     std::map<std::string, std::string> headers;
     try {
@@ -760,6 +770,80 @@ TEST(OAuthTest, DPoPNonceObservationFeedsNextProof) {
     ASSERT_TRUE(payload.has_value());
     EXPECT_NE(payload->find("\"nonce\":\"nonce-abc\""), std::string::npos);
     EXPECT_NE(payload->find("\"htm\":\"GET\""), std::string::npos);
+}
+
+TEST(OAuthTest, DpopNonceBucketsIsolatedByOriginAndTokenType) {
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.enable_dpop = true;
+    OAuthClientProvider provider(opts);
+
+    provider.ObserveDPoPNonce("https://a.example/mcp", "Bearer", "nonce-a-bearer");
+    provider.ObserveDPoPNonce("https://a.example/mcp", "DPoP", "nonce-a-dpop");
+    provider.ObserveDPoPNonce("https://b.example/mcp", "Bearer", "nonce-b-bearer");
+
+    ASSERT_TRUE(provider.GetDPoPNonce("https://a.example/mcp", "Bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://a.example/mcp", "Bearer"), "nonce-a-bearer");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://a.example/mcp", "DPoP").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://a.example/mcp", "DPoP"), "nonce-a-dpop");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://b.example/mcp", "Bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://b.example/mcp", "Bearer"), "nonce-b-bearer");
+    EXPECT_FALSE(provider.GetDPoPNonce("https://a.example/mcp", "other").has_value());
+    EXPECT_FALSE(provider.GetDPoPNonce("https://c.example/mcp", "Bearer").has_value());
+    ASSERT_TRUE(provider.GetDPoPNonce("https://A.EXAMPLE:443/mcp", "bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://A.EXAMPLE:443/mcp", "bearer"),
+        "nonce-a-bearer");
+
+    provider.SetDPoPNonceContext("https://c.example/mcp", "Bearer");
+    provider.ObserveDPoPNonce("legacy-nonce");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://c.example/mcp", "Bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://c.example/mcp", "Bearer"), "legacy-nonce");
+    EXPECT_EQ(*provider.GetDPoPNonce("https://a.example/mcp", "Bearer"), "nonce-a-bearer");
+}
+
+TEST(OAuthTest, DpopKeyRestoredFromCacheAcrossProviderRestart) {
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    ext::dpop::EcP256Jwk key{
+        "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+        "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"};
+    ASSERT_TRUE(ext::dpop::ValidateKey(key));
+    cache->StoreDpopKey(key);
+
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.token_cache = cache;
+    opts.enable_dpop = true;
+    OAuthClientProvider provider(opts);
+
+    try {
+        auto proof = provider.BuildDPoPProof("GET", "https://resource.example/mcp");
+        ASSERT_FALSE(proof.empty());
+        auto dot = proof.find('.');
+        ASSERT_NE(dot, std::string::npos);
+        auto header = mcp::detail::Base64UrlDecode(proof.substr(0, dot));
+        ASSERT_TRUE(header.has_value());
+        EXPECT_NE(header->find(key.x), std::string::npos);
+        EXPECT_NE(header->find(key.y), std::string::npos);
+    } catch (const McpError&) {
+    }
+}
+
+TEST(OAuthTest, DpopLegacyNonceSetterDelegatesToCurrentBucket) {
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.enable_dpop = true;
+    OAuthClientProvider provider(opts);
+
+    provider.SetDPoPNonceContext("https://legacy.example/mcp", "DPoP");
+    provider.SetDPoPNonce("legacy-set-nonce");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://legacy.example/mcp", "DPoP").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://legacy.example/mcp", "DPoP"),
+        "legacy-set-nonce");
+    EXPECT_FALSE(provider.GetDPoPNonce("https://legacy.example/mcp", "Bearer").has_value());
 }
 
 TEST(OAuthTest, DPoPStaleProofRejectedByWindow) {
@@ -825,6 +909,8 @@ TEST(OAuthTest, EmptyAuthCodeRejectedWithoutTokenRequest) {
     OAuthClientOptions opts;
     opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
+    opts.allow_legacy_metadata_fallback = true;
+    opts.require_pkce_metadata = false;
     opts.authorization_redirect_handler =
         [&seen_url](std::string_view url) { seen_url = std::string(url); };
     opts.authorization_code_callback =
@@ -864,6 +950,7 @@ TEST(OAuthTest, TokenResponseMissingIssAccepted) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
     EXPECT_TRUE(provider.AuthenticateClientCredentials());
     EXPECT_TRUE(provider.HasToken());
@@ -896,6 +983,9 @@ TEST(OAuthTest, MissingIssWarnsWhenNotRequired) {
     opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
     opts.client_id = "test-client";
+    opts.require_iss_when_advertised = false;
+    opts.allow_legacy_metadata_fallback = true;
+    opts.require_pkce_metadata = false;
     opts.authorization_redirect_handler =
         [&seen_url](std::string_view url) { seen_url = std::string(url); };
     opts.authorization_code_callback =
@@ -946,6 +1036,8 @@ TEST(OAuthTest, MissingIssRejectedWhenRequired) {
     opts.redirect_uri = "http://localhost/callback";
     opts.client_id = "test-client";
     opts.require_iss_when_advertised = true;
+    opts.allow_legacy_metadata_fallback = true;
+    opts.require_pkce_metadata = false;
     opts.authorization_redirect_handler =
         [&seen_url](std::string_view url) { seen_url = std::string(url); };
     opts.authorization_code_callback =
@@ -987,6 +1079,7 @@ TEST(OAuthTest, TokenResponseMatchingIssAccepted) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
     EXPECT_TRUE(provider.AuthenticateClientCredentials());
     EXPECT_TRUE(provider.HasToken());
@@ -1064,6 +1157,7 @@ TEST(OAuthTest, TokenRefreshWithoutIssAccepted) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
     ASSERT_TRUE(provider.AuthenticateClientCredentials());
     EXPECT_EQ(provider.GetAccessToken(), "refreshed-no-iss");
@@ -1110,6 +1204,7 @@ TEST(OAuthTest, TokenResourcePersistedAndMismatchGate) {
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
     opts.token_cache = cache;
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
     ASSERT_TRUE(provider.AuthenticateClientCredentials());
 
@@ -1264,6 +1359,7 @@ TEST(OAuthTest, TokenRefreshNotifiesHandler) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     opts.token_update_handler = [&seen_mutex, &seen](const TokenContainer& t) {
         std::lock_guard<std::mutex> lock(seen_mutex);
         seen.push_back(t.access_token);
@@ -1306,6 +1402,7 @@ TEST(OAuthTest, ConcurrentGetAccessTokenRefreshesOnce) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
     ASSERT_TRUE(provider.AuthenticateClientCredentials());
 
@@ -1353,6 +1450,7 @@ TEST(OAuthTest, TokenUpdateHandlerReentrantGetAccessTokenDoesNotDeadlock) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     opts.token_update_handler =
         [&provider_ptr, &seen_mutex, &seen](const TokenContainer& t) {
             std::lock_guard<std::mutex> lock(seen_mutex);
@@ -1408,6 +1506,7 @@ TEST(OAuthTest, ConcurrentWaiterSurvivesRefreshOwnerReentry) {
     opts.server_url = issuer;
     opts.client_id = "test-client";
     opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
     opts.token_update_handler =
         [&provider_ptr, &seen_mutex, &seen](const TokenContainer& t) {
             std::lock_guard<std::mutex> lock(seen_mutex);
@@ -1588,7 +1687,8 @@ TEST(OAuthTest, CimdUnreachableDocumentFallsBackToAuthorizationFlow) {
         [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
             resp.body = "{\"issuer\":\"" + issuer + "\","
                         "\"authorization_endpoint\":\"" + issuer + "/authorize\","
-                        "\"token_endpoint\":\"" + issuer + "/token\"}";
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"code_challenge_methods_supported\":[\"S256\"]}";
         });
     server.SetHandler("POST", "/token",
         [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
@@ -1603,7 +1703,8 @@ TEST(OAuthTest, CimdUnreachableDocumentFallsBackToAuthorizationFlow) {
     OAuthClientOptions opts;
     opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
-    opts.client_id = "http://127.0.0.1:9/unreachable-client";
+    opts.client_id = "https://127.0.0.1:9/unreachable-client";
+    opts.allow_legacy_metadata_fallback = true;
     opts.authorization_redirect_handler =
         [&seen_url](std::string_view url) { seen_url = std::string(url); };
     opts.authorization_code_callback =
@@ -1625,106 +1726,40 @@ TEST(OAuthTest, CimdUnreachableDocumentFallsBackToAuthorizationFlow) {
     server.Stop();
 }
 
-TEST(OAuthTest, CimdDocumentClientIdMismatchFallsBack) {
-    auto port = PickFreePort(kTestBasePort + 1220);
-    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
-
-    mcp::HttpServer server(port);
-    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
-        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = "{\"issuer\":\"" + issuer + "\","
-                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
-                        "\"token_endpoint\":\"" + issuer + "/token\"}";
-        });
-    server.SetHandler("GET", "/client",
-        [](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = R"({"client_id":"https://other.example/client",)"
-                        R"("token_endpoint_auth_method":"none",)"
-                        R"("redirect_uris":["http://localhost/callback"]})";
-        });
-    server.SetHandler("POST", "/token",
-        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = "{\"access_token\":\"cimd-mismatch-token\","
-                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
-                        "\"iss\":\"" + issuer + "\"}";
-        });
-    server.Start();
-    ASSERT_TRUE(WaitUntilReady(port));
-
-    std::string seen_url;
+TEST(OAuthTest, CimdHttpDocumentUrlRejectedBeforeDiscovery) {
     OAuthClientOptions opts;
-    opts.server_url = issuer;
+    opts.server_url = "https://mcp.example/mcp";
     opts.redirect_uri = "http://localhost/callback";
-    opts.client_id = issuer + "/client";
-    opts.authorization_redirect_handler =
-        [&seen_url](std::string_view url) { seen_url = std::string(url); };
-    opts.authorization_code_callback =
-        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
-            AuthorizationCodeResult result;
-            result.code = "cimd-code";
-            auto pos = seen_url.find("state=");
-            if (pos != std::string::npos) {
-                auto end = seen_url.find('&', pos);
-                auto len = (end == std::string::npos)
-                    ? std::string::npos : end - pos - 6;
-                result.state = seen_url.substr(pos + 6, len);
-            }
-            return result;
-        };
+    opts.client_id = "http://client.example/client";
     OAuthClientProvider provider(opts);
-    EXPECT_TRUE(provider.Authenticate());
-    EXPECT_EQ(provider.GetAccessToken(), "cimd-mismatch-token");
-    server.Stop();
+    EXPECT_THROW((void)provider.Authenticate(), McpError);
+    EXPECT_THROW((void)provider.AuthenticateClientCredentials(), McpError);
 }
 
-TEST(OAuthTest, CimdRedirectUriMismatchFallsBack) {
-    auto port = PickFreePort(kTestBasePort + 1230);
-    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
-
-    mcp::HttpServer server(port);
-    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
-        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = "{\"issuer\":\"" + issuer + "\","
-                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
-                        "\"token_endpoint\":\"" + issuer + "/token\"}";
-        });
-    server.SetHandler("GET", "/client",
-        [](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = R"({"redirect_uris":["http://localhost/other"]})";
-        });
-    server.SetHandler("POST", "/token",
-        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = "{\"access_token\":\"cimd-redirect-token\","
-                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
-                        "\"iss\":\"" + issuer + "\"}";
-        });
-    server.Start();
-    ASSERT_TRUE(WaitUntilReady(port));
-
-    std::string seen_url;
+TEST(OAuthTest, CimdRootPathDocumentUrlRejectedBeforeDiscovery) {
     OAuthClientOptions opts;
-    opts.server_url = issuer;
+    opts.server_url = "https://mcp.example/mcp";
     opts.redirect_uri = "http://localhost/callback";
-    opts.client_id = issuer + "/client";
-    opts.authorization_redirect_handler =
-        [&seen_url](std::string_view url) { seen_url = std::string(url); };
-    opts.authorization_code_callback =
-        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
-            AuthorizationCodeResult result;
-            result.code = "cimd-code";
-            auto pos = seen_url.find("state=");
-            if (pos != std::string::npos) {
-                auto end = seen_url.find('&', pos);
-                auto len = (end == std::string::npos)
-                    ? std::string::npos : end - pos - 6;
-                result.state = seen_url.substr(pos + 6, len);
-            }
-            return result;
-        };
+    opts.client_id = "https://client.example/";
     OAuthClientProvider provider(opts);
-    EXPECT_TRUE(provider.Authenticate());
-    EXPECT_EQ(provider.GetAccessToken(), "cimd-redirect-token");
-    server.Stop();
+    EXPECT_THROW((void)provider.Authenticate(), McpError);
+}
+
+TEST(OAuthTest, CimdUserinfoFragmentAndMissingPathRejectedBeforeDiscovery) {
+    const std::vector<std::string> invalid = {
+        "https://user@client.example/client",
+        "https://client.example/client#section",
+        "https://client.example?query=1",
+        "https:///client"
+    };
+    for (const auto& client_id : invalid) {
+        OAuthClientOptions opts;
+        opts.server_url = "https://mcp.example/mcp";
+        opts.redirect_uri = "http://localhost/callback";
+        opts.client_id = client_id;
+        OAuthClientProvider provider(opts);
+        EXPECT_THROW((void)provider.Authenticate(), McpError);
+    }
 }
 
 TEST(OAuthTest, AuthClosedLoopScopeInsufficientRetryCaseInsensitive) {
@@ -1870,6 +1905,7 @@ TEST(OAuthTest, DiscoveredPlaintextTokenEndpointRejected) {
     OAuthClientOptions opts;
     opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
+    opts.allow_legacy_metadata_fallback = true;
     OAuthClientProvider provider(opts);
     EXPECT_THROW((void)provider.Authenticate(), McpError);
     server.Stop();
@@ -1910,6 +1946,8 @@ TEST(OAuthTest, InvalidGrantFallsBackToAuthorizationFlow) {
     opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
     opts.token_cache = cache;
+    opts.allow_legacy_metadata_fallback = true;
+    opts.require_pkce_metadata = false;
     opts.authorization_redirect_handler = [&](std::string_view url) {
         redirect_called.store(true);
         redirect_url = std::string(url);
@@ -1925,6 +1963,125 @@ TEST(OAuthTest, InvalidGrantFallsBackToAuthorizationFlow) {
     EXPECT_NE(redirect_url.find("code_challenge="), std::string::npos);
     EXPECT_NE(redirect_url.find("code_challenge_method=S256"), std::string::npos);
     EXPECT_FALSE(cache->GetTokens().has_value());
+    server.Stop();
+}
+
+TEST(OAuthTest, AuthenticateAndPublicRefreshCoalesceToOneRequest) {
+    auto port = PickFreePort(kTestBasePort + 1178);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> refresh_calls{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (req.body.find("grant_type=refresh_token") != std::string::npos) {
+                refresh_calls.fetch_add(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                resp.body = "{\"access_token\":\"coalesced-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                            "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+            } else {
+                resp.body = "{\"access_token\":\"short-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-one\",\"iss\":\"" + issuer + "\"}";
+            }
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
+    OAuthClientProvider provider(opts);
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+
+    std::atomic<int> successes{0};
+    std::vector<std::thread> callers;
+    for (int i = 0; i < 4; ++i) {
+        callers.emplace_back([&provider, &successes, i] {
+            bool ok = i < 2 ? provider.RefreshTokens() : provider.Authenticate();
+            if (ok) successes.fetch_add(1);
+        });
+    }
+    for (auto& caller : callers) caller.join();
+
+    EXPECT_EQ(refresh_calls.load(), 1);
+    EXPECT_EQ(successes.load(), 4);
+    EXPECT_EQ(provider.GetAccessToken(), "coalesced-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, RefreshSingleFlightReleasesWaitersAfterOwnerException) {
+    auto port = PickFreePort(kTestBasePort + 1179);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> refresh_calls{0};
+    std::atomic<bool> refresh_started{false};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            refresh_calls.fetch_add(1);
+            refresh_started.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            resp.body = "{\"access_token\":\"after-fault-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    struct FaultCache : InMemoryTokenCache {
+        std::atomic<bool> fail_once{true};
+        void StoreTokens(const TokenContainer& tokens) override {
+            if (fail_once.exchange(false)) {
+                throw McpError(McpErrorCode::InternalError, "injected cache fault");
+            }
+            InMemoryTokenCache::StoreTokens(tokens);
+        }
+    };
+    auto cache = std::make_shared<FaultCache>();
+    TokenContainer short_token;
+    short_token.access_token = "short-token";
+    short_token.refresh_token = "rt-one";
+    short_token.token_type = "Bearer";
+    short_token.expires_at = 1;
+    cache->InMemoryTokenCache::StoreTokens(short_token);
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    opts.token_cache = cache;
+    opts.allow_legacy_metadata_fallback = true;
+    OAuthClientProvider provider(opts);
+
+    std::atomic<bool> owner_fault{false};
+    bool waiter_result = true;
+    MCP_RUN_WITH_TIMEOUT(std::chrono::seconds(20), [&] {
+        std::thread waiter([&] {
+            while (!refresh_started.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            try {
+                waiter_result = provider.RefreshTokens();
+            } catch (...) {
+                waiter_result = true;
+            }
+        });
+        try {
+            (void)provider.RefreshTokens();
+        } catch (const McpError&) {
+            owner_fault.store(true);
+        }
+        waiter.join();
+    });
+
+    EXPECT_TRUE(owner_fault.load());
+    EXPECT_FALSE(waiter_result);
+    EXPECT_EQ(refresh_calls.load(), 1);
+    EXPECT_TRUE(provider.RefreshTokens());
+    EXPECT_EQ(provider.GetAccessToken(), "after-fault-token");
     server.Stop();
 }
 
@@ -2091,14 +2248,28 @@ TEST(OAuthTest, IssuerChangeThroughDiscoveryRejectedAndTokensRetained) {
 }
 
 TEST(OAuthTest, ConcurrentAuthorizationFlowsUseDistinctState) {
+    auto port = PickFreePort(kTestBasePort + 2160);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"code_challenge_methods_supported\":[\"S256\"]}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
     auto cache = std::make_shared<InMemoryTokenCache>();
     std::mutex states_mutex;
     std::vector<std::string> states;
 
     OAuthClientOptions opts;
-    opts.server_url = "http://127.0.0.1:1";
+    opts.server_url = issuer;
     opts.redirect_uri = "http://localhost/callback";
     opts.token_cache = cache;
+    opts.allow_legacy_metadata_fallback = true;
     opts.authorization_redirect_handler = [&](std::string_view url) {
         std::string text(url);
         auto pos = text.find("state=");
@@ -2127,6 +2298,7 @@ TEST(OAuthTest, ConcurrentAuthorizationFlowsUseDistinctState) {
     EXPECT_EQ(states.size(), 12U);
     std::set<std::string> unique(states.begin(), states.end());
     EXPECT_EQ(unique.size(), states.size());
+    server.Stop();
 }
 
 TEST(OAuthTest, TriggerWebhookLogDoesNotLeakWebhookUrl) {
@@ -2150,9 +2322,11 @@ TEST(OAuthTest, TriggerWebhookLogDoesNotLeakWebhookUrl) {
     EXPECT_NE(captured.find("127.0.0.1"), std::string::npos);
 }
 
-TEST(OAuthFallbackTest, OptionDefaultsToTrue) {
+TEST(OAuthFallbackTest, StrictDefaults) {
     OAuthClientOptions opts;
-    EXPECT_TRUE(opts.allow_legacy_metadata_fallback);
+    EXPECT_TRUE(opts.require_iss_when_advertised);
+    EXPECT_TRUE(opts.require_pkce_metadata);
+    EXPECT_FALSE(opts.allow_legacy_metadata_fallback);
 }
 
 TEST(OAuthFallbackTest, PrmReachableWithValidAsMetadata) {
@@ -2163,8 +2337,9 @@ TEST(OAuthFallbackTest, PrmReachableWithValidAsMetadata) {
 
     mcp::HttpServer resource_server(resource_port);
     resource_server.SetHandler("GET", "/.well-known/oauth-protected-resource",
-        [as](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = "{\"authorization_servers\":[\"" + as + "\"]}";
+        [as, resource](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"resource\":\"" + resource + "\","
+                        "\"authorization_servers\":[\"" + as + "\"]}";
         });
     mcp::HttpServer as_server(as_port);
     as_server.SetHandler("GET", "/.well-known/oauth-authorization-server",
@@ -2204,7 +2379,7 @@ TEST(OAuthFallbackTest, PrmUnreachable) {
     server.Start();
     ASSERT_TRUE(WaitUntilReady(port));
 
-    auto enabled = OAuthMetadata::Discover(origin);
+    auto enabled = OAuthMetadata::Discover(origin, true);
     ASSERT_TRUE(enabled.has_value());
     EXPECT_EQ(enabled->issuer, origin);
 
@@ -2222,8 +2397,9 @@ TEST(OAuthFallbackTest, EmptyAsMetadata) {
 
     mcp::HttpServer resource_server(resource_port);
     resource_server.SetHandler("GET", "/.well-known/oauth-protected-resource",
-        [as](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
-            resp.body = "{\"authorization_servers\":[\"" + as + "\"]}";
+        [as, resource](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"resource\":\"" + resource + "\","
+                        "\"authorization_servers\":[\"" + as + "\"]}";
         });
     resource_server.SetHandler("GET", "/.well-known/oauth-authorization-server",
         [resource](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
@@ -2241,7 +2417,7 @@ TEST(OAuthFallbackTest, EmptyAsMetadata) {
     ASSERT_TRUE(WaitUntilReady(resource_port));
     ASSERT_TRUE(WaitUntilReady(as_port));
 
-    auto enabled = OAuthMetadata::Discover(resource);
+    auto enabled = OAuthMetadata::Discover(resource, true);
     ASSERT_TRUE(enabled.has_value());
     EXPECT_EQ(enabled->issuer, resource);
 
@@ -2285,10 +2461,822 @@ TEST(OAuthFallbackTest, ProviderHonorsFallbackOption) {
         opts.server_url = origin;
         opts.client_id = "client";
         opts.client_secret = "secret";
+        opts.allow_legacy_metadata_fallback = true;
         OAuthClientProvider provider(opts);
         (void)provider.AuthenticateClientCredentials();
     }
     EXPECT_GT(rfc8414_requests.load(), after_disabled);
 
     server.Stop();
+}
+
+TEST(OAuthTest, AuthorizationResponseIssFourStatesByDefault) {
+    auto port = PickFreePort(kTestBasePort + 2170);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"resource\":\"" + issuer + "\","
+                        "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"authorization_response_iss_parameter_supported\":true,"
+                        "\"code_challenge_methods_supported\":[\"S256\"]}";
+        });
+    server.SetHandler("POST", "/token",
+        [&token_hits, issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            token_hits.fetch_add(1);
+            resp.body = "{\"access_token\":\"iss-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto run = [&](std::optional<std::string> iss) {
+        std::string seen_url;
+        OAuthClientOptions opts;
+        opts.server_url = issuer;
+        opts.redirect_uri = "http://localhost/callback";
+        opts.authorization_redirect_handler =
+            [&seen_url](std::string_view url) { seen_url = std::string(url); };
+        opts.authorization_code_callback =
+            [&seen_url, iss]() -> std::optional<AuthorizationCodeResult> {
+                AuthorizationCodeResult result;
+                result.code = "code";
+                auto pos = seen_url.find("state=");
+                if (pos != std::string::npos) {
+                    auto end = seen_url.find('&', pos);
+                    auto len = end == std::string::npos
+                        ? std::string::npos : end - pos - 6;
+                    result.state = seen_url.substr(pos + 6, len);
+                }
+                result.iss = iss;
+                return result;
+            };
+        OAuthClientProvider provider(opts);
+        return provider.Authenticate();
+    };
+
+    EXPECT_TRUE(run(issuer));
+    EXPECT_EQ(token_hits.load(), 1);
+    EXPECT_FALSE(run(std::nullopt));
+    EXPECT_FALSE(run(std::string{}));
+    EXPECT_FALSE(run(issuer + "/evil"));
+    EXPECT_EQ(token_hits.load(), 1);
+    server.Stop();
+}
+
+TEST(OAuthTest, MissingIssAcceptedWithExplicitLegacyOptOut) {
+    auto port = PickFreePort(kTestBasePort + 2180);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"resource\":\"" + issuer + "\","
+                        "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"authorization_response_iss_parameter_supported\":true,"
+                        "\"code_challenge_methods_supported\":[\"S256\"]}";
+        });
+    server.SetHandler("POST", "/token",
+        [&token_hits, issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            token_hits.fetch_add(1);
+            resp.body = "{\"access_token\":\"legacy-iss-token\",\"token_type\":\"Bearer\","
+                        "\"expires_in\":3600,\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    std::string seen_url;
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.require_iss_when_advertised = false;
+    opts.authorization_redirect_handler =
+        [&seen_url](std::string_view url) { seen_url = std::string(url); };
+    opts.authorization_code_callback =
+        [&seen_url]() -> std::optional<AuthorizationCodeResult> {
+            AuthorizationCodeResult result;
+            result.code = "code";
+            auto pos = seen_url.find("state=");
+            if (pos != std::string::npos) {
+                auto end = seen_url.find('&', pos);
+                auto len = end == std::string::npos
+                    ? std::string::npos : end - pos - 6;
+                result.state = seen_url.substr(pos + 6, len);
+            }
+            return result;
+        };
+    OAuthClientProvider provider(opts);
+    EXPECT_TRUE(provider.Authenticate());
+    EXPECT_EQ(token_hits.load(), 1);
+    server.Stop();
+}
+
+TEST(OAuthTest, PkceMetadataMissingRefusesFlowByDefault) {
+    auto port = PickFreePort(kTestBasePort + 2190);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+    bool callback_called = false;
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"resource\":\"" + issuer + "\","
+                        "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\"}";
+        });
+    server.SetHandler("POST", "/token",
+        [&token_hits](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            token_hits.fetch_add(1);
+            resp.body = R"({"access_token":"should-not-issue"})";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    opts.authorization_redirect_handler = [](std::string_view) {};
+    opts.authorization_code_callback =
+        [&callback_called]() -> std::optional<AuthorizationCodeResult> {
+            callback_called = true;
+            return std::nullopt;
+        };
+    OAuthClientProvider provider(opts);
+    EXPECT_FALSE(provider.Authenticate());
+    EXPECT_FALSE(callback_called);
+    EXPECT_EQ(token_hits.load(), 0);
+    server.Stop();
+}
+
+TEST(OAuthTest, PrmResourceRequiresExactMatch) {
+    auto resource_port = PickFreePort(kTestBasePort + 2200);
+    auto as_port = PickFreePort(kTestBasePort + 2210);
+    std::string origin = "http://127.0.0.1:" + std::to_string(resource_port);
+    std::string resource = origin + "/mcp";
+    std::string as = "http://127.0.0.1:" + std::to_string(as_port);
+    std::atomic<int> mode{0};
+
+    mcp::HttpServer resource_server(resource_port);
+    auto prm = [as, origin, resource, &mode](
+        const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+        std::string value = resource;
+        switch (mode.load()) {
+        case 1: value = origin; break;
+        case 2: value = resource + "/"; break;
+        case 3: value = "*"; break;
+        case 4: value = "evil" + resource; break;
+        default: break;
+        }
+        resp.body = "{\"resource\":\"" + value + "\","
+                    "\"authorization_servers\":[\"" + as + "\"]}";
+    };
+    resource_server.SetHandler("GET", "/mcp/.well-known/oauth-protected-resource", prm);
+    resource_server.SetHandler("GET", "/.well-known/oauth-protected-resource", prm);
+    mcp::HttpServer as_server(as_port);
+    as_server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [as](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + as + "\","
+                        "\"authorization_endpoint\":\"" + as + "/authorize\","
+                        "\"token_endpoint\":\"" + as + "/token\"}";
+        });
+    resource_server.Start();
+    as_server.Start();
+    ASSERT_TRUE(WaitUntilReady(resource_port));
+    ASSERT_TRUE(WaitUntilReady(as_port));
+
+    for (int value = 1; value <= 4; ++value) {
+        mode.store(value);
+        EXPECT_FALSE(OAuthMetadata::Discover(resource, false).has_value());
+    }
+    mode.store(0);
+    auto exact = OAuthMetadata::Discover(resource, false);
+    ASSERT_TRUE(exact.has_value());
+    EXPECT_TRUE(exact->resource.has_value());
+    EXPECT_EQ(*exact->resource, resource);
+
+    auto overridden = OAuthMetadata::Discover(origin, false, std::string_view(resource));
+    ASSERT_TRUE(overridden.has_value());
+    EXPECT_EQ(*overridden->resource, resource);
+
+    resource_server.Stop();
+    as_server.Stop();
+}
+
+TEST(OAuthTest, ChallengeResourcePrefixRejected) {
+    auto port = PickFreePort(kTestBasePort + 2220);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> mode{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/meta",
+        [issuer, &mode](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            std::string value = mode.load() == 0 ? issuer : issuer + "/tenant";
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"resource\":\"" + value + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.redirect_uri = "http://localhost/callback";
+    OAuthClientProvider provider(opts);
+    const std::string challenge = "Bearer resource_metadata=\"" + issuer + "/meta\"";
+    EXPECT_TRUE(provider.HandleAuthChallenge(challenge));
+    mode.store(1);
+    EXPECT_FALSE(provider.HandleAuthChallenge(challenge));
+    server.Stop();
+}
+
+TEST(OAuthTest, Sha256FallbackWorksWithoutOpenSsl) {
+#ifndef MCP_HAVE_OPENSSL
+    EXPECT_EQ(pkce::ComputeCodeChallenge(
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    EXPECT_GE(pkce::GenerateCodeVerifier().size(), 43U);
+#endif
+}
+
+TEST(OAuthTest, PrivateKeyJwtFailsClosedWithoutOpenSsl) {
+#ifndef MCP_HAVE_OPENSSL
+    auto port = PickFreePort(kTestBasePort + 2230);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"resource\":\"" + issuer + "\","
+                        "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            resp.body = "{\"issuer\":\"" + issuer + "\","
+                        "\"authorization_endpoint\":\"" + issuer + "/authorize\","
+                        "\"token_endpoint\":\"" + issuer + "/token\","
+                        "\"token_endpoint_auth_methods_supported\":[\"private_key_jwt\"]}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "jwt-client";
+    opts.private_key_pem = kTestEs256PrivateKeyPem;
+    opts.client_assertion_clock_seconds = [] { return int64_t{1700000000}; };
+    OAuthClientProvider provider(opts);
+    bool threw = false;
+    try {
+        (void)provider.AuthenticateClientCredentials();
+    } catch (const McpError& e) {
+        threw = true;
+        EXPECT_EQ(e.Code(), McpErrorCode::InternalError);
+    }
+    EXPECT_TRUE(threw);
+    server.Stop();
+#endif
+}
+
+namespace {
+
+class FakeUrlResolver final : public mcp::detail::net::IUrlSecurityResolver {
+public:
+    explicit FakeUrlResolver(std::vector<mcp::detail::net::UrlSecurityAddress> answers)
+        : answers_(std::move(answers)) {}
+
+    std::vector<mcp::detail::net::UrlSecurityAddress> Resolve(std::string_view) override {
+        ++calls_;
+        return answers_;
+    }
+
+    [[nodiscard]] int Calls() const { return calls_; }
+
+private:
+    std::vector<mcp::detail::net::UrlSecurityAddress> answers_;
+    int calls_{0};
+};
+
+mcp::detail::net::UrlSecurityAddress V4(unsigned char a, unsigned char b,
+                                        unsigned char c, unsigned char d) {
+    mcp::detail::net::UrlSecurityAddress address;
+    address.family = 4;
+    address.length = 4;
+    address.bytes[0] = a;
+    address.bytes[1] = b;
+    address.bytes[2] = c;
+    address.bytes[3] = d;
+    return address;
+}
+
+mcp::detail::net::UrlSecurityAddress V6(std::initializer_list<unsigned char> values) {
+    mcp::detail::net::UrlSecurityAddress address;
+    address.family = 6;
+    address.length = 16;
+    std::size_t index = 0;
+    for (unsigned char value : values) {
+        if (index >= address.bytes.size()) break;
+        address.bytes[index++] = value;
+    }
+    return address;
+}
+
+class LogCapture final {
+public:
+    LogCapture()
+        : previous_handler_(GetLogHandler())
+        , previous_level_(GetLogLevel())
+    {
+        SetLogLevel(LogLevel::Error);
+        SetLogHandler([this](const LogRecord& record) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            records_.emplace_back(record.message);
+        });
+    }
+
+    ~LogCapture() {
+        SetLogHandler(previous_handler_);
+        SetLogLevel(previous_level_);
+    }
+
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+
+    [[nodiscard]] bool Contains(std::string_view needle) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& record : records_)
+            if (record.find(needle) != std::string::npos) return true;
+        return false;
+    }
+
+private:
+    LogHandler previous_handler_;
+    LogLevel previous_level_;
+    mutable std::mutex mutex_;
+    std::vector<std::string> records_;
+};
+
+std::string DcrMetadataBody(std::string_view issuer, bool with_registration) {
+    JsonValue object(JsonValue::object_tag);
+    object["issuer"] = JsonValue(std::string(issuer));
+    object["authorization_endpoint"] = JsonValue(std::string(issuer) + "/authorize");
+    object["token_endpoint"] = JsonValue(std::string(issuer) + "/token");
+    if (with_registration)
+        object["registration_endpoint"] = JsonValue(std::string(issuer) + "/register");
+    return JsonValue(std::move(object)).Dump();
+}
+
+} // namespace
+
+TEST(OAuthSecurityTest, OriginAllowlistExplicitOnlyAndPortNormalization) {
+    using namespace mcp::detail::net;
+    UrlSecurityPolicyConfig config;
+    config.allowed_origins = {"https://Good.Example:8443", "https://plain.example"};
+    config.resolver = std::make_shared<FakeUrlResolver>(
+        std::vector<UrlSecurityAddress>{V4(93, 184, 215, 14)});
+    UrlSecurityPolicy policy(std::move(config));
+    std::string error;
+    std::vector<UrlSecurityAddress> addresses;
+
+    EXPECT_TRUE(policy.Validate("https://good.example:8443/token", error, addresses));
+    EXPECT_TRUE(policy.Validate("https://GOOD.EXAMPLE:8443/token", error, addresses));
+    EXPECT_TRUE(policy.Validate("https://plain.example/token", error, addresses));
+    EXPECT_FALSE(policy.Validate("https://good.example/token", error, addresses));
+    EXPECT_FALSE(policy.Validate("http://good.example:8443/token", error, addresses));
+    EXPECT_FALSE(policy.Validate("https://evil.example/token", error, addresses));
+    EXPECT_FALSE(policy.Validate("https://user@good.example:8443/token", error, addresses));
+    EXPECT_FALSE(policy.Validate("https://%67ood.example:8443/token", error, addresses));
+
+    EXPECT_FALSE(ParseUrlSecurityOrigin("https://2130706433/token").has_value());
+    EXPECT_FALSE(ParseUrlSecurityOrigin("http://0x7f000001/token").has_value());
+    EXPECT_FALSE(ParseUrlSecurityOrigin("http://user@127.0.0.1/token").has_value());
+    EXPECT_FALSE(ParseUrlSecurityOrigin("http://%31%32%37.0.0.1/token").has_value());
+}
+
+TEST(OAuthSecurityTest, DnsAddressPolicyRejectsForbiddenClasses) {
+    using namespace mcp::detail::net;
+    EXPECT_EQ(ClassifyAddress(V4(127, 0, 0, 1)), UrlAddressClass::Loopback);
+    EXPECT_EQ(ClassifyAddress(V4(10, 0, 0, 5)), UrlAddressClass::PrivateAddress);
+    EXPECT_EQ(ClassifyAddress(V4(172, 16, 0, 1)), UrlAddressClass::PrivateAddress);
+    EXPECT_EQ(ClassifyAddress(V4(192, 168, 1, 1)), UrlAddressClass::PrivateAddress);
+    EXPECT_EQ(ClassifyAddress(V4(169, 254, 169, 254)), UrlAddressClass::LinkLocal);
+    EXPECT_EQ(ClassifyAddress(V4(224, 0, 0, 1)), UrlAddressClass::Multicast);
+    EXPECT_EQ(ClassifyAddress(V4(0, 0, 0, 0)), UrlAddressClass::Unspecified);
+    EXPECT_EQ(ClassifyAddress(V4(240, 0, 0, 1)), UrlAddressClass::Reserved);
+    EXPECT_EQ(ClassifyAddress(V4(100, 64, 0, 1)), UrlAddressClass::Reserved);
+    EXPECT_EQ(ClassifyAddress(V4(8, 8, 8, 8)), UrlAddressClass::Public);
+    EXPECT_EQ(ClassifyAddress(V6({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})),
+              UrlAddressClass::Unspecified);
+    EXPECT_EQ(ClassifyAddress(V6({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})),
+              UrlAddressClass::Loopback);
+    EXPECT_EQ(ClassifyAddress(V6({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255,
+                                  127, 0, 0, 1})), UrlAddressClass::Mapped);
+    EXPECT_EQ(ClassifyAddress(V6({0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0, 0, 1})), UrlAddressClass::LinkLocal);
+    EXPECT_EQ(ClassifyAddress(V6({0xfc, 0, 0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0, 0, 1})), UrlAddressClass::PrivateAddress);
+    EXPECT_EQ(ClassifyAddress(V6({0xff, 0x02, 0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0, 0, 1})), UrlAddressClass::Multicast);
+    EXPECT_EQ(ClassifyAddress(V6({0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0, 0, 1})), UrlAddressClass::Reserved);
+}
+
+TEST(OAuthSecurityTest, DnsMultipleAnswersWithPrivateRejectedBeforeConnect) {
+    using namespace mcp::detail::net;
+    auto resolver = std::make_shared<FakeUrlResolver>(
+        std::vector<UrlSecurityAddress>{V4(93, 184, 215, 14), V4(10, 0, 0, 5)});
+    UrlSecurityPolicyConfig config;
+    config.allowed_origins = {"https://multi.test"};
+    config.resolver = resolver;
+    UrlSecurityPolicy policy(std::move(config));
+    std::string error;
+    std::vector<UrlSecurityAddress> addresses;
+    EXPECT_FALSE(policy.Validate("https://multi.test/token", error, addresses));
+    EXPECT_EQ(error, "address_forbidden");
+    EXPECT_EQ(resolver->Calls(), 1);
+
+    auto provider_resolver = std::make_shared<FakeUrlResolver>(
+        std::vector<UrlSecurityAddress>{V4(93, 184, 215, 14), V4(10, 0, 0, 5)});
+    OAuthClientOptions options;
+    options.server_url = "https://multi.test";
+    options.client_id = "multi-client";
+    options.client_secret = "multi-secret";
+    options.dns_resolver = provider_resolver;
+    OAuthClientProvider provider(options);
+    EXPECT_FALSE(provider.AuthenticateClientCredentials());
+    EXPECT_GE(provider_resolver->Calls(), 1);
+}
+
+TEST(OAuthSecurityTest, DnsAnswerSwappedBeforeConnectRejected) {
+    auto port = PickFreePort(kTestBasePort + 1300);
+    std::string issuer = "http://localhost:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&token_hits](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            token_hits.fetch_add(1);
+            response.body = R"json({"access_token":"swapped"})json";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resolver = std::make_shared<FakeUrlResolver>(
+        std::vector<mcp::detail::net::UrlSecurityAddress>{V4(93, 184, 215, 14)});
+    mcp::detail::net::UrlSecurityPolicyConfig config;
+    config.allowed_origins = {issuer};
+    config.resolver = resolver;
+    auto policy = std::make_shared<const mcp::detail::net::UrlSecurityPolicy>(
+        std::move(config));
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec request;
+    request.method = "POST";
+    request.url = issuer + "/token";
+    request.body = "grant_type=client_credentials";
+    request.security_policy = policy;
+    request.peer_address_override = []() -> std::optional<std::string> {
+        return std::string("127.0.0.1");
+    };
+    EXPECT_THROW((void)client.Request(request), McpError);
+    EXPECT_EQ(token_hits.load(), 0);
+    EXPECT_EQ(resolver->Calls(), 1);
+    server.Stop();
+}
+
+TEST(OAuthSecurityTest, MetadataCannotExpandOriginAllowlist) {
+    auto port_a = PickFreePort(kTestBasePort + 1310);
+    auto port_b = PickFreePort(kTestBasePort + 1320);
+    std::string issuer_a = "http://127.0.0.1:" + std::to_string(port_a);
+    std::atomic<int> server_b_hits{0};
+
+    mcp::HttpServer server_a(port_a);
+    server_a.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer_a, port_b](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"resource\":\"" + issuer_a + "\","
+                            "\"authorization_servers\":[\"http://127.0.0.1:" +
+                            std::to_string(port_b) + "\"]}";
+        });
+    mcp::HttpServer server_b(port_b);
+    server_b.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [&server_b_hits](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            server_b_hits.fetch_add(1);
+            response.body = R"json({"issuer":"http://127.0.0.1:1"})json";
+        });
+    server_a.Start();
+    server_b.Start();
+    ASSERT_TRUE(WaitUntilReady(port_a));
+    ASSERT_TRUE(WaitUntilReady(port_b));
+
+    OAuthClientOptions options;
+    options.server_url = issuer_a;
+    options.redirect_uri = issuer_a + "/callback";
+    OAuthClientProvider provider(options);
+    EXPECT_FALSE(provider.Authenticate());
+    EXPECT_EQ(server_b_hits.load(), 0);
+    server_a.Stop();
+    server_b.Stop();
+}
+
+TEST(OAuthSecurityTest, EveryRedirectHopRevalidatedAndCrossOriginRejected) {
+    auto port_a = PickFreePort(kTestBasePort + 1330);
+    auto port_b = PickFreePort(kTestBasePort + 1340);
+    std::atomic<int> server_b_hits{0};
+    mcp::HttpServer server_a(port_a);
+    server_a.SetHandler("GET", "/start",
+        [port_b](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.status_code = 302;
+            response.headers["Location"] = "http://127.0.0.1:" +
+                std::to_string(port_b) + "/landing";
+        });
+    mcp::HttpServer server_b(port_b);
+    server_b.SetHandler("GET", "/landing",
+        [&server_b_hits](const mcp::HttpRequest&, mcp::HttpResponse&) {
+            server_b_hits.fetch_add(1);
+        });
+    server_a.Start();
+    server_b.Start();
+    ASSERT_TRUE(WaitUntilReady(port_a));
+    ASSERT_TRUE(WaitUntilReady(port_b));
+
+    mcp::detail::net::UrlSecurityPolicyConfig config;
+    config.allowed_origins = {"http://127.0.0.1:" + std::to_string(port_a)};
+    config.loopback_exceptions = {{"127.0.0.1", static_cast<std::uint16_t>(port_a)}};
+    auto policy = std::make_shared<const mcp::detail::net::UrlSecurityPolicy>(
+        std::move(config));
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec request;
+    request.method = "GET";
+    request.url = "http://127.0.0.1:" + std::to_string(port_a) + "/start";
+    request.security_policy = policy;
+    EXPECT_THROW((void)client.Request(request), McpError);
+    EXPECT_EQ(server_b_hits.load(), 0);
+    server_a.Stop();
+    server_b.Stop();
+}
+
+TEST(OAuthSecurityTest, RedirectBudgetEnforcedByPolicy) {
+    auto port = PickFreePort(kTestBasePort + 1350);
+    std::string origin = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> final_hits{0};
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/a",
+        [origin](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.status_code = 302;
+            response.headers["Location"] = origin + "/b";
+        });
+    server.SetHandler("GET", "/b",
+        [origin](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.status_code = 302;
+            response.headers["Location"] = origin + "/c";
+        });
+    server.SetHandler("GET", "/c",
+        [&final_hits](const mcp::HttpRequest&, mcp::HttpResponse&) {
+            final_hits.fetch_add(1);
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    mcp::detail::net::UrlSecurityPolicyConfig config;
+    config.allowed_origins = {origin};
+    config.loopback_exceptions = {{"127.0.0.1", port}};
+    config.max_redirects = 1;
+    auto policy = std::make_shared<const mcp::detail::net::UrlSecurityPolicy>(
+        std::move(config));
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec request;
+    request.method = "GET";
+    request.url = origin + "/a";
+    request.security_policy = policy;
+    EXPECT_THROW((void)client.Request(request), McpError);
+    EXPECT_EQ(final_hits.load(), 0);
+    server.Stop();
+}
+
+TEST(OAuthSecurityTest, CrossOriginRedirectDropsSensitiveHeaders) {
+    auto port_a = PickFreePort(kTestBasePort + 1360);
+    auto port_b = PickFreePort(kTestBasePort + 1370);
+    std::string origin_a = "http://127.0.0.1:" + std::to_string(port_a);
+    std::string origin_b = "http://127.0.0.1:" + std::to_string(port_b);
+    std::atomic<int> auth_hits{0};
+    std::atomic<int> cookie_hits{0};
+    std::atomic<int> secret_hits{0};
+    std::atomic<int> keep_hits{0};
+
+    mcp::HttpServer server_a(port_a);
+    server_a.SetHandler("GET", "/start",
+        [origin_b](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.status_code = 302;
+            response.headers["Location"] = origin_b + "/landing";
+        });
+    mcp::HttpServer server_b(port_b);
+    server_b.SetHandler("GET", "/landing",
+        [&](const mcp::HttpRequest& request, mcp::HttpResponse&) {
+            if (request.headers.count("authorization")) auth_hits.fetch_add(1);
+            if (request.headers.count("cookie")) cookie_hits.fetch_add(1);
+            if (request.headers.count("x-client-secret")) secret_hits.fetch_add(1);
+            if (request.headers.count("x-keep")) keep_hits.fetch_add(1);
+        });
+    server_a.Start();
+    server_b.Start();
+    ASSERT_TRUE(WaitUntilReady(port_a));
+    ASSERT_TRUE(WaitUntilReady(port_b));
+
+    mcp::detail::net::UrlSecurityPolicyConfig config;
+    config.allowed_origins = {origin_a, origin_b};
+    config.loopback_exceptions = {
+        {"127.0.0.1", static_cast<std::uint16_t>(port_a)},
+        {"127.0.0.1", static_cast<std::uint16_t>(port_b)}};
+    config.allow_cross_origin_redirect = true;
+    auto policy = std::make_shared<const mcp::detail::net::UrlSecurityPolicy>(
+        std::move(config));
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec request;
+    request.method = "GET";
+    request.url = origin_a + "/start";
+    request.redirect_policy = mcp::detail::HttpRedirectPolicy::FollowAll;
+    request.headers["Authorization"] = "Bearer leaked-token";
+    request.headers["Cookie"] = "sid=leaked";
+    request.headers["X-Client-Secret"] = "leaked-secret";
+    request.headers["X-Keep"] = "ok";
+    request.security_policy = policy;
+    auto response = client.Request(request);
+    EXPECT_EQ(response.status_code, 200);
+    EXPECT_EQ(auth_hits.load(), 0);
+    EXPECT_EQ(cookie_hits.load(), 0);
+    EXPECT_EQ(secret_hits.load(), 0);
+    EXPECT_EQ(keep_hits.load(), 1);
+    server_a.Stop();
+    server_b.Stop();
+}
+
+TEST(OAuthSecurityTest, DcrSecretPriorityExplicitOverRegistered) {
+    auto port = PickFreePort(kTestBasePort + 1380);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"resource\":\"" + issuer + "\","
+                            "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = DcrMetadataBody(issuer, true);
+        });
+    server.SetHandler("POST", "/register",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"client_id\":\"dcr-client\","
+                            "\"client_secret\":\"LEAKME_DCR_SECRET\","
+                            "\"token_endpoint_auth_method\":\"client_secret_post\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    TokenContainer tokens;
+    tokens.access_token = "cached-token";
+    tokens.expires_at = 9999999999999LL;
+    cache->StoreTokens(tokens);
+
+    OAuthClientOptions options;
+    options.server_url = issuer;
+    options.redirect_uri = issuer + "/callback";
+    options.client_secret = "EXPLICIT_SECRET";
+    options.token_cache = cache;
+    OAuthClientProvider explicit_provider(options);
+    ASSERT_TRUE(explicit_provider.Authenticate());
+    auto explicit_secret = explicit_provider.ResolveClientSecret();
+    ASSERT_TRUE(explicit_secret.has_value());
+    EXPECT_EQ(*explicit_secret, "EXPLICIT_SECRET");
+
+    OAuthClientOptions second = options;
+    second.client_secret.reset();
+    OAuthClientProvider registered_provider(second);
+    ASSERT_TRUE(registered_provider.Authenticate());
+    auto registered = registered_provider.ResolveClientSecret();
+    ASSERT_TRUE(registered.has_value());
+    EXPECT_EQ(*registered, "LEAKME_DCR_SECRET");
+    server.Stop();
+}
+
+TEST(OAuthSecurityTest, DcrSecretIsUsedForClientAuthentication) {
+    auto port = PickFreePort(kTestBasePort + 1390);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> token_hits{0};
+    std::string observed_secret;
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"resource\":\"" + issuer + "\","
+                            "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = DcrMetadataBody(issuer, true);
+        });
+    server.SetHandler("POST", "/register",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"client_id\":\"dcr-client\","
+                            "\"client_secret\":\"LEAKME_DCR_SECRET\","
+                            "\"token_endpoint_auth_method\":\"client_secret_post\"}";
+        });
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest& request, mcp::HttpResponse& response) {
+            token_hits.fetch_add(1);
+            auto pos = request.body.find("client_secret=");
+            if (pos != std::string::npos) {
+                auto value = request.body.substr(pos + std::string("client_secret=").size());
+                auto amp = value.find('&');
+                observed_secret = amp == std::string::npos ? value : value.substr(0, amp);
+            }
+            response.body = "{\"access_token\":\"refreshed\",\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    TokenContainer tokens;
+    tokens.access_token = "old-token";
+    tokens.refresh_token = "refresh-token";
+    tokens.expires_at = 0;
+    cache->StoreTokens(tokens);
+
+    OAuthClientOptions options;
+    options.server_url = issuer;
+    options.redirect_uri = issuer + "/callback";
+    options.token_cache = cache;
+    OAuthClientProvider provider(options);
+    ASSERT_TRUE(provider.Authenticate());
+    EXPECT_EQ(token_hits.load(), 1);
+    EXPECT_EQ(observed_secret, "LEAKME_DCR_SECRET");
+    server.Stop();
+}
+
+TEST(OAuthSecurityTest, DcrInvalidSecretRejectedWithoutLeak) {
+    auto port = PickFreePort(kTestBasePort + 1400);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/.well-known/oauth-protected-resource",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"resource\":\"" + issuer + "\","
+                            "\"authorization_servers\":[\"" + issuer + "\"]}";
+        });
+    server.SetHandler("GET", "/.well-known/oauth-authorization-server",
+        [issuer](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = DcrMetadataBody(issuer, true);
+        });
+    server.SetHandler("POST", "/register",
+        [](const mcp::HttpRequest&, mcp::HttpResponse& response) {
+            response.body = "{\"client_id\":\"dcr-client\","
+                            "\"client_secret\":\"LEAKME_INVALID_SECRET \"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions options;
+    options.server_url = issuer;
+    options.redirect_uri = issuer + "/callback";
+    OAuthClientProvider provider(options);
+    LogCapture logs;
+    std::string exception_text;
+    try {
+        (void)provider.Authenticate();
+    } catch (const McpError& error) {
+        exception_text = error.what();
+        EXPECT_EQ(error.Code(), McpErrorCode::InvalidParams);
+    }
+    EXPECT_FALSE(exception_text.empty());
+    EXPECT_EQ(exception_text.find("LEAKME_INVALID_SECRET"), std::string::npos);
+    EXPECT_FALSE(logs.Contains("LEAKME_INVALID_SECRET"));
+    server.Stop();
+}
+
+TEST(OAuthSecurityTest, SecretCacheKeyIsolatedByIssuerAndPrincipal) {
+    using mcp::OAuthClientProvider;
+    const std::string first = OAuthClientProvider::SecretCacheKey(
+        "https://issuer-a", "client", "https://resource");
+    EXPECT_NE(first, OAuthClientProvider::SecretCacheKey(
+        "https://issuer-b", "client", "https://resource"));
+    EXPECT_NE(first, OAuthClientProvider::SecretCacheKey(
+        "https://issuer-a", "other-client", "https://resource"));
+    EXPECT_NE(first, OAuthClientProvider::SecretCacheKey(
+        "https://issuer-a", "client", "https://other-resource"));
 }

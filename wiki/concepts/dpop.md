@@ -3,7 +3,7 @@ type: Concept
 title: DPoP 证明绑定令牌
 description: DPoP（RFC 9449 / SEP-1932 草案）在本 SDK 的落点：dpop 原语的 JWS 签发与验签链（htm/htu/ath/nonce/iat 窗口 + jti 重放表）、Streamable HTTP 服务端 Bearer 链上的 DPoP 校验门、OAuthClientProvider 发送侧开关与 nonce 接口、传输层逐请求 proof 头注入口与 use_dpop_nonce 单次重试、OpenSSL 可选依赖缺失时的抛错降级语义。
 tags: [dpop, oauth, 安全, sep-1932, rfc9449, 传输, openssl]
-timestamp: 2026-11-18T16:15:39+08:00
+timestamp: 2026-11-24T23:55:18+08:00
 resource: src/ext/DPoP.cpp
 ---
 
@@ -51,8 +51,8 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 ## 客户端发送侧
 
 - `GetAuthorizationHeader()`：开关开返回 `DPoP <access_token>`，否则 `Bearer <access_token>`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）
-- `BuildDPoPProof(htm, htu, access_token)`：开关关直接返回空串；开则在 `dpop_mutex_` 保护下懒生成进程内单份 P-256 密钥（`GenerateKey`），`dpop_nonce_` 非空时写入 `nonce` claim（`:769-779`）
-- `SetDPoPNonce(nonce)`：写入 `dpop_nonce_`，后续签发的证明携带该 nonce（`:781-784`）
+- `BuildDPoPProof(htm, htu, access_token)`：开关关直接返回空串；开则在 `dpop_mutex_` 保护下优先从 `ITokenCache::GetDpopKey()` 恢复已校验密钥，缺失才生成（`GenerateKey`）并写回缓存；nonce 从 `htu` 规范化 origin + 当前 token_type 对应的桶读取，命中才写 `nonce` claim。构造期同样恢复并校验持久化密钥，`ValidateKey`（不依赖 OpenSSL）校验 x/y/d 长度、曲线与 `d·G == (x,y)`，失配拒绝且不静默换 key。
+- `SetDPoPNonce(nonce)` / 旧 `ObserveDPoPNonce(nonce)`：委托到「当前桶」——最近一次 `BuildDPoPProof` / `ApplyDPoPProofHeader` / `SetDPoPNonceContext` 设置的 (origin, token_type)；不再存在全局单份 nonce。新增 `ObserveDPoPNonce(url, token_type, nonce)` 与 `GetDPoPNonce(url, token_type)` 供显式指定桶，跨桶不复用。
 - provider 自己发往授权服务器的 `HttpPost`（令牌交换 / 刷新 / 动态注册等）在开关开时自动附 `DPoP` 头（`:278-280`）；该请求**不带 `ath`**（`BuildDPoPProof` 未传 access_token）——按 RFC 9449，`ath` 只用于绑资源请求，授权服务器请求不绑
 - `ComputeThumbprint(x, y)` 提供 P-256 JWK 规范化指纹（SHA-256 of `{"crv","kty","x","y"}` 规范化 JSON），但 `RegisterClient` 的注册体未发送 `dpop_jkt`（注册字段为 `redirect_uris` / `client_name` / `application_type`，见 [/concepts/oauth.md](/concepts/oauth.md)）
 
@@ -66,13 +66,13 @@ DPoP（RFC 9449）用持有者私钥签发的 JWS 证明把 access token 绑定�
 provider 侧适配器（可直接绑到上述两个回调）：
 
 - `ApplyDPoPProofHeader(context, headers)`：开关关或 `enable_dpop` 为 false 时直接返回不写头；否则以 `htm = context.http_method`、`htu` = `context.url` **剥掉 query 与 fragment**（`DpopHtu`，防敏感信息落入证明）计算 proof，写入 `headers["DPoP"]`。`ath` 在能取到未过期且 resource 匹配的 access token 时按 RFC 9449 绑定传入（`BuildDPoPProof` 第三参），否则不带。每次调用内部重新签发 → `jti`/`iat` 天然逐请求全新，满足 referee `sep-1932-client-fresh-proof`。
-- `ObserveDPoPNonce(dpop_nonce)`：非空且长度 ≤1024 时写入 `dpop_nonce_`，后续 proof 自动携带该 nonce claim。
+- `ObserveDPoPNonce(dpop_nonce)`：非空且长度 ≤1024 时写入**当前桶**（由最近一次 proof/上下文决定），后续同桶 proof 自动携带该 nonce claim；要显式指定桶用三参数重载，避免跨 origin/token_type 串用。`FileTokenCache` 把完整 P-256 密钥与令牌写在同一份文件（Windows 经 DPAPI），加载失败保留原字段不覆盖。
 
 `use_dpop_nonce` 重试（`RequiresDPoPNonceRetry`，Win32/POSIX 共用）：仅 `attempt == 0`（首轮）且状态码为 **401 或 400**、且 `WWW-Authenticate` 或响应体前 4KB 含 `use_dpop_nonce` 时触发**恰好一次**重试并重算 proof；重试与 `auth_challenge_handler`（401/`insufficient_scope`）及 400 `HeaderMismatch` 刷新共用同一「一次」预算，先命中者占用。响应体扫描做 4KB 上限，防大响应放大开销。
 
 OpenSSL 缺失时 `GenerateKey`/`CreateProof` 抛错的既有失败语义保持不变——`ApplyDPoPProofHeader` **不静默跳过**，异常上抛（无 catch），与 `BuildDPoPProof` 一致；因此该能力**依赖 OpenSSL**。
 
-守护测试：`PerRequestHeadersInjectedOnEveryPost`、`DPoPNonceChallengeRetriesOnceWithFreshProof`、`DPoPNonceRetryBudgetIsSpentOnce`（[StreamableHttpTransportTests.cpp](../../tests/unit/StreamableHttpTransportTests.cpp)）；`DPoPProofHeaderAdapterSkipsWhenDisabled`、`DPoPProofHeaderAdapterStripsQueryAndVariesPerCall`、`DPoPNonceObservationFeedsNextProof`（[OAuthTests.cpp](../../tests/unit/OAuthTests.cpp)）。
+守护测试：`PerRequestHeadersInjectedOnEveryPost`、`DPoPNonceChallengeRetriesOnceWithFreshProof`、`DPoPNonceRetryBudgetIsSpentOnce`（[StreamableHttpTransportTests.cpp](../../tests/unit/StreamableHttpTransportTests.cpp)）；`DPoPProofHeaderAdapterSkipsWhenDisabled`、`DPoPProofHeaderAdapterStripsQueryAndVariesPerCall`、`DPoPNonceObservationFeedsNextProof`、`DpopNonceBucketsIsolatedByOriginAndTokenType`、`DpopLegacyNonceSetterDelegatesToCurrentBucket`、`DpopKeyRestoredFromCacheAcrossProviderRestart`（[OAuthTests.cpp](../../tests/unit/OAuthTests.cpp)）；密钥持久化与失配拒载见 `DpopKeyValidationAcceptsP256AndRejectsMismatch`、`DpopKeyPersistsAcrossInstances`、`MismatchedDpopKeyRejectedAndOriginalKept`（[FileTokenCacheTests.cpp](../../tests/unit/FileTokenCacheTests.cpp)）。
 
 ## 遗留
 

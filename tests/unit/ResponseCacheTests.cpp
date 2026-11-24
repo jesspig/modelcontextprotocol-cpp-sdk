@@ -142,6 +142,17 @@ TEST(ResponseCacheTest, InvalidateRemovesKeyAcrossAuthContexts) {
     EXPECT_TRUE(cache.GetAny("other", std::nullopt, "user-a").has_value());
 }
 
+TEST(ResponseCacheTest, PublicLookupDoesNotAbsorbPrivateEntry) {
+    ResponseCache cache(4);
+    cache.Store("secret", ResponseCache::Scope::Private, JsonValue(9),
+        std::chrono::hours(1), "user-a");
+
+    EXPECT_FALSE(cache.GetAny("secret").has_value());
+    EXPECT_FALSE(cache.GetAny("secret", std::nullopt, "user-b").has_value());
+    ASSERT_TRUE(cache.GetAny("secret", std::nullopt, "user-a").has_value());
+    EXPECT_EQ(cache.GetAny("secret", std::nullopt, "user-a")->GetInt(), 9);
+}
+
 TEST(ResponseCacheTest, DefaultAuthContextRoundTrips) {
     ResponseCache cache(4);
     cache.Store("k", ResponseCache::Scope::Private, JsonValue(5),

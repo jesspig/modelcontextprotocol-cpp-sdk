@@ -3,7 +3,7 @@ type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发、Streamable HTTP 监听流按 stateless 判默认）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-10-13T11:10:48+08:00
+timestamp: 2026-11-24T23:55:18+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -41,7 +41,8 @@ resource: include/mcp/detail/ThreadUtils.hpp
 - `HttpServer::Stop()`：`running_` 原子化（`exchange(false)`）；自研 `Impl::Stop()` 关 listen/连接 fd 解除阻塞后 join accept 与全部连接线程，故在独立 stopper 线程中执行并 `JoinThreadSafely(stopper)`（self-join 防护，[HttpServer.cpp](../../src/http/HttpServer.cpp)）
 - 超时回调同样在锁外执行
 - `MessageChannel`：回调在锁外调用；`Send` 满则阻塞（`TrySend` 不阻塞）
-- 写侧串行化：`FileTaskStore` 双锁（详见 [/concepts/storage.md](storage.md)）、`OAuthClientProvider::GetAccessToken` 的 `refresh_mutex_`（详见 [/concepts/oauth.md](oauth.md)）
+- 写侧串行化：`FileTaskStore` 双锁（详见 [/concepts/storage.md](storage.md)）；`OAuthClientProvider` 的 `GetAccessToken`、`Authenticate`、公开 `RefreshTokens` 共用一组 `refresh_mutex_` / `refresh_cv_` single-flight：仅一个线程执行，等待者有界返回并读最新令牌，重入线程直接取当前值，RAII 守卫保证异常路径也通知（详见 [/concepts/oauth.md](oauth.md)）
+- `McpClient` 协商结果为 `shared_ptr<const NegotiationResult>` 不可变快照：getter 在 `negotiation_mutex_` 下取同一快照，历史快照随客户端对象存活；重协商成功才整份替换，失败保留上一份，杜绝 version/capabilities/server_info/instructions 撕裂（[/classes/mcp-client.md](../classes/mcp-client.md)）
 
 ## 相关页面
 

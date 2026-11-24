@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <string_view>
 
 typedef struct ssl_st SSL;
@@ -26,6 +28,7 @@ public:
     void Close();
     bool IsEof() const;
     bool IsConnected() const;
+    [[nodiscard]] std::optional<std::string> PeerAddress() const;
 
 private:
     TcpSocket tcp_;

@@ -17,6 +17,8 @@ struct EcP256Jwk {
 
 EcP256Jwk GenerateKey();
 
+[[nodiscard]] bool ValidateKey(const EcP256Jwk& key);
+
 std::string ComputeThumbprint(std::string_view x, std::string_view y);
 
 std::string PublicJwkJson(const EcP256Jwk& key);

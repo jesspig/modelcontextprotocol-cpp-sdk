@@ -1,5 +1,7 @@
 #pragma once
 #include <mcp/McpTypes.hpp>
+#include <mcp/ext/DPoP.hpp>
+#include <mcp/transport/detail/UrlSecurityPolicy.hpp>
 
 #include <memory>
 #include <mutex>
@@ -29,6 +31,10 @@ public:
 
     virtual void StoreBoundIssuer(const std::string& issuer) { (void)issuer; }
     [[nodiscard]] virtual std::optional<std::string> GetBoundIssuer() { return std::nullopt; }
+
+    virtual void StoreDpopKey(const ext::dpop::EcP256Jwk& key) { (void)key; }
+    [[nodiscard]] virtual std::optional<ext::dpop::EcP256Jwk> GetDpopKey() { return std::nullopt; }
+    virtual void ClearDpopKey() {}
 };
 
 class InMemoryTokenCache : public ITokenCache {
@@ -38,9 +44,13 @@ public:
     void ClearTokens() override;
     void StoreBoundIssuer(const std::string& issuer) override;
     std::optional<std::string> GetBoundIssuer() override;
+    void StoreDpopKey(const ext::dpop::EcP256Jwk& key) override;
+    std::optional<ext::dpop::EcP256Jwk> GetDpopKey() override;
+    void ClearDpopKey() override;
 private:
     std::optional<TokenContainer> tokens_;
     std::optional<std::string> bound_issuer_;
+    std::optional<ext::dpop::EcP256Jwk> dpop_key_;
     std::mutex mutex_;
 };
 
@@ -60,7 +70,15 @@ struct OAuthMetadata {
     bool authorization_response_iss_parameter_supported{false};
 
     [[nodiscard]] static std::optional<OAuthMetadata> Discover(
-        std::string_view server_url, bool allow_legacy_fallback = true);
+        std::string_view server_url,
+        bool allow_legacy_fallback = false,
+        std::optional<std::string_view> expected_resource = std::nullopt);
+
+    [[nodiscard]] static std::optional<OAuthMetadata> DiscoverWithPolicy(
+        std::string_view server_url,
+        bool allow_legacy_fallback,
+        std::optional<std::string_view> expected_resource,
+        std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> policy);
 };
 
 struct OAuthTokenResponse {
@@ -83,6 +101,13 @@ struct ClientRegistrationInfo {
         std::string_view redirect_uri,
         std::string_view client_name,
         std::string_view application_type = "native");
+
+    [[nodiscard]] static std::optional<ClientRegistrationInfo> RegisterWithPolicy(
+        std::string_view registration_endpoint,
+        std::string_view redirect_uri,
+        std::string_view client_name,
+        std::string_view application_type,
+        std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> policy);
 };
 
 } // namespace mcp

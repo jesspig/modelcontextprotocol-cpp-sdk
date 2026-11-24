@@ -5,11 +5,20 @@
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
 
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <netdb.h>
+#include <sys/socket.h>
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <string>
 
 namespace mcp { namespace detail { namespace net {
@@ -26,7 +35,67 @@ int HexValue(char c) {
     return c - 'A' + 10;
 }
 
+class SystemUrlSecurityResolver final : public IUrlSecurityResolver {
+public:
+    std::vector<UrlSecurityAddress> Resolve(std::string_view host) override {
+        EnsureNetwork();
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        std::string host_text(host);
+        struct addrinfo* results = nullptr;
+        if (::getaddrinfo(host_text.c_str(), nullptr, &hints, &results) != 0) return {};
+        std::vector<UrlSecurityAddress> out;
+        for (struct addrinfo* ai = results; ai != nullptr && out.size() < 64; ai = ai->ai_next) {
+            if (ai->ai_family == AF_INET && ai->ai_addrlen >= sizeof(struct sockaddr_in)) {
+                auto* addr = reinterpret_cast<const struct sockaddr_in*>(ai->ai_addr);
+                UrlSecurityAddress parsed;
+                parsed.family = 4;
+                parsed.length = 4;
+                std::memcpy(parsed.bytes.data(), &addr->sin_addr, 4);
+                out.push_back(parsed);
+            } else if (ai->ai_family == AF_INET6 && ai->ai_addrlen >= sizeof(struct sockaddr_in6)) {
+                auto* addr = reinterpret_cast<const struct sockaddr_in6*>(ai->ai_addr);
+                UrlSecurityAddress parsed;
+                parsed.family = 6;
+                parsed.length = 16;
+                std::memcpy(parsed.bytes.data(), &addr->sin6_addr, 16);
+                out.push_back(parsed);
+            }
+        }
+        ::freeaddrinfo(results);
+        return out;
+    }
+
+private:
+    static void EnsureNetwork() {
+#ifdef _WIN32
+        static std::once_flag once;
+        static bool ok = false;
+        std::call_once(once, [] {
+            WSADATA data;
+            ok = (::WSAStartup(MAKEWORD(2, 2), &data) == 0);
+        });
+        (void)ok;
+#endif
+    }
+};
+
+bool IsSensitiveHeader(std::string_view name) {
+    std::string lower = ToLowerAsciiCopy(name);
+    return lower == "authorization" || lower == "proxy-authorization" ||
+           lower == "cookie" || lower == "set-cookie" ||
+           lower == "client_secret" || lower == "x-client-secret" ||
+           lower == "registration_access_token";
+}
+
 } // anonymous namespace
+
+std::shared_ptr<IUrlSecurityResolver> CreateSystemUrlSecurityResolver() {
+    return std::make_shared<SystemUrlSecurityResolver>();
+}
 
 HttpClient::HttpClient()
     : tcp_(std::make_unique<TcpSocket>()) {}
@@ -64,6 +133,16 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
     max_body_bytes_ = req.max_response_bytes.value_or(
         (std::numeric_limits<std::size_t>::max)());
     HttpRequestSpec current = req;
+    std::string previous_url;
+    std::vector<UrlSecurityAddress> validated_addresses;
+    bool first_hop = true;
+    std::size_t policy_redirects =
+        current.security_policy ? current.security_policy->MaxRedirects() : 0;
+    int redirect_budget = current.security_policy
+        ? (policy_redirects > static_cast<std::size_t>((std::numeric_limits<int>::max)())
+              ? (std::numeric_limits<int>::max)()
+              : static_cast<int>(policy_redirects))
+        : current.max_redirects;
 
     for (int redirect = 0; ; ++redirect) {
     UrlParts url = ParseUrl(current.url);
@@ -72,6 +151,17 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
     bool want_tls = (url.scheme == "https");
     if (url.scheme != "http" && url.scheme != "https")
         throw McpError(McpErrorCode::ProtocolViolation, "unsupported scheme in URL: " + current.url);
+
+    std::string policy_error;
+    if (current.security_policy) {
+        bool valid = first_hop
+            ? current.security_policy->Validate(current.url, policy_error, validated_addresses)
+            : current.security_policy->ValidateRedirect(
+                  previous_url, current.url, policy_error, validated_addresses);
+        if (!valid)
+            throw McpError(McpErrorCode::ProtocolViolation,
+                           "URL security policy rejected the request: " + policy_error);
+    }
 
     if (!connected_ || use_tls_ != want_tls || host_ != url.host || port_ != url.port || IsEof()) {
         CloseConnection();
@@ -90,6 +180,20 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
             tcp_->Connect(host_, port_, connect_timeout);
         }
         connected_ = true;
+    }
+
+    if (current.security_policy) {
+        auto peer_text = current.peer_address_override
+            ? current.peer_address_override()
+            : (use_tls_ ? tls_->PeerAddress() : tcp_->PeerAddress());
+        auto peer = peer_text ? ParseIpLiteral(*peer_text) : std::nullopt;
+        if (!peer ||
+            std::find(validated_addresses.begin(), validated_addresses.end(), *peer)
+                == validated_addresses.end()) {
+            CloseConnection();
+            throw McpError(McpErrorCode::ProtocolViolation,
+                           "URL security policy rejected the request: peer_address_mismatch");
+        }
     }
 
     std::string path = url.path;
@@ -186,7 +290,7 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
             current.redirect_policy != HttpRedirectPolicy::NoFollow) {
             auto loc_it = resp.headers.find("location");
             if (loc_it != resp.headers.end()) {
-                if (redirect >= current.max_redirects)
+                if (redirect >= redirect_budget)
                     throw McpError(McpErrorCode::ProtocolViolation, "too many HTTP redirects");
                 std::string next_url;
                 bool same_origin = false;
@@ -208,13 +312,19 @@ HttpResponseInfo HttpClient::Request(const HttpRequestSpec& req,
                     current.method = "GET";
                     current.body.clear();
                 }
-                if (!same_origin) {
+                auto from_origin = ParseUrlSecurityOrigin(current.url);
+                auto to_origin = ParseUrlSecurityOrigin(next_url);
+                bool origin_changed = !same_origin ||
+                    !from_origin || !to_origin || !(*from_origin == *to_origin);
+                if (origin_changed) {
                     for (auto hit = current.headers.begin(); hit != current.headers.end();) {
-                        if (ToLower(hit->first) == "authorization") hit = current.headers.erase(hit);
+                        if (IsSensitiveHeader(hit->first)) hit = current.headers.erase(hit);
                         else ++hit;
                     }
                 }
+                previous_url = current.url;
                 current.url = std::move(next_url);
+                first_hop = false;
                 CloseConnection();
                 continue;
             }

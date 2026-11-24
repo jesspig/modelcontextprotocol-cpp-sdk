@@ -3,7 +3,7 @@ type: Concept
 title: 客户端响应缓存
 description: McpClient 对带 cache hint 的列表和资源读取结果使用的双作用域、带 TTL、按授权上下文分区并按 URI 失效的本地缓存。
 tags: [client, cache, sep2549, ttl, 订阅]
-timestamp: 2026-10-29T22:02:08+08:00
+timestamp: 2026-11-24T23:55:18+08:00
 resource: src/detail/ResponseCache.hpp
 ---
 
@@ -23,7 +23,7 @@ resource: src/detail/ResponseCache.hpp
 
 - `notifications/tools/list_changed`、`resources/list_changed`、`prompts/list_changed` 清空整个响应缓存。
 - `notifications/resources/updated` 只调用 `Invalidate(uri)`，删除 public 键并跨所有授权上下文删除 private 中对应 URI 键，不影响其他资源和列表条目。
-- `McpClient` 兼容 2026 时代结果顶层 `ttlMs` / `cacheScope` 与 2025 时代嵌套 `cacheHint`；读取提示和写入提示的优先顺序按实现分别处理，详见客户端页面。服务端在 modern 未配置提示时默认返回 `ttlMs=0`、`cacheScope="private"`（`ttlMs=0` 即不缓存）。
+- `McpClient` 兼容 2026 时代结果顶层 `ttlMs` / `cacheScope` 与 2025 时代嵌套 `cacheHint`；**两个字段各自独立回退**：先取顶层，顶层缺失时再取嵌套 `cacheHint` 的同名字段，顶层存在即胜出（即使嵌套值不同）。`private` 条目始终绑定 `auth_context` 写入 private 分区，public 查询只命中 public 条目，不会吸收 private 结果。服务端在 modern 未配置提示时默认返回 `ttlMs=0`、`cacheScope="private"`（`ttlMs=0` 即不缓存）。
 - 该响应缓存与 ETag 条件请求相互独立：前者消费 2026 TTL 提示，后者是本 SDK 的非标扩展（服务端默认关闭 `ServerOptions::enable_etag_cache`）。
 - `cache_mode` 为 `use`、`bypass`、`refresh` 时分别对应正常读取、跳过缓存、绕过旧值后重新写入；`max_age_ms` 约束命中年龄。
 

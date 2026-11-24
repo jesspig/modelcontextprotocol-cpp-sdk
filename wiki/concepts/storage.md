@@ -3,7 +3,7 @@ type: Concept
 title: 存储与原子写入
 description: 临时文件 + fsync + rename 的原子持久化，任务/令牌存储的失败语义，FileEventStore 事件持久化与 SessionStore 会话记录抽象。
 tags: [storage, 原子写入, fsync, 持久化, event-store, session-store]
-timestamp: 2026-11-18T14:08:29+08:00
+timestamp: 2026-11-24T23:55:18+08:00
 resource: include/mcp/detail/AtomicJsonFile.hpp
 ---
 
@@ -23,7 +23,7 @@ resource: include/mcp/detail/AtomicJsonFile.hpp
 | 组件 | 行为 | 页 |
 |------|------|----|
 | FileTaskStore | 双锁 + 锁外 JSONL 追加（见下）；损坏文件备份 `<path>.corrupt` 继续 | [/classes/file-task-store.md](../classes/file-task-store.md) |
-| FileTokenCache | Windows DPAPI 加密、POSIX 明文；`WriteAtomicSecure` 创建即安全、加载前权限校验；解密失败不回落明文 | [/classes/file-token-cache.md](../classes/file-token-cache.md) |
+| FileTokenCache | Windows DPAPI 加密、POSIX 明文；`WriteAtomicSecure` 创建即安全、加载前权限校验；解密失败不回落明文；DPoP 完整 P-256 key 与令牌同文件持久化，加载校验 x/y/d/曲线/公私钥匹配，损坏拒载且保留原字段不覆盖；issuer 锚点额外拒绝链接/非普通文件/越权权限/超长/控制字符 | [/classes/file-token-cache.md](../classes/file-token-cache.md) |
 | FileEventStore | SSE 事件 JSONL 持久化（跨进程文件锁，见下） | [/classes/file-event-store.md](../classes/file-event-store.md) |
 
 ## FileEventStore 事件持久化
