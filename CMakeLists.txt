@@ -232,6 +232,7 @@ target_sources(mcp-ext PRIVATE
     src/ext/Apps.cpp
     src/ext/DPoP.cpp
     src/ext/ServerCard.cpp
+    src/ext/ServerCardClient.cpp
     src/ext/Triggers.cpp)
 target_link_libraries(mcp-ext PUBLIC mcp-core mcp-transport)
 mcp_setup_library(mcp-ext)

@@ -112,6 +112,17 @@ Behavioural highlights (every decision below is implemented in `src/client/McpCl
 | `SetLoggingLevel` | `void SetLoggingLevel(LoggingLevel level)` | — | Sends `logging/setLevel` (60s timeout); **modern versions throw `ProtocolViolation`**, pointing to the per-request `logLevel` instead |
 | `SendRootsListChanged` | `void SendRootsListChanged()` | — | Throws `ProtocolViolation` on modern versions (method removed) and also on versions below `2025-06-18` |
 
+## Server Card client discovery
+
+| Symbol | Signature/type | Default | Notes |
+|---|---|---|---|
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | Derives the discovery URL from the endpoint and GETs the card; accepts only a JSON media type and bounded body, follows same-origin redirects by default |
+| `ServerCardClientOptions` | `struct { optional<string> if_none_match; optional<ServerCard> cached_card; optional<size_t> max_response_bytes; milliseconds timeout{30000}; int max_redirects{5}; }` | 1 MiB cap | Conditional requests need both `if_none_match` and `cached_card`; a 304 without a cached card throws `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; string etag; bool from_cache{false}; }` | — | A 304 hit returns the caller's cached card with `from_cache=true` |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | Standalone parsing/validation of a card, independent of an `McpClient` connection |
+
+The discovery URL is `<endpoint path>/server-card` built from the endpoint's scheme/host/port/path (query and fragment removed; userinfo, non-HTTP(S) and malformed URLs rejected), e.g. `http://localhost:3001/mcp?x=1` → `http://localhost:3001/mcp/server-card`. `application/json` (case-insensitive, charset and other parameters allowed) is the compatibility baseline, and `application/*+json` is accepted too; HTML/plain text, empty or oversized bodies and invalid JSON throw `McpError`. Declared in `include/mcp/ext/ServerCardClient.hpp`, implemented in `src/ext/ServerCardClient.cpp`; `McpClient` connection and version-negotiation behaviour is unchanged.
+
 ## Deprecated but still callable
 
 The four symbols below carry `[[deprecated]]` in the header: they **still exist and are still callable**, new code should simply not use them (older docs describing them as "removed/unavailable" are wrong).

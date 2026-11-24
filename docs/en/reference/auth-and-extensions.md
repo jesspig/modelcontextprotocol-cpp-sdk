@@ -186,12 +186,21 @@ Triggers have no extension id constant: the only outward identifier is the notif
 | `ServerCardEndpoint` | `struct { std::string url; std::map<std::string,std::string> headers; std::map<std::string,std::string> variables; }` | empty string/tables | One endpoint; `headers` and `variables` are passed through as-is |
 | `ServerCardRepository` | `struct { std::optional<std::string> url; }` | `nullopt` | Repository wrapper, yet `ServerCard::repository` is a plain string and does not use this struct |
 | Required fields | `name`, `version` (`std::string`) | empty | Empty values fail validation |
-| Optional fields | `description`, `title`, `website_url`, `repository`, `meta` (the first four `std::optional<std::string>`, `meta` a `std::optional<JsonValue>`) | all `nullopt` | Serialization writes `description` as an empty string when absent and omits the other optional fields |
-| List fields | `icons` (`std::vector<Icon>`), `endpoints` (`std::vector<ServerCardEndpoint>`), `supported_protocol_versions` (`std::vector<std::string>`) | empty | An empty `endpoints` list fails validation |
-| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | Requires non-empty name/version/endpoints and an http/https url per endpoint; violations throw `InvalidParams` |
-| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | Calls `ValidateCard` first; emitted keys are `name`/`version`/`description`/`endpoints`/`supportedProtocolVersions` |
+| Optional fields | `description`, `title`, `website_url`, `repository`, `meta` (the first four `std::optional<std::string>`, `meta` a `std::optional<JsonValue>`) | all `nullopt` | `description` is still written as an empty string when absent; `title`/`website_url`/`repository`/`meta` are written only when set |
+| List fields | `icons` (`std::vector<Icon>`), `endpoints` (`std::vector<ServerCardEndpoint>`), `supported_protocol_versions` (`std::vector<std::string>`) | empty | An empty `endpoints` list fails validation; `icons` is now emitted with the card |
+| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | Validates required fields, http(s) URLs (rejecting userinfo and malformed ports), icon `src`/`mimeType`/`sizes`/`theme`, endpoint header names/values, variable names/values and date-shaped `supportedProtocolVersions`; violations throw `InvalidParams` |
+| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | Calls `ValidateCard` first; fixed keys `name`/`version`/`description`/`icons`/`endpoints`/`supportedProtocolVersions`, other optional keys only when set |
+| `ServerCardClientOptions` | `struct { std::optional<std::string> if_none_match; std::optional<ServerCard> cached_card; std::optional<std::size_t> max_response_bytes; std::chrono::milliseconds timeout{30000}; int max_redirects{5}; }` | no conditional header/cache, 1 MiB cap | `if_none_match` with `cached_card` drives conditional requests; a 304 without a cached card throws `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; std::string etag; bool from_cache{false}; }` | — | `from_cache=true` means a 304 hit and the caller's cached card was returned |
+| `BuildServerCardDiscoveryUrl` | `std::string BuildServerCardDiscoveryUrl(std::string_view endpoint_url)` | — | Derives `<path>/server-card` from the endpoint scheme/host/port/path; strips query/fragment and rejects userinfo, non-HTTP(S) and malformed URLs |
+| `IsServerCardJsonMediaType` / `ServerCardEtagMatches` | `bool` (case-insensitive media type/parameters; weak comparison and list syntax, `*` supported) | — | Reusable admission helpers for callers |
+| `CanonicalizeServerCardBody` / `ComputeServerCardEtag` | `std::string` (canonical JSON / quoted SHA-256 strong ETag) | — | The same canonical serialization backs the server ETag and client comparison |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | Parses every field, then calls `ValidateCard`; non-objects, wrong types and invalid fields throw `InvalidParams` |
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | GETs the discovery URL; accepts only a JSON media type and bounded body, follows same-origin redirects by default, and throws `McpError` on empty bodies or error statuses |
 
-Declared in `include/mcp/ext/ServerCard.hpp`; validation and serialization are in `src/ext/ServerCard.cpp`.
+The client free functions above are `[[nodiscard]]`; callers that intentionally discard a result should write `(void)mcp::ext::FetchServerCard(endpoint)`.
+
+The server-side API stays in `include/mcp/ext/ServerCard.hpp` with validation and serialization in `src/ext/ServerCard.cpp`; the client API is declared in `include/mcp/ext/ServerCardClient.hpp` and implemented in `src/ext/ServerCardClient.cpp`. `GetServerCard`, `ValidateCard`, `SerializeCard` and `GET /server-card` all remain. Serialization now includes optional fields that are set; older readers can ignore the extra keys. Cards carrying invalid optional fields are now rejected by both the new client and the server validator (old/new behaviour and how affected callers adapt are listed above).
 
 ### Apps
 
@@ -308,7 +317,7 @@ Task-shaped guides: [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-c
 ## Source files behind this page
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`, `include/mcp/client/auth/TokenCache.hpp`, `include/mcp/storage/FileTokenCache.hpp`, `include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/ServerCardClient.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`, `include/mcp/ProtocolVersion.hpp`, `include/mcp/McpTypes.hpp`, `include/mcp/transport/StreamableHttpClientTransport.hpp`, `include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/Apps.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/ServerCardClient.cpp`, `src/ext/Apps.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`, `cmake/OpenSslVersion.cmake`, `CMakeLists.txt`

@@ -113,7 +113,7 @@ private:
 
     bool AuthorizeRequest(const HttpRequest& req, HttpResponse& resp);
     void HandleMetadataRequest(HttpResponse& resp);
-    void HandleServerCardRequest(HttpResponse& resp);
+    void HandleServerCardRequest(const HttpRequest& req, HttpResponse& resp);
     ext::ServerCard BuildDefaultServerCard() const;
 
     std::string BuildSseEvent(JsonRpcMessage msg);

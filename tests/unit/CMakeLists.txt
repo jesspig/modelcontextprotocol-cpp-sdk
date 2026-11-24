@@ -53,7 +53,7 @@ add_executable(mcp-net-tests
 target_link_libraries(mcp-net-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-net-tests RESOURCE_LOCK mcp_bind_ports)
 
-add_executable(mcp-http-tests HttpServerTests.cpp)
+add_executable(mcp-http-tests HttpServerTests.cpp ServerCardClientTests.cpp)
 target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-http-tests RESOURCE_LOCK mcp_bind_ports)
 

@@ -186,12 +186,21 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `ServerCardEndpoint` | `struct { std::string url; std::map<std::string,std::string> headers; std::map<std::string,std::string> variables; }` | 空串/空表 | 单端点，`headers`、`variables` 原样透出 |
 | `ServerCardRepository` | `struct { std::optional<std::string> url; }` | `nullopt` | 仓库地址包装；`ServerCard::repository` 却是裸串，未用该结构 |
 | `ServerCard` 必填字段 | `name`、`version`（`std::string`） | 空串 | 空即校验失败 |
-| `ServerCard` 可选字段 | `description`、`title`、`website_url`、`repository`、`meta`（前四个 `std::optional<std::string>`，`meta` 为 `std::optional<JsonValue>`） | 全部 `nullopt` | 序列化时 `description` 缺省写成空串，其余可选字段不写出 |
-| `ServerCard` 列表字段 | `icons`（`std::vector<Icon>`）、`endpoints`（`std::vector<ServerCardEndpoint>`）、`supported_protocol_versions`（`std::vector<std::string>`） | 空表 | `endpoints` 空即校验失败 |
-| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | name/version/endpoints 非空、每个 endpoint url 必须 http/https；违规抛 `InvalidParams` |
-| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | 先 `ValidateCard`；键为 `name`/`version`/`description`/`endpoints`/`supportedProtocolVersions` |
+| `ServerCard` 可选字段 | `description`、`title`、`website_url`、`repository`、`meta`（前四个 `std::optional<std::string>`，`meta` 为 `std::optional<JsonValue>`） | 全部 `nullopt` | `description` 缺省仍写空串；`title`/`website_url`/`repository`/`meta` 有值才写出 |
+| `ServerCard` 列表字段 | `icons`（`std::vector<Icon>`）、`endpoints`（`std::vector<ServerCardEndpoint>`）、`supported_protocol_versions`（`std::vector<std::string>`） | 空表 | `endpoints` 空即校验失败；`icons` 现在也随卡片写出 |
+| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | 必填、http(s) URL（拒 userinfo/畸形端口）、图标 `src`/`mimeType`/`sizes`/`theme`、端点头名与头值、变量名与值、`supportedProtocolVersions` 日期串均校验；违规抛 `InvalidParams` |
+| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | 先 `ValidateCard`；固定键 `name`/`version`/`description`/`icons`/`endpoints`/`supportedProtocolVersions`，其余可选键有值才写 |
+| `ServerCardClientOptions` | `struct { std::optional<std::string> if_none_match; std::optional<ServerCard> cached_card; std::optional<std::size_t> max_response_bytes; std::chrono::milliseconds timeout{30000}; int max_redirects{5}; }` | 无条件头/无缓存、上限 1 MiB | `if_none_match` 与 `cached_card` 配套用于条件请求；304 无缓存抛 `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; std::string etag; bool from_cache{false}; }` | — | `from_cache=true` 表示命中 304 并回传调用方缓存 |
+| `BuildServerCardDiscoveryUrl` | `std::string BuildServerCardDiscoveryUrl(std::string_view endpoint_url)` | — | 从 endpoint 的 scheme/host/port/path 推导 `<path>/server-card`；去 query/fragment，拒 userinfo、非 http(s)、畸形 URL |
+| `IsServerCardJsonMediaType` / `ServerCardEtagMatches` | `bool`（大小写不敏感类型/参数；弱比较与列表语法、支持 `*`） | — | 供调用方自检或复用同一准入规则 |
+| `CanonicalizeServerCardBody` / `ComputeServerCardEtag` | `std::string`（规范化 JSON / 带引号的 SHA-256 强 ETag） | — | 同一规范化序列化用于服务端 ETag 与客户端比对 |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | 解析全部字段后调用 `ValidateCard`；非 JSON 对象、非法类型与非法字段均抛 `InvalidParams` |
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | GET 发现地址；只接受 JSON media type 与有界 body，默认仅同 origin 重定向，空 body 与错误状态抛 `McpError` |
 
-声明在 `include/mcp/ext/ServerCard.hpp`，校验与序列化在 `src/ext/ServerCard.cpp`。
+上表客户端自由函数带 `[[nodiscard]]`；确实不需要返回值时请用 `(void)` 显式消除（如 `(void)mcp::ext::FetchServerCard(endpoint)`）。
+
+服务端 API 声明在 `include/mcp/ext/ServerCard.hpp`，校验与序列化在 `src/ext/ServerCard.cpp`；客户端 API 声明在 `include/mcp/ext/ServerCardClient.hpp`，实现在 `src/ext/ServerCardClient.cpp`。`GetServerCard`、`ValidateCard`、`SerializeCard` 与 `GET /server-card` 均保留；序列化现在会写出已设置的可选字段，旧读取方忽略未知键即可。旧卡片若带非法可选字段，现在会被新客户端与服务端校验拒绝（旧行为/新行为/受影响方：见本节表格与上列规则）。
 
 ### Apps
 
@@ -308,7 +317,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 ## 本页对应源码
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`、`include/mcp/client/auth/TokenCache.hpp`、`include/mcp/storage/FileTokenCache.hpp`、`include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`、`include/mcp/ext/ServerCard.hpp`、`include/mcp/ext/Apps.hpp`、`include/mcp/ext/Triggers.hpp`、`include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`、`include/mcp/ext/ServerCard.hpp`、`include/mcp/ext/ServerCardClient.hpp`、`include/mcp/ext/Apps.hpp`、`include/mcp/ext/Triggers.hpp`、`include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`、`include/mcp/ProtocolVersion.hpp`、`include/mcp/McpTypes.hpp`、`include/mcp/transport/StreamableHttpClientTransport.hpp`、`include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`、`src/client/FileTokenCache.cpp`、`src/client/SkillVerify.cpp`、`src/ext/DPoP.cpp`、`src/ext/ServerCard.cpp`、`src/ext/Apps.cpp`、`src/ext/Triggers.cpp`、`src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`、`src/client/FileTokenCache.cpp`、`src/client/SkillVerify.cpp`、`src/ext/DPoP.cpp`、`src/ext/ServerCard.cpp`、`src/ext/ServerCardClient.cpp`、`src/ext/Apps.cpp`、`src/ext/Triggers.cpp`、`src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`、`cmake/OpenSslVersion.cmake`、`CMakeLists.txt`

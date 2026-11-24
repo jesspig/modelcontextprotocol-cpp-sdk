@@ -3,6 +3,7 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/ext/Apps.hpp>
 #include <mcp/ext/ServerCard.hpp>
+#include <mcp/ext/ServerCardClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/storage/FileTaskStore.hpp>
 
@@ -5391,6 +5392,38 @@ TEST(McpServerTest, AppsAndServerCardGatesMatrix) {
         EXPECT_FALSE(card.supported_protocol_versions.empty());
         CloseAppsCardEnv(env);
     }
+}
+
+TEST(McpServerTest, ServerCardLegacyApiAndClientRoundTrip) {
+    ext::ServerCard card;
+    card.name = "legacy-card";
+    card.version = "2.0.0";
+    card.description = "legacy description";
+    ext::ServerCardEndpoint endpoint;
+    endpoint.url = "https://example.com/mcp";
+    endpoint.headers["x-legacy"] = "yes";
+    card.endpoints.push_back(std::move(endpoint));
+    card.supported_protocol_versions = {std::string(kLatestProtocolVersion)};
+
+    auto env = MakeAppsCardEnv(false, true, card);
+    EXPECT_TRUE(CapabilityDeclares(
+        env.server->GetCapabilities(), ext::kServerCardExtensionId));
+    auto kept = env.server->GetServerCard();
+    EXPECT_EQ(kept.name, card.name);
+    EXPECT_EQ(kept.version, card.version);
+    ASSERT_EQ(kept.endpoints.size(), 1u);
+    EXPECT_EQ(kept.endpoints[0].url, card.endpoints[0].url);
+    auto serialized = ext::SerializeCard(kept);
+    EXPECT_TRUE(serialized.Contains("name"));
+    EXPECT_TRUE(serialized.Contains("endpoints"));
+    EXPECT_TRUE(serialized.Contains("supportedProtocolVersions"));
+    auto parsed = ext::ParseServerCard(serialized.Dump());
+    EXPECT_EQ(parsed.name, card.name);
+    EXPECT_EQ(parsed.description, card.description);
+    EXPECT_EQ(parsed.endpoints[0].headers, card.endpoints[0].headers);
+    EXPECT_EQ(parsed.supported_protocol_versions, card.supported_protocol_versions);
+    EXPECT_FALSE(env.server->GetCapabilities().extensions->empty());
+    CloseAppsCardEnv(env);
 }
 
 TEST(McpServerTest, TasksRequireExplicitExtensionFlag) {

@@ -126,7 +126,7 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s (`kDefaultHttpRequestTimeout`) | Deadline for the POST wait on the handler's response; `0` waits forever, expiry answers 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | Without it there is no auth gate and behaviour is unchanged |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | unset | Resolves `Mcp-Param-*` header annotations per method/tool; when unset parameter-header validation is skipped |
-| `enable_server_card` | `bool` | `false` | Registers the `GET /server-card` discovery endpoint |
+| `enable_server_card` | `bool` | `false` | Registers `GET /server-card` and additionally `GET <endpoint>/server-card` for client discovery |
 | `server_card` | `std::optional<ext::ServerCard>` | `std::nullopt` | `BuildDefaultServerCard()` is used when absent |
 
 ### `StreamableHttpServerOptions::BearerAuthConfig`
@@ -142,6 +142,8 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `expected_resource` | `std::string` | `""` | Expected audience; empty disables the check |
 | `validate_token_resource` | `bool` | `true` | Audience-validation switch |
 | `enable_dpop` | `bool` | `false` | DPoP proof validation (experimental, requires OpenSSL) |
+
+The card response is `application/json` with a strong ETag over the canonical body; `If-None-Match` supports weak comparison, lists and `*`, and a hit returns 304 with no body while preserving ETag, `cache-control` and CORS headers. The card handler no longer duplicates `Access-Control-Allow-Origin`: Host/Origin admission, OPTIONS preflight and `Access-Control-Expose-Headers` (now including `ETag`) are all provided by `HttpServerImpl`; no credentialed CORS is added.
 
 The interface and Options are declared in `include/mcp/transport/StreamableHttpServerTransport.hpp`; routing, header validation and the server-card endpoint are in `src/http/StreamableHttpServerTransport.cpp`, and Host/Origin plus binding behaviour in `src/http/HttpServerImpl.cpp`.
 

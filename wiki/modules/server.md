@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-11-18T16:15:39+08:00
+timestamp: 2026-11-25T00:21:16+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -62,6 +62,12 @@ resource: src/server/McpServer.cpp
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）
 - **六开关门控位置**：etag 构造期同步（`SetEtagCacheEnabled(options_.enable_etag_cache)`，[McpServer.cpp](../../src/server/McpServer.cpp)）、触发器发射门（`EmitTriggerEvent` 开头，关直接 return，[McpServer.cpp](../../src/server/McpServer.cpp)）、渐进发现（`HandleListTools` 开头，关走缓存快照路径，[McpServer.cpp](../../src/server/McpServer.cpp)）、文件输入（`HandleCallTool` 参数解析段，关跳过 file 引用消解，[McpServer.cpp](../../src/server/McpServer.cpp)）、apps `ui://` 读门（`HandleReadResource` 内 `HasAppsUriScheme` 分支，关报 `HandlerError "apps extension is disabled"`，[McpServer.cpp](../../src/server/McpServer.cpp)）、server-card 获取门（`GetServerCard` 开头，关报 `HandlerError "server card is disabled"`，[McpServer.cpp](../../src/server/McpServer.cpp)）；注意 apps/server-card 关态为 `HandlerError` 而非 `MethodNotFound`
+
+## Server Card 服务端/客户端分工
+
+- 服务端 `GetServerCard()`、`ValidateCard`、`SerializeCard` 与 `GET /server-card` 均保留；[ServerCard.cpp](../../src/ext/ServerCard.cpp) 的校验扩展到图标、URL、头值、变量与版本串，序列化在有值时写出 `title`/`icons`/`repository`/`website_url`/`meta`
+- HTTP 卡片响应（[StreamableHttpServerTransport.cpp](../../src/http/StreamableHttpServerTransport.cpp)）提供规范化 body 的强 ETag、`If-None-Match` 弱比较/列表/304 空 body，并额外注册 `GET <endpoint>/server-card` 以匹配客户端发现；CORS 由 [HttpServerImpl.cpp](../../src/http/HttpServerImpl.cpp) 统一提供，卡片处理器不再重复写 `Access-Control-Allow-Origin`，`Access-Control-Expose-Headers` 现含 `ETag`
+- 客户端 `ext::FetchServerCard`/`ParseServerCard`（[ServerCardClient.hpp](../../include/mcp/ext/ServerCardClient.hpp)）独立于 `McpServer` 连接，负责发现、JSON media type 与 body 上限、条件请求，304 无缓存抛 `InvalidParams`
 
 ## requestState 签发（MRTR）
 

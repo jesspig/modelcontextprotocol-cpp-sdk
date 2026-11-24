@@ -112,6 +112,17 @@
 | `SetLoggingLevel` | `void SetLoggingLevel(LoggingLevel level)` | — | 发 `logging/setLevel`（60s 超时）；**modern 版本抛 `ProtocolViolation`**，提示改用每请求 `logLevel` |
 | `SendRootsListChanged` | `void SendRootsListChanged()` | — | modern 版本抛 `ProtocolViolation`（已移除）；版本低于 `2025-06-18` 同样抛 `ProtocolViolation` |
 
+## Server Card 客户端发现
+
+| 符号 | 签名/类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | 从 endpoint 推导发现地址并 GET 卡片；只接受 JSON media type 和有界 body，默认仅同 origin 重定向 |
+| `ServerCardClientOptions` | `struct { optional<string> if_none_match; optional<ServerCard> cached_card; optional<size_t> max_response_bytes; milliseconds timeout{30000}; int max_redirects{5}; }` | 上限 1 MiB | 条件请求需同时给 `if_none_match` 与 `cached_card`；304 无缓存抛 `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; string etag; bool from_cache{false}; }` | — | 命中 304 时返回调用方缓存并把 `from_cache` 置真 |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | 独立解析/校验卡片，不依赖 `McpClient` 连接 |
+
+发现地址是 endpoint 的 scheme/host/port/path 末尾拼 `/server-card`（去 query/fragment，拒 userinfo、非 http(s) 与畸形 URL），例如 `http://localhost:3001/mcp?x=1` → `http://localhost:3001/mcp/server-card`。`application/json`（大小写不敏感、允许 charset 等参数）是兼容基线，`application/*+json` 也接受；HTML/纯文本、空 body、超限 body 与无效 JSON 均抛 `McpError`。声明在 `include/mcp/ext/ServerCardClient.hpp`，实现在 `src/ext/ServerCardClient.cpp`；不改变 `McpClient` 的连接与版本协商行为。
+
 ## 已废弃但仍可调用
 
 以下四项在头文件中带 `[[deprecated]]` 标记：**仍然存在、仍然可调用**，只是新代码不该用（旧文档把它们写成“已移除/不可用”是错的）。

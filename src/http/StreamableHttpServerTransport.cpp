@@ -8,6 +8,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <mcp/ext/DPoP.hpp>
+#include <mcp/ext/ServerCardClient.hpp>
 
 #include <transport/detail/net/NetIoUtil.hpp>
 
@@ -594,10 +595,14 @@ StreamableHttpServerTransport::StreamableHttpServerTransport(
     }
 
     if (options_.enable_server_card) {
-        http_server_->SetHandler("GET", "/server-card",
-            [this](const HttpRequest&, HttpResponse& resp) {
-                HandleServerCardRequest(resp);
-            });
+        auto handler = [this](const HttpRequest& req, HttpResponse& resp) {
+            HandleServerCardRequest(req, resp);
+        };
+        http_server_->SetHandler("GET", "/server-card", handler);
+        std::string card_path = options_.endpoint;
+        while (card_path.size() > 1 && card_path.back() == '/') card_path.pop_back();
+        if (card_path != "/" && card_path != "/server-card")
+            http_server_->SetHandler("GET", card_path + "/server-card", handler);
     }
 }
 
@@ -778,12 +783,26 @@ ext::ServerCard StreamableHttpServerTransport::BuildDefaultServerCard() const {
     return card;
 }
 
-void StreamableHttpServerTransport::HandleServerCardRequest(HttpResponse& resp) {
+void StreamableHttpServerTransport::HandleServerCardRequest(
+    const HttpRequest& req, HttpResponse& resp)
+{
+    resp.headers["content-type"] = "application/json";
+    resp.headers["cache-control"] = "public,max-age=60";
     try {
         ext::ServerCard card = options_.server_card.value_or(BuildDefaultServerCard());
+        const std::string body = ext::SerializeCard(card).Dump();
+        const std::string etag = ext::ComputeServerCardEtag(body);
+        resp.headers["etag"] = etag;
+        auto inm = GetMcpHeader(req, "if-none-match");
+        if (inm && ext::ServerCardEtagMatches(*inm, etag)) {
+            resp.status_code = 304;
+            resp.status_text = "Not Modified";
+            resp.body.clear();
+            return;
+        }
         resp.status_code = 200;
         resp.status_text = "OK";
-        resp.body = ext::SerializeCard(card).Dump();
+        resp.body = body;
     } catch (const McpError& e) {
         resp.status_code = 400;
         resp.status_text = "Bad Request";
@@ -792,9 +811,6 @@ void StreamableHttpServerTransport::HandleServerCardRequest(HttpResponse& resp) 
         err["message"] = JsonValue(std::string(e.ErrorMessage()));
         resp.body = JsonValue(std::move(err)).Dump();
     }
-    resp.headers["content-type"] = "application/json";
-    resp.headers["access-control-allow-origin"] = "*";
-    resp.headers["cache-control"] = "public,max-age=60";
 }
 
 std::string StreamableHttpServerTransport::PendingKey(
