@@ -3,6 +3,7 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/ext/Apps.hpp>
 #include <mcp/ext/ServerCard.hpp>
+#include <mcp/ext/ServerCardClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/storage/FileTaskStore.hpp>
 
@@ -3023,6 +3024,7 @@ ModernTaskEnv MakeModernTaskEnv() {
     sopts.task_store = env.store;
     sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.server->SetDefaultPrincipal("test-principal");
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
     env.client->Start();
@@ -3064,6 +3066,7 @@ ModernTaskEnv MakeBareModernTaskEnv() {
     sopts.task_store = env.store;
     sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.server->SetDefaultPrincipal("test-principal");
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
     env.client->Start();
@@ -5391,6 +5394,38 @@ TEST(McpServerTest, AppsAndServerCardGatesMatrix) {
     }
 }
 
+TEST(McpServerTest, ServerCardLegacyApiAndClientRoundTrip) {
+    ext::ServerCard card;
+    card.name = "legacy-card";
+    card.version = "2.0.0";
+    card.description = "legacy description";
+    ext::ServerCardEndpoint endpoint;
+    endpoint.url = "https://example.com/mcp";
+    endpoint.headers["x-legacy"] = "yes";
+    card.endpoints.push_back(std::move(endpoint));
+    card.supported_protocol_versions = {std::string(kLatestProtocolVersion)};
+
+    auto env = MakeAppsCardEnv(false, true, card);
+    EXPECT_TRUE(CapabilityDeclares(
+        env.server->GetCapabilities(), ext::kServerCardExtensionId));
+    auto kept = env.server->GetServerCard();
+    EXPECT_EQ(kept.name, card.name);
+    EXPECT_EQ(kept.version, card.version);
+    ASSERT_EQ(kept.endpoints.size(), 1u);
+    EXPECT_EQ(kept.endpoints[0].url, card.endpoints[0].url);
+    auto serialized = ext::SerializeCard(kept);
+    EXPECT_TRUE(serialized.Contains("name"));
+    EXPECT_TRUE(serialized.Contains("endpoints"));
+    EXPECT_TRUE(serialized.Contains("supportedProtocolVersions"));
+    auto parsed = ext::ParseServerCard(serialized.Dump());
+    EXPECT_EQ(parsed.name, card.name);
+    EXPECT_EQ(parsed.description, card.description);
+    EXPECT_EQ(parsed.endpoints[0].headers, card.endpoints[0].headers);
+    EXPECT_EQ(parsed.supported_protocol_versions, card.supported_protocol_versions);
+    EXPECT_FALSE(env.server->GetCapabilities().extensions->empty());
+    CloseAppsCardEnv(env);
+}
+
 TEST(McpServerTest, TasksRequireExplicitExtensionFlag) {
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
@@ -6419,4 +6454,243 @@ TEST(McpServerTest, LegacyElicitResolvesCapabilitiesForSingleStatefulSession) {
     EXPECT_EQ(explicit_text->text, "sess-e:accept");
 
     server->Close();
+}
+
+TEST(McpServerTest, ModernTaskOwnerComesFromPrincipalNotRequestFields) {
+    auto env = MakeModernTaskEnv();
+    env.server->RegisterTool("owned_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "ok"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "owned_task";
+    JsonValue forged(JsonValue::object_tag);
+    forged["owner"] = JsonValue("attacker");
+    params.arguments = forged;
+    auto meta = MetaWithTasksExtension();
+    meta.extensions = forged;
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), meta,
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code")) << resp.Dump();
+    auto created = DeserializeCreateTaskResult(resp);
+    auto stored = env.store->GetTask(created.task_id);
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->owner, "test-principal");
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, ModernTaskWithoutPrincipalFailsClosed) {
+    auto env = MakeBareModernTaskEnv();
+    env.server->SetDefaultPrincipal("");
+    GetTaskRequestParams params;
+    params.task_id = "task-1";
+    auto resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(params), MetaWithTasksExtension());
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, CrossPrincipalTaskOperationsRejectUniformly) {
+    auto env = MakeModernTaskEnv();
+    const std::string task_id = "task-cross-principal";
+    env.store->CreateTask(task_id, "test-principal", 300000);
+    env.server->SetDefaultPrincipal("other-principal");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_TRUE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+    EXPECT_EQ(get_resp["message"].GetString(), "task not found: " + task_id);
+
+    UpdateTaskRequestParams update_params;
+    update_params.task_id = task_id;
+    JsonValue result(JsonValue::object_tag);
+    result["ok"] = JsonValue(true);
+    update_params.result = result;
+    auto update_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(update_params), MetaWithTasksExtension());
+    EXPECT_EQ(update_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = task_id;
+    auto cancel_resp = SendBareRequest(env.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params), MetaWithTasksExtension());
+    EXPECT_EQ(cancel_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    auto delete_resp = SendBareRequest(env.client, methods::kDeleteTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_TRUE(delete_resp.Contains("code"));
+    EXPECT_EQ(delete_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    EXPECT_EQ(delete_resp["message"].GetString(), "task not found: " + task_id);
+
+    EXPECT_TRUE(env.store->GetTask(task_id).has_value());
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, ModernTaskNotificationHonorsTaskIdsFilterAndAck) {
+    auto env = MakeModernTaskEnv();
+    env.store->CreateTask("task-a", "test-principal", 300000);
+    env.store->CreateTask("task-b", "test-principal", 300000);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed_ids;
+    env.client->SetNotificationHandler(notifications::kTasks,
+        [&observed_mutex, &observed_ids](const JsonRpcNotification& n) {
+            auto id = NotificationField(n, "taskId");
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed_ids.push_back(id);
+        });
+    std::vector<std::string> acknowledged_ids;
+    env.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&acknowledged_ids](const JsonRpcNotification& n) {
+            auto params = DeserializeSubscriptionsAcknowledgedNotificationParams(*n.params);
+            acknowledged_ids = params.notifications.task_ids;
+        });
+
+    SubscriptionsListenRequestParams listen;
+    listen.notifications.task_ids.push_back("task-a");
+    auto listen_future = env.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(listen),
+        MetaWithSubscriptionId("sub-tasks"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(listen_future.get().Contains("code"));
+    ASSERT_EQ(acknowledged_ids.size(), 1u);
+    EXPECT_EQ(acknowledged_ids[0], "task-a");
+
+    env.server->SendTaskStatus("task-a", TaskStatus::Working);
+    env.server->SendTaskStatus("task-b", TaskStatus::Working);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    {
+        std::lock_guard<std::mutex> lock(observed_mutex);
+        ASSERT_EQ(observed_ids.size(), 1u);
+        EXPECT_EQ(observed_ids[0], "task-a");
+    }
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, LegacyTaskListFiltersByPrincipalAndKeepsOldOwnerlessTasks) {
+    auto env = MakeTaskEraEnv();
+    env.server->SetDefaultPrincipal("principal-a");
+    env.store->CreateTask("legacy-owned", "principal-a", 300000);
+    env.store->CreateTask("legacy-other", "principal-b", 300000);
+    env.store->CreateTask("legacy-old");
+
+    auto future = env.client->SendRequest(methods::kListTasks,
+        JsonValue(JsonValue::object_tag), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* tasks = resp.Find("tasks");
+    ASSERT_NE(tasks, nullptr);
+    ASSERT_TRUE(tasks->IsArray());
+    std::vector<std::string> ids;
+    for (const auto& entry : tasks->GetArray()) {
+        auto* id = entry.Find("taskId");
+        if (id && id->IsString()) ids.push_back(id->GetString());
+    }
+    EXPECT_EQ(ids.size(), 2u);
+    EXPECT_TRUE(std::find(ids.begin(), ids.end(), "legacy-owned") != ids.end());
+    EXPECT_TRUE(std::find(ids.begin(), ids.end(), "legacy-old") != ids.end());
+    EXPECT_TRUE(std::find(ids.begin(), ids.end(), "legacy-other") == ids.end());
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, ConcurrentTaskCreateKeepsSingleOwnerAndState) {
+    InMemoryTaskStore store;
+    constexpr int kThreads = 8;
+    std::atomic<int> created{0};
+    std::atomic<int> rejected{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < kThreads; ++i) {
+        workers.emplace_back([&]() {
+            try {
+                store.CreateTask("same-id", "principal-a", 300000);
+                ++created;
+            } catch (const McpError&) {
+                ++rejected;
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    EXPECT_EQ(created.load(), 1);
+    EXPECT_EQ(rejected.load(), kThreads - 1);
+    auto task = store.GetTask("same-id");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_EQ(task->owner, "principal-a");
+    EXPECT_TRUE(store.SetTaskStatus("same-id", TaskStatus::Working));
+    EXPECT_EQ(store.GetTask("same-id")->owner, "principal-a");
+    EXPECT_TRUE(store.SetTaskStatus("same-id", TaskStatus::Completed));
+    EXPECT_FALSE(store.SetTaskStatus("same-id", TaskStatus::Working));
+    EXPECT_EQ(store.GetTask("same-id")->status, TaskStatus::Completed);
+    EXPECT_EQ(store.GetTask("same-id")->owner, "principal-a");
+}
+
+TEST(McpServerTest, TaskPayloadBeyondBudgetIsRejected) {
+    auto env = MakeModernTaskEnv();
+    const std::string task_id = "task-payload-budget";
+    env.store->CreateTask(task_id, "test-principal", 300000);
+    UpdateTaskRequestParams params;
+    params.task_id = task_id;
+    params.result = JsonValue(std::string(kMaxTaskResultBytes + 1, 'x'));
+    auto resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(params), MetaWithTasksExtension());
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    auto stored = env.store->GetTask(task_id);
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->status, TaskStatus::Pending);
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TaskCountBeyondBudgetIsRejected) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto store = std::make_shared<InMemoryTaskStore>();
+    for (size_t i = 0; i < kMaxTasksPerPrincipal; ++i)
+        store->CreateTask("bulk-" + std::to_string(i), "test-principal", 300000);
+    sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->SetDefaultPrincipal("test-principal");
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->RegisterTool("bulk_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "ok"});
+            return r;
+        });
+    CallToolRequestParams params;
+    params.name = "bulk_task";
+    auto future = client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    EXPECT_EQ(store->GetAllTasks().size(), kMaxTasksPerPrincipal);
+    server->Close();
+    client->Close();
 }

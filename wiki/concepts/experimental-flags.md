@@ -3,7 +3,7 @@ type: Concept
 title: 实验开关
 description: 服务端 8 开关与客户端 4 开关：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器已实现语义与构造期同步、DPoP 门在传输侧而非 ServerOptions、interceptor 为无门控别名；澄清 enable_file_input 不等于 files 上传下载扩展。
 tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容, files]
-timestamp: 2026-11-19T01:12:29+08:00
+timestamp: 2026-11-25T00:50:47+08:00
 resource: include/mcp/server/ServerOptions.hpp
 ---
 
@@ -28,6 +28,10 @@ resource: include/mcp/server/ServerOptions.hpp
 
 > [!note] `enable_file_input` ≠ `io.modelcontextprotocol/files` 扩展
 > `enable_file_input` 只是 `tools/call` 参数 `arguments` 内 `file://`/`resource://` 引用的内联解析能力（本地参数处理）。官方 `io.modelcontextprotocol/files` 扩展（2026-11-10 早期草案，依赖协议版本 `2026-07-28+`，目前无参考实现、目标年底稳定）定义的是客户端与工具之间文件上传/下载的独立协议，本仓库尚未支持该扩展，勿将两者等同；预研结论见 `.handoff/discussions/2026-11-18-files-research.md`。
+
+## Apps 宿主桥接不新增开关
+
+`enable_apps_extension` 仍只门控 `ui://` 资源的读取与扩展声明；新增的 [AppsHostBridge.hpp](../../include/mcp/ext/AppsHostBridge.hpp) 是 `mcp-ext` 的独立 API，不引入 `ServerOptions`/`ClientOptions` 新开关，也不改变上表任何开/关语义。桥接默认失败关闭：宿主必须自行填入 `AppsMessageContext`（source/target origin、resource uri、`sandbox_verified=true`、能力凭证），payload 中同类字段作为未知顶层键拒绝；权限取 `UiMeta::permissions` 与宿主方法白名单交集，未知方法、通配符 origin、未证明 sandbox、过期/重放凭证与超限 JSON 一律拒绝。CSP 继续来自 `UiMeta`，桥接不交付 iframe/WebView/DOM/脚本注入或 UI 渲染器。
 
 客户端：
 

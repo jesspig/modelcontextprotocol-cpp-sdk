@@ -9,3 +9,7 @@
 	path = third_party/re2
 	url = https://github.com/google/re2.git
 	commit = 927f5d53caf8111721e734cf24724686bb745f55
+[submodule "third_party/rapidyaml"]
+	path = third_party/rapidyaml
+	url = https://github.com/biojppm/rapidyaml.git
+	# pinned commit f8ac8dd50f4f7916579d55a05ebf9c6488e52670 (v0.16.0); no rolling branch

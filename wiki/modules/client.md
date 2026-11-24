@@ -3,7 +3,7 @@ type: Module
 title: mcp-client 客户端库
 description: McpClient 门面：连接模式协商、请求/响应、progress 回调、任务化工具调用、MRTR 默认自动驱动、URL elicitation 三态、客户端控制面 API、授权上下文缓存分区、404 会话自愈、OAuth 与令牌缓存。
 tags: [client, oauth, 缓存, 协商, progress, tasks]
-timestamp: 2026-10-29T22:02:08+08:00
+timestamp: 2026-11-25T00:50:47+08:00
 resource: src/client/McpClient.cpp
 ---
 
@@ -20,6 +20,7 @@ resource: src/client/McpClient.cpp
 | OAuthClientProvider | OAuth 2.0 授权码流 + PKCE + RFC 9207 iss 校验 | [/concepts/oauth.md](../concepts/oauth.md) |
 | FileTokenCache / ITokenCache | 令牌持久化（Windows DPAPI） | [/classes/file-token-cache.md](../classes/file-token-cache.md) |
 | SpanHooks / span_handler | 客户端在会话启动前注入的边界观测钩子 | [/concepts/span-hooks.md](../concepts/span-hooks.md) |
+| AppsHostBridge | `mcp-ext` 提供的 Apps 宿主桥接 JSON 消息 API，宿主侧可选接入，不改动 `McpClient` 门面 | [/reference/auth-and-extensions.md](../../docs/zh/reference/auth-and-extensions.md) |
 
 ## 客户端行为要点
 
@@ -37,6 +38,7 @@ resource: src/client/McpClient.cpp
 - 超时：任务类请求 `kTaskRequestTimeout = 600s`、Ping `kPingTimeout = 10s`
 - `ClientOptions::span_handler` 在会话 `Start()` 前传入 `McpSessionHandler::SetSpanHandler`；事件契约和线程约束见 [/concepts/span-hooks.md](../concepts/span-hooks.md)
 - OAuth provider 支持 RFC 8707 `resource`、CIMD client metadata、RFC 9207 授权响应 `iss` 校验，以及 `client_credentials` 入口（详见 [/concepts/oauth.md](../concepts/oauth.md)）
+- Apps 宿主桥接由宿主侧调用 [AppsHostBridge.hpp](../../include/mcp/ext/AppsHostBridge.hpp) 的 `Create`/`CreateCapability`/`SerializeHostMessage`/`ParseAppMessage`，与 `McpClient` 无耦合：source/target origin、resource uri、`sandbox_verified` 只从 `AppsMessageContext` 取得，payload 同名与权限字段一律拒绝；方法权限取 `UiMeta::permissions` ∩ 宿主白名单，敏感方法要求单次使用凭证，凭证常量时间比较且过期/重放拒绝，JSON 深度/节点/字节均有预算。不提供 UI 渲染器
 
 ### Auto 协商回退（对齐官方 TS SDK，[McpClient.cpp](../../src/client/McpClient.cpp)）
 

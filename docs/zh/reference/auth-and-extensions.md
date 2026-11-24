@@ -215,12 +215,21 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `ServerCardEndpoint` | `struct { std::string url; std::map<std::string,std::string> headers; std::map<std::string,std::string> variables; }` | 空串/空表 | 单端点，`headers`、`variables` 原样透出 |
 | `ServerCardRepository` | `struct { std::optional<std::string> url; }` | `nullopt` | 仓库地址包装；`ServerCard::repository` 却是裸串，未用该结构 |
 | `ServerCard` 必填字段 | `name`、`version`（`std::string`） | 空串 | 空即校验失败 |
-| `ServerCard` 可选字段 | `description`、`title`、`website_url`、`repository`、`meta`（前四个 `std::optional<std::string>`，`meta` 为 `std::optional<JsonValue>`） | 全部 `nullopt` | 序列化时 `description` 缺省写成空串，其余可选字段不写出 |
-| `ServerCard` 列表字段 | `icons`（`std::vector<Icon>`）、`endpoints`（`std::vector<ServerCardEndpoint>`）、`supported_protocol_versions`（`std::vector<std::string>`） | 空表 | `endpoints` 空即校验失败 |
-| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | name/version/endpoints 非空、每个 endpoint url 必须 http/https；违规抛 `InvalidParams` |
-| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | 先 `ValidateCard`；键为 `name`/`version`/`description`/`endpoints`/`supportedProtocolVersions` |
+| `ServerCard` 可选字段 | `description`、`title`、`website_url`、`repository`、`meta`（前四个 `std::optional<std::string>`，`meta` 为 `std::optional<JsonValue>`） | 全部 `nullopt` | `description` 缺省仍写空串；`title`/`website_url`/`repository`/`meta` 有值才写出 |
+| `ServerCard` 列表字段 | `icons`（`std::vector<Icon>`）、`endpoints`（`std::vector<ServerCardEndpoint>`）、`supported_protocol_versions`（`std::vector<std::string>`） | 空表 | `endpoints` 空即校验失败；`icons` 现在也随卡片写出 |
+| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | 必填、http(s) URL（拒 userinfo/畸形端口）、图标 `src`/`mimeType`/`sizes`/`theme`、端点头名与头值、变量名与值、`supportedProtocolVersions` 日期串均校验；违规抛 `InvalidParams` |
+| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | 先 `ValidateCard`；固定键 `name`/`version`/`description`/`icons`/`endpoints`/`supportedProtocolVersions`，其余可选键有值才写 |
+| `ServerCardClientOptions` | `struct { std::optional<std::string> if_none_match; std::optional<ServerCard> cached_card; std::optional<std::size_t> max_response_bytes; std::chrono::milliseconds timeout{30000}; int max_redirects{5}; }` | 无条件头/无缓存、上限 1 MiB | `if_none_match` 与 `cached_card` 配套用于条件请求；304 无缓存抛 `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; std::string etag; bool from_cache{false}; }` | — | `from_cache=true` 表示命中 304 并回传调用方缓存 |
+| `BuildServerCardDiscoveryUrl` | `std::string BuildServerCardDiscoveryUrl(std::string_view endpoint_url)` | — | 从 endpoint 的 scheme/host/port/path 推导 `<path>/server-card`；去 query/fragment，拒 userinfo、非 http(s)、畸形 URL |
+| `IsServerCardJsonMediaType` / `ServerCardEtagMatches` | `bool`（大小写不敏感类型/参数；弱比较与列表语法、支持 `*`） | — | 供调用方自检或复用同一准入规则 |
+| `CanonicalizeServerCardBody` / `ComputeServerCardEtag` | `std::string`（规范化 JSON / 带引号的 SHA-256 强 ETag） | — | 同一规范化序列化用于服务端 ETag 与客户端比对 |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | 解析全部字段后调用 `ValidateCard`；非 JSON 对象、非法类型与非法字段均抛 `InvalidParams` |
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | GET 发现地址；只接受 JSON media type 与有界 body，默认仅同 origin 重定向，空 body 与错误状态抛 `McpError` |
 
-声明在 `include/mcp/ext/ServerCard.hpp`，校验与序列化在 `src/ext/ServerCard.cpp`。
+上表客户端自由函数带 `[[nodiscard]]`；确实不需要返回值时请用 `(void)` 显式消除（如 `(void)mcp::ext::FetchServerCard(endpoint)`）。
+
+服务端 API 声明在 `include/mcp/ext/ServerCard.hpp`，校验与序列化在 `src/ext/ServerCard.cpp`；客户端 API 声明在 `include/mcp/ext/ServerCardClient.hpp`，实现在 `src/ext/ServerCardClient.cpp`。`GetServerCard`、`ValidateCard`、`SerializeCard` 与 `GET /server-card` 均保留；序列化现在会写出已设置的可选字段，旧读取方忽略未知键即可。旧卡片若带非法可选字段，现在会被新客户端与服务端校验拒绝（旧行为/新行为/受影响方：见本节表格与上列规则）。
 
 ### Apps
 
@@ -229,7 +238,42 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `UiMeta` | `struct { std::string resource_uri; std::vector<std::string> csp; std::vector<std::string> permissions; }` | 空串/空表/空表 | `_meta` 里的 ui 声明 |
 | `ValidateUiMeta` | `void ValidateUiMeta(const UiMeta& meta)` | — | `resource_uri` 非空且必须以 `ui://` 开头，否则抛 `InvalidParams`；`csp`/`permissions` 不校验 |
 
-声明在 `include/mcp/ext/Apps.hpp`，校验在 `src/ext/Apps.cpp`。
+声明在 `include/mcp/ext/Apps.hpp`，校验在 `src/ext/Apps.cpp`。`UiMeta`、`ValidateUiMeta`、`kAppsExtensionId`、`kAppsMimeType` 与 `kAppsUriScheme` 均未改动。
+
+### Apps 宿主桥接
+
+声明在 `include/mcp/ext/AppsHostBridge.hpp`，实现在 `src/ext/AppsHostBridge.cpp`。本节只覆盖宿主与沙箱 UI 之间的 JSON 消息桥，不交付 iframe、WebView、DOM、脚本注入或 UI 渲染器。
+
+| 符号 | 签名/类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `kAppsMessageSchemaVersion` | `std::string_view` | `"2026-07-28"` | 消息唯一受支持 schema version，畸形或缺字段一律拒绝 |
+| `kAppsCapabilityTokenBytes` | `size_t` | `32` | 能力凭证随机字节数；对外为 64 位十六进制串 |
+| `kDefaultAppsCapabilityTtl` | `std::chrono::milliseconds` | `60000` | 凭证默认有效期 |
+| `AppsHostBridgeOptions` | `struct` | 见下 | `ui_meta`（来自 `UiMeta`，含 `resource_uri`/`csp`/`permissions`）、`allowed_origins`（宿主可信 origin 白名单）、`host_allowed_methods`（宿主显式方法白名单）、`max_message_bytes`(65536)、`max_depth`(32)、`max_nodes`(10000)、`max_string_bytes`(65536)、`max_id_bytes`(128)、`max_method_bytes`(128)、`capability_ttl`(60s)、`single_use_sensitive_methods`(`true`) |
+| `AppsPostMessage` | `struct` | schema version 预置、id 空、method 空、params 空 JSON | 只承载 JSON 值、schema version、可选 `request_id`、`method` 与 `params`；无函数/DOM/可执行代码字段 |
+| `AppsMessageContext` | `struct` | `sandbox_verified=false`，其余空串 | 宿主可信上下文：`source_origin`、`target_origin`、`resource_uri`、`sandbox_verified` 与 `capability`，全部由宿主填入 |
+| `AppsSandboxPolicy` | `struct` | 五个禁用标志均 `true`，`csp` 空 | 暴露 opaque origin、禁 `allow-same-origin`、禁顶层导航/弹窗/表单/下载；`csp` 逐项来自 `UiMeta` |
+| `AppsHostBridge::Create` | `static std::unique_ptr<AppsHostBridge> Create(AppsHostBridgeOptions)` | — | 校验 `UiMeta`、预算与 origin/方法合法性；有效权限 = `UiMeta::permissions` ∩ `host_allowed_methods`，空即拒绝一切方法 |
+| `SerializeHostMessage` | `std::string SerializeHostMessage(const AppsPostMessage&, const AppsMessageContext&) const` | — | 宿主→应用序列化；仍校验可信上下文、schema version、方法权限与消息预算 |
+| `ParseAppMessage` | `AppsPostMessage ParseAppMessage(std::string_view, const AppsMessageContext&) const` | — | 应用→宿主解析；先查总字节再解析，逐项校验 origin、sandbox、凭证、schema、方法与 id |
+| `IsMethodAllowed` | `bool IsMethodAllowed(std::string_view, const AppsMessageContext&) const` | — | 只读判定；未知方法、越权、过期/已用凭证均返回 `false` |
+| `CreateCapability` | `std::string CreateCapability(const AppsMessageContext&) const` | — | 签发绑定 `resource_uri`、allowed origins、有效权限、过期时间、消息字节上限与单次使用标志的不透明凭证 |
+| `GetSandboxPolicy` | `AppsSandboxPolicy GetSandboxPolicy() const` | — | 返回固定沙箱禁用标志与来自 `UiMeta` 的 CSP |
+| `NormalizeOrigin` | `bool NormalizeOrigin(std::string_view, std::string&)` | — | 小写 scheme/host，补默认端口（http 80、https 443）后输出 `scheme://host:port`；拒绝 `*`、`null`、userinfo、路径、通配符与非 http(s) |
+| `IsAppsSensitiveMethod` | `bool IsAppsSensitiveMethod(std::string_view)` | — | `tools/call` 与 `resources/read` 为敏感方法，默认不在权限内即拒绝，且要求单次使用凭证 |
+
+信任边界：
+
+- `source_origin`、`target_origin`、`resource_uri`、`sandbox_verified` 只从 `AppsMessageContext` 读取；payload 中同名或 `permissions`/`capability` 字段属于未知顶层键，直接拒绝，不参与任何授权决策。
+- origin 规范化后按 scheme/host/有效端口精确比较，默认端口省略与显式写出等价；目标为 `*`、opaque origin、跨白名单 origin、未证明 sandbox 一律拒绝。
+- 有效权限逐项取 `UiMeta::permissions` 与 `host_allowed_methods` 交集；敏感方法默认拒绝，`single_use_sensitive_methods=true` 时凭证单次使用；凭证 32 字节随机、常量时间比较，绑定 resource/origin/权限/过期/字节上限；过期、重放、跨上下文或权限变更后一律拒绝。
+- JSON 解析先查总字节，再限制深度/节点/单串字节；重复 key、非有限数字、超长 id/method、畸形 schema version 均抛 `McpError`，错误信息只含固定分类器，不回显 payload 内容。
+
+::: warning 旧行为 / 新行为 / 受影响怎么改
+- 旧行为：0.3.13 之前没有 Apps 宿主桥接 API，宿主自行拼接 postMessage，origin、sandbox 与权限无统一强制点。
+- 新行为：新增上述 API，默认失败关闭；任何未证明 sandbox、未列入白名单的 origin、未知方法或未签发凭证的消息均被拒绝。
+- 受影响怎么改：原来自行拼装 postMessage 的宿主改为由宿主侧填入 `AppsMessageContext`（不得从消息 payload 取值），调用 `CreateCapability` 签发凭证，再用 `SerializeHostMessage`/`ParseAppMessage` 走桥；现有 `UiMeta`/`ValidateUiMeta`/Apps MIME 与 URI 常量以及服务端 `ui://` 资源读门不受影响，无需迁移。
+:::
 
 ### Triggers
 
@@ -296,6 +340,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `kGetTask` / `kUpdateTask` / `kCancelTask` | `"tasks/get"` / `"tasks/update"` / `"tasks/cancel"` | 双时代（需任务开关） |
 | `kGetTaskPayload` / `kLegacyGetTaskPayload` | 两者同为 `"tasks/result"` | 仅旧；`kLegacy*` 是同值别名 |
 | `kListTasks` / `kLegacyListTasks` | 两者同为 `"tasks/list"` | 仅旧；同上 |
+| `kDeleteTask` | `"tasks/delete"` | 仅现代；按 owner 校验后删除任务 |
 | `kListSkills` / `kGetSkill` | `"skills/list"` / `"skills/get"` | 仅现代 |
 | `kSetLoggingLevel` | `"logging/setLevel"` | 仅旧 |
 | `kListExtensions` | `"server/extensions/list"` | 双时代 |
@@ -313,7 +358,8 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `kRootsListChanged` | `"notifications/roots/list_changed"` | 仅旧；客户端另要求协商不低于 `2025-06-18` |
 | `kElicitationComplete` | `"notifications/elicitation/complete"` | 仅旧 |
 | `kSubscriptionsAcknowledged` | `"notifications/subscriptions/acknowledged"` | 仅现代 |
-| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`、`"…/working"`、`"…/completed"`、`"…/failed"`、`"…/cancelled"`、`"…/input_required"` | 双时代 |
+| `kTasks` | `"notifications/tasks"` | 仅现代；`params` 是完整 `DetailedTask`，支持 `taskIds` 订阅过滤 |
+| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`、`"…/working"`、`"…/completed"`、`"…/failed"`、`"…/cancelled"`、`"…/input_required"` | 仅旧；现代不再发送或接收这些旧通知 |
 | `kTriggersEvent` | `"notifications/triggers/event"` | 双时代 |
 
 ### 协议版本常量
@@ -335,7 +381,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 ## 本页对应源码
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`、`include/mcp/client/auth/TokenCache.hpp`、`include/mcp/storage/FileTokenCache.hpp`、`include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`、`include/mcp/ext/ServerCard.hpp`、`include/mcp/ext/Apps.hpp`、`include/mcp/ext/Triggers.hpp`、`include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`、`include/mcp/ext/ServerCard.hpp`、`include/mcp/ext/ServerCardClient.hpp`、`include/mcp/ext/Apps.hpp`、`include/mcp/ext/AppsHostBridge.hpp`、`include/mcp/ext/Triggers.hpp`、`include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`、`include/mcp/ProtocolVersion.hpp`、`include/mcp/McpTypes.hpp`、`include/mcp/transport/StreamableHttpClientTransport.hpp`、`include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`、`src/client/FileTokenCache.cpp`、`src/client/SkillVerify.cpp`、`src/ext/DPoP.cpp`、`src/ext/ServerCard.cpp`、`src/ext/Apps.cpp`、`src/ext/Triggers.cpp`、`src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`、`src/client/FileTokenCache.cpp`、`src/client/SkillVerify.cpp`、`src/ext/DPoP.cpp`、`src/ext/ServerCard.cpp`、`src/ext/ServerCardClient.cpp`、`src/ext/Apps.cpp`、`src/ext/AppsHostBridge.cpp`、`src/ext/Triggers.cpp`、`src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`、`cmake/OpenSslVersion.cmake`、`CMakeLists.txt`

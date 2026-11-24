@@ -99,6 +99,20 @@ set(RE2_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/abseil-cpp EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/re2 EXCLUDE_FROM_ALL)
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rapidyaml/CMakeLists.txt")
+    message(FATAL_ERROR
+        "[mcp] rapidyaml submodule missing — run: git submodule update --init third_party/rapidyaml")
+endif()
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(RYML_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(RYML_BUILD_API OFF CACHE BOOL "" FORCE)
+set(RYML_SYSTEM_C4CORE OFF CACHE BOOL "" FORCE)
+set(RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS ON CACHE BOOL "" FORCE)
+set(RYML_WITH_LEGACY_OPERATORS OFF CACHE BOOL "" FORCE)
+set(RYML_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/rapidyaml EXCLUDE_FROM_ALL)
+message(STATUS "[mcp] rapidyaml: v0.16.0 @ f8ac8dd50f4f7916579d55a05ebf9c6488e52670 (MIT, embedded c4core 0.6.0)")
+
 set(MCP_LIBRARY_TARGETS
     mcp-core
     mcp-transport
@@ -199,6 +213,7 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol mcp-ext)
+target_link_libraries(mcp-client PRIVATE $<BUILD_INTERFACE:ryml>)
 if(WIN32)
     target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
 endif()
@@ -229,8 +244,10 @@ set_property(TARGET mcp-http PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 add_library(mcp-ext STATIC)
 target_sources(mcp-ext PRIVATE
     src/ext/Apps.cpp
+    src/ext/AppsHostBridge.cpp
     src/ext/DPoP.cpp
     src/ext/ServerCard.cpp
+    src/ext/ServerCardClient.cpp
     src/ext/Triggers.cpp)
 target_link_libraries(mcp-ext PUBLIC mcp-core mcp-transport)
 mcp_setup_library(mcp-ext)

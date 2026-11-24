@@ -42,6 +42,8 @@ The client has no `Run()`: `Create()` already starts the session handler's messa
 | `ListSkills` | `SkillsListResult ListSkills(std::optional<std::string> cursor = std::nullopt)` | paginated result | With `enable_skills_extension=false` throws `McpError(MethodNotFound, "skills extension is disabled")` |
 | `GetSkill` | `SkillsGetResult GetSkill(std::string_view uri, const CacheableRequestOptions& options = {})` | `SkillsGetResult` | Same gate; runs through MRTR and the cache |
 | `ReadDirectory` | `ReadDirectoryResult ReadDirectory(std::string_view uri, std::optional<std::string> cursor = std::nullopt, const CacheableRequestOptions& options = {})` | entry list | Same gate; the server additionally needs `SetSkillsDirectoryRead(true)` |
+| `ReadSkill` | `SkillReadResult ReadSkill(std::string_view uri, const CacheableRequestOptions& options = {})` | `SkillReadResult{skill, files[], diagnostics[]}` | Preserved eager entry: measures raw size/SHA-256 first, then strict Base64 decoding, size/digest verification and real YAML frontmatter parsing; legacy sessions throw `MethodNotFound` |
+| `ReadSkill` (lazy overload) | `SkillReadResult ReadSkill(std::string_view uri, const CacheableRequestOptions& options, SkillReadParts parts)` | same as above | `FrontmatterOnly` reads only the entry resource and does not expand other manifest files; `BodyOnly` decodes and verifies bodies only; `All` is the old entry point; both enforce budgets |
 | `CallToolAsTask` | `GetTaskResult CallToolAsTask(std::string_view name, std::optional<JsonValue> arguments = std::nullopt, const RequestOptions& options = {})` | task handle (`task_id`/`status`) | When the peer did not task-ify the call it **degrades** to `task_id="<none>"`, `status="completed"` and `result` holding the raw tool-result JSON |
 | `GetTask` | `GetTaskResult GetTask(std::string_view task_id)` | `GetTaskResult` | Fixed 600s timeout; **does not check** `enable_tasks_extension` |
 | `UpdateTask` | `UpdateTaskResult UpdateTask(std::string_view task_id, std::optional<JsonValue> result = std::nullopt, std::optional<JsonValue> input_responses = std::nullopt)` | `EmptyResult` alias | Requires `enable_tasks_extension`; `result` and `input_responses` are checked for mutual exclusion by the server |
@@ -109,6 +111,17 @@ Behavioural highlights (every decision below is implemented in `src/client/McpCl
 | `SubscribeAsync` | `void SubscribeAsync(const SubscriptionsListenRequestParams& params = {})` | — | Reuses or mints the `_meta` subscription id, sends `subscriptions/listen` and waits for the acknowledged frame (5000ms cap); not receiving it throws `InternalError`; on non-modern versions the server answers `MethodNotFound` |
 | `SetLoggingLevel` | `void SetLoggingLevel(LoggingLevel level)` | — | Sends `logging/setLevel` (60s timeout); **modern versions throw `ProtocolViolation`**, pointing to the per-request `logLevel` instead |
 | `SendRootsListChanged` | `void SendRootsListChanged()` | — | Throws `ProtocolViolation` on modern versions (method removed) and also on versions below `2025-06-18` |
+
+## Server Card client discovery
+
+| Symbol | Signature/type | Default | Notes |
+|---|---|---|---|
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | Derives the discovery URL from the endpoint and GETs the card; accepts only a JSON media type and bounded body, follows same-origin redirects by default |
+| `ServerCardClientOptions` | `struct { optional<string> if_none_match; optional<ServerCard> cached_card; optional<size_t> max_response_bytes; milliseconds timeout{30000}; int max_redirects{5}; }` | 1 MiB cap | Conditional requests need both `if_none_match` and `cached_card`; a 304 without a cached card throws `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; string etag; bool from_cache{false}; }` | — | A 304 hit returns the caller's cached card with `from_cache=true` |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | Standalone parsing/validation of a card, independent of an `McpClient` connection |
+
+The discovery URL is `<endpoint path>/server-card` built from the endpoint's scheme/host/port/path (query and fragment removed; userinfo, non-HTTP(S) and malformed URLs rejected), e.g. `http://localhost:3001/mcp?x=1` → `http://localhost:3001/mcp/server-card`. `application/json` (case-insensitive, charset and other parameters allowed) is the compatibility baseline, and `application/*+json` is accepted too; HTML/plain text, empty or oversized bodies and invalid JSON throw `McpError`. Declared in `include/mcp/ext/ServerCardClient.hpp`, implemented in `src/ext/ServerCardClient.cpp`; `McpClient` connection and version-negotiation behaviour is unchanged.
 
 ## Deprecated but still callable
 
@@ -200,6 +213,16 @@ Public free functions for consistency checks before and after adopting a skill, 
 | `VerifyFrontmatter` | `bool VerifyFrontmatter(const Skill& advertised, const JsonValue& fetched, std::string& error_out)` | `false` + reason | Compares advertised and fetched frontmatter |
 | `IsApprovalStillValid` | `bool IsApprovalStillValid(const Skill& approved, const Skill& current)` | `bool` | Whether an already approved skill is still valid |
 | `ApprovalKey` | `std::string ApprovalKey(const std::string& host_label, const Skill&)` | key string | Key for approval records |
+| `SkillBlob` | `FromEncoded(std::string, std::string&)` / `FromText(std::string, std::string&)` / `Decode` / `Frontmatter` / `Body` | lazy object | `FromEncoded` computes raw size and SHA-256 before decoding; `Frontmatter` and `Body` expand on demand and reuse the budgets; `Metrics()` exposes raw/decoded byte counts |
+| `kMaxSkillEncodedChars` / `kMaxSkillDecodedBytes` | `constexpr size_t` | `1398104` / `1048576` | Encoded blob character bound and decoded byte budget (B-65/B-64) |
+| `kMaxSkillFrontmatterBytes` / `kMaxYamlDepth` / `kMaxYamlNodes` | `constexpr size_t` | `1048576` / `64` / `10000` | Frontmatter byte, depth and node budgets (B-52/B-53/B-54) |
+| `kMaxYamlScalarBytes` / `kMaxYamlKeyBytes` | `constexpr size_t` | `65536` / `1024` | Single-scalar and key-name budgets (B-56/B-57) |
+| `SkillRoute` / `ResolveSkillRoute` | `enum class` / `SkillRoute ResolveSkillRoute(std::string_view, const ServerCapabilities&)` | `Modern` / `Legacy` | Dual routing by negotiated version and declared extension capability: legacy versions or an explicit absence of the skills extension yield `Legacy`; an absent capability map is treated as unknown and keeps the previous behaviour |
+| `ParseFrontmatter` | `bool ParseFrontmatter(std::string_view yaml, JsonValue& out, std::string& error_out)` | `false` + reason | Real `parse_in_arena` parsing; rejects duplicate keys, aliases/anchors, custom tags, `<<` merge, implicit scalar typing, multiple documents and `%` directives; no string-search fallback on failure |
+| `SplitSkillDocument` / `VerifyFrontmatterBytes` | `bool`, `bool` | `false` + reason | Parses `---` delimiters and compares advertised frontmatter to parsed real bytes; without delimiters the previous self-comparison behaviour is retained |
+| `ResolveSkillLocalPath` | `bool ResolveSkillLocalPath(std::string_view root, std::string_view relative, std::string& resolved, std::string& error_out)` | normalized absolute path | Root normalization and `..` rejection first, then `weakly_canonical` symlink-escape check; absolute paths and out-of-root relative paths are rejected |
+
+`ReadSkill` diagnostics add `invalid_encoding` (strict Base64/budget failure) and `frontmatter_invalid` (real YAML parse or delimiter failure) to the existing `size_mismatch`/`digest_mismatch`/`frontmatter_mismatch` reasons; failed reads never return partial bodies.
 
 ## Internal symbols (not user API — never cite them as interface)
 

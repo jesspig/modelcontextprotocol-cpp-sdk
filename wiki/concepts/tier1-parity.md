@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 六实现（TS v2.4.0 / Python v2.3.0 / C# v2.4.0 含 v2.3.1 安全修复 / Go v1.8.0 稳定与 v1.9.0-pre.1 预发布 / Rust rmcp-v3.11.0 / Ruby，spec 2026-07-28；基线数据截止 2026-11-18）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标, ruby, baseline-2026-11-18]
-timestamp: 2026-11-19T01:05:35+08:00
+timestamp: 2026-11-25T00:21:16+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -38,7 +38,7 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 | 来源校验与资源护栏 | 对等 | `40134f4` |
 | 传输（stateless 单连接、持开 listen 流、变更推送、订阅广播寻址） | 对等 | [streamable-http](/transports/streamable-http.md)；`53fbce0` + `8d589ae` |
 | OAuth 客户端鉴权表面（CIMD 加固、audience 硬化） | 对等 | [oauth](/concepts/oauth.md)；`ba1f8c2` + `8ad053e` |
-| Apps 扩展与 Server Card | Apps 对等；Server Card 仅服务端 | `2f2fc8d`；服务端可生成（`McpServer::GetServerCard()`）并经 `/server-card` 返回，客户端不消费，开关见 [experimental-flags](/concepts/experimental-flags.md) |
+| Apps 扩展与 Server Card | Apps 对等；Server Card 服务端生成/客户端发现均已覆盖 | `2f2fc8d` + T-16；服务端 `McpServer::GetServerCard()` 与 `/server-card`（另含 `<endpoint>/server-card`）保留，客户端 `FetchServerCard`/`ParseServerCard` 提供发现、解析、条件请求与强 ETag 校验，开关见 [experimental-flags](/concepts/experimental-flags.md) |
 | 单连接语义与 trace 配对可观测 | 对等 | `a581292`；[span-hooks](/concepts/span-hooks.md) |
 | 服务端现代任务用例形态 | 对等 | `b7a613e`（逐请求声明） |
 | `http-custom-headers` 18/18 | 对等（modern 基线已删，legacy 条目保留待复跑） | `baseline-2026-07-28.yaml` 删除 10 行注释 + 条目；CI Linux 报 stale 即为变绿证据 |

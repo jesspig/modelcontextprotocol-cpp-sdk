@@ -83,13 +83,18 @@
 | （路由规则） | `SendListChangedNotification` 内部 | — | modern 时代 → `NotifySubscribers`；legacy 时代 → `SendNotification` 广播 |
 | `SendLoggingMessage` | `void SendLoggingMessage(LoggingLevel level, std::string_view data)` | — | **modern 时代直接返回不发送**；legacy 时代按 `logging/setLevel` 记录的级别过滤 |
 | `SendLoggingMessage`（重载） | `void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level)` | `min_level = nullopt` | 给了 `min_level` 就只按它过滤并发送（可越过 `setLevel` 记录）；`nullopt` 时行为回落到二参版本 |
-| `SendTaskStatus` | `void SendTaskStatus(std::string_view task_id, TaskStatus status)` | — | 从 `task_store` 反查 owner 会话，再按该会话的协商版本决定订阅路由或广播；须配 `enable_tasks_extension` + `task_store` 才有可用任务 |
+| `SendTaskStatus` | `void SendTaskStatus(std::string_view task_id, TaskStatus status)` | — | 从 `task_store` 反查任务；modern 发送单 `notifications/tasks`（完整 `DetailedTask`），legacy 按 owner 会话协商版本广播 `notifications/tasks/status`；须配 `enable_tasks_extension` + `task_store` 才有可用任务 |
+| `SetSessionPrincipal` | `void SetSessionPrincipal(std::string_view session_id, std::string_view principal)` | — | 绑定该会话的 authenticated principal；任务 owner 的唯一可信来源 |
+| `ClearSessionPrincipal` | `void ClearSessionPrincipal(std::string_view session_id)` | — | 清除会话 principal 绑定 |
+| `SetDefaultPrincipal` | `void SetDefaultPrincipal(std::string_view principal)` | — | 为未单独绑定的会话提供默认 principal；传空串即关闭默认绑定 |
 | `SendProgress` | `void SendProgress(const ProgressToken& token, double progress, std::optional<double> total = std::nullopt, std::optional<std::string> message = std::nullopt)` | — | modern 时代先尝试写入请求流缓冲（`BufferRequestStreamNotification`），失败则发全局 `notifications/progress` |
 | `SetCacheable` | `void SetCacheable(std::function<std::optional<CacheHint>(std::string_view method)> resolver)` | — | 运行时替换缓存钩子，优先于 `ServerOptions::cache_hints`；modern 时代仍校验 `ttlMs`/`cacheScope` |
 
 声明在 `include/mcp/server/McpServer.hpp`，投递与时代路由在 `src/server/McpServer.cpp`。
 
 `TaskStatus` 取值：`Pending`、`Working`、`Completed`、`Failed`、`Cancelled`、`InputRequired`（定义见 `include/mcp/server/McpTaskStore.hpp`）。
+
+任务 owner 只能由上述 principal 注入接口提供：modern 任务操作在缺少 principal 时失败关闭（`TaskNotFound`），不从 `params`、`_meta`、`taskId` 或客户端自报字段读取 owner；legacy 任务在无 principal 时回退到会话 id 以保持旧线协议行为。跨 owner 的 get/update/cancel/delete/list 与不存在任务返回同一拒绝语义。任务预算常量 `kMaxTasksPerPrincipal`(10000)、`kMaxTaskResultBytes`(8388608)、`kMaxTaskNotificationBytes`(1048576)、`kMaxTaskIdsPerSubscription`(1024) 定义在 `include/mcp/server/McpTaskStore.hpp`。
 
 ## 客户端状态查询
 

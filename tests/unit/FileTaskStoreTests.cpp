@@ -751,3 +751,46 @@ TEST_F(FileTaskStoreTest, CorruptRebuildFailureThrowsAfterBackup) {
     EXPECT_EQ(ReadTaskStoreBytes(store_path), corrupted);
     EXPECT_EQ(ReadTaskStoreBytes(store_path.string() + ".corrupt"), corrupted);
 }
+
+TEST_F(FileTaskStoreTest, ReadsLegacyRecordWithoutOwnerAndKeepsIt) {
+    const auto legacy = R"({"task_id":"legacy-task","state":{"task_id":"legacy-task","status":2,"created_at":"0"}})";
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << legacy << '\n';
+    }
+    {
+        FileTaskStore store(store_path);
+        auto task = store.GetTask("legacy-task");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_TRUE(task->owner.empty());
+        store.CreateTask("owned-task", "principal-a", 300000);
+    }
+    {
+        FileTaskStore store(store_path);
+        auto legacy_task = store.GetTask("legacy-task");
+        ASSERT_TRUE(legacy_task.has_value());
+        EXPECT_TRUE(legacy_task->owner.empty());
+        auto owned_task = store.GetTask("owned-task");
+        ASSERT_TRUE(owned_task.has_value());
+        EXPECT_EQ(owned_task->owner, "principal-a");
+        ASSERT_TRUE(owned_task->ttl_ms.has_value());
+        EXPECT_EQ(*owned_task->ttl_ms, 300000);
+    }
+}
+
+TEST_F(FileTaskStoreTest, InMemoryStorePreservesOwnerAndLegacyRecords) {
+    InMemoryTaskStore store;
+    store.CreateTask("legacy-task");
+    store.CreateTask("owned-task", "principal-a", 60000);
+    auto legacy_task = store.GetTask("legacy-task");
+    ASSERT_TRUE(legacy_task.has_value());
+    EXPECT_TRUE(legacy_task->owner.empty());
+    auto owned_task = store.GetTask("owned-task");
+    ASSERT_TRUE(owned_task.has_value());
+    EXPECT_EQ(owned_task->owner, "principal-a");
+    EXPECT_TRUE(store.SetTaskOwner("legacy-task", "principal-b"));
+    EXPECT_EQ(store.GetTask("legacy-task")->owner, "principal-b");
+    EXPECT_TRUE(store.RemoveTask("owned-task"));
+    EXPECT_FALSE(store.GetTask("owned-task").has_value());
+}

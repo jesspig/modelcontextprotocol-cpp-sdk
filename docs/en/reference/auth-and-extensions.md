@@ -215,12 +215,21 @@ Triggers have no extension id constant: the only outward identifier is the notif
 | `ServerCardEndpoint` | `struct { std::string url; std::map<std::string,std::string> headers; std::map<std::string,std::string> variables; }` | empty string/tables | One endpoint; `headers` and `variables` are passed through as-is |
 | `ServerCardRepository` | `struct { std::optional<std::string> url; }` | `nullopt` | Repository wrapper, yet `ServerCard::repository` is a plain string and does not use this struct |
 | Required fields | `name`, `version` (`std::string`) | empty | Empty values fail validation |
-| Optional fields | `description`, `title`, `website_url`, `repository`, `meta` (the first four `std::optional<std::string>`, `meta` a `std::optional<JsonValue>`) | all `nullopt` | Serialization writes `description` as an empty string when absent and omits the other optional fields |
-| List fields | `icons` (`std::vector<Icon>`), `endpoints` (`std::vector<ServerCardEndpoint>`), `supported_protocol_versions` (`std::vector<std::string>`) | empty | An empty `endpoints` list fails validation |
-| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | Requires non-empty name/version/endpoints and an http/https url per endpoint; violations throw `InvalidParams` |
-| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | Calls `ValidateCard` first; emitted keys are `name`/`version`/`description`/`endpoints`/`supportedProtocolVersions` |
+| Optional fields | `description`, `title`, `website_url`, `repository`, `meta` (the first four `std::optional<std::string>`, `meta` a `std::optional<JsonValue>`) | all `nullopt` | `description` is still written as an empty string when absent; `title`/`website_url`/`repository`/`meta` are written only when set |
+| List fields | `icons` (`std::vector<Icon>`), `endpoints` (`std::vector<ServerCardEndpoint>`), `supported_protocol_versions` (`std::vector<std::string>`) | empty | An empty `endpoints` list fails validation; `icons` is now emitted with the card |
+| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | Validates required fields, http(s) URLs (rejecting userinfo and malformed ports), icon `src`/`mimeType`/`sizes`/`theme`, endpoint header names/values, variable names/values and date-shaped `supportedProtocolVersions`; violations throw `InvalidParams` |
+| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | Calls `ValidateCard` first; fixed keys `name`/`version`/`description`/`icons`/`endpoints`/`supportedProtocolVersions`, other optional keys only when set |
+| `ServerCardClientOptions` | `struct { std::optional<std::string> if_none_match; std::optional<ServerCard> cached_card; std::optional<std::size_t> max_response_bytes; std::chrono::milliseconds timeout{30000}; int max_redirects{5}; }` | no conditional header/cache, 1 MiB cap | `if_none_match` with `cached_card` drives conditional requests; a 304 without a cached card throws `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; std::string etag; bool from_cache{false}; }` | — | `from_cache=true` means a 304 hit and the caller's cached card was returned |
+| `BuildServerCardDiscoveryUrl` | `std::string BuildServerCardDiscoveryUrl(std::string_view endpoint_url)` | — | Derives `<path>/server-card` from the endpoint scheme/host/port/path; strips query/fragment and rejects userinfo, non-HTTP(S) and malformed URLs |
+| `IsServerCardJsonMediaType` / `ServerCardEtagMatches` | `bool` (case-insensitive media type/parameters; weak comparison and list syntax, `*` supported) | — | Reusable admission helpers for callers |
+| `CanonicalizeServerCardBody` / `ComputeServerCardEtag` | `std::string` (canonical JSON / quoted SHA-256 strong ETag) | — | The same canonical serialization backs the server ETag and client comparison |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | Parses every field, then calls `ValidateCard`; non-objects, wrong types and invalid fields throw `InvalidParams` |
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | GETs the discovery URL; accepts only a JSON media type and bounded body, follows same-origin redirects by default, and throws `McpError` on empty bodies or error statuses |
 
-Declared in `include/mcp/ext/ServerCard.hpp`; validation and serialization are in `src/ext/ServerCard.cpp`.
+The client free functions above are `[[nodiscard]]`; callers that intentionally discard a result should write `(void)mcp::ext::FetchServerCard(endpoint)`.
+
+The server-side API stays in `include/mcp/ext/ServerCard.hpp` with validation and serialization in `src/ext/ServerCard.cpp`; the client API is declared in `include/mcp/ext/ServerCardClient.hpp` and implemented in `src/ext/ServerCardClient.cpp`. `GetServerCard`, `ValidateCard`, `SerializeCard` and `GET /server-card` all remain. Serialization now includes optional fields that are set; older readers can ignore the extra keys. Cards carrying invalid optional fields are now rejected by both the new client and the server validator (old/new behaviour and how affected callers adapt are listed above).
 
 ### Apps
 
@@ -229,7 +238,42 @@ Declared in `include/mcp/ext/ServerCard.hpp`; validation and serialization are i
 | `UiMeta` | `struct { std::string resource_uri; std::vector<std::string> csp; std::vector<std::string> permissions; }` | empty string/tables/tables | The ui declaration carried in `_meta` |
 | `ValidateUiMeta` | `void ValidateUiMeta(const UiMeta& meta)` | — | `resource_uri` must be non-empty and start with `ui://`, otherwise `InvalidParams` is thrown; `csp`/`permissions` are not validated |
 
-Declared in `include/mcp/ext/Apps.hpp`; validation is in `src/ext/Apps.cpp`.
+Declared in `include/mcp/ext/Apps.hpp`; validation is in `src/ext/Apps.cpp`. `UiMeta`, `ValidateUiMeta`, `kAppsExtensionId`, `kAppsMimeType` and `kAppsUriScheme` are unchanged.
+
+### Apps host bridge
+
+Declared in `include/mcp/ext/AppsHostBridge.hpp`, implemented in `src/ext/AppsHostBridge.cpp`. This section covers only the JSON message bridge between a host and a sandboxed UI; no iframe, WebView, DOM, script injection or UI renderer is delivered.
+
+| Symbol | Signature/type | Default | Notes |
+|---|---|---|---|
+| `kAppsMessageSchemaVersion` | `std::string_view` | `"2026-07-28"` | The only supported schema version; malformed or missing values are rejected |
+| `kAppsCapabilityTokenBytes` | `size_t` | `32` | Random bytes in a capability token; exposed as a 64-character hex string |
+| `kDefaultAppsCapabilityTtl` | `std::chrono::milliseconds` | `60000` | Default capability lifetime |
+| `AppsHostBridgeOptions` | `struct` | see below | `ui_meta` (from `UiMeta`: `resource_uri`/`csp`/`permissions`), `allowed_origins` (host-trusted origin allowlist), `host_allowed_methods` (explicit host method allowlist), `max_message_bytes`(65536), `max_depth`(32), `max_nodes`(10000), `max_string_bytes`(65536), `max_id_bytes`(128), `max_method_bytes`(128), `capability_ttl`(60s), `single_use_sensitive_methods`(`true`) |
+| `AppsPostMessage` | `struct` | schema version preset, empty id/method/params | Carries only JSON values, schema version, optional `request_id`, `method` and `params`; no function/DOM/executable-code fields |
+| `AppsMessageContext` | `struct` | `sandbox_verified=false`, other fields empty | Host-trusted context: `source_origin`, `target_origin`, `resource_uri`, `sandbox_verified` and `capability`, all supplied by the host |
+| `AppsSandboxPolicy` | `struct` | all five deny flags `true`, `csp` empty | Exposes opaque origin, bans `allow-same-origin`, top navigation, popups, forms and downloads; `csp` comes verbatim from `UiMeta` |
+| `AppsHostBridge::Create` | `static std::unique_ptr<AppsHostBridge> Create(AppsHostBridgeOptions)` | — | Validates `UiMeta`, budgets and origin/method syntax; effective permissions = `UiMeta::permissions` ∩ `host_allowed_methods`, empty means deny every method |
+| `SerializeHostMessage` | `std::string SerializeHostMessage(const AppsPostMessage&, const AppsMessageContext&) const` | — | Host-to-app serialization; still checks trusted context, schema version, method permission and byte budget |
+| `ParseAppMessage` | `AppsPostMessage ParseAppMessage(std::string_view, const AppsMessageContext&) const` | — | App-to-host parsing; checks total bytes before parsing, then origin, sandbox, capability, schema, method and id |
+| `IsMethodAllowed` | `bool IsMethodAllowed(std::string_view, const AppsMessageContext&) const` | — | Read-only predicate; unknown methods, excess permissions and expired/consumed capabilities return `false` |
+| `CreateCapability` | `std::string CreateCapability(const AppsMessageContext&) const` | — | Issues an opaque token bound to `resource_uri`, allowed origins, effective permissions, expiry, message byte cap and the single-use flag |
+| `GetSandboxPolicy` | `AppsSandboxPolicy GetSandboxPolicy() const` | — | Returns fixed sandbox deny flags plus the CSP from `UiMeta` |
+| `NormalizeOrigin` | `bool NormalizeOrigin(std::string_view, std::string&)` | — | Lowercases scheme/host, supplies the default port (80 for http, 443 for https) and emits `scheme://host:port`; rejects `*`, `null`, userinfo, paths, wildcards and non-HTTP(S) schemes |
+| `IsAppsSensitiveMethod` | `bool IsAppsSensitiveMethod(std::string_view)` | — | `tools/call` and `resources/read` are sensitive: denied unless explicitly permitted, and require a single-use capability |
+
+Trust boundary:
+
+- `source_origin`, `target_origin`, `resource_uri` and `sandbox_verified` are read only from `AppsMessageContext`. Payload fields with those names, plus `permissions` or `capability`, are unknown top-level keys and are rejected; they never take part in an authorization decision.
+- Origins are normalized and compared exactly on scheme/host/effective port; omitting a default port is equivalent to writing it explicitly. A wildcard or opaque target, an origin outside the allowlist, and an unproven sandbox are always rejected.
+- Effective permissions are the intersection of `UiMeta::permissions` and `host_allowed_methods`. Sensitive methods are denied by default; with `single_use_sensitive_methods=true` the capability is single-use. Tokens use 32 unpredictable bytes, are compared in constant time, and are bound to resource/origins/permissions/expiry/byte cap; expiry, replay, cross-context use and permission changes are rejected.
+- JSON parsing checks total bytes first, then depth/node/string budgets. Duplicate keys, non-finite numbers, overlong ids/methods and malformed schema versions throw `McpError` with fixed classifier messages that never echo payload content.
+
+::: warning Old behaviour / new behaviour / how affected callers adapt
+- Old behaviour: before 0.3.13 there was no Apps host bridge API; hosts assembled postMessage themselves with no single enforcement point for origin, sandbox or permissions.
+- New behaviour: the new API fails closed by default; any message without a proven sandbox, with an unlisted origin, an unknown method or an unissued capability is rejected.
+- How to adapt: hosts that assembled postMessage manually should populate `AppsMessageContext` on the host side (never from message payload), call `CreateCapability`, and route traffic through `SerializeHostMessage`/`ParseAppMessage`. `UiMeta`/`ValidateUiMeta`, the Apps MIME and URI constants, and the server `ui://` resource read gate are unchanged and need no migration.
+:::
 
 ### Triggers
 
@@ -296,6 +340,7 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kGetTask` / `kUpdateTask` / `kCancelTask` | `"tasks/get"` / `"tasks/update"` / `"tasks/cancel"` | both eras (task switch required) |
 | `kGetTaskPayload` / `kLegacyGetTaskPayload` | both `"tasks/result"` | legacy only; `kLegacy*` is a same-value alias |
 | `kListTasks` / `kLegacyListTasks` | both `"tasks/list"` | legacy only; as above |
+| `kDeleteTask` | `"tasks/delete"` | modern only; removes a task after the owner check |
 | `kListSkills` / `kGetSkill` | `"skills/list"` / `"skills/get"` | modern only |
 | `kSetLoggingLevel` | `"logging/setLevel"` | legacy only |
 | `kListExtensions` | `"server/extensions/list"` | both eras |
@@ -313,7 +358,8 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kRootsListChanged` | `"notifications/roots/list_changed"` | legacy only; the client additionally requires a negotiated version of at least `2025-06-18` |
 | `kElicitationComplete` | `"notifications/elicitation/complete"` | legacy only |
 | `kSubscriptionsAcknowledged` | `"notifications/subscriptions/acknowledged"` | modern only |
-| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`, `"…/working"`, `"…/completed"`, `"…/failed"`, `"…/cancelled"`, `"…/input_required"` | both eras |
+| `kTasks` | `"notifications/tasks"` | modern only; `params` is a full `DetailedTask`, filterable by `taskIds` subscriptions |
+| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`, `"…/working"`, `"…/completed"`, `"…/failed"`, `"…/cancelled"`, `"…/input_required"` | legacy only; modern no longer sends or accepts these |
 | `kTriggersEvent` | `"notifications/triggers/event"` | both eras |
 
 ### Protocol version constants
@@ -335,7 +381,7 @@ Task-shaped guides: [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-c
 ## Source files behind this page
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`, `include/mcp/client/auth/TokenCache.hpp`, `include/mcp/storage/FileTokenCache.hpp`, `include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/ServerCardClient.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/AppsHostBridge.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`, `include/mcp/ProtocolVersion.hpp`, `include/mcp/McpTypes.hpp`, `include/mcp/transport/StreamableHttpClientTransport.hpp`, `include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/Apps.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/ServerCardClient.cpp`, `src/ext/Apps.cpp`, `src/ext/AppsHostBridge.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`, `cmake/OpenSslVersion.cmake`, `CMakeLists.txt`

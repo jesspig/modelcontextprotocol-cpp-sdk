@@ -126,7 +126,7 @@
 | `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s（`kDefaultHttpRequestTimeout`） | POST 等待处理器响应的截止；`0` 无限期等待，超时回 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | 未设置时无鉴权门，行为不变 |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | 未设置 | 按方法/工具名解析 `Mcp-Param-*` 头注解；未设置时跳过参数头校验 |
-| `enable_server_card` | `bool` | `false` | 注册 `GET /server-card` 发现端点 |
+| `enable_server_card` | `bool` | `false` | 注册 `GET /server-card`，并另注册 `GET <endpoint>/server-card` 以匹配客户端发现路径 |
 | `server_card` | `std::optional<ext::ServerCard>` | `std::nullopt` | 未提供时由 `BuildDefaultServerCard()` 生成 |
 
 ### `StreamableHttpServerOptions::BearerAuthConfig`
@@ -142,6 +142,8 @@
 | `expected_resource` | `std::string` | `""` | 期望 audience；空则不校验 |
 | `validate_token_resource` | `bool` | `true` | audience 校验开关 |
 | `enable_dpop` | `bool` | `false` | DPoP 证明校验（实验特性，需 OpenSSL） |
+
+卡片响应为 `application/json` 与规范化 body 的强 ETag；`If-None-Match` 支持弱比较、列表与 `*`，命中回 304 空 body 并保留 ETag、`cache-control` 与 CORS 头。CORS 不再由卡片处理器重复写 `Access-Control-Allow-Origin`，统一由 `HttpServerImpl` 的 Host/Origin 准入、OPTIONS 预检与 `Access-Control-Expose-Headers`（含 `ETag`）提供；不新增凭据型 CORS。
 
 接口与 Options 声明在 `include/mcp/transport/StreamableHttpServerTransport.hpp`；路由、头校验与 server-card 端点在 `src/http/StreamableHttpServerTransport.cpp`，Host/Origin 与绑定行为在 `src/http/HttpServerImpl.cpp`。
 

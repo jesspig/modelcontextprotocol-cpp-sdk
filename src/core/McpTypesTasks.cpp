@@ -133,6 +133,61 @@ JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v) {
     return obj;
 }
 
+JsonValue SerializeDetailedTask(const DetailedTask& v) {
+    JsonValue obj(JsonValue::object_tag);
+    obj[detail::kTaskId] = JsonValue(v.task_id);
+    obj[detail::kStatus] = JsonValue(v.status);
+    if (v.created_at) obj[detail::kCreatedAt] = JsonValue(*v.created_at);
+    detail::SerializeOptional(obj, detail::kLastUpdatedAt, v.last_updated_at);
+    detail::SerializeOptional(obj, detail::kTTLMs, v.ttl_ms);
+    detail::SerializeOptional(obj, detail::kResult, v.result);
+    detail::SerializeOptional(obj, detail::kError, v.error);
+    detail::SerializeOptional(obj, "inputRequired", v.input_required);
+    if (v.input_requests) obj[detail::kInputRequests] = SerializeInputRequests(*v.input_requests);
+    return obj;
+}
+
+DetailedTask DeserializeDetailedTask(const JsonValue& j) {
+    DetailedTask v;
+    if (auto* id = j.Find(detail::kTaskId); id && id->IsString())
+        v.task_id = id->GetString();
+    if (auto* st = j.Find(detail::kStatus); st && st->IsString())
+        v.status = st->GetString();
+    detail::DeserializeOptional(j, detail::kCreatedAt, v.created_at);
+    detail::DeserializeOptional(j, detail::kLastUpdatedAt, v.last_updated_at);
+    detail::DeserializeOptional(j, detail::kTTLMs, v.ttl_ms);
+    detail::DeserializeOptional(j, detail::kResult, v.result);
+    detail::DeserializeOptional(j, detail::kError, v.error);
+    detail::DeserializeOptional(j, "inputRequired", v.input_required);
+    if (auto* ir = j.Find(detail::kInputRequests); ir && ir->IsObject())
+        v.input_requests = DeserializeInputRequests(*ir);
+    return v;
+}
+
+bool IsValidDetailedTask(const JsonValue& j) {
+    if (!j.IsObject()) return false;
+    auto* id = j.Find(detail::kTaskId);
+    if (!id || !id->IsString() || id->GetString().empty()) return false;
+    auto* status = j.Find(detail::kStatus);
+    if (!status || !status->IsString() || status->GetString().empty()) return false;
+    auto* created = j.Find(detail::kCreatedAt);
+    if (!created || !created->IsString() || created->GetString().empty()) return false;
+    if (auto* updated = j.Find(detail::kLastUpdatedAt);
+            updated && !updated->IsString()) return false;
+    if (auto* ttl = j.Find(detail::kTTLMs); ttl && !ttl->IsInt()) return false;
+    if (auto* ir = j.Find(detail::kInputRequests); ir && !ir->IsObject()) return false;
+    const std::string status_value = status->GetString();
+    if (status_value == "failed") {
+        auto* error = j.Find(detail::kError);
+        if (!error || error->IsNull()) return false;
+    }
+    if (status_value == "completed") {
+        auto* result = j.Find(detail::kResult);
+        if (!result || result->IsNull()) return false;
+    }
+    return true;
+}
+
 CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j) {
     CancelTaskRequestParams v;
     v.task_id = j[detail::kTaskId].GetString();

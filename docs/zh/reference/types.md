@@ -164,7 +164,7 @@
 | `DiscoverRequestParams` / `ListRootsRequestParams` | `struct {}` | — | 空参数请求 |
 | `Pagination` | `struct { std::optional<std::string> next_cursor; }` | `nullopt` | 游标信封 |
 | `FileRef` | `struct { std::string uri; int64_t offset{0}; int64_t length{0}; }` | `0` | `x-mcp-fileref` 参数；序列化时 `0` 值字段被省略 |
-| `SubscriptionFilter` | `struct { optional<bool> tools_list_changed/prompts_list_changed/resources_list_changed; vector<string> resource_subscriptions; }` | `nullopt` / `{}` | `subscriptions/listen` 过滤器 |
+| `SubscriptionFilter` | `struct { optional<bool> tools_list_changed/prompts_list_changed/resources_list_changed; vector<string> resource_subscriptions; vector<string> task_ids; }` | `nullopt` / `{}` | `subscriptions/listen` 过滤器；`task_ids` 线格式为 `taskIds`，用于 modern 任务通知筛选 |
 | `SubscriptionsListenRequestParams` | `struct { SubscriptionFilter notifications; optional<RequestMeta> meta; }` | — | 监听订阅入参 |
 | `CreateMessageRequestParams` / `SamplingMessage` | `struct { vector<SamplingMessage> messages; int64_t max_tokens; optional<string> stop_reason/model_preference; }` / `struct { role; ContentVariant content; }` | `max_tokens` 必填 | `sampling/*` 已废弃（SEP-2577），类型仍保留 |
 | `SetLevelRequestParams` | `struct { LoggingLevel level; }` | — | `logging/setLevel` 入参 |
@@ -214,7 +214,9 @@
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `TaskStatus` | `enum class { Pending, Working, Completed, Failed, Cancelled, InputRequired }` | `Pending` | 任务状态机 |
-| `TaskState` | `struct`（17 个字段：`task_id`/`owner`/`status`/`result`/`error_message`/`input_required`/`progress`/`progress_total`/`created_at`/`status_message`/`last_updated_at`/`ttl_ms`/`poll_interval_ms`/`input_requests`/`input_responses`/`tool_name`/`tool_arguments`） | `status = Pending`、`progress = 0` | 定义在**服务端**头，非 `McpTypes.hpp`；存储侧细节见 [进程与存储参考](/zh/reference/process-and-storage) |
+| `TaskState` | `struct`（17 个字段：`task_id`/`owner`/`status`/`result`/`error_message`/`input_required`/`progress`/`progress_total`/`created_at`/`status_message`/`last_updated_at`/`ttl_ms`/`poll_interval_ms`/`input_requests`/`input_responses`/`tool_name`/`tool_arguments`） | `status = Pending`、`progress = 0` | 定义在**服务端**头，非 `McpTypes.hpp`；`owner` 来自 authenticated principal；存储侧细节见 [进程与存储参考](/zh/reference/process-and-storage) |
+| `DetailedTask` | `struct { task_id; status; optional<created_at/last_updated_at/ttl_ms/result/error/input_required/input_requests>; }` | 按值 | modern `notifications/tasks` 的完整载荷；`IsValidDetailedTask` 校验必填字段与终态字段 |
+| `IMcpTaskStore` / `FileTaskStore` / `InMemoryTaskStore` | 接口与两个实现 | — | 新增任务写入 `owner`；旧记录 `owner` 可为空且被保留；`CreateTask(id, owner, ttl)` 为新写入口 |
 | `CreateTaskResult` | `struct : Result { task_id; status; created_at; optional<status_message/last_updated_at/ttl_ms/poll_interval_ms/input_requests>; }` | 前三必填 | `tasks/*` 创建结果 |
 | `GetTaskResult` | `struct`（**不继承** `Result`，14 个字段，含 `task_result_type{"task"}`、`error`、`error_message`、`input_required`、`meta`） | `task_result_type = "task"` | 与 `CreateTaskResult` 不同基类，勿混淆 |
 | `UpdateTaskResult` / `CancelTaskResult` | `using ... = EmptyResult` | — | 无自有字段 |

@@ -5,9 +5,10 @@ add_executable(mcp-core-tests
     McpTypesTests.cpp
     JsonParserTests.cpp
     LogTests.cpp
-    ResponseCacheTests.cpp)
+    ResponseCacheTests.cpp
+    AppsHostBridgeTests.cpp)
 
-target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-test-support GTest::gtest_main)
+target_link_libraries(mcp-core-tests PRIVATE mcp-core mcp-ext mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-core-tests)
 
 add_executable(mcp-schema-tests JsonSchema2020Tests.cpp)
@@ -29,7 +30,7 @@ add_executable(mcp-server-tests McpServerTests.cpp)
 target_link_libraries(mcp-server-tests PRIVATE mcp-client mcp-server mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-server-tests)
 
-add_executable(mcp-client-tests McpClientTests.cpp)
+add_executable(mcp-client-tests McpClientTests.cpp SkillSafetyTests.cpp)
 target_link_libraries(mcp-client-tests PRIVATE mcp-client mcp-server mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-client-tests)
 
@@ -61,7 +62,7 @@ add_executable(mcp-net-tests
 target_link_libraries(mcp-net-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-net-tests RESOURCE_LOCK mcp_bind_ports)
 
-add_executable(mcp-http-tests HttpServerTests.cpp)
+add_executable(mcp-http-tests HttpServerTests.cpp ServerCardClientTests.cpp)
 target_link_libraries(mcp-http-tests PRIVATE mcp-http mcp-protocol mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-http-tests RESOURCE_LOCK mcp_bind_ports)
 
