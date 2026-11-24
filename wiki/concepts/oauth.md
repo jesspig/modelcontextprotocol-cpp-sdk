@@ -3,7 +3,7 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、private_key_jwt 客户端断言（ES256，aud 取 issuer）、RFC 8707 资源指示符与 audience 绑定、RFC 9207 授权响应 iss 校验与 token 响应「存在即校验」、发行者绑定、刷新合并与重入短路、吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, rfc7523, cimd, bearer, audience, private_key_jwt]
-timestamp: 2026-11-24T23:55:18+08:00
+timestamp: 2026-11-25T21:30:00+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
@@ -13,7 +13,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 ## 流程（`Authenticate()`）
 
-1. `DiscoverMetadata`：默认严格——PRM-first，先 RFC 9728 `/.well-known/oauth-protected-resource`，PRM 文档必须提供与配置资源标识（`OAuthClientOptions::resource`，未设则 `server_url`）逐字相等的 `resource`，再经 `authorization_servers[0]` 取 RFC 8414 元数据；任一环节失败即失败关闭。只有调用方显式开启 `allow_legacy_metadata_fallback` 才回退到 RFC 8414 直连与硬编码 `/authorize` + `/token` + issuer=server_url（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）
+1. `DiscoverMetadata`：默认严格——PRM-first，先 RFC 9728 `/.well-known/oauth-protected-resource`，PRM 文档必须提供与配置资源标识（`OAuthClientOptions::resource`，未设则 `server_url`）逐字相等的 `resource`，再经 `authorization_servers[0]` 取 RFC 8414 元数据；任一环节失败即失败关闭。只有调用方显式开启 `allow_legacy_metadata_fallback` 才回退到 RFC 8414 直连与硬编码 `/authorize` + `/token` + issuer=server_url（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）。T-21 续轮（2026-11-25）在该回退中补上 OIDC discovery 候选：RFC 8414 `/.well-known/oauth-authorization-server` 不可达时再尝试 `/.well-known/openid-configuration`（首个 2xx 且 JSON 对象即采用），修复 T-05 引入的 OIDC-only AS 回退缺失（官方 conformance `auth/metadata-var1`）。迁移（A 类，默认行为不变）：old——只认 OAuth AS 元数据端点，OIDC-only AS 需调用方自行准备元数据；new——显式开启 `allow_legacy_metadata_fallback` 后自动补 OIDC 回退，调用方无需改动；未开启该开关者行为逐字不变。全局 0.3.13 迁移页由 T-24 负责，证据见 `.handoff/evidence/T-21/client-fix.md`）
 2. `client_id` 已配置且形态为 URL 时先 `ValidateClientId`（**CIMD**：必须是 HTTPS、含非根 path、无 fragment/userinfo；违规在所有认证入口统一抛 `InvalidParams`，[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)），再 `FetchClientMetadataDocument` GET 文档；文档超 1MB（`kMaxDcrBytes`）、非对象、所载 `client_id` 与请求 URL 不等、`grant_types`/`redirect_uris` 超 128 项、已配置 `redirect_uri` 非空却不在文档 `redirect_uris` 之列时记 Error 并回退已配置值（文档不可达时同样回退，不中断授权流）；文档中的 `token_endpoint_auth_method`（非空字符串）会被采纳进注册信息）；仅当**无** `client_id` 且 metadata 有 registration_endpoint 时才 `RegisterClient`（POST `{redirect_uris, client_name:"mcp-cpp-client", application_type}`，`application_type` 取 `OAuthClientOptions::application_type`，空时回退 `"native"`）
 3. 缓存 token 未过期直接成功（**先做 audience 检查**：缓存 `resource` 与当前 `ResolveResourceIndicator()` 失配时清空缓存并视为无 token）；过期但有 refresh_token → `RefreshTokens`；否则授权码流
 

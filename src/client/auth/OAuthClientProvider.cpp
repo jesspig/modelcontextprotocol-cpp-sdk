@@ -1604,13 +1604,16 @@ std::optional<OAuthMetadata> OAuthMetadata::DiscoverWithPolicy(
 
     if (!allow_legacy_fallback) return std::nullopt;
 
-    std::string metadata_url = url + "/.well-known/oauth-authorization-server";
-
-    auto resp = HttpGetUrl(metadata_url, policy);
-    if (resp && resp->status_code >= 200 && resp->status_code < 300) {
-        auto json = JsonValue::Parse(resp->body);
-        if (json.IsObject()) {
-            return ParseMetadataJson(json);
+    for (std::string_view suffix : {
+             "/.well-known/oauth-authorization-server",
+             "/.well-known/openid-configuration"}) {
+        std::string metadata_url = url + std::string(suffix);
+        auto resp = HttpGetUrl(metadata_url, policy);
+        if (resp && resp->status_code >= 200 && resp->status_code < 300) {
+            auto json = JsonValue::Parse(resp->body);
+            if (json.IsObject()) {
+                return ParseMetadataJson(json);
+            }
         }
     }
 

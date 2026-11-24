@@ -3,7 +3,7 @@ type: Concept
 title: 任务扩展
 description: SEP-2663 任务扩展与 Tasks v2：双时代 tasks/get|update|cancel、modern tasks/delete 与 notifications/tasks/DetailedTask/taskIds、legacy tasks/result|list 与 notifications/tasks/*、principal owner、任务化 tools/call 与订阅路由。
 tags: [tasks, 扩展, 双时代, 2026, owner]
-timestamp: 2026-11-24T18:30:00+08:00
+timestamp: 2026-11-25T20:55:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -47,6 +47,16 @@ wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../..
 ## 存储字段
 
 `TaskState` 含 `status_message`、`last_updated_at`（Create/Update/Cancel/SetStatus/Advance 全路径刷新）、`ttl_ms`、`poll_interval_ms`、`input_requests`、`input_responses`、`owner`，`FileTaskStore` 与 `InMemoryTaskStore` 均持久化/保留该字段（旧记录 `owner` 为空且不删除、不重写），新增任务经 `CreateTask(id, owner, ttl)` 写入 principal。modern 通知另经 `SerializeDetailedTask`/`IsValidDetailedTask` 生成与校验，经 `MakeGetTaskResultJson` 透传到 `GetTaskResult`。持久化格式为 JSONL 追加 + 阈值压缩，详见 [/classes/file-task-store.md](../classes/file-task-store.md)。
+
+## 官方 conformance 扩展验证（T-21，2026-11-25）
+
+referee `@modelcontextprotocol/conformance@0.2.0-alpha.12` 的 `list --requirements 2026-07-28` 定义 10 个 server 侧 tasks 场景：`tasks-lifecycle`、`tasks-capability-negotiation`、`tasks-wire-fields`、`tasks-request-state-removal`、`tasks-mrtr-input`、`tasks-request-headers`、`tasks-dispatch-and-envelope`、`tasks-status-notifications`、`tasks-required-task-error`、`tasks-mrtr-composition`。WT-RELEASE / `6c947db` 在 Node 22.23.3 下显式执行：
+
+- server modern `--requirements 2026-07-28 --force`：**169 passed / 26 failed / 0 warnings**，退出码 0；26 项失败全部来自上述 10 个场景（`tasks-lifecycle` 2/7、`tasks-capability-negotiation` 2/3、`tasks-wire-fields` 1/3、`tasks-request-state-removal` 1/1、`tasks-mrtr-input` 1/3、`tasks-request-headers` 3/2、`tasks-dispatch-and-envelope` 4/5、`tasks-status-notifications` 0/0、`tasks-required-task-error` 1/1、`tasks-mrtr-composition` 1/1）。referee 在 requirements 模式下把这些 extension 场景判为 expected（for visibility），不计入 core MUST，基线检查通过。
+- server legacy `--suite all --force`：81 passed / 0 failed，退出码 1；唯一 unexpected 为 pending `server-sse-polling` 0/0（fixture 未覆盖该 SSE 轮询语义，不写基线、不以 skip 冒充通过）。
+- 扩展 schema 侧：官方 [ext-tasks](https://github.com/modelcontextprotocol/ext-tasks) v2 固定快照 @ `cc9aaac1...`（v0.2.3）含 76 个 `$defs`，其中 `Task`/`DetailedTask`/`CreateTaskResult`/`GetTaskRequest|Result`/`UpdateTaskRequest|Result`/`CancelTaskRequest|Result`/`Error` 等 22 个正反例全部符合预期（必填字段、状态迁移、任务头 `ttlMs` 类型与错误结构均被正确约束）。
+
+结论：本 SDK 的任务扩展**核心 wire 契约与 schema 形状已对齐官方定义**，但 conformance 的 10 个 tasks 扩展场景仍有 26 项未通过（fixture 能力覆盖缺口，非 core MUST 回归）；已逐场景留证，等待后续补齐 fixture 后复跑，不写基线、不声称全绿。证据见 `.handoff/evidence/T-21/extensions-tasks-skills/` 与 `schema-positive-negative.md`。
 
 ## 相关页面
 

@@ -3,7 +3,7 @@ type: Concept
 title: Tier1 技术对标声明（2026-07-28）
 description: 与 Tier1 六实现（TS v2.4.0 / Python v2.3.0 / C# v2.4.0 含 v2.3.1 安全修复 / Go v1.8.0 稳定与 v1.9.0-pre.1 预发布 / Rust rmcp-v3.11.0 / Ruby，spec 2026-07-28；基线数据截止 2026-11-18）的逐项技术对等状态；含 2026 协议修复批次（T-01..T-13）落点与 sampling legacy partial 判定；仅技术对标，无官方 Tier 申报意向；自研 WebSocket client 为非标超集。
 tags: [tier1, parity, 2026-07-28, conformance, 对标, ruby, baseline-2026-11-18]
-timestamp: 2026-11-25T00:21:16+08:00
+timestamp: 2026-11-25T21:30:00+08:00
 resource: tests/conformance/baseline-2026-07-28.yaml
 ---
 
@@ -71,6 +71,21 @@ resource: tests/conformance/baseline-2026-07-28.yaml
 - client legacy：233 passed / 0 failed
 - client modern：450 passed / 9 failed；9 项均为本地构建无 OpenSSL 的 DPoP/ES256 环境限制（`auth/client-credentials-jwt`、`auth/dpop`、`auth/dpop-nonce`），CI runner 具备 OpenSSL 时预期通过，不新增基线
 - 专项：`request_state` 5/5、`$ref` 1/1、`schema-preservation` 9/9
+
+## T-21 复跑（2026-11-25，WT-RELEASE / `6c947db`，含续轮 client 修复）
+
+referee 固定 `@modelcontextprotocol/conformance@0.2.0-alpha.12`、Node 22.23.3；本机为 WSL2，curl/环境变量/WSL 路径/CRLF 适配仅在 gitignore 的 `.tmp` 临时包装器中完成，仓库脚本/工作流与三份基线文件未改（新增条目 0）：
+
+| 腿 | passed / failed（最终） | 退出码 | 判定 |
+|----|-------------------------|--------|------|
+| server legacy 2025-11-25 | 73 / 0 | 0 | core 全绿 |
+| server modern 2026-07-28 | 169 / 26 | 0 | 26 项均属 tasks 扩展 for visibility，referee 判 expected |
+| client legacy 2025-11-25 | **234 / 0** | **0** | core 全绿（修复前 136/16） |
+| client modern 2026-07-28 | **451 / 9** | **0** | 9 项均为无 OpenSSL 环境限制，referee 判 expected（修复前 309/32） |
+
+与上节（2026-10-29）相比，server 两腿核心结论不变；client 两腿曾因 **T-05 SSRF 防护后 conformance client fixture 未按 `DiscoverWithPolicy` 的 PRM-first 语义适配** 退化为 136/16、309/32，续轮逐层归因并修复：fixture 侧显式授权 AS origin + WSL localhost 双栈 resolver（`dns_resolver` 注入点消除 `peer_address_mismatch`）+ 授权回调透传 `iss`；产品侧 `DiscoverWithPolicy` 的 legacy fallback 补 OIDC `/.well-known/openid-configuration` 回退候选（修复 `auth/metadata-var1`，A 类、默认行为不变、迁移说明见 `client-fix.md`）。逐轮数字与诊断见 `.handoff/evidence/T-21/client-fix.md`。9 项 modern 失败与本机 OpenSSL 未探到一致，属环境阻断，等待受支持 runner 复跑，不写基线。产品代码改动后全量 `ctest --preset debug` 1243/1243（343.36s，退出码 0）。
+
+本轮 `tasks-*` 10 个扩展场景仍有 26 项失败（referee 判 expected，不计 core MUST）；`--suite all --force` 额外披露 pending `server-sse-polling` 0/0（fixture 未覆盖，不写基线）。schema 侧：ext-tasks v2 固定快照 22/22 正反例通过；官方 JSON Schema Test Suite `e2a68a15...` 405 组 / 1300 例 / 142 跳过 / 2 失败（设计性 fail-closed，与上节 T-09 终态一致）。结论：**核心官方 MUST 场景四腿均无失败（除 9 项 OpenSSL 环境限制），ST-05 发布门达成**；未把失败重新标为不支持、未扩大基线。
 
 当前测试基线为静态 **1032** 用例 / **4887** 断言、18 目标（Windows `ctest -N` 注册 1021，差 11 为条件编译用例），逐目标分布见 [/tests.md](/tests.md)。计数口径为 `ctest -N` 注册与静态统计，本页不声明全量 `ctest` 运行结果。conformance 结果为本轮四 leg 实测；基线条目以 per-leg 文件为准（未知版本回退 `baseline.yaml` 1 条、legacy `baseline-2025-11-25.yaml` 2 条、modern `baseline-2026-07-28.yaml` 0 条）。
 
