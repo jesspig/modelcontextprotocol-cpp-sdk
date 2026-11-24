@@ -3,7 +3,7 @@ type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发、Streamable HTTP 监听流按 stateless 判默认）、Close self-join 陷阱、异步 handler 收尾。
 tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-11-25T00:25:00+08:00
+timestamp: 2026-11-25T01:00:00+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -50,6 +50,8 @@ resource: include/mcp/detail/ThreadUtils.hpp
 统一关闭顺序：进入 `Closing` 停接收 → 关 `MessageChannel` 唤醒等待者 → 经既有失败路径结算 pending → 关 socket/pipe 并中断在途请求 → `JoinThreadSafely` join（回调线程内关闭 detach 而非 self-join）→ 一次性终止通知。generation 守卫让旧会话的 `message/error/close` 回调在新 generation 后全部丢弃；`TransportState` 新增末尾枚举值 `Closing`，旧值语义不变。
 
 确定性测试：`TransportLifecycleTest.*`（阶段、generation 失效、关闭等待、并发通知一次、并发 socket 关闭）与 `SessionHandlerTest.ConcurrentCloseHasSingleOwnerAndWakesPending`；所有等待均有界，不改 `MCP_RUN_WITH_TIMEOUT` 护栏。
+
+WebSocket 在该原语之下另有更细的握手状态（`WebSocketClient::HandshakeState`）：`Connecting → Open → Closing → Closed`，`SetConnected()` 改由 `on_open` 回调触发，即 101 完整验证后才把会话生命周期推进到 Open。Connecting 期间发送走有界队列（条数与序列化字节双上限），失败时逐条经 `on_error` 结算；`Closed` 为唯一终止态且只通知一次。总截止时间覆盖 DNS/TCP/TLS/写请求/读响应/重定向，`Close()` 先关 socket 打断阻塞读再 `JoinThreadSafely` join，IO 回调内 self-close 走 detach（见 [/transports/websocket.md](../transports/websocket.md)）。
 
 ## 相关页面
 

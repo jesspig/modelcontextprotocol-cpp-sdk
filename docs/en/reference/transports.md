@@ -99,6 +99,10 @@ Declared in `include/mcp/protocol/MessageChannel.hpp`.
 `stderr_path` and `on_stderr` are mutually exclusive: setting both makes `Connect()` throw `McpError(McpErrorCode::InvalidParams, "stderr_path and on_stderr are mutually exclusive")`.
 :::
 
+::: warning
+POSIX environment and PATH behaviour is tightened (source compatible): overrides used to be appended after the inherited environment (possibly duplicating keys), executable lookup read the parent process `getenv("PATH")`, and a directory with the execute bit could be mistaken for an executable. Now inherited entries are deduplicated by key and overrides take effect with the last value for each key; `inherit_environment_variables=false` never reads the parent environment; PATH comes from the final effective environment, an empty segment means the current directory, and directories or non-executable files are rejected. Without a custom environment the system `execvp` semantics still apply, and `argv[0]` plus the explicit working directory are unchanged. Downstream code relying on duplicate keys or the parent PATH should set `PATH` explicitly in `environment_variables` and keep `inherit_environment_variables=true` for the entries it still needs.
+:::
+
 The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` and `include/mcp/transport/StdioClientTransport.hpp`; the spawning and frame-reading behaviour is in `src/transport/StdioClientTransport.cpp`, and process-tree termination in `src/transport/detail/posix_platform.cpp` and `src/transport/detail/win32_platform.cpp`.
 
 ## Streamable HTTP server
@@ -226,6 +230,10 @@ The interface and Options are declared in `include/mcp/transport/StreamableHttpC
 
 The interfaces are declared in `include/mcp/transport/SseClientTransport.hpp` and `include/mcp/transport/WebSocketClientTransport.hpp`; the implementations are `src/transport/SseClientTransport.cpp` and `src/transport/detail/net/WebSocketClient.cpp`.
 
+::: warning
+WebSocket handshake behaviour is tightened (source compatible; public signatures unchanged): `Connect()` used to mark the transport Connected immediately and send before 101 without a bound, failing silently. Now the client stays Connecting until the status line, `Upgrade`, `Connection` and `Sec-WebSocket-Accept` all validate, then enters Open and marks the transport Connected; pre-101 messages are queued in order with a message cap of `kMaxWebSocketHandshakeQueueMessages` (64) and a serialized-byte cap of `kMaxWebSocketHandshakeQueueBytes` (1 MiB), with explicit errors through `SetOnError` when full or when the handshake fails, and new messages are rejected in Closing/Closed; failures, timeouts and closes reach one terminal state and notify once. A single deadline covers DNS/TCP/TLS/request write/response read/redirects, and close or timeout interrupts blocking reads before join. Redirects allow only the same host with the same port or a `ws:80 → wss:443` upgrade, at most `kMaxWebSocketRedirects` (5) hops; downgrades, cross-host, other cross-port, userinfo and malformed Locations are rejected, each hop uses a fresh Sec-WebSocket-Key and TLS verification is never relaxed. Downstream code relying on cross-host/downgrade redirects or unbounded pre-101 sends must configure a legal URL and honour the bounded queue errors; constructors and `Connect()` are unchanged.
+:::
+
 ## In-process transport
 
 | Symbol | Signature/Type | Default | Notes |
@@ -300,6 +308,9 @@ Declared in `include/mcp/http/SessionStore.hpp`; the idle timeout and capacity c
 | `kMaxSseEventBytes` | `size_t` | 1 MiB | Default per-SSE-event cap |
 | `kMaxStdioFrameBytes` | `size_t` | 8 MiB | Default stdio frame cap |
 | `kMaxHttpRedirects` | `int` | `5` | Default redirect hop budget |
+| `kMaxWebSocketRedirects` | `int` | `5` | WebSocket redirect hop cap |
+| `kMaxWebSocketHandshakeQueueMessages` | `size_t` | `64` | Pre-101 queued message cap |
+| `kMaxWebSocketHandshakeQueueBytes` | `size_t` | 1 MiB | Pre-101 queued serialized-byte cap |
 | `kChannelCapacity` | `size_t` | `64` | `MessageChannel` depth |
 | `kMaxHttpSessions` | `size_t` | `10000` | Session-store cap (full → 503 / `TrySave` failure) |
 | `kSessionIdleTimeoutMs` | `int64_t` | `1800000` | Session idle expiry |

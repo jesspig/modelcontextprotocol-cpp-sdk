@@ -39,11 +39,10 @@ private:
 WebSocketSessionTransport::~WebSocketSessionTransport() { Close(); }
 
 void WebSocketSessionTransport::Start() {
-    uint64_t generation = Generation();
     auto weak_self = std::weak_ptr<WebSocketSessionTransport>(
         std::static_pointer_cast<WebSocketSessionTransport>(shared_from_this()));
     ws_.SetCallbacks(
-        [weak_self, generation](std::string_view msg) {
+        [weak_self](std::string_view msg) {
             auto self = weak_self.lock();
             if (!self || !self->IsGenerationActive()) return;
             try {
@@ -54,13 +53,13 @@ void WebSocketSessionTransport::Start() {
                 self->NotifyError(std::string("WebSocket parse error: ") + e.what());
             }
         },
-        [weak_self, generation]() {
+        [weak_self]() {
             auto self = weak_self.lock();
             if (!self || !self->IsGenerationActive()) return;
             self->running_.store(false);
             self->CompleteShutdown();
         },
-        [weak_self, generation](std::string_view message) {
+        [weak_self](std::string_view message) {
             auto self = weak_self.lock();
             if (!self || !self->IsGenerationActive()) return;
             MCP_LOG(Error, std::string("WebSocket error: ") + std::string(message));
@@ -68,7 +67,10 @@ void WebSocketSessionTransport::Start() {
         });
 
     running_.store(true);
-    SetConnected();
+    ws_.SetOpenCallback([weak_self]() {
+        auto self = weak_self.lock();
+        if (self && self->IsGenerationActive()) self->SetConnected();
+    });
     ws_.Open(url_, std::chrono::seconds(30), true);
 }
 

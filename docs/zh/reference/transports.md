@@ -99,6 +99,10 @@
 `stderr_path` 与 `on_stderr` 互斥：两者同时设置时 `Connect()` 抛 `McpError(McpErrorCode::InvalidParams, "stderr_path and on_stderr are mutually exclusive")`。
 :::
 
+::: warning
+POSIX 环境与 PATH 行为收紧（源码兼容）：旧行为是覆盖项直接追加到继承环境之后（可能重复），可执行文件搜索读父进程的 `getenv("PATH")`，目录也会因可执行位被误当可执行文件。新行为是继承环境按 key 去重、覆盖项按 key 最后生效；`inherit_environment_variables=false` 完全不读父环境；PATH 取自最终有效环境，空段表示当前目录，目录与不可执行文件被拒绝。无自定义环境仍走系统 `execvp` 语义，`argv[0]` 与显式工作目录不变。受影响的下游若依赖重复键或父环境 PATH，请在 `environment_variables` 中显式设置 `PATH`，并用 `inherit_environment_variables=true` 保留需要的继承项。
+:::
+
 接口声明在 `include/mcp/transport/StdioServerTransport.hpp` 与 `include/mcp/transport/StdioClientTransport.hpp`；子进程与帧读取的行为在 `src/transport/StdioClientTransport.cpp`，进程树终止在 `src/transport/detail/posix_platform.cpp` 与 `src/transport/detail/win32_platform.cpp`。
 
 ## Streamable HTTP 服务端
@@ -226,6 +230,10 @@
 
 接口声明在 `include/mcp/transport/SseClientTransport.hpp` 与 `include/mcp/transport/WebSocketClientTransport.hpp`；实现分别在 `src/transport/SseClientTransport.cpp` 与 `src/transport/detail/net/WebSocketClient.cpp`。
 
+::: warning
+WebSocket 握手行为收紧（源码兼容，旧 API 签名不变）：旧行为是 `Connect()` 立即把传输标为 Connected，握手完成前发送的消息无界且失败静默。新行为是 101 前保持 Connecting，仅在状态行、`Upgrade`、`Connection`、`Sec-WebSocket-Accept` 全部验证通过后进入 Open 并把传输标为 Connected；101 前消息按入队顺序延迟发送，条数上限 `kMaxWebSocketHandshakeQueueMessages`（64）与序列化字节上限 `kMaxWebSocketHandshakeQueueBytes`（1 MiB），满载或握手失败经 `SetOnError` 明确报错，Closing/Closed 拒绝新消息；失败、超时、关闭进入唯一终止态且只通知一次。总截止时间覆盖 DNS/TCP/TLS/写请求/读响应/重定向，关闭或超时中断阻塞读写并 join。重定向仅允许同主机同端口或 `ws:80 → wss:443` 升级，最多 `kMaxWebSocketRedirects`（5）跳，拒绝降级、跨主机、其他跨端口、带 userinfo 与畸形 Location，每次跳转更换 Sec-WebSocket-Key 且不放宽 TLS 校验。受影响的下游若依赖跨主机/降级重定向或 101 前无界发送，请改为显式配置合法 URL 并尊重有界队列的报错；构造与 `Connect()` 签名不变。
+:::
+
 ## 进程内传输
 
 | 符号 | 签名/类型 | 默认值 | 说明 |
@@ -300,6 +308,9 @@
 | `kMaxSseEventBytes` | `size_t` | 1 MiB | SSE 单事件默认上限 |
 | `kMaxStdioFrameBytes` | `size_t` | 8 MiB | stdio 单帧默认上限 |
 | `kMaxHttpRedirects` | `int` | `5` | 重定向跳数默认值 |
+| `kMaxWebSocketRedirects` | `int` | `5` | WebSocket 重定向跳数上限 |
+| `kMaxWebSocketHandshakeQueueMessages` | `size_t` | `64` | 101 前排队条数上限 |
+| `kMaxWebSocketHandshakeQueueBytes` | `size_t` | 1 MiB | 101 前排队序列化字节上限 |
 | `kChannelCapacity` | `size_t` | `64` | `MessageChannel` 深度 |
 | `kMaxHttpSessions` | `size_t` | `10000` | 会话存储上限（满 → 503 / `TrySave` 失败） |
 | `kSessionIdleTimeoutMs` | `int64_t` | `1800000` | 会话闲置过期 |
