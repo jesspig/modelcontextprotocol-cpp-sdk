@@ -179,7 +179,7 @@ With `bearer_auth` enabled, POST/GET validate the token first, then `ServerReque
 | Symbol | Signature/Type | Default | Notes |
 |---|---|---|---|
 | `endpoint` | `std::string` | empty (required) | Server URL; `https` uses TLS |
-| `transport_mode` | `HttpTransportMode` | `AutoDetect` | Declared-only field: nothing in `src/` reads it; actual probing happens in `McpClient` version negotiation |
+| `transport_mode` | `HttpTransportMode` | `AutoDetect` | `AutoDetect` falls back to legacy SSE exactly once when the first `initialize` response is 400/404/405 with a body that is not a valid JSON-RPC error envelope; `StreamableHttp`/`Sse` select an implementation directly and never fall back |
 | `name` | `std::string` | `""` | Falls back to `"streamable-http"` |
 | `known_session_id` | `std::string` | `""` | Resumes an existing session |
 | `additional_headers` | `std::map<std::string, std::string>` | `{}` | Static extra headers |
@@ -207,7 +207,7 @@ With `bearer_auth` enabled, POST/GET validate the token first, then `ServerReque
 | `AutoDetect` / `StreamableHttp` / `Sse` | `enum class HttpTransportMode` | `AutoDetect` | Value type of `transport_mode`, declared in `include/mcp/transport/HttpTransportMode.hpp` |
 
 ::: info
-`transport_mode` and `HttpTransportMode` currently appear only in public headers and `tests/unit/StreamableHttpTransportTests.cpp`; no production code path consumes them, so do not infer connection behaviour from them.
+`AutoDetect` is consumed by the stable facade returned from `StreamableHttpClientTransport::Connect()`: the facade owns the single `MessageChannel` while inner Streamable HTTP/SSE sessions only perform IO, so replacing the inner session never changes the caller's channel. Only the first `initialize` response is classified. `McpClient` disables transport fallback for `ConnectMode::Pin/Legacy` through `ITransportFallbackControl::SetFallbackEnabled(false)` without changing negotiation semantics.
 :::
 
 The interface and Options are declared in `include/mcp/transport/StreamableHttpClientTransport.hpp`; POST, listen stream and replay are in `src/http/StreamableHttpClientTransport.cpp`, and the redirect constants in `include/mcp/transport/detail/Limits.hpp`.
@@ -224,6 +224,11 @@ The interface and Options are declared in `include/mcp/transport/StreamableHttpC
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` | Per-event cap |
 | `redirect_policy` | `detail::HttpRedirectPolicy` | `SameOriginOnly` | Redirect policy |
 | `max_redirects` | `int` | `5` | Maximum hop count |
+| `additional_headers` | `std::map<std::string, std::string>` | `{}` | Static extra headers on GET and POST |
+| `auth_challenge_handler` | `std::function<std::string(std::string_view)>` | unset | Always called on 401, on 403 only with `insufficient_scope`; a non-empty result is used by the next request |
+| `apply_per_request_headers` | `std::function<void(const HttpRequestHeaderContext&, std::map<std::string, std::string>&)>` | unset | Invoked before every GET/POST send and may override static headers |
+| `observe_response_challenge` | `std::function<void(const HttpResponseChallengeContext&)>` | unset | Invoked after each GET/POST response |
+| `on_establish_result` | `std::function<void(bool)>` | unset | Internal fallback hook: `true` on the first valid SSE event, `false` when retries are exhausted without establishment; normal users leave it unset |
 | `WebSocketClientTransport` | `class WebSocketClientTransport : public IClientTransport` | — | WebSocket client transport; **there is no Options struct**, only two constructor arguments |
 | Constructor | `WebSocketClientTransport(std::string url, std::string name = "websocket")` | `name = "websocket"` | `Name()` returns the constructed name verbatim, no fallback logic |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | Accepts `ws`/`wss` only; `wss` uses TLS; 30s connect timeout |
@@ -278,6 +283,13 @@ The interface is declared in `include/mcp/http/HttpServer.hpp`; `src/http/HttpSe
 - Old behavior: an empty `bind_host` bound `INADDR_ANY` (all interfaces); request/response `Content-Length` used naive multiply-add with duplicate headers resolved by last value; each SSE path split on `\n\n` independently, recognizing only CRLF/LF with inconsistent handling of a trailing `\r` across chunks; HTTP 202 was only logged, so a request's pending could hang.
 - New behavior: an empty `bind_host` binds only the IPv4 loopback `127.0.0.1`, while the default server card endpoint stays `localhost`; `Content-Length` checks multiplication overflow before comparing with the body limit and rejects empty, non-numeric, duplicate/conflicting and out-of-`size_t` values; `Transfer-Encoding` together with `Content-Length` is rejected, and chunk size overflow plus cumulative body limits are unified; SSE uses one incremental parser where CRLF/LF/CR/mixed endings and a trailing `\r` split across chunks are equivalent, blank lines dispatch events and the event limit is unchanged; 202 only acknowledges notifications (an empty body completes immediately), while a request receiving 202 immediately gets `ProtocolViolation (-32005)` on its pending and the connection is closed/drained without replay.
 - How to adapt: set `HttpServerOptions::bind_host = "0.0.0.0"` (or `"::"` for IPv6) explicitly when all-interface listening is required; make servers answer requests with a real JSON-RPC response/error instead of relying on a later GET/SSE after 202; send a single valid `Content-Length` and never combine it with `Transfer-Encoding`; make SSE servers emit standard CRLF/LF blank-line framing instead of relying on bare CR or trailing-CR chunk boundaries. Constructor and option field signatures are unchanged.
+:::
+
+::: warning Single legacy SSE fallback for AutoDetect (source compatible, unchanged API signatures)
+- Old behavior: `transport_mode` had no runtime reader, `AutoDetect` always used Streamable HTTP, and a 400/404/405 with a non-protocol body only produced an error.
+- New behavior: when the first `initialize` response is 400/404/405 and the body is not a valid JSON-RPC error envelope, `AutoDetect` stops sending, fully closes the old Streamable HTTP session (POST/listen/resume/DELETE/threads), then creates a legacy SSE session with the same endpoint, extra headers, per-request headers, challenge callbacks, redirect policy and size limits and replays that initialize message exactly once. Other statuses, valid error envelopes and later responses never fall back. If SSE cannot be established, pending ends in bounded fashion with `ConnectionClosed`, one error is reported and there is no retry loop. Explicit `StreamableHttp`/`Sse` modes and `ConnectMode::Pin/Legacy` never fall back.
+- Related SSE tightening (same compatibility surface): messages sent before the `endpoint` event used to be dropped, and any response body chunk reset the reconnect budget. Messages now wait for the `endpoint` event and are then sent in order (so fallback replay cannot be lost), and only a valid `endpoint`/`message` event resets the reconnect budget, so non-SSE error bodies cannot reconnect forever.
+- How to adapt: downstream code that must not fall back should set `transport_mode` to `StreamableHttp` or `Sse`, use `ConnectMode::Pin/Legacy` (the client disables transport fallback), or call `ITransportFallbackControl::SetFallbackEnabled(false)` on the returned transport; code that expected an immediate error on a text 400/404/405 body must expect one replayed legacy SSE initialization instead; code that relied on pre-endpoint sends being dropped or on error-body chunk resets must wait for the endpoint event before sending and have the server emit valid SSE frames. All new `SseClientTransportOptions` fields have defaults, so existing constructors and aggregate initialization remain valid.
 :::
 
 ### `EventStore`

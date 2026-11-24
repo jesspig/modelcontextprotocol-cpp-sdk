@@ -179,7 +179,7 @@ POSIX 环境与 PATH 行为收紧（源码兼容）：旧行为是覆盖项直�
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `endpoint` | `std::string` | 空（必填） | 服务端 URL；`https` 走 TLS |
-| `transport_mode` | `HttpTransportMode` | `AutoDetect` | 声明字段：`src/` 内无任何读取点，实际探测由 `McpClient` 版本协商完成 |
+| `transport_mode` | `HttpTransportMode` | `AutoDetect` | `AutoDetect` 首次初始化收到 400/404/405 且 body 非合法 JSON-RPC 错误信封时恰好回退一次 legacy SSE；`StreamableHttp`/`Sse` 直选实现，不回退 |
 | `name` | `std::string` | `""` | 空回退 `"streamable-http"` |
 | `known_session_id` | `std::string` | `""` | 恢复既有会话 |
 | `additional_headers` | `std::map<std::string, std::string>` | `{}` | 静态附加头 |
@@ -207,7 +207,7 @@ POSIX 环境与 PATH 行为收紧（源码兼容）：旧行为是覆盖项直�
 | `AutoDetect` / `StreamableHttp` / `Sse` | `enum class HttpTransportMode` | `AutoDetect` | 声明于 `include/mcp/transport/HttpTransportMode.hpp`，为 `transport_mode` 的取值类型 |
 
 ::: info
-`transport_mode` 与 `HttpTransportMode` 目前只出现在公共头文件与 `tests/unit/StreamableHttpTransportTests.cpp` 里，生产代码路径未消费；不要据此判断连接行为。
+`AutoDetect` 由 `StreamableHttpClientTransport::Connect()` 返回的稳定 facade 消费：facade 持有唯一 `MessageChannel`，内层 Streamable HTTP/SSE 只负责 IO，替换内层不改变调用方持有的 channel。仅首次 `initialize` 响应参与回退判定；`McpClient` 在 `ConnectMode::Pin/Legacy` 下通过 `ITransportFallbackControl::SetFallbackEnabled(false)` 关闭传输回退（协商语义不变）。
 :::
 
 接口与 Options 声明在 `include/mcp/transport/StreamableHttpClientTransport.hpp`；POST、监听流与回放行为在 `src/http/StreamableHttpClientTransport.cpp`，重定向策略常量在 `include/mcp/transport/detail/Limits.hpp`。
@@ -224,6 +224,11 @@ POSIX 环境与 PATH 行为收紧（源码兼容）：旧行为是覆盖项直�
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` | 单事件上限 |
 | `redirect_policy` | `detail::HttpRedirectPolicy` | `SameOriginOnly` | 重定向策略 |
 | `max_redirects` | `int` | `5` | 最大跳数 |
+| `additional_headers` | `std::map<std::string, std::string>` | `{}` | 静态附加头（GET 与 POST） |
+| `auth_challenge_handler` | `std::function<std::string(std::string_view)>` | 未设置 | 401 必调、403 含 `insufficient_scope` 才调；返回非空用于下一次请求 |
+| `apply_per_request_headers` | `std::function<void(const HttpRequestHeaderContext&, std::map<std::string, std::string>&)>` | 未设置 | GET/POST 每次发送前调用，可覆盖附加头 |
+| `observe_response_challenge` | `std::function<void(const HttpResponseChallengeContext&)>` | 未设置 | GET/POST 响应到达后各调用一次 |
+| `on_establish_result` | `std::function<void(bool)>` | 未设置 | 内部回退接线用：首个有效 SSE 事件为 `true`，重试预算耗尽仍未建立为 `false`；普通用户无需设置 |
 | `WebSocketClientTransport` | `class WebSocketClientTransport : public IClientTransport` | — | WebSocket 客户端传输；**没有 Options 结构体**，只有两个构造参数 |
 | 构造 | `WebSocketClientTransport(std::string url, std::string name = "websocket")` | `name = "websocket"` | `Name()` 原样返回构造名，无回退逻辑 |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | 只接受 `ws`/`wss`，`wss` 走 TLS，连接超时 30s |
@@ -278,6 +283,13 @@ WebSocket 握手行为收紧（源码兼容，旧 API 签名不变）：旧行�
 - 旧行为：`bind_host` 为空时绑定 `INADDR_ANY`（全网）；请求与响应的 `Content-Length` 用朴素乘加、重复头以最后值覆盖；SSE 各路径自行按 `\n\n` 分块，只有 CRLF/LF 被识别且跨块末尾 `\r` 处理不一致；HTTP 202 无论请求还是通知都只记日志，请求的 pending 可能悬挂。
 - 新行为：`bind_host` 为空只绑定 IPv4 loopback `127.0.0.1`，默认卡片端点仍是 `localhost`；`Content-Length` 先做乘法溢出检查再比 body 上限，空值/非数字/重复冲突/超 `size_t` 确定拒绝，`Transfer-Encoding` 与 `Content-Length` 共存拒绝，chunk size 溢出与累计上限统一；SSE 共用增量解析器，CRLF/LF/单独 CR/混合换行与跨块末尾 `\r` 等价，空行派发、事件上限不变；202 仅确认通知（空 body 直接完成），请求收到 202 立即投递 `ProtocolViolation (-32005)` 并关闭/排空连接，不自动重放。
 - 受影响怎么改：需要全网监听时显式设置 `HttpServerOptions::bind_host = "0.0.0.0"`（IPv6 用 `"::"`）；依赖请求收到 202 后由后续 GET/SSE 补响应的下游应改为让服务端返回正式 JSON-RPC 响应或错误；依赖重复/非法 framing 被宽容的下游应发送合规的单 `Content-Length` 且不同时出现 `Transfer-Encoding`；依赖裸 CR 或跨块尾 `\r` 旧行为的 SSE 服务端应发出标准 CRLF/LF 空行分帧。旧的 `SseClientTransport`/`HttpClientTransportOptions` 构造与 `HttpServerOptions` 字段签名均不变。
+:::
+
+::: warning AutoDetect 单次 legacy SSE 回退（源码兼容，旧 API 签名不变）
+- 旧行为：`transport_mode` 无运行时读取点，`AutoDetect` 始终走 Streamable HTTP；命中 400/404/405 的非协议 body 时只报错，不尝试 legacy SSE。
+- 新行为：`AutoDetect` 首次 `initialize` 响应为 400/404/405 且 body 不是合法 JSON-RPC 错误信封时，先停发并完整关闭旧 Streamable HTTP 会话（POST/listen/resume/DELETE/线程），再用相同 endpoint、附加头、每请求头、challenge 回调、重定向策略与大小上限建立 legacy SSE，并在新会话上恰好重放一次该初始化消息；其他状态、合法错误信封与后续响应不回退。SSE 建立失败时以 `ConnectionClosed` 有界结束 pending、只报一次错误，不循环重试。`StreamableHttp`/`Sse` 显式模式与 `ConnectMode::Pin/Legacy` 不回退。
+- 附带 SSE 收紧（同源兼容面）：旧行为是 endpoint 事件到达前发出的消息被静默丢弃，且任意响应 body 分块都会重置重连预算；新行为是消息等待 endpoint 事件后按序发出（避免回退重放丢失），只有有效 `endpoint`/`message` 事件才重置重连预算，非 SSE 错误体不再无限重连。
+- 受影响怎么改：不希望自动回退的下游把 `transport_mode` 显式设为 `StreamableHttp` 或 `Sse`，或使用 `ConnectMode::Pin/Legacy`（客户端自动关闭传输回退），也可对返回的传输调用 `ITransportFallbackControl::SetFallbackEnabled(false)`；依赖 400/404/405 文本 body 直接报错的下游需改为预期一次 legacy SSE 初始化重放；依赖 endpoint 前发送消息被丢弃或靠错误体重置重连预算的下游需改为等待 endpoint 事件后再发送、并让服务端返回合法 SSE 帧。`SseClientTransportOptions` 新增字段全部有默认值，旧构造与聚合初始化不变。
 :::
 
 ### `EventStore`

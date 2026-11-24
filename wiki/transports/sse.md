@@ -3,7 +3,7 @@ type: Transport
 title: SSE 客户端传输
 description: 服务端推送事件流（GET）+ POST 消息通道，支持 Last-Event-ID 断线回放与退避重连。
 tags: [transport, sse, 重连]
-timestamp: 2026-11-25T01:44:25+08:00
+timestamp: 2026-11-25T02:17:20+08:00
 resource: src/transport/SseClientTransport.cpp
 ---
 
@@ -29,7 +29,10 @@ resource: src/transport/SseClientTransport.cpp
 - 流结束且非显式关闭时**退避重连**：最多 2 次尝试（`kMaxReconnectAttempts`），退避 1s 起始 ×1.5 增长、封顶 30s（`kBackoffBase`/`kBackoffCap`）；服务端 `retry:` 与默认退避统一经 `sse_client_impl::ReconnectDelayForAttempt` 钳制到 **450–1000ms** 窗口（`kReconnectWaitFloor`/`kReconnectWaitCeiling`，对齐 SEP-1699 的 500ms −50ms/+200ms 口径；超大 `retry:` 先按整数比较再构造时长，避免 `milliseconds` 溢出回绕成立即重连；确定性无抖动，下探抖动会击穿 450ms 下限）；等待期间每 100ms 检查 `running_`，`Close()` 即时中断。同一钳制函数语义被 Streamable HTTP 客户端的 GET 监听流复用（见 [/transports/streamable-http.md](streamable-http.md)，其退避基数 ×1.5/封顶 30s/上限 5 次独立）
 - 流结束时先 `FlushSseBuffer()` 再算重连等待：`SseIncrementalParser::Flush()` 补派发已收齐完整行但无空行的帧（含 `id:`/`retry:` 的新值覆盖旧值），无换行符的截断行丢弃；无论是否补派发都重置解析器，防止残留拼接到下一条连接的首帧。补派发复用 `DispatchSseEvent` 语义，无 `id:`/`retry:` 的纯数据残尾仍按关流丢弃，不会误触发解析错误
 - 重试耗尽自行退出时：**不置 `running_`**，先 `channel_->Close()` 再 `notify_one()` 唤醒发送线程，最后 `SetDisconnected()`
-- 发送线程：条件变量取队列（wait 谓词含 `channel_ && !channel_->IsOpen()` 退出条件，通道关闭时也能退出），POST 到 endpoint，`Content-Type: application/json`
+- 发送线程：条件变量取队列（wait 谓词含 `channel_ && !channel_->IsOpen()` 退出条件，通道关闭时也能退出），**队列非空但 endpoint 尚未到达时继续等待**（`endpoint` 事件写入后置入 `endpoint_url_` 并 notify，避免回退重放或早发消息被静默丢弃），随后按入队顺序 POST 到 endpoint，`Content-Type: application/json`
+- 重连预算只由有效 `endpoint`/`message` SSE 事件重置；非 SSE 错误体的 body 分块不再把 `reconnect_attempts_` 清零，最多 2 次尝试后退出（旧行为下错误体可无限重连）
+- **Options 兼容增量**（`SseClientTransportOptions`，全部带默认值，旧构造与聚合初始化不变）：`additional_headers`（GET/POST 静态头）、`auth_challenge_handler`（401 必调，403 仅 `insufficient_scope`）、`apply_per_request_headers`（每次 GET/POST 前调用，可覆盖静态头）、`observe_response_challenge`（GET/POST 响应各回调一次）、`on_establish_result`（内部回退接线用；首个有效 `endpoint`/`message` 事件为 `true`，重试预算耗尽仍未建立为 `false`）
+- **AutoDetect 回退内层**：被回退创建的 SSE 会话采纳 facade 的 `MessageChannel`（自身退出时不关该 channel），以 `detail::SessionLifecycle` 的独立 generation 接入；facade 失败路径以 `ConnectionClosed` 结束 pending 并只报告一次错误
 
 ## 相关页面
 

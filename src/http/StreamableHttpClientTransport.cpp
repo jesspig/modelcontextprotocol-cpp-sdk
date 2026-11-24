@@ -8,6 +8,7 @@
 #include <mcp/ProtocolVersion.hpp>
 #include <mcp/transport/IRequestCanceller.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
+#include <transport/SseClientInternal.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/PlatformIO.hpp>
 #include <mcp/transport/detail/Url.hpp>
@@ -15,6 +16,7 @@
 #include <transport/detail/net/HttpClient.hpp>
 
 #include "McpParamHeaders.hpp"
+#include "StreamableHttpClientSessionControl.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -99,6 +101,16 @@ std::optional<std::string> NegotiatedVersionFromResponse(
         return version->GetString();
     } catch (...) {
         return std::nullopt;
+    }
+}
+
+bool IsJsonRpcErrorEnvelope(const std::string& body) {
+    if (body.empty()) return false;
+    try {
+        auto message = DeserializeMessage(body);
+        return std::holds_alternative<JsonRpcErrorResponse>(message);
+    } catch (...) {
+        return false;
     }
 }
 
@@ -344,16 +356,21 @@ std::string QueryResponseHeader(HINTERNET request, const wchar_t* name) {
 }
 
 class StreamableHttpSessionTransport : public TransportBase,
-                                       public IRequestCanceller {
+                                       public IRequestCanceller,
+                                       public IStreamableHttpSessionControl {
 public:
     StreamableHttpSessionTransport(
         HttpClientTransportOptions options,
         std::shared_ptr<detail::SessionLifecycle> lifecycle,
-        uint64_t generation)
+        uint64_t generation,
+        std::shared_ptr<MessageChannel> channel = nullptr,
+        std::function<void(int, const std::string&)> observe_initialize_response = {})
         : TransportBase()
         , options_(std::move(options))
+        , observe_initialize_response_(std::move(observe_initialize_response))
     {
         AdoptLifecycle(std::move(lifecycle), generation);
+        if (channel) AdoptMessageChannel(std::move(channel));
         current_session_id_ = options_.known_session_id;
     }
 
@@ -371,7 +388,7 @@ public:
     void Close() override {
         if (!running_.exchange(false)) return;
         BeginShutdown();
-        if (channel_) channel_->Close();
+        CloseMessageChannel();
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
             delete_pending_ = true;
@@ -400,7 +417,12 @@ public:
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
-        if (!running_) return;
+        if (!running_ || sends_suspended_) return;
+        auto* request = std::get_if<JsonRpcRequest>(&message);
+        if (request && request->method == streamable_http_client_impl::kInitializeMethod &&
+            !initialize_id_.has_value()) {
+            initialize_id_ = request->id;
+        }
         MaybeStartListenStream(message);
         bool is_request = IsRequest(message);
         auto body = SerializeMessage(std::move(message));
@@ -412,6 +434,15 @@ public:
             return;
         }
         send_cv_.notify_one();
+    }
+
+    void SuspendSends() override {
+        sends_suspended_.store(true);
+        {
+            std::lock_guard<std::mutex> lk(send_mutex_);
+            send_queue_ = {};
+        }
+        send_cv_.notify_all();
     }
 
 private:
@@ -469,6 +500,7 @@ private:
     }
 
     void LaunchImmediatePost(std::string body) {
+        if (sends_suspended_) return;
         try {
             auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
                 shared_from_this());
@@ -487,7 +519,8 @@ private:
         }
     }
     void MaybeStartListenStream(const JsonRpcMessage& message) {
-        if (!streamable_http_client_impl::ShouldListenStream(options_)) return;
+        if (sends_suspended_ ||
+            !streamable_http_client_impl::ShouldListenStream(options_)) return;
         auto* notification = AsNotification(message);
         if (!notification || notification->method !=
             streamable_http_client_impl::kInitializedNotificationMethod) {
@@ -699,9 +732,9 @@ private:
             {
                 std::unique_lock<std::mutex> lk(send_mutex_);
                 send_cv_.wait(lk, [this] {
-                    return !send_queue_.empty() || !running_;
+                    return !send_queue_.empty() || !running_ || sends_suspended_;
                 });
-                if (!running_) break;
+                if (!running_ || sends_suspended_) break;
                 body = std::move(send_queue_.front());
                 send_queue_.pop();
             }
@@ -713,7 +746,7 @@ private:
     }
 
     void DoDelete() {
-        if (options_.stateless) return;
+        if (options_.stateless || sends_suspended_) return;
         auto sid = CurrentSessionId();
         if (sid.empty()) return;
         HINTERNET hSession = WinHttpOpen(L"MCP-HTTP-Client/1.0",
@@ -770,6 +803,7 @@ private:
     }
 
     void DoPost(const std::string& body) {
+        if (sends_suspended_) return;
         std::string auth_value;
         std::string current_url = options_.endpoint;
         std::string current_body = body;
@@ -1048,6 +1082,15 @@ private:
                     WinHttpCloseHandle(hConnect);
                     WinHttpCloseHandle(hSession);
                     continue;
+                }
+                if (is_initialize && observe_initialize_response_) {
+                    observe_initialize_response_(static_cast<int>(status_code), err_body);
+                    if (sends_suspended_) {
+                        WinHttpCloseHandle(hRequest);
+                        WinHttpCloseHandle(hConnect);
+                        WinHttpCloseHandle(hSession);
+                        return;
+                    }
                 }
                 bool delivered = false;
                 if (!err_body.empty() && err_body.size() <= detail::kMaxMessageSize) {
@@ -1427,8 +1470,22 @@ private:
 
     bool DeliverIncoming(JsonRpcMessage message) {
         if (!IsGenerationActive()) return false;
+        NoteInitializeResponse(message);
         ObserveToolsListResult(message);
         return channel_ && channel_->Send(std::move(message));
+    }
+
+    void NoteInitializeResponse(const JsonRpcMessage& message) {
+        if (!initialize_id_.has_value() || !observe_initialize_response_) return;
+        const RequestId* id = nullptr;
+        if (auto* response = std::get_if<JsonRpcResponse>(&message)) {
+            id = &response->id;
+        } else if (auto* error = std::get_if<JsonRpcErrorResponse>(&message)) {
+            if (error->id.has_value()) id = &*error->id;
+        }
+        if (!id || *id != *initialize_id_) return;
+        initialize_id_.reset();
+        observe_initialize_response_(200, {});
     }
 
     void ObserveToolsListResult(JsonRpcMessage& message) {
@@ -1492,6 +1549,9 @@ private:
     std::atomic<HINTERNET> listen_request_{nullptr};
 
     http_detail::ToolAnnotationCache tool_annotations_;
+    std::function<void(int, const std::string&)> observe_initialize_response_;
+    std::optional<RequestId> initialize_id_;
+    std::atomic<bool> sends_suspended_{false};
 };
 
 } // namespace
@@ -1523,15 +1583,20 @@ struct PostBodyTooLarge {};
 struct ResumeMatched {};
 
 class StreamableHttpSessionTransport : public TransportBase,
-                                       public IRequestCanceller {
+                                       public IRequestCanceller,
+                                       public IStreamableHttpSessionControl {
 public:
     explicit StreamableHttpSessionTransport(
         HttpClientTransportOptions options,
         std::shared_ptr<detail::SessionLifecycle> lifecycle,
-        uint64_t generation)
+        uint64_t generation,
+        std::shared_ptr<MessageChannel> channel = nullptr,
+        std::function<void(int, const std::string&)> observe_initialize_response = {})
         : options_(std::move(options))
+        , observe_initialize_response_(std::move(observe_initialize_response))
     {
         AdoptLifecycle(std::move(lifecycle), generation);
+        if (channel) AdoptMessageChannel(std::move(channel));
         current_session_id_ = options_.known_session_id;
     }
 
@@ -1546,7 +1611,7 @@ public:
     void Close() override {
         if (!running_.exchange(false)) return;
         BeginShutdown();
-        if (channel_) channel_->Close();
+        CloseMessageChannel();
         {
             std::lock_guard<std::mutex> lk(send_mutex_);
             delete_pending_ = true;
@@ -1568,7 +1633,12 @@ public:
     }
 
     void SendMessageAsync(JsonRpcMessage message) override {
-        if (!running_) return;
+        if (!running_ || sends_suspended_) return;
+        auto* request = std::get_if<JsonRpcRequest>(&message);
+        if (request && request->method == streamable_http_client_impl::kInitializeMethod &&
+            !initialize_id_.has_value()) {
+            initialize_id_ = request->id;
+        }
         MaybeStartListenStream(message);
         bool is_request = IsRequest(message);
         auto body = SerializeMessage(std::move(message));
@@ -1580,6 +1650,15 @@ public:
             return;
         }
         send_cv_.notify_one();
+    }
+
+    void SuspendSends() override {
+        sends_suspended_.store(true);
+        {
+            std::lock_guard<std::mutex> lk(send_mutex_);
+            send_queue_ = {};
+        }
+        send_cv_.notify_all();
     }
 
 private:
@@ -1635,6 +1714,7 @@ private:
     }
 
     void LaunchImmediatePost(std::string body) {
+        if (sends_suspended_) return;
         try {
             auto self = std::static_pointer_cast<StreamableHttpSessionTransport>(
                 shared_from_this());
@@ -1652,7 +1732,8 @@ private:
         }
     }
     void MaybeStartListenStream(const JsonRpcMessage& message) {
-        if (!streamable_http_client_impl::ShouldListenStream(options_)) return;
+        if (sends_suspended_ ||
+            !streamable_http_client_impl::ShouldListenStream(options_)) return;
         auto* notification = AsNotification(message);
         if (!notification || notification->method !=
             streamable_http_client_impl::kInitializedNotificationMethod) {
@@ -1807,8 +1888,10 @@ private:
             std::string body;
             {
                 std::unique_lock<std::mutex> lk(send_mutex_);
-                send_cv_.wait(lk, [this]{ return !send_queue_.empty() || !running_; });
-                if (!running_) break;
+                send_cv_.wait(lk, [this]{
+                    return !send_queue_.empty() || !running_ || sends_suspended_;
+                });
+                if (!running_ || sends_suspended_) break;
                 body = std::move(send_queue_.front());
                 send_queue_.pop();
             }
@@ -1820,7 +1903,7 @@ private:
     }
 
     void DoDelete() {
-        if (options_.stateless) return;
+        if (options_.stateless || sends_suspended_) return;
         auto sid = CurrentSessionId();
         if (sid.empty()) return;
         detail::net::HttpRequestSpec req;
@@ -1845,6 +1928,7 @@ private:
     }
 
     void DoPost(const std::string& body) {
+        if (sends_suspended_) return;
         std::string auth_value;
         const std::optional<RequestId> post_request_id =
             streamable_http_client_impl::RequestIdFromBody(body);
@@ -2008,6 +2092,10 @@ private:
                 if (retry) {
                     if (!next_auth.empty()) auth_value = std::move(next_auth);
                     continue;
+                }
+                if (is_initialize && observe_initialize_response_) {
+                    observe_initialize_response_(resp.status_code, full_body);
+                    if (sends_suspended_) return;
                 }
                 bool delivered = false;
                 if (!full_body.empty() && full_body.size() <= detail::kMaxMessageSize) {
@@ -2261,11 +2349,28 @@ private:
     detail::net::HttpClient* active_post_client_ = nullptr;
 
     http_detail::ToolAnnotationCache tool_annotations_;
+    std::function<void(int, const std::string&)> observe_initialize_response_;
+    std::optional<RequestId> initialize_id_;
+    std::atomic<bool> sends_suspended_{false};
 
     bool DeliverIncoming(JsonRpcMessage message) {
         if (!IsGenerationActive()) return false;
+        NoteInitializeResponse(message);
         ObserveToolsListResult(message);
         return channel_ && channel_->Send(std::move(message));
+    }
+
+    void NoteInitializeResponse(const JsonRpcMessage& message) {
+        if (!initialize_id_.has_value() || !observe_initialize_response_) return;
+        const RequestId* id = nullptr;
+        if (auto* response = std::get_if<JsonRpcResponse>(&message)) {
+            id = &response->id;
+        } else if (auto* error = std::get_if<JsonRpcErrorResponse>(&message)) {
+            if (error->id.has_value()) id = &*error->id;
+        }
+        if (!id || *id != *initialize_id_) return;
+        initialize_id_.reset();
+        observe_initialize_response_(200, {});
     }
 
     void ObserveToolsListResult(JsonRpcMessage& message) {
@@ -2303,6 +2408,246 @@ private:
 } // namespace
 #endif
 
+namespace {
+
+constexpr std::chrono::milliseconds kFallbackEstablishWait{10000};
+
+SseClientTransportOptions BuildSseOptions(const HttpClientTransportOptions& options) {
+    SseClientTransportOptions sse;
+    sse.server_url = options.endpoint;
+    sse.name = options.name.empty() ? std::string{"sse"} : options.name;
+    sse.max_sse_event_bytes = options.max_sse_event_bytes;
+    sse.redirect_policy = options.redirect_policy;
+    sse.max_redirects = options.max_redirects;
+    sse.additional_headers = options.additional_headers;
+    sse.auth_challenge_handler = options.auth_challenge_handler;
+    sse.apply_per_request_headers = options.apply_per_request_headers;
+    sse.observe_response_challenge = options.observe_response_challenge;
+    return sse;
+}
+
+class HttpAutoDetectFacadeTransport final : public TransportBase,
+                                             public ITransportFallbackControl {
+public:
+    explicit HttpAutoDetectFacadeTransport(HttpClientTransportOptions options)
+        : options_(std::move(options))
+    {
+    }
+
+    ~HttpAutoDetectFacadeTransport() override { Close(); }
+
+    bool IsStateless() const override { return options_.stateless; }
+
+    void SetFallbackEnabled(bool enabled) override { fallback_enabled_.store(enabled); }
+
+    void Start() override {
+        if (running_.exchange(true)) return;
+        SetConnected();
+        std::lock_guard<std::mutex> lock(mutex_);
+        inner_lifecycle_ = std::make_shared<detail::SessionLifecycle>();
+        CreateInnerLocked(options_.transport_mode);
+    }
+
+    void SendMessageAsync(JsonRpcMessage message) override {
+        std::shared_ptr<ITransport> inner;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_) return;
+            if (fallback_pending_) {
+                deferred_.push_back(std::move(message));
+                return;
+            }
+            auto* request = std::get_if<JsonRpcRequest>(&message);
+            if (request != nullptr &&
+                request->method == streamable_http_client_impl::kInitializeMethod &&
+                !replay_message_.has_value() && !first_response_seen_) {
+                replay_message_ = message;
+            }
+            inner = inner_;
+        }
+        if (inner) inner->SendMessageAsync(std::move(message));
+    }
+
+    void Close() override {
+        std::shared_ptr<ITransport> inner;
+        std::thread worker;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_.exchange(false)) return;
+            BeginShutdown();
+            inner = std::move(inner_);
+            worker = std::move(fallback_thread_);
+            fallback_pending_ = false;
+            cv_.notify_all();
+        }
+        if (inner) inner->Close();
+        detail::JoinThreadSafely(worker);
+        CloseMessageChannel();
+        CompleteShutdown();
+    }
+
+    void OnInitializeResponse(int status_code, const std::string& body) {
+        if (options_.transport_mode != HttpTransportMode::AutoDetect ||
+            !fallback_enabled_.load()) return;
+        std::shared_ptr<ITransport> old;
+        std::optional<JsonRpcMessage> replay;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_ || first_response_seen_ || fallback_spent_ ||
+                fallback_pending_ || !inner_lifecycle_) {
+                return;
+            }
+            first_response_seen_ = true;
+            if (status_code != 400 && status_code != 404 && status_code != 405) return;
+            if (streamable_http_client_impl::IsJsonRpcErrorEnvelope(body)) return;
+            fallback_pending_ = true;
+            fallback_spent_ = true;
+            replay = replay_message_;
+            old = inner_;
+        }
+        if (auto* control = dynamic_cast<IStreamableHttpSessionControl*>(old.get())) {
+            control->SuspendSends();
+        }
+        std::weak_ptr<HttpAutoDetectFacadeTransport> weak = WeakSelf();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_) return;
+            fallback_thread_ = std::thread(
+                [weak, replay = std::move(replay)]() mutable {
+                    if (auto self = weak.lock()) self->RunFallback(replay);
+                });
+        }
+    }
+
+private:
+    std::weak_ptr<HttpAutoDetectFacadeTransport> WeakSelf() {
+        return std::dynamic_pointer_cast<HttpAutoDetectFacadeTransport>(
+            shared_from_this());
+    }
+
+    void CreateInnerLocked(HttpTransportMode mode) {
+        uint64_t generation = inner_lifecycle_->BeginConnect(kFallbackEstablishWait);
+        current_generation_ = generation;
+        std::weak_ptr<HttpAutoDetectFacadeTransport> weak = WeakSelf();
+        if (mode == HttpTransportMode::Sse) {
+            inner_ = sse_client_impl::CreateSession(
+                BuildSseOptions(options_), inner_lifecycle_, generation, channel_);
+            return;
+        }
+        std::function<void(int, const std::string&)> observe;
+        if (mode == HttpTransportMode::AutoDetect) {
+            observe = [weak](int status_code, const std::string& body) {
+                if (auto self = weak.lock()) self->OnInitializeResponse(status_code, body);
+            };
+        }
+        auto session = std::make_shared<StreamableHttpSessionTransport>(
+            options_, inner_lifecycle_, generation, channel_, std::move(observe));
+        session->Start();
+        inner_ = session;
+    }
+
+    void RunFallback(const std::optional<JsonRpcMessage>& replay) {
+        std::shared_ptr<ITransport> old;
+        uint64_t old_generation = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            old = inner_;
+            old_generation = current_generation_;
+        }
+        if (old) old->Close();
+        inner_lifecycle_->WaitClosed(old_generation, kFallbackEstablishWait);
+
+        uint64_t generation = inner_lifecycle_->BeginConnect(kFallbackEstablishWait);
+        std::weak_ptr<HttpAutoDetectFacadeTransport> weak = WeakSelf();
+        auto options = BuildSseOptions(options_);
+        options.on_establish_result = [weak](bool established) {
+            if (auto self = weak.lock()) self->OnSseEstablish(established);
+        };
+        auto sse = sse_client_impl::CreateSession(
+            options, inner_lifecycle_, generation, channel_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_) {
+                sse->Close();
+                return;
+            }
+            inner_ = sse;
+            current_generation_ = generation;
+        }
+        if (replay.has_value()) sse->SendMessageAsync(*replay);
+        bool failed = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait_for(lock, kFallbackEstablishWait, [this] {
+                return sse_established_ || sse_failed_ || !running_;
+            });
+            failed = !sse_established_ || !running_;
+        }
+        if (failed) {
+            OnSseEstablish(false);
+            Close();
+        }
+    }
+
+    void OnSseEstablish(bool established) {
+        std::shared_ptr<ITransport> inner;
+        std::vector<JsonRpcMessage> deferred;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_ || !fallback_pending_) return;
+            if (established) {
+                sse_established_ = true;
+                fallback_pending_ = false;
+                inner = inner_;
+                deferred = std::move(deferred_);
+                deferred_.clear();
+            } else {
+                if (sse_failed_) return;
+                sse_failed_ = true;
+                failed_id_ = RequestId{int64_t(0)};
+                if (replay_message_.has_value()) {
+                    if (auto* request = std::get_if<JsonRpcRequest>(&*replay_message_)) {
+                        failed_id_ = request->id;
+                    }
+                }
+            }
+            if (established) {
+                for (auto& message : deferred) {
+                    if (inner) inner->SendMessageAsync(std::move(message));
+                }
+            }
+            cv_.notify_all();
+        }
+        if (established) return;
+        JsonRpcErrorResponse error;
+        error.id = failed_id_;
+        error.error.code = McpErrorCode::ConnectionClosed;
+        error.error.message = "legacy SSE fallback failed to establish";
+        if (channel_) (void)channel_->Send(JsonRpcMessage(std::move(error)));
+        NotifyError("legacy SSE fallback failed to establish");
+    }
+
+    HttpClientTransportOptions options_;
+    std::shared_ptr<detail::SessionLifecycle> inner_lifecycle_;
+    std::shared_ptr<ITransport> inner_;
+    uint64_t current_generation_ = 0;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> fallback_enabled_{true};
+    bool first_response_seen_ = false;
+    bool fallback_spent_ = false;
+    bool fallback_pending_ = false;
+    bool sse_established_ = false;
+    bool sse_failed_ = false;
+    std::optional<JsonRpcMessage> replay_message_;
+    std::optional<RequestId> failed_id_;
+    std::vector<JsonRpcMessage> deferred_;
+    std::thread fallback_thread_;
+};
+
+} // namespace
+
 StreamableHttpClientTransport::StreamableHttpClientTransport(
     const HttpClientTransportOptions& options)
     : options_(options) {}
@@ -2314,26 +2659,13 @@ std::string_view StreamableHttpClientTransport::Name() const {
 }
 
 std::shared_ptr<ITransport> StreamableHttpClientTransport::Connect() {
-#ifdef _WIN32
-    const auto connect_wait = kStreamableHttpWinConnectWait;
-    const auto close_wait = kStreamableHttpWinCloseWait;
-#else
-    const auto connect_wait = kStreamableHttpPosixConnectWait;
-    const auto close_wait = kStreamableHttpPosixCloseWait;
-#endif
     std::lock_guard<std::mutex> lock(connect_mutex_);
     auto previous = std::move(current_);
-    uint64_t previous_generation = current_generation_;
-    if (previous) {
-        previous->Close();
-        lifecycle_->WaitClosed(previous_generation, close_wait);
-    }
-    uint64_t generation = lifecycle_->BeginConnect(connect_wait);
-    auto session = std::make_shared<StreamableHttpSessionTransport>(options_, lifecycle_, generation);
-    session->Start();
-    current_generation_ = generation;
-    current_ = session;
-    return session;
+    if (previous) previous->Close();
+    auto facade = std::make_shared<HttpAutoDetectFacadeTransport>(options_);
+    facade->Start();
+    current_ = facade;
+    return facade;
 }
 
 } // namespace mcp

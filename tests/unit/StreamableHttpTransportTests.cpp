@@ -12,11 +12,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <future>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -3730,4 +3732,427 @@ TEST(SessionIsolationTest, LogsRedactCredentialsAndSessionIdentifiers) {
     }
     EXPECT_TRUE(saw_context);
     server.Close();
+}
+
+namespace {
+
+struct AutoDetectReader {
+    struct State {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::queue<JsonRpcMessage> messages;
+        bool closed = false;
+    };
+
+    explicit AutoDetectReader(MessageChannel& channel) : channel_(channel) {
+        auto state = state_;
+        MessageChannel* source = &channel_;
+        worker_ = std::thread([state, source] {
+            for (;;) {
+                source->AsyncReceive([state](std::error_code ec, JsonRpcMessage msg) {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (ec) {
+                        state->closed = true;
+                    } else {
+                        state->messages.push(std::move(msg));
+                    }
+                    state->cv.notify_all();
+                });
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->closed) break;
+            }
+        });
+    }
+
+    ~AutoDetectReader() {
+        channel_.Close();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    bool Wait(JsonRpcMessage& out,
+              std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+        auto state = state_;
+        std::unique_lock<std::mutex> lock(state->mutex);
+        if (!state->cv.wait_for(lock, timeout, [&state] {
+                return !state->messages.empty() || state->closed;
+            })) {
+            return false;
+        }
+        if (state->messages.empty()) return false;
+        out = std::move(state->messages.front());
+        state->messages.pop();
+        return true;
+    }
+
+private:
+    MessageChannel& channel_;
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::thread worker_;
+};
+
+struct AutoDetectMock {
+    explicit AutoDetectMock(uint16_t p) : port(p), server(p) {}
+
+    void Start() {
+        server.SetHandler("POST", "/mcp", [this](const HttpRequest& req, HttpResponse& resp) {
+            const int index = mcp_posts.fetch_add(1);
+            if (success_first && index == 0) {
+                resp.status_code = 200;
+                resp.body = InitBody(req.body);
+                return;
+            }
+            resp.status_code = status_code;
+            resp.status_text = "Error";
+            resp.body = error_body;
+        });
+        server.SetHandler("GET", "/mcp", [this](const HttpRequest& req, HttpResponse& resp) {
+            if (req.headers.find("mcp-protocol-version") != req.headers.end()) {
+                listen_gets.fetch_add(1);
+                resp.status_code = 405;
+                resp.body = "listen disabled";
+                return;
+            }
+            sse_gets.fetch_add(1);
+            if (!sse_available) {
+                resp.status_code = 404;
+                resp.body = "no legacy sse";
+                return;
+            }
+            resp.is_sse = true;
+            resp.body = "event: endpoint\ndata: /message\n\n";
+        });
+        server.SetHandler("POST", "/message", [this](const HttpRequest& req, HttpResponse& resp) {
+            message_posts.fetch_add(1);
+            auto body = JsonValue::Parse(req.body);
+            auto* method = body.Find("method");
+            {
+                std::lock_guard<std::mutex> lock(methods_mutex);
+                methods.push_back(method && method->IsString() ? method->GetString() : std::string{});
+            }
+            std::string result = "{}";
+            if (method && method->IsString() && method->GetString() == "initialize") {
+                result = R"({"protocolVersion":"2025-11-25","capabilities":{},)"
+                         R"("serverInfo":{"name":"legacy","version":"1"}})";
+            }
+            auto response = "{\"jsonrpc\":\"2.0\",\"id\":" + IdLiteral(body) +
+                            ",\"result\":" + result + "}";
+            server.BroadcastSse("event: message\ndata: " + response + "\n\n");
+        });
+        server.Start();
+    }
+
+    void Stop() { server.Stop(); }
+
+    static std::string IdLiteral(const JsonValue& body) {
+        auto* id = body.Find("id");
+        if (id && id->IsInt()) return std::to_string(id->GetInt());
+        if (id && id->IsString()) return "\"" + id->GetString() + "\"";
+        return "null";
+    }
+
+    static std::string InitBody(const std::string& request) {
+        auto body = JsonValue::Parse(request);
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + IdLiteral(body) +
+               R"(,"result":{"protocolVersion":"2025-11-25","capabilities":{},)"
+               R"("serverInfo":{"name":"mock","version":"1"}}})";
+    }
+
+    uint16_t port;
+    HttpServer server;
+    int status_code = 400;
+    std::string error_body = "<html>legacy only</html>";
+    bool sse_available = true;
+    bool success_first = false;
+    std::atomic<int> mcp_posts{0};
+    std::atomic<int> listen_gets{0};
+    std::atomic<int> sse_gets{0};
+    std::atomic<int> message_posts{0};
+    std::mutex methods_mutex;
+    std::vector<std::string> methods;
+};
+
+JsonRpcRequest AutoDetectRequest(std::string method, int64_t id) {
+    JsonRpcRequest request;
+    request.method = std::move(method);
+    request.id = id;
+    return request;
+}
+
+bool IsResponseTo(const JsonRpcMessage& message, int64_t id) {
+    auto* response = std::get_if<JsonRpcResponse>(&message);
+    return response != nullptr && std::holds_alternative<int64_t>(response->id) &&
+           std::get<int64_t>(response->id) == id;
+}
+
+} // namespace
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackReplaysInitializeOnceAndKeepsOrder) {
+    auto port = PickFreePort(kTestBasePort + 2500);
+    AutoDetectMock mock(port);
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    ASSERT_NE(transport, nullptr);
+    AutoDetectReader reader(transport->GetMessageChannel());
+
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 1));
+    JsonRpcMessage message;
+    if (!reader.Wait(message)) {
+        ADD_FAILURE() << "mcp_posts=" << mock.mcp_posts.load()
+                      << " sse_gets=" << mock.sse_gets.load()
+                      << " listen_gets=" << mock.listen_gets.load()
+                      << " message_posts=" << mock.message_posts.load();
+        transport->Close();
+        mock.Stop();
+        return;
+    }
+    EXPECT_TRUE(IsResponseTo(message, 1));
+
+    transport->SendMessageAsync(AutoDetectRequest("tools/list", 2));
+    ASSERT_TRUE(reader.Wait(message));
+    EXPECT_TRUE(IsResponseTo(message, 2));
+
+    JsonRpcNotification note;
+    note.method = "notifications/initialized";
+    transport->SendMessageAsync(std::move(note));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    transport->Close();
+    mock.Stop();
+
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.listen_gets.load(), 0);
+    EXPECT_GE(mock.sse_gets.load(), 1);
+    EXPECT_EQ(mock.message_posts.load(), 3);
+    std::lock_guard<std::mutex> lock(mock.methods_mutex);
+    EXPECT_EQ(mock.methods, (std::vector<std::string>{
+                                "initialize", "tools/list", "notifications/initialized"}));
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackStatusAndBodyMatrix) {
+    struct Case {
+        int status;
+        std::string body;
+    };
+    const Case cases[] = {
+        {400, "<html>legacy only</html>"},
+        {400, "plain text legacy"},
+        {400, ""},
+        {404, "<html>legacy only</html>"},
+        {404, "plain text legacy"},
+        {404, ""},
+        {405, "<html>legacy only</html>"},
+        {405, "plain text legacy"},
+        {405, ""},
+    };
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        auto port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 2520 + i));
+        AutoDetectMock mock(port);
+        mock.status_code = cases[i].status;
+        mock.error_body = cases[i].body;
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        AutoDetectReader reader(transport->GetMessageChannel());
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 41));
+
+        JsonRpcMessage message;
+        ASSERT_TRUE(reader.Wait(message)) << "case " << i;
+        EXPECT_TRUE(IsResponseTo(message, 41)) << "case " << i;
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 1) << "case " << i;
+        EXPECT_GE(mock.sse_gets.load(), 1) << "case " << i;
+        EXPECT_EQ(mock.message_posts.load(), 1) << "case " << i;
+    }
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectKeepsJsonRpcErrorEnvelopeOn400) {
+    auto port = PickFreePort(kTestBasePort + 2560);
+    AutoDetectMock mock(port);
+    mock.status_code = 400;
+    mock.error_body =
+        R"({"jsonrpc":"2.0","id":7,"error":{"code":-32600,"message":"bad request"}})";
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    AutoDetectReader reader(transport->GetMessageChannel());
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 7));
+
+    JsonRpcMessage message;
+    ASSERT_TRUE(reader.Wait(message));
+    auto* error = std::get_if<JsonRpcErrorResponse>(&message);
+    ASSERT_TRUE(error != nullptr);
+    EXPECT_EQ(static_cast<int64_t>(error->error.code), -32600);
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.sse_gets.load(), 0);
+    EXPECT_EQ(mock.message_posts.load(), 0);
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectSkipsFallbackForNonLegacyStatuses) {
+    struct Case {
+        uint16_t offset;
+        int status;
+    };
+    const Case cases[] = {
+        {2570, 401}, {2571, 403}, {2572, 500},
+    };
+    for (const auto& item : cases) {
+        auto port = PickFreePort(static_cast<uint16_t>(kTestBasePort + item.offset));
+        AutoDetectMock mock(port);
+        mock.status_code = item.status;
+        mock.error_body = "plain failure";
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 9));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 1) << item.status;
+        EXPECT_EQ(mock.sse_gets.load(), 0) << item.status;
+    }
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectDoesNotFallBackAfterFirstResponse) {
+    auto port = PickFreePort(kTestBasePort + 2580);
+    AutoDetectMock mock(port);
+    mock.success_first = true;
+    mock.status_code = 400;
+    mock.error_body = "plain legacy";
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    AutoDetectReader reader(transport->GetMessageChannel());
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 11));
+    JsonRpcMessage message;
+    ASSERT_TRUE(reader.Wait(message));
+    EXPECT_TRUE(IsResponseTo(message, 11));
+
+    transport->SendMessageAsync(AutoDetectRequest("tools/list", 12));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 2);
+    EXPECT_EQ(mock.sse_gets.load(), 0);
+    EXPECT_EQ(mock.message_posts.load(), 0);
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectExplicitModesChooseImplementationDirectly) {
+    {
+        auto port = PickFreePort(kTestBasePort + 2590);
+        AutoDetectMock mock(port);
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        opts.transport_mode = HttpTransportMode::StreamableHttp;
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 13));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 1);
+        EXPECT_EQ(mock.sse_gets.load(), 0);
+    }
+    {
+        auto port = PickFreePort(kTestBasePort + 2591);
+        AutoDetectMock mock(port);
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        opts.transport_mode = HttpTransportMode::Sse;
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        AutoDetectReader reader(transport->GetMessageChannel());
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 14));
+        JsonRpcMessage message;
+        ASSERT_TRUE(reader.Wait(message));
+        EXPECT_TRUE(IsResponseTo(message, 14));
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 0);
+        EXPECT_GE(mock.sse_gets.load(), 1);
+        EXPECT_EQ(mock.message_posts.load(), 1);
+    }
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackFailureEndsPendingOnce) {
+    auto port = PickFreePort(kTestBasePort + 2600);
+    AutoDetectMock mock(port);
+    mock.sse_available = false;
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    std::atomic<int> errors{0};
+    dynamic_cast<TransportBase*>(transport.get())->SetOnError(
+        [&](std::string_view) { errors.fetch_add(1); });
+    AutoDetectReader reader(transport->GetMessageChannel());
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 15));
+
+    JsonRpcMessage message;
+    ASSERT_TRUE(reader.Wait(message, std::chrono::seconds(12)));
+    auto* error = std::get_if<JsonRpcErrorResponse>(&message);
+    ASSERT_TRUE(error != nullptr);
+    ASSERT_TRUE(error->id.has_value());
+    EXPECT_EQ(std::get<int64_t>(*error->id), 15);
+    EXPECT_EQ(static_cast<int64_t>(error->error.code),
+              static_cast<int64_t>(McpErrorCode::ConnectionClosed));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(errors.load(), 1);
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.message_posts.load(), 0);
+    EXPECT_LE(mock.sse_gets.load(), 3);
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackCanBeDisabledByControl) {
+    auto port = PickFreePort(kTestBasePort + 2610);
+    AutoDetectMock mock(port);
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    auto* control = dynamic_cast<ITransportFallbackControl*>(transport.get());
+    ASSERT_TRUE(control != nullptr);
+    control->SetFallbackEnabled(false);
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 16));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.sse_gets.load(), 0);
+    EXPECT_EQ(mock.message_posts.load(), 0);
 }

@@ -620,6 +620,11 @@ McpClient::McpClient(
     elicitation_handler_ = options_.elicitation_handler;
     url_elicitation_handler_ = options_.url_elicitation_handler;
     options_.capabilities = DeriveClientCapabilities(options_);
+    if (options.connect_mode != ConnectMode::Auto) {
+        if (auto* control = dynamic_cast<ITransportFallbackControl*>(transport_.get())) {
+            control->SetFallbackEnabled(false);
+        }
+    }
 
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(

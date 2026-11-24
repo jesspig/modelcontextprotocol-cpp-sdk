@@ -62,10 +62,12 @@ protected:
     bool BeginShutdown();
     void CompleteShutdown();
     void AdoptLifecycle(std::shared_ptr<detail::SessionLifecycle> lifecycle, uint64_t generation);
+    void AdoptMessageChannel(std::shared_ptr<MessageChannel> channel);
+    void CloseMessageChannel();
     [[nodiscard]] uint64_t Generation() const { return generation_; }
     [[nodiscard]] bool IsGenerationActive() const;
 
-    std::unique_ptr<MessageChannel> channel_;
+    std::shared_ptr<MessageChannel> channel_;
     std::string session_id_;
     std::atomic<int> state_{0};
     std::function<void()> on_close_;
@@ -73,6 +75,7 @@ protected:
     std::mutex callback_mutex_;
     std::shared_ptr<detail::SessionLifecycle> lifecycle_;
     uint64_t generation_ = 0;
+    bool close_channel_owned_ = true;
 };
 
 class MCP_API IClientTransport {
@@ -82,8 +85,14 @@ public:
     [[nodiscard]] virtual std::shared_ptr<ITransport> Connect() = 0;
 };
 
+class MCP_API ITransportFallbackControl {
+public:
+    virtual ~ITransportFallbackControl() = default;
+    virtual void SetFallbackEnabled(bool enabled) = 0;
+};
+
 inline TransportBase::TransportBase() {
-    channel_ = std::make_unique<MessageChannel>(detail::kChannelCapacity);
+    channel_ = std::make_shared<MessageChannel>(detail::kChannelCapacity);
     lifecycle_ = std::make_shared<detail::SessionLifecycle>();
 }
 inline TransportBase::~TransportBase() = default;
@@ -130,6 +139,15 @@ inline void TransportBase::AdoptLifecycle(
     std::shared_ptr<detail::SessionLifecycle> lifecycle, uint64_t generation) {
     lifecycle_ = std::move(lifecycle);
     generation_ = generation;
+}
+
+inline void TransportBase::AdoptMessageChannel(std::shared_ptr<MessageChannel> channel) {
+    channel_ = std::move(channel);
+    close_channel_owned_ = false;
+}
+
+inline void TransportBase::CloseMessageChannel() {
+    if (close_channel_owned_ && channel_) channel_->Close();
 }
 
 inline bool TransportBase::IsGenerationActive() const {
