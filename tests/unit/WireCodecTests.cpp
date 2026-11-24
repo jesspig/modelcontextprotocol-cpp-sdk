@@ -2,11 +2,13 @@
 #include <mcp/protocol/WireCodec.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/McpCore.hpp>
+#include <mcp/server/McpTaskStore.hpp>
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <future>
+#include <string>
 
 using namespace mcp;
 
@@ -190,12 +192,13 @@ TEST(WireCodecTest, Rev2026HasMessageSubscriptionAndTaskNotifications) {
     auto codec = MakeWireCodec("2026-07-28");
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/message"));
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/subscriptions/acknowledged"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/status"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/working"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/completed"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/failed"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/cancelled"));
-    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks/input_required"));
+    EXPECT_TRUE(codec->HasNotificationMethod("notifications/tasks"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/status"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/working"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/completed"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/failed"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/cancelled"));
+    EXPECT_FALSE(codec->HasNotificationMethod("notifications/tasks/input_required"));
     EXPECT_TRUE(codec->HasNotificationMethod("notifications/triggers/event"));
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/roots/list_changed"));
     EXPECT_FALSE(codec->HasNotificationMethod("notifications/initialized"));
@@ -277,7 +280,7 @@ TEST(WireCodecTest, Rev2026ValidateNotificationRejectsLegacyOnly) {
     EXPECT_EQ(modern->ValidateNotification("notifications/elicitation/complete", raw),
               WireValidation::NotInEra);
     EXPECT_EQ(modern->ValidateNotification("notifications/tasks/status", raw),
-              WireValidation::Ok);
+              WireValidation::NotInEra);
     EXPECT_FALSE(modern->HasNotificationMethod("notifications/roots/list_changed"));
     EXPECT_EQ(modern->ValidateNotification("notifications/roots/list_changed", raw),
               WireValidation::NotInEra);
@@ -812,4 +815,78 @@ TEST(WireCodecTest, VerifyCapabilityObjectShape) {
         client->Close();
         server->Close();
     }
+}
+
+TEST(WireCodecTest, DetailedTaskSchemaAcceptsCompletePayload) {
+    auto detail = JsonValue::Parse(R"({
+        "taskId":"task-a",
+        "status":"completed",
+        "createdAt":"2026-11-24T00:00:00Z",
+        "lastUpdatedAt":"2026-11-24T00:00:01Z",
+        "ttlMs":300000,
+        "result":{"content":[{"type":"text","text":"done"}]},
+        "inputRequests":{"request-1":{"method":"elicitation/create","params":{}}}
+    })");
+    EXPECT_TRUE(IsValidDetailedTask(detail));
+    auto round_trip = SerializeDetailedTask(DeserializeDetailedTask(detail));
+    EXPECT_TRUE(IsValidDetailedTask(round_trip));
+    EXPECT_EQ(round_trip["taskId"].GetString(), "task-a");
+    EXPECT_EQ(round_trip["result"].Dump(), detail["result"].Dump());
+
+    auto failed = JsonValue::Parse(R"({
+        "taskId":"task-b",
+        "status":"failed",
+        "createdAt":"2026-11-24T00:00:00Z",
+        "error":{"code":-32000,"message":"boom"}
+    })");
+    EXPECT_TRUE(IsValidDetailedTask(failed));
+}
+
+TEST(WireCodecTest, DetailedTaskSchemaRejectsInvalidPayload) {
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue(JsonValue::array_tag)));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"status":"working"})")));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"taskId":"","status":"working","createdAt":"t"})")));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"taskId":"t","createdAt":"t"})")));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"taskId":"t","status":"working"})")));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"taskId":"t","status":"completed","createdAt":"t"})")));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"taskId":"t","status":"failed","createdAt":"t"})")));
+    EXPECT_FALSE(IsValidDetailedTask(JsonValue::Parse(R"({"taskId":"t","status":"working","createdAt":"t","ttlMs":"300000"})")));
+}
+
+TEST(WireCodecTest, Rev2026TasksNotificationValidatesDetailedTask) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    auto invalid = JsonValue::Parse(R"({"jsonrpc":"2.0","method":"notifications/tasks","params":{"status":"working"}})");
+    auto valid = JsonValue::Parse(R"({"jsonrpc":"2.0","method":"notifications/tasks","params":{"taskId":"t","status":"working","createdAt":"t"}})");
+    EXPECT_EQ(modern->ValidateNotification(notifications::kTasks, invalid), WireValidation::Invalid);
+    EXPECT_EQ(modern->ValidateNotification(notifications::kTasks, valid), WireValidation::Ok);
+    EXPECT_EQ(legacy->ValidateNotification(notifications::kTasks, valid), WireValidation::NotInEra);
+    EXPECT_FALSE(legacy->HasNotificationMethod(notifications::kTasks));
+}
+
+TEST(WireCodecTest, Rev2026RejectsInvalidTaskIdsFilter) {
+    auto modern = MakeWireCodec("2026-07-28");
+    auto legacy = MakeWireCodec("2025-11-25");
+    auto request = JsonValue::Parse(R"({
+        "jsonrpc":"2.0","id":1,"method":"subscriptions/listen",
+        "params":{"notifications":{"taskIds":["task-a"]},"_meta":{}}
+    })");
+    EXPECT_EQ(modern->ValidateRequest(methods::kSubscribe, request), WireValidation::Ok);
+    EXPECT_EQ(legacy->ValidateRequest(methods::kSubscribe, request), WireValidation::NotInEra);
+
+    auto bad_type = JsonValue::Parse(R"({
+        "jsonrpc":"2.0","id":1,"method":"subscriptions/listen",
+        "params":{"notifications":{"taskIds":[7]},"_meta":{}}
+    })");
+    EXPECT_EQ(modern->ValidateRequest(methods::kSubscribe, bad_type), WireValidation::Invalid);
+
+    JsonValue::Array too_many;
+    for (size_t i = 0; i <= kMaxTaskIdsPerSubscription; ++i)
+        too_many.push_back(JsonValue("task-" + std::to_string(i)));
+    JsonValue oversized = JsonValue::Parse(R"({
+        "jsonrpc":"2.0","id":1,"method":"subscriptions/listen",
+        "params":{"notifications":{},"_meta":{}}
+    })");
+    oversized["params"]["notifications"]["taskIds"] = JsonValue(std::move(too_many));
+    EXPECT_EQ(modern->ValidateRequest(methods::kSubscribe, oversized), WireValidation::Invalid);
 }

@@ -25,7 +25,7 @@ resource: include/mcp/storage/FileTaskStore.hpp
 
 ## 持久化格式
 
-**JSONL 追加 + 阈值压缩**：每条变更追加一行 `{"task_id":"...", "state":{...任务全字段...}}` 或 `{"task_id":"...", "removed":true}`（临时文件名 `<path>.tmp.<pid>.<counter>.<salt>` 语义同 `WriteAtomic` 家族）；追加句柄在独立作用域内关闭后才计数并触发压缩，避免 Windows 上存储自身的句柄阻止 `rename`（UCRT `ofstream` 只共享 `FILE_SHARE_READ|FILE_SHARE_WRITE`，无 `FILE_SHARE_DELETE`）；追加后待处理记录数超过 `kMinCompactThreshold(64) + 存活数×2` 时自动压缩为全量快照（`CompactLocked`），析构 `Flush` 亦压缩。压缩为 **best-effort**：失败只记 Error 日志并把 `pending_records_` 归零，本次追加仍返回成功，避免一次压缩失败让任务会话后续每次写入都抛 `McpError(InternalError)`。旧格式 `{"tasks": {...}}` 单对象文件仍可读（自动识别），且容忍**末尾截断记录**（半行忽略，中途坏行备份 `.corrupt` 后清空重建）。反序列化容缺：缺字段的旧记录仍可读，未知键忽略。状态字段含 `owner`（会话锚定）、`ttl_ms` 等新字段。
+**JSONL 追加 + 阈值压缩**：每条变更追加一行 `{"task_id":"...", "state":{...任务全字段...}}` 或 `{"task_id":"...", "removed":true}`（临时文件名 `<path>.tmp.<pid>.<counter>.<salt>` 语义同 `WriteAtomic` 家族）；追加句柄在独立作用域内关闭后才计数并触发压缩，避免 Windows 上存储自身的句柄阻止 `rename`（UCRT `ofstream` 只共享 `FILE_SHARE_READ|FILE_SHARE_WRITE`，无 `FILE_SHARE_DELETE`）；追加后待处理记录数超过 `kMinCompactThreshold(64) + 存活数×2` 时自动压缩为全量快照（`CompactLocked`），析构 `Flush` 亦压缩。压缩为 **best-effort**：失败只记 Error 日志并把 `pending_records_` 归零，本次追加仍返回成功，避免一次压缩失败让任务会话后续每次写入都抛 `McpError(InternalError)`。旧格式 `{"tasks": {...}}` 单对象文件仍可读（自动识别），且容忍**末尾截断记录**（半行忽略，中途坏行备份 `.corrupt` 后清空重建）。反序列化容缺：缺字段的旧记录仍可读，未知键忽略。状态字段含 `owner`（authenticated principal 锚定）、`ttl_ms` 等新字段；旧记录 `owner` 为空且保留原样、不删除不重写，新增任务经 `CreateTask(id, owner, ttl)` 写入 principal。`InMemoryTaskStore`（同头文件）提供相同 owner 语义的内存实现，供无文件后端场景使用。
 
 损坏文件：加载遇坏行把原文件复制为 `<path>.corrupt`（overwrite）后清空重建，复制失败仅记 Error。
 

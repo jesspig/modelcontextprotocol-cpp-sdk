@@ -267,6 +267,7 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `kGetTask` / `kUpdateTask` / `kCancelTask` | `"tasks/get"` / `"tasks/update"` / `"tasks/cancel"` | 双时代（需任务开关） |
 | `kGetTaskPayload` / `kLegacyGetTaskPayload` | 两者同为 `"tasks/result"` | 仅旧；`kLegacy*` 是同值别名 |
 | `kListTasks` / `kLegacyListTasks` | 两者同为 `"tasks/list"` | 仅旧；同上 |
+| `kDeleteTask` | `"tasks/delete"` | 仅现代；按 owner 校验后删除任务 |
 | `kListSkills` / `kGetSkill` | `"skills/list"` / `"skills/get"` | 仅现代 |
 | `kSetLoggingLevel` | `"logging/setLevel"` | 仅旧 |
 | `kListExtensions` | `"server/extensions/list"` | 双时代 |
@@ -284,7 +285,8 @@ triggers 没有扩展 ID 常量：对外只有通知名 `notifications/triggers/
 | `kRootsListChanged` | `"notifications/roots/list_changed"` | 仅旧；客户端另要求协商不低于 `2025-06-18` |
 | `kElicitationComplete` | `"notifications/elicitation/complete"` | 仅旧 |
 | `kSubscriptionsAcknowledged` | `"notifications/subscriptions/acknowledged"` | 仅现代 |
-| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`、`"…/working"`、`"…/completed"`、`"…/failed"`、`"…/cancelled"`、`"…/input_required"` | 双时代 |
+| `kTasks` | `"notifications/tasks"` | 仅现代；`params` 是完整 `DetailedTask`，支持 `taskIds` 订阅过滤 |
+| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`、`"…/working"`、`"…/completed"`、`"…/failed"`、`"…/cancelled"`、`"…/input_required"` | 仅旧；现代不再发送或接收这些旧通知 |
 | `kTriggersEvent` | `"notifications/triggers/event"` | 双时代 |
 
 ### 协议版本常量

@@ -83,13 +83,18 @@ Protocol-era differences (important):
 | (routing rule) | internal `SendListChangedNotification` | — | Modern era → `NotifySubscribers`; legacy era → broadcast `SendNotification` |
 | `SendLoggingMessage` | `void SendLoggingMessage(LoggingLevel level, std::string_view data)` | — | **Returns immediately without sending in the modern era**; in the legacy era it is filtered by the level recorded through `logging/setLevel` |
 | `SendLoggingMessage` (overload) | `void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level)` | `min_level = nullopt` | With `min_level` set, that bound alone filters and sends (overriding the `setLevel` record); with `nullopt` it falls back to the two-argument behaviour |
-| `SendTaskStatus` | `void SendTaskStatus(std::string_view task_id, TaskStatus status)` | — | Looks the owner session up in `task_store`, then routes through subscriptions or broadcast according to that session's negotiated version; needs `enable_tasks_extension` + `task_store` for any usable task |
+| `SendTaskStatus` | `void SendTaskStatus(std::string_view task_id, TaskStatus status)` | — | Looks the task up in `task_store`; modern emits a single `notifications/tasks` with a full `DetailedTask`, legacy broadcasts `notifications/tasks/status`; needs `enable_tasks_extension` + `task_store` for any usable task |
+| `SetSessionPrincipal` | `void SetSessionPrincipal(std::string_view session_id, std::string_view principal)` | — | Binds the authenticated principal of a session; the only trusted source of a task owner |
+| `ClearSessionPrincipal` | `void ClearSessionPrincipal(std::string_view session_id)` | — | Clears a session's principal binding |
+| `SetDefaultPrincipal` | `void SetDefaultPrincipal(std::string_view principal)` | — | Default principal for sessions without an explicit binding; pass an empty string to disable |
 | `SendProgress` | `void SendProgress(const ProgressToken& token, double progress, std::optional<double> total = std::nullopt, std::optional<std::string> message = std::nullopt)` | — | Modern era first tries the request-stream buffer (`BufferRequestStreamNotification`); otherwise sends the global `notifications/progress` |
 | `SetCacheable` | `void SetCacheable(std::function<std::optional<CacheHint>(std::string_view method)> resolver)` | — | Replaces the cache hook at runtime, taking precedence over `ServerOptions::cache_hints`; hints are still validated in the modern era |
 
 Declared in `include/mcp/server/McpServer.hpp`; delivery and era routing are in `src/server/McpServer.cpp`.
 
 `TaskStatus` values: `Pending`, `Working`, `Completed`, `Failed`, `Cancelled`, `InputRequired` (defined in `include/mcp/server/McpTaskStore.hpp`).
+
+Task owners may only come from the principal injection APIs above: modern task operations fail closed (`TaskNotFound`) when no principal is bound and never read an owner from `params`, `_meta`, `taskId`, or client-reported fields; legacy tasks fall back to the session id when no principal is present to preserve the old wire behavior. Cross-owner get/update/cancel/delete/list and unknown tasks share one rejection semantic. Budget constants `kMaxTasksPerPrincipal` (10000), `kMaxTaskResultBytes` (8388608), `kMaxTaskNotificationBytes` (1048576), and `kMaxTaskIdsPerSubscription` (1024) live in `include/mcp/server/McpTaskStore.hpp`.
 
 ## Client state queries
 

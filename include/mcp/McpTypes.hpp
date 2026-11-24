@@ -217,6 +217,7 @@ struct SubscriptionFilter {
     std::optional<bool> prompts_list_changed;
     std::optional<bool> resources_list_changed;
     std::vector<std::string> resource_subscriptions;
+    std::vector<std::string> task_ids;
 };
 
 struct SubscriptionsListenRequestParams {
@@ -465,6 +466,18 @@ struct TaskStatusNotificationParams {
     std::string status;
 };
 
+struct DetailedTask {
+    std::string task_id;
+    std::string status;
+    std::optional<std::string> created_at;
+    std::optional<std::string> last_updated_at;
+    std::optional<int64_t> ttl_ms;
+    std::optional<JsonValue> result;
+    std::optional<JsonValue> error;
+    std::optional<JsonValue> input_required;
+    std::optional<InputRequests> input_requests;
+};
+
 using ListSkillsRequestParams = PaginatedRequestParams;
 
 struct SkillsGetRequestParams {
@@ -691,6 +704,9 @@ UpdateTaskRequestParams DeserializeUpdateTaskRequestParams(const JsonValue& j);
 JsonValue SerializeCancelTaskRequestParams(const CancelTaskRequestParams& v);
 CancelTaskRequestParams DeserializeCancelTaskRequestParams(const JsonValue& j);
 JsonValue SerializeTaskStatusNotificationParams(const TaskStatusNotificationParams& v);
+JsonValue SerializeDetailedTask(const DetailedTask& v);
+DetailedTask DeserializeDetailedTask(const JsonValue& j);
+bool IsValidDetailedTask(const JsonValue& j);
 
 JsonValue SerializeSkillResource(const SkillResource& v);
 SkillResource DeserializeSkillResource(const JsonValue& j);
