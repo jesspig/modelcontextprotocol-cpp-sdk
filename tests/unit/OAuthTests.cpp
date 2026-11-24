@@ -742,9 +742,10 @@ TEST(OAuthTest, DPoPNonceObservationFeedsNextProof) {
     opts.enable_dpop = true;
 
     OAuthClientProvider provider(opts);
-    provider.ObserveDPoPNonce("");
-    provider.ObserveDPoPNonce(std::string(2048, 'n'));
-    provider.ObserveDPoPNonce("nonce-abc");
+    provider.ObserveDPoPNonce("https://resource.example/mcp", "Bearer", "");
+    provider.ObserveDPoPNonce("https://resource.example/mcp", "Bearer",
+        std::string(2048, 'n'));
+    provider.ObserveDPoPNonce("https://resource.example/mcp", "Bearer", "nonce-abc");
 
     std::map<std::string, std::string> headers;
     try {
@@ -769,6 +770,80 @@ TEST(OAuthTest, DPoPNonceObservationFeedsNextProof) {
     ASSERT_TRUE(payload.has_value());
     EXPECT_NE(payload->find("\"nonce\":\"nonce-abc\""), std::string::npos);
     EXPECT_NE(payload->find("\"htm\":\"GET\""), std::string::npos);
+}
+
+TEST(OAuthTest, DpopNonceBucketsIsolatedByOriginAndTokenType) {
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.enable_dpop = true;
+    OAuthClientProvider provider(opts);
+
+    provider.ObserveDPoPNonce("https://a.example/mcp", "Bearer", "nonce-a-bearer");
+    provider.ObserveDPoPNonce("https://a.example/mcp", "DPoP", "nonce-a-dpop");
+    provider.ObserveDPoPNonce("https://b.example/mcp", "Bearer", "nonce-b-bearer");
+
+    ASSERT_TRUE(provider.GetDPoPNonce("https://a.example/mcp", "Bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://a.example/mcp", "Bearer"), "nonce-a-bearer");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://a.example/mcp", "DPoP").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://a.example/mcp", "DPoP"), "nonce-a-dpop");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://b.example/mcp", "Bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://b.example/mcp", "Bearer"), "nonce-b-bearer");
+    EXPECT_FALSE(provider.GetDPoPNonce("https://a.example/mcp", "other").has_value());
+    EXPECT_FALSE(provider.GetDPoPNonce("https://c.example/mcp", "Bearer").has_value());
+    ASSERT_TRUE(provider.GetDPoPNonce("https://A.EXAMPLE:443/mcp", "bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://A.EXAMPLE:443/mcp", "bearer"),
+        "nonce-a-bearer");
+
+    provider.SetDPoPNonceContext("https://c.example/mcp", "Bearer");
+    provider.ObserveDPoPNonce("legacy-nonce");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://c.example/mcp", "Bearer").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://c.example/mcp", "Bearer"), "legacy-nonce");
+    EXPECT_EQ(*provider.GetDPoPNonce("https://a.example/mcp", "Bearer"), "nonce-a-bearer");
+}
+
+TEST(OAuthTest, DpopKeyRestoredFromCacheAcrossProviderRestart) {
+    auto cache = std::make_shared<InMemoryTokenCache>();
+    ext::dpop::EcP256Jwk key{
+        "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+        "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"};
+    ASSERT_TRUE(ext::dpop::ValidateKey(key));
+    cache->StoreDpopKey(key);
+
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.token_cache = cache;
+    opts.enable_dpop = true;
+    OAuthClientProvider provider(opts);
+
+    try {
+        auto proof = provider.BuildDPoPProof("GET", "https://resource.example/mcp");
+        ASSERT_FALSE(proof.empty());
+        auto dot = proof.find('.');
+        ASSERT_NE(dot, std::string::npos);
+        auto header = mcp::detail::Base64UrlDecode(proof.substr(0, dot));
+        ASSERT_TRUE(header.has_value());
+        EXPECT_NE(header->find(key.x), std::string::npos);
+        EXPECT_NE(header->find(key.y), std::string::npos);
+    } catch (const McpError&) {
+    }
+}
+
+TEST(OAuthTest, DpopLegacyNonceSetterDelegatesToCurrentBucket) {
+    OAuthClientOptions opts;
+    opts.server_url = "http://localhost:8080";
+    opts.redirect_uri = "http://localhost:8080/callback";
+    opts.enable_dpop = true;
+    OAuthClientProvider provider(opts);
+
+    provider.SetDPoPNonceContext("https://legacy.example/mcp", "DPoP");
+    provider.SetDPoPNonce("legacy-set-nonce");
+    ASSERT_TRUE(provider.GetDPoPNonce("https://legacy.example/mcp", "DPoP").has_value());
+    EXPECT_EQ(*provider.GetDPoPNonce("https://legacy.example/mcp", "DPoP"),
+        "legacy-set-nonce");
+    EXPECT_FALSE(provider.GetDPoPNonce("https://legacy.example/mcp", "Bearer").has_value());
 }
 
 TEST(OAuthTest, DPoPStaleProofRejectedByWindow) {
@@ -1888,6 +1963,125 @@ TEST(OAuthTest, InvalidGrantFallsBackToAuthorizationFlow) {
     EXPECT_NE(redirect_url.find("code_challenge="), std::string::npos);
     EXPECT_NE(redirect_url.find("code_challenge_method=S256"), std::string::npos);
     EXPECT_FALSE(cache->GetTokens().has_value());
+    server.Stop();
+}
+
+TEST(OAuthTest, AuthenticateAndPublicRefreshCoalesceToOneRequest) {
+    auto port = PickFreePort(kTestBasePort + 1178);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> refresh_calls{0};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest& req, mcp::HttpResponse& resp) {
+            if (req.body.find("grant_type=refresh_token") != std::string::npos) {
+                refresh_calls.fetch_add(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                resp.body = "{\"access_token\":\"coalesced-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                            "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+            } else {
+                resp.body = "{\"access_token\":\"short-token\","
+                            "\"token_type\":\"Bearer\",\"expires_in\":0,"
+                            "\"refresh_token\":\"rt-one\",\"iss\":\"" + issuer + "\"}";
+            }
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    opts.allow_legacy_metadata_fallback = true;
+    OAuthClientProvider provider(opts);
+    ASSERT_TRUE(provider.AuthenticateClientCredentials());
+
+    std::atomic<int> successes{0};
+    std::vector<std::thread> callers;
+    for (int i = 0; i < 4; ++i) {
+        callers.emplace_back([&provider, &successes, i] {
+            bool ok = i < 2 ? provider.RefreshTokens() : provider.Authenticate();
+            if (ok) successes.fetch_add(1);
+        });
+    }
+    for (auto& caller : callers) caller.join();
+
+    EXPECT_EQ(refresh_calls.load(), 1);
+    EXPECT_EQ(successes.load(), 4);
+    EXPECT_EQ(provider.GetAccessToken(), "coalesced-token");
+    server.Stop();
+}
+
+TEST(OAuthTest, RefreshSingleFlightReleasesWaitersAfterOwnerException) {
+    auto port = PickFreePort(kTestBasePort + 1179);
+    std::string issuer = "http://127.0.0.1:" + std::to_string(port);
+    std::atomic<int> refresh_calls{0};
+    std::atomic<bool> refresh_started{false};
+
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/token",
+        [&](const mcp::HttpRequest&, mcp::HttpResponse& resp) {
+            refresh_calls.fetch_add(1);
+            refresh_started.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            resp.body = "{\"access_token\":\"after-fault-token\","
+                        "\"token_type\":\"Bearer\",\"expires_in\":3600,"
+                        "\"refresh_token\":\"rt-two\",\"iss\":\"" + issuer + "\"}";
+        });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    struct FaultCache : InMemoryTokenCache {
+        std::atomic<bool> fail_once{true};
+        void StoreTokens(const TokenContainer& tokens) override {
+            if (fail_once.exchange(false)) {
+                throw McpError(McpErrorCode::InternalError, "injected cache fault");
+            }
+            InMemoryTokenCache::StoreTokens(tokens);
+        }
+    };
+    auto cache = std::make_shared<FaultCache>();
+    TokenContainer short_token;
+    short_token.access_token = "short-token";
+    short_token.refresh_token = "rt-one";
+    short_token.token_type = "Bearer";
+    short_token.expires_at = 1;
+    cache->InMemoryTokenCache::StoreTokens(short_token);
+
+    OAuthClientOptions opts;
+    opts.server_url = issuer;
+    opts.client_id = "test-client";
+    opts.client_secret = "test-secret";
+    opts.token_cache = cache;
+    opts.allow_legacy_metadata_fallback = true;
+    OAuthClientProvider provider(opts);
+
+    std::atomic<bool> owner_fault{false};
+    bool waiter_result = true;
+    MCP_RUN_WITH_TIMEOUT(std::chrono::seconds(20), [&] {
+        std::thread waiter([&] {
+            while (!refresh_started.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            try {
+                waiter_result = provider.RefreshTokens();
+            } catch (...) {
+                waiter_result = true;
+            }
+        });
+        try {
+            (void)provider.RefreshTokens();
+        } catch (const McpError&) {
+            owner_fault.store(true);
+        }
+        waiter.join();
+    });
+
+    EXPECT_TRUE(owner_fault.load());
+    EXPECT_FALSE(waiter_result);
+    EXPECT_EQ(refresh_calls.load(), 1);
+    EXPECT_TRUE(provider.RefreshTokens());
+    EXPECT_EQ(provider.GetAccessToken(), "after-fault-token");
     server.Stop();
 }
 

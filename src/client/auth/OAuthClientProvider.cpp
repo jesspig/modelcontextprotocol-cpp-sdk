@@ -209,9 +209,9 @@ struct ClientSecretGuard {
     std::string value;
 };
 
-class RefreshInFlightGuard {
+class SingleFlightGuard {
 public:
-    RefreshInFlightGuard(std::mutex& mutex,
+    SingleFlightGuard(std::mutex& mutex,
                         bool& in_flight,
                         std::thread::id& owner,
                         std::condition_variable& finished)
@@ -220,7 +220,7 @@ public:
         , owner_(owner)
         , finished_(finished) {}
 
-    ~RefreshInFlightGuard() {
+    ~SingleFlightGuard() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             in_flight_ = false;
@@ -229,8 +229,8 @@ public:
         finished_.notify_all();
     }
 
-    RefreshInFlightGuard(const RefreshInFlightGuard&) = delete;
-    RefreshInFlightGuard& operator=(const RefreshInFlightGuard&) = delete;
+    SingleFlightGuard(const SingleFlightGuard&) = delete;
+    SingleFlightGuard& operator=(const SingleFlightGuard&) = delete;
 
 private:
     std::mutex& mutex_;
@@ -238,6 +238,29 @@ private:
     std::thread::id& owner_;
     std::condition_variable& finished_;
 };
+
+template <typename T>
+T RunSingleFlight(std::mutex& mutex,
+                  std::condition_variable& finished,
+                  bool& in_flight,
+                  std::thread::id& owner,
+                  std::function<T()> work,
+                  std::function<T()> after_wait,
+                  std::function<T()> reentrant)
+{
+    std::unique_lock<std::mutex> lock(mutex);
+    if (!in_flight) {
+        in_flight = true;
+        owner = std::this_thread::get_id();
+        SingleFlightGuard guard(mutex, in_flight, owner, finished);
+        lock.unlock();
+        return work();
+    }
+    if (owner == std::this_thread::get_id()) return reentrant();
+    finished.wait_for(lock, std::chrono::seconds(30));
+    lock.unlock();
+    return after_wait();
+}
 
 } // anonymous namespace
 
@@ -383,6 +406,21 @@ std::optional<std::string> InMemoryTokenCache::GetBoundIssuer() {
     return bound_issuer_;
 }
 
+void InMemoryTokenCache::StoreDpopKey(const ext::dpop::EcP256Jwk& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    dpop_key_ = key;
+}
+
+std::optional<ext::dpop::EcP256Jwk> InMemoryTokenCache::GetDpopKey() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dpop_key_;
+}
+
+void InMemoryTokenCache::ClearDpopKey() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    dpop_key_.reset();
+}
+
 OAuthClientProvider::TokenEndpointResponse OAuthClientProvider::HttpPost(
     std::string_view url_str,
     const std::map<std::string, std::string>& form_data,
@@ -453,11 +491,23 @@ OAuthClientProvider::OAuthClientProvider(OAuthClientOptions options)
     config.allow_cross_origin_redirect = options_.allow_cross_origin_redirect;
     network_policy_ = std::make_shared<mcp::detail::net::UrlSecurityPolicy>(
         std::move(config));
+    if (options_.enable_dpop) {
+        auto persisted = token_cache_->GetDpopKey();
+        if (persisted && ext::dpop::ValidateKey(*persisted))
+            dpop_key_ = std::move(persisted);
+    }
 }
 
 OAuthClientProvider::~OAuthClientProvider() = default;
 
 bool OAuthClientProvider::Authenticate() {
+    auto after_wait = [this] { return IsAuthenticated(); };
+    return RunSingleFlight<bool>(refresh_mutex_, refresh_cv_, refresh_in_flight_,
+        refresh_owner_, [this] { return AuthenticateUncoalesced(); },
+        after_wait, after_wait);
+}
+
+bool OAuthClientProvider::AuthenticateUncoalesced() {
     ValidateClientId();
     if (!DiscoverMetadata()) return false;
 
@@ -1111,7 +1161,11 @@ bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
 }
 
 bool OAuthClientProvider::RefreshTokens() {
-    return RefreshTokensInternal() == RefreshOutcome::Refreshed;
+    auto after_wait = [this] { return IsAuthenticated(); };
+    return RunSingleFlight<bool>(refresh_mutex_, refresh_cv_, refresh_in_flight_,
+        refresh_owner_,
+        [this] { return RefreshTokensInternal() == RefreshOutcome::Refreshed; },
+        after_wait, after_wait);
 }
 
 OAuthClientProvider::RefreshOutcome OAuthClientProvider::RefreshTokensInternal() {
@@ -1184,42 +1238,26 @@ OAuthClientProvider::RefreshOutcome OAuthClientProvider::RefreshTokensInternal()
     return RefreshOutcome::Refreshed;
 }
 
-void OAuthClientProvider::RefreshTokensCoalesced() {
-    for (;;) {
-        std::unique_lock<std::mutex> lock(refresh_mutex_);
-        if (!refresh_in_flight_) {
-            refresh_in_flight_ = true;
-            refresh_owner_ = std::this_thread::get_id();
-            RefreshInFlightGuard guard(refresh_mutex_, refresh_in_flight_,
-                                       refresh_owner_, refresh_cv_);
-            lock.unlock();
-            if (!RefreshTokens())
-                throw McpError(McpErrorCode::InternalError,
-                    "OAuth token refresh failed");
-            return;
-        }
-        if (refresh_owner_ == std::this_thread::get_id()) {
-            MCP_LOG(Warning,
-                "OAuth token refresh re-entered on the refreshing thread; serving the pending token without waiting");
-            return;
-        }
-        refresh_cv_.wait(lock);
-        lock.unlock();
-        auto tokens = token_cache_->GetTokens();
-        if (tokens && TokenResourceMatches(*tokens) && !tokens->WillExpireSoon())
-            return;
-    }
-}
-
 std::string OAuthClientProvider::GetAccessToken() {
+    auto read_token = [this] {
+        auto tokens = token_cache_->GetTokens();
+        return tokens && TokenResourceMatches(*tokens) ? tokens->access_token
+                                                       : std::string{};
+    };
     auto tokens = token_cache_->GetTokens();
-    if (!tokens) return {};
-    if (!TokenResourceMatches(*tokens)) return {};
+    if (!tokens || !TokenResourceMatches(*tokens)) return {};
     if (!tokens->WillExpireSoon() || tokens->refresh_token.empty())
         return tokens->access_token;
-    RefreshTokensCoalesced();
-    tokens = token_cache_->GetTokens();
-    return tokens ? tokens->access_token : std::string{};
+    return RunSingleFlight<std::string>(refresh_mutex_, refresh_cv_,
+        refresh_in_flight_, refresh_owner_,
+        [this, &read_token] {
+            if (RefreshTokensInternal() != RefreshOutcome::Refreshed) {
+                throw McpError(McpErrorCode::InternalError,
+                    "OAuth token refresh failed");
+            }
+            return read_token();
+        },
+        read_token, read_token);
 }
 
 void OAuthClientProvider::Revoke() {
@@ -1258,15 +1296,84 @@ std::string OAuthClientProvider::BuildDPoPProof(
     std::optional<std::string_view> access_token) {
     if (!options_.enable_dpop) return {};
     std::lock_guard<std::mutex> lock(dpop_mutex_);
-    if (!dpop_key_) dpop_key_ = ext::dpop::GenerateKey();
+    if (!dpop_key_) {
+        auto generated = ext::dpop::GenerateKey();
+        if (!ext::dpop::ValidateKey(generated)) {
+            throw McpError(McpErrorCode::InternalError, "DPoP generated key failed validation");
+        }
+        dpop_key_ = generated;
+        token_cache_->StoreDpopKey(generated);
+    }
     std::optional<std::string_view> nonce;
-    if (dpop_nonce_ && !dpop_nonce_->empty()) nonce = *dpop_nonce_;
+    std::string token_type;
+    if (auto tokens = token_cache_->GetTokens();
+        tokens && TokenResourceMatches(*tokens) && !tokens->token_type.empty()) {
+        token_type = tokens->token_type;
+    }
+    if (token_type.empty()) token_type = dpop_nonce_context_token_type_;
+    dpop_nonce_context_url_ = std::string(htu);
+    dpop_nonce_context_token_type_ = token_type;
+    auto bucket = DPoPNonceBucket(htu, token_type);
+    if (!bucket.empty()) {
+        auto it = dpop_nonces_.find(bucket);
+        if (it != dpop_nonces_.end() && !it->second.empty()) nonce = it->second;
+    }
     return ext::dpop::CreateProof(*dpop_key_, htm, htu, access_token, nonce);
 }
 
-void OAuthClientProvider::SetDPoPNonce(std::string nonce) {
+std::string OAuthClientProvider::DPoPNonceBucket(
+    std::string_view url, std::string_view token_type)
+{
+    auto origin = mcp::detail::net::ParseUrlSecurityOrigin(url);
+    if (!origin) return {};
+    auto normalized = mcp::detail::net::ToLowerAsciiCopy(token_type);
+    if (normalized.empty()) normalized = "bearer";
+    return origin->Key() + '\x1F' + normalized;
+}
+
+void OAuthClientProvider::RememberDPoPNonce(
+    std::string_view url, std::string_view token_type, std::string_view nonce)
+{
+    auto bucket = DPoPNonceBucket(url, token_type);
+    if (bucket.empty()) return;
     std::lock_guard<std::mutex> lock(dpop_mutex_);
-    dpop_nonce_ = std::move(nonce);
+    if (nonce.empty()) {
+        dpop_nonces_.erase(bucket);
+        return;
+    }
+    dpop_nonces_[bucket] = std::string(nonce);
+}
+
+void OAuthClientProvider::SetDPoPNonceContext(
+    std::string_view url, std::string_view token_type)
+{
+    std::lock_guard<std::mutex> lock(dpop_mutex_);
+    if (!url.empty()) dpop_nonce_context_url_ = std::string(url);
+    if (!token_type.empty())
+        dpop_nonce_context_token_type_ = std::string(token_type);
+}
+
+std::optional<std::string> OAuthClientProvider::GetDPoPNonce(
+    std::string_view url, std::string_view token_type) const
+{
+    auto bucket = DPoPNonceBucket(url, token_type);
+    if (bucket.empty()) return std::nullopt;
+    std::lock_guard<std::mutex> lock(dpop_mutex_);
+    auto it = dpop_nonces_.find(bucket);
+    if (it == dpop_nonces_.end()) return std::nullopt;
+    return it->second;
+}
+
+void OAuthClientProvider::SetDPoPNonce(std::string nonce) {
+    std::string url;
+    std::string token_type;
+    {
+        std::lock_guard<std::mutex> lock(dpop_mutex_);
+        url = dpop_nonce_context_url_;
+        token_type = dpop_nonce_context_token_type_;
+    }
+    if (url.empty()) url = options_.server_url;
+    RememberDPoPNonce(url, token_type, nonce);
 }
 
 void OAuthClientProvider::ApplyDPoPProofHeader(
@@ -1278,10 +1385,13 @@ void OAuthClientProvider::ApplyDPoPProofHeader(
     auto htu = DpopHtu(context.url);
     if (htu.empty()) return;
     std::optional<std::string_view> access_token;
+    std::string token_type;
     auto tokens = token_cache_->GetTokens();
     if (tokens && !tokens->access_token.empty() && TokenResourceMatches(*tokens)) {
         access_token = tokens->access_token;
+        token_type = tokens->token_type;
     }
+    SetDPoPNonceContext(context.url, token_type);
     std::string proof = BuildDPoPProof(context.http_method, htu, access_token);
     if (proof.empty()) return;
     headers["DPoP"] = std::move(proof);
@@ -1290,7 +1400,24 @@ void OAuthClientProvider::ApplyDPoPProofHeader(
 void OAuthClientProvider::ObserveDPoPNonce(std::string_view dpop_nonce) {
     if (!options_.enable_dpop) return;
     if (dpop_nonce.empty() || dpop_nonce.size() > 1024) return;
-    SetDPoPNonce(std::string(dpop_nonce));
+    std::string url;
+    std::string token_type;
+    {
+        std::lock_guard<std::mutex> lock(dpop_mutex_);
+        url = dpop_nonce_context_url_;
+        token_type = dpop_nonce_context_token_type_;
+    }
+    if (url.empty()) url = options_.server_url;
+    RememberDPoPNonce(url, token_type, dpop_nonce);
+}
+
+void OAuthClientProvider::ObserveDPoPNonce(
+    std::string_view url, std::string_view token_type,
+    std::string_view dpop_nonce)
+{
+    if (!options_.enable_dpop) return;
+    if (dpop_nonce.empty() || dpop_nonce.size() > 1024) return;
+    RememberDPoPNonce(url, token_type, dpop_nonce);
 }
 
 bool OAuthClientProvider::StepUpAuthorization(

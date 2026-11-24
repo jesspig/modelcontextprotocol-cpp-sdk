@@ -66,13 +66,14 @@
 | `Authenticate` | `bool Authenticate()` | 是否拿到可用令牌 | 严格发现元数据（默认无 legacy 回退）→ 按需注册/取 CIMD 文档 → 未过期缓存直接 true → 有过期令牌则刷新，`invalid_grant`/`invalid_client` 回落完整授权流；资源不符的缓存先清掉 |
 | `AuthenticateClientCredentials` | `bool AuthenticateClientCredentials()` | 令牌是否入库 | 需 `client_id`；无断言时还需 `client_secret`；不发授权码流 |
 | `GetAccessToken` | `std::string GetAccessToken()` | 令牌串，无令牌为空串 | 临期且有 refresh token 时走合并刷新（并发共享一次刷新）；刷新失败抛 `InternalError` |
-| `RefreshTokens` | `bool RefreshTokens()` | 是否刷新成功 | 直接刷新，不合并；`invalid_grant` 与临时失败都返回 `false` |
+| `RefreshTokens` | `bool RefreshTokens()` | 是否刷新成功 | 与 `GetAccessToken` / `Authenticate` 共用同一个 single-flight；`invalid_grant` 清令牌并返回 `false`，瞬时失败保留缓存并等待者读最新令牌 |
 | `Revoke` | `void Revoke()` | void | 有 revocation 端点才 POST（非 https 抛 `InvalidParams`），无论成败都清缓存 |
 | `IsAuthenticated` / `HasToken` | `bool IsAuthenticated() const` / `bool HasToken() const` | `bool` | 前者要求未过期，后者只要求 access token 非空；两者都校验资源匹配 |
 | `GetAuthorizationHeader` | `std::string GetAuthorizationHeader() const` | `DPoP <token>` 或 `Bearer <token>`，无令牌为空串 | 只读，不触发刷新；方案名由 `enable_dpop` 决定 |
-| `BuildDPoPProof` | `std::string BuildDPoPProof(std::string_view htm, std::string_view htu, std::optional<std::string_view> access_token = std::nullopt)` | 证明 JWT 串；`enable_dpop` 为 false 时空串 | 首次调用懒生成 P-256 密钥，并带上已记录的 nonce |
-| `ApplyDPoPProofHeader` | `void ApplyDPoPProofHeader(const HttpRequestHeaderContext& context, std::map<std::string, std::string>& headers)` | void | 按上下文的方法与 URL 造证明写入 `headers["DPoP"]`；未开 dpop、缺方法或 URL 不可解析则原样不动 |
-| `ObserveDPoPNonce` / `SetDPoPNonce` | `void ObserveDPoPNonce(std::string_view dpop_nonce)` / `void SetDPoPNonce(std::string nonce)` | void | 前者空串或超过 1024 字节忽略；后者无条件覆盖，不看 dpop 开关 |
+| `BuildDPoPProof` | `std::string BuildDPoPProof(std::string_view htm, std::string_view htu, std::optional<std::string_view> access_token = std::nullopt)` | 证明 JWT 串；`enable_dpop` 为 false 时空串 | 启动时从 token cache 恢复已校验 P-256 密钥（无则懒生成并持久化），nonce 按 `htu` 的规范化 origin 与 token_type 分桶读取 |
+| `ApplyDPoPProofHeader` | `void ApplyDPoPProofHeader(const HttpRequestHeaderContext& context, std::map<std::string, std::string>& headers)` | void | 按上下文的方法与 URL 造证明写入 `headers["DPoP"]`，同时把当前 nonce 桶切到该 URL / token_type；未开 dpop、缺方法或 URL 不可解析则原样不动 |
+| `ObserveDPoPNonce` / `SetDPoPNonce` | `void ObserveDPoPNonce(std::string_view dpop_nonce)` / `void SetDPoPNonce(std::string nonce)` | void | 旧入口委托到当前桶（由最近一次 proof/上下文设置决定），空串或超过 1024 字节的观察值忽略；Setter 无条件覆盖且不看 dpop 开关 |
+| 带上下文的 nonce 入口 | `void ObserveDPoPNonce(std::string_view url, std::string_view token_type, std::string_view dpop_nonce)` / `void SetDPoPNonceContext(std::string_view url, std::string_view token_type)` / `std::optional<std::string> GetDPoPNonce(std::string_view url, std::string_view token_type) const` | void / `optional<string>` | 显式按规范化 origin + token_type 分桶观察与读取；跨桶不复用 nonce，host 大小写与默认端口归一化 |
 | `StepUpAuthorization` | `bool StepUpAuthorization(const std::vector<std::string>& additional_scopes)` | 是否重新授权成功 | 追加范围 → `Revoke()` → 重跑授权流，会清掉当前令牌 |
 | `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | 是否据此重建了元数据 | 只认 `resource_metadata="…"`；头部超 4096 字节、URL 非 https、文档超 65536 字节、元数据 `resource` 与配置资源标识不逐字相等、授权服务器不在白名单，一律 `false` |
 
@@ -120,7 +121,8 @@ provider 不被其他公共头引用，三个钩子由调用方在 `HttpClientTr
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `EcP256Jwk` | `struct { std::string x; std::string y; std::string d; }` | 三个空串 | P-256 JWK，`d` 为私钥标量；`CreateProof` 要求三者齐备 |
-| `GenerateKey` | `EcP256Jwk GenerateKey()` | — | 生成 P-256 密钥 |
+| `GenerateKey` | `EcP256Jwk GenerateKey()` | — | 生成 P-256 密钥（需 OpenSSL） |
+| `ValidateKey` | `bool ValidateKey(const EcP256Jwk& key)` | — | 不依赖 OpenSSL：校验 x/y/d 各为 32 字节、标量在 `[1,n-1]`、点在 P-256 曲线上且 `d·G == (x,y)`；失配返回 `false` |
 | `ComputeThumbprint` | `std::string ComputeThumbprint(std::string_view x, std::string_view y)` | — | 对 `{"crv":"P-256","kty":"EC","x":…,"y":…}` 取 SHA-256 再 base64url；x 或 y 为空抛 `InvalidParams`；不依赖 OpenSSL |
 | `PublicJwkJson` | `std::string PublicJwkJson(const EcP256Jwk& key)` | — | 只输出 `crv`/`kty`/`x`/`y`，不含 `d`；不依赖 OpenSSL |
 | `CreateProof` | `std::string CreateProof(const EcP256Jwk& key, std::string_view htm, std::string_view htu, std::optional<std::string_view> access_token = std::nullopt, std::optional<std::string_view> nonce = std::nullopt, std::optional<int64_t> iat_override_seconds = std::nullopt)` | 三个 `nullopt` | 产出 DPoP JWT：头部 `typ=dpop+jwt`、`alg=ES256`、内嵌 `jwk`，载荷 `htm`/`htu`/`jti`/`iat`，给了 access token 就写 `ath` |
@@ -168,6 +170,7 @@ provider 不被其他公共头引用，三个钩子由调用方在 `HttpClientTr
 | `GetTokens` | `virtual std::optional<TokenContainer> GetTokens() = 0` | — | 非 const 成员 |
 | `StoreBoundIssuer` | `virtual void StoreBoundIssuer(const std::string& issuer)` | 空实现（可覆写） | 按 issuer 绑定的持久锚点；provider 首次发现 issuer 即写入，之后 issuer 变更一律拒绝 |
 | `GetBoundIssuer` | `virtual std::optional<std::string> GetBoundIssuer()` | `nullopt`（可覆写） | 读回绑定 issuer；默认实现表示不持久化 |
+| DPoP 密钥扩展 | `virtual void StoreDpopKey(const ext::dpop::EcP256Jwk& key)` / `virtual std::optional<ext::dpop::EcP256Jwk> GetDpopKey()` / `virtual void ClearDpopKey()` | 空实现 / `nullopt` / 空实现（均可覆写） | 三个方法都有默认实现，旧自定义 `ITokenCache` 无需改动；provider 重启时优先恢复这里的可信密钥 |
 | `OAuthMetadata` | `struct`：issuer、authorization/token/revocation/registration/jwks/resource 端点与四类 `*_supported` 列表；`static std::optional<OAuthMetadata> Discover(std::string_view server_url, bool allow_legacy_fallback = false, std::optional<std::string_view> expected_resource = std::nullopt)` | 端点串空、列表空 | 后四个端点与 `resource` 为 `optional`；PRM 必须提供与期望资源标识逐字相等的 `resource`，否则不采用；RFC 8414 直连回退默认关闭 |
 | `OAuthTokenResponse` | `struct`：`access_token`/`refresh_token`/`expires_in`/`token_type`/`scope` | `expires_in = 3600`、`token_type = "Bearer"` | 令牌端点响应载荷 |
 | `ClientRegistrationInfo::Register` | `static std::optional<ClientRegistrationInfo> Register(std::string_view registration_endpoint, std::string_view redirect_uri, std::string_view client_name, std::string_view application_type = "native")` | `"native"` | DCR 出口 |
@@ -179,7 +182,8 @@ provider 不被其他公共头引用，三个钩子由调用方在 `HttpClientTr
 | `InMemoryTokenCache` | `class : public ITokenCache` | 进程内实现，五个接口全覆写、含 issuer 绑定，内部加锁 |
 | `FileTokenCache` 构造/析构 | `explicit FileTokenCache(std::filesystem::path cache_path)` / `~FileTokenCache() override` | 构造即读盘（文件不存在视作空缓存）；析构落盘失败只记 Error 日志，不外抛 |
 | `StoreTokens` / `GetTokens` / `ClearTokens` | `override` | 每次写入同步落盘；令牌为空时写盘即删除文件 |
-| `StoreBoundIssuer` / `GetBoundIssuer` | `override` | 锚点写在 `<cache_path>.issuer`；传空串删除该文件，写失败记 Error |
+| `StoreBoundIssuer` / `GetBoundIssuer` | `override` | 锚点写在 `<cache_path>.issuer`；传空串删除该文件，写失败记 Error；读取时拒绝符号链接/非普通文件/越权权限/超 4096 字节/控制字符/短读，失败只返回 `nullopt`，不清令牌也不删锚点 |
+| DPoP 密钥持久化 | `StoreDpopKey` / `GetDpopKey` / `ClearDpopKey` `override` | 与令牌写入同一份 JSON/dpapi 文件；加载时完整校验 x/y/d 曲线与公私钥匹配，损坏即拒载且后续写入保留原始字段不覆盖；Windows 同样经 DPAPI |
 | 权限语义（POSIX） | 加载前 `stat`：属主须为当前 uid 且 group/other 权限位必须全空，否则拒载并记 Error | 拒载等价空缓存，不抛异常 |
 | 权限语义（Windows） | 整份缓存经 DPAPI（`CryptProtectData`/`CryptUnprotectData`）按当前用户加解密；解密失败忽略缓存 | 磁盘上不是明文 JSON；落盘走内部原子安全写（仅属主可访问） |
 

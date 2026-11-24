@@ -92,8 +92,12 @@ public:
                               std::map<std::string, std::string>& headers);
 
     void ObserveDPoPNonce(std::string_view dpop_nonce);
-
+    void ObserveDPoPNonce(std::string_view url, std::string_view token_type,
+                          std::string_view dpop_nonce);
     void SetDPoPNonce(std::string nonce);
+    void SetDPoPNonceContext(std::string_view url, std::string_view token_type);
+    [[nodiscard]] std::optional<std::string> GetDPoPNonce(
+        std::string_view url, std::string_view token_type) const;
 
     [[nodiscard]] bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
 
@@ -127,14 +131,14 @@ private:
         }
     };
 
+    bool AuthenticateUncoalesced();
+
     bool DiscoverMetadata();
     bool EnsureMetadata();
     bool RegisterClient();
     bool StartAuthorizationFlow();
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
     bool ParseAndStoreTokenResponse(const JsonValue& json);
-
-    void RefreshTokensCoalesced();
 
     RefreshOutcome RefreshTokensInternal();
 
@@ -174,6 +178,11 @@ private:
 
     bool FetchClientMetadataDocument();
 
+    [[nodiscard]] static std::string DPoPNonceBucket(
+        std::string_view url, std::string_view token_type);
+    void RememberDPoPNonce(std::string_view url, std::string_view token_type,
+                           std::string_view nonce);
+
     bool PrivateKeyJwtAdvertised() const;
 
     bool UsesClientAssertion() const;
@@ -205,7 +214,9 @@ private:
     std::mutex auth_flow_mutex_;
 
     std::optional<ext::dpop::EcP256Jwk> dpop_key_;
-    std::optional<std::string> dpop_nonce_;
+    std::map<std::string, std::string> dpop_nonces_;
+    std::string dpop_nonce_context_url_;
+    std::string dpop_nonce_context_token_type_{"Bearer"};
     mutable std::mutex dpop_mutex_;
 
     std::mutex refresh_mutex_;

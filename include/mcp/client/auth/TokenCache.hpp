@@ -1,5 +1,6 @@
 #pragma once
 #include <mcp/McpTypes.hpp>
+#include <mcp/ext/DPoP.hpp>
 #include <mcp/transport/detail/UrlSecurityPolicy.hpp>
 
 #include <memory>
@@ -30,6 +31,10 @@ public:
 
     virtual void StoreBoundIssuer(const std::string& issuer) { (void)issuer; }
     [[nodiscard]] virtual std::optional<std::string> GetBoundIssuer() { return std::nullopt; }
+
+    virtual void StoreDpopKey(const ext::dpop::EcP256Jwk& key) { (void)key; }
+    [[nodiscard]] virtual std::optional<ext::dpop::EcP256Jwk> GetDpopKey() { return std::nullopt; }
+    virtual void ClearDpopKey() {}
 };
 
 class InMemoryTokenCache : public ITokenCache {
@@ -39,9 +44,13 @@ public:
     void ClearTokens() override;
     void StoreBoundIssuer(const std::string& issuer) override;
     std::optional<std::string> GetBoundIssuer() override;
+    void StoreDpopKey(const ext::dpop::EcP256Jwk& key) override;
+    std::optional<ext::dpop::EcP256Jwk> GetDpopKey() override;
+    void ClearDpopKey() override;
 private:
     std::optional<TokenContainer> tokens_;
     std::optional<std::string> bound_issuer_;
+    std::optional<ext::dpop::EcP256Jwk> dpop_key_;
     std::mutex mutex_;
 };
 

@@ -3,13 +3,13 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、private_key_jwt 客户端断言（ES256，aud 取 issuer）、RFC 8707 资源指示符与 audience 绑定、RFC 9207 授权响应 iss 校验与 token 响应「存在即校验」、发行者绑定、刷新合并与重入短路、吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, rfc7523, cimd, bearer, audience, private_key_jwt]
-timestamp: 2026-11-24T22:40:00+08:00
+timestamp: 2026-11-24T23:55:18+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
 # OAuth 授权流程
 
-`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——`GetAccessToken` 缓存命中路径**不持任何锁**；仅在需要刷新时经 `RefreshTokensCoalesced` 用 `refresh_mutex_` + `refresh_cv_` + `refresh_in_flight_` + `refresh_owner_` 标志做**一次性刷新协调**：抢到标志的线程记录 `refresh_owner_ = std::this_thread::get_id()` 后释放锁执行 `RefreshTokens`（网络 I/O **不在锁内**），其余线程在条件变量上等待，完成后复查缓存——已新鲜则直接复用，否则自己再抢刷新（失败同样抛错）。因此 N 路并发 `GetAccessToken` 只触发一次刷新请求。`RefreshInFlightGuard` 析构时在同一临界区内清 `refresh_in_flight_` 与 `refresh_owner_` 再 `notify_all`，正常返回与抛异常路径均由析构兜底。**owner 线程重入短路**：`token_update_handler` 回调内同线程再调 `GetAccessToken` 时，判定 `refresh_owner_ == std::this_thread::get_id()` 即直接返回而不进条件变量等待（否则该线程会等自己造成死锁），此时读到的是刷新流程正在写入的令牌缓存。metadata 与动态注册状态由 `state_mutex_`（`std::recursive_mutex`）保护，读取一律走 `MetadataSnapshot`/`RegistrationSnapshot` 快照；并发授权流由 `auth_flow_mutex_` 串行化，授权流状态（code_verifier/challenge/state）为**局部变量**、不在成员上跨线程共享——并发 `StepUpAuthorization` 各自拿到互异的 state。无 token_cache 时默认 `InMemoryTokenCache`。
+`OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——`GetAccessToken` 缓存命中路径**不持任何锁**；`GetAccessToken`、`Authenticate`、公开 `RefreshTokens` 三个入口共用一组 `refresh_mutex_` / `refresh_cv_` / `refresh_in_flight_` / `refresh_owner_` single-flight（通用 `RunSingleFlight`）：抢到标志的线程记录 owner 后释放锁执行实际工作（网络 I/O **不在锁内**），其余线程在条件变量上**有界等待**（30s），醒来后读最新令牌并按入口语义返回，不重复发请求；同线程重入（如 `token_update_handler` 回调里再调 `GetAccessToken`）直接读当前值而不等待，避免死锁；`SingleFlightGuard` 析构在正常与异常路径都清标志并 `notify_all`。`GetAccessToken` 刷新失败仍抛 `InternalError`，`Authenticate` / `RefreshTokens` 按 `RefreshOutcome` 区分 `invalid_grant` 与瞬时失败。metadata 与动态注册状态由 `state_mutex_`（`std::recursive_mutex`）保护，读取一律走快照；并发授权流由 `auth_flow_mutex_` 串行化，授权状态为局部变量。无 token_cache 时默认 `InMemoryTokenCache`。
 
 ## 流程（`Authenticate()`）
 
@@ -34,7 +34,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 
 ## 发行者绑定与元数据加固
 
-- `DiscoverMetadata`：发现结果经 `ValidateMetadataEndpoints` 强制 https（见下节「端点策略」）；**发现失败默认失败关闭**——仅当显式开启 `allow_legacy_metadata_fallback` 才使用 `issuer = server_url`、`authorization_endpoint = server_url + "/authorize"`、`token_endpoint = server_url + "/token"`（`server_url` 为空仍失败），legacy 兜底路径不做 issuer 锚定校验；发现成功时先经 `IssuerBindingAllows` 校验——**锚定持久化到令牌缓存**（`ITokenCache::StoreBoundIssuer/GetBoundIssuer`，`FileTokenCache` 落 `<cache>.issuer` 旁挂文件，清除令牌不影响锚点），锚定 issuer 与本次发现不符即拒绝并保留已存令牌（防授权服务器迁移劫持，跨 provider 实例同样生效）；首次发现经 `EnforceIssuerBinding` 写入锚点
+- `DiscoverMetadata`：发现结果经 `ValidateMetadataEndpoints` 强制 https（见下节「端点策略」）；**发现失败默认失败关闭**——仅当显式开启 `allow_legacy_metadata_fallback` 才使用 `issuer = server_url`、`authorization_endpoint = server_url + "/authorize"`、`token_endpoint = server_url + "/token"`（`server_url` 为空仍失败），legacy 兜底路径不做 issuer 锚定校验；发现成功时先经 `IssuerBindingAllows` 校验——**锚定持久化到令牌缓存**（`ITokenCache::StoreBoundIssuer/GetBoundIssuer`，`FileTokenCache` 落 `<cache>.issuer` 旁挂文件，清除令牌不影响锚点），锚定 issuer 与本次发现不符即拒绝并保留已存令牌（防授权服务器迁移劫持，跨 provider 实例同样生效）；首次发现经 `EnforceIssuerBinding` 写入锚点。锚点读取失败关闭：拒绝符号链接/重解析点、非普通文件、越权权限（POSIX 属主 + group/other 位全空）、超 4096 字节、控制字符与短读；失败只返回「无锚点」，不清令牌也不删已有锚点
 - **端点策略**：metadata 的 authorization/token/revocation/registration 端点与动态注册 URL、挑战元数据 URL 一律要求 https（loopback 主机例外，`IsSecureEndpoint`），违规抛 `McpError(InvalidParams)`；`HandleAuthChallenge` 的挑战授权服务器须与 `server_url` **同源**（`IsSameOrigin`，scheme/host/端口归一化）或命中 `OAuthClientOptions::allowed_authorization_server_origins` 白名单，否则拒绝且不清令牌
 - `ScopeFilter`（`OAuthClientOptions::scope_filter`，空即原样发送）：返回值替换授权 URL（`StartAuthorizationFlow`）与 `client_credentials` 令牌请求中的 `scope`；刷新请求不带 `scope`（缺落盘值沿用旧值），提权（`StepUpAuthorization`）合并后同样经该钩子生效
 - `expectedResource` 比对：客户端 `VerifyResourceMatch` 现在要求元数据 `resource` 与配置资源标识逐字相等（缺失/空放行），不再做归一化或 scheme+host 前缀放行；服务端 audience 门（`validate_token_resource && expected_resource 非空`）沿用既有归一化比较，要求令牌 `resource` 非空且归一化后相等（[StreamableHttpServerTransport.cpp](../../src/http/StreamableHttpServerTransport.cpp)，DPoP 路径同门在 505 行），失配 401 `invalid_token`；方向不对称（服务端缺 audience 拒绝，客户端缺字段放行）
@@ -54,7 +54,7 @@ resource: src/client/auth/OAuthClientProvider.cpp
 - **刷新三态**（`RefreshTokensInternal`）：成功 `Refreshed`；授权服务器明确拒绝（HTTP 4xx 且 `error` 为 `invalid_grant`/`invalid_client`）→ `InvalidGrant`，清空令牌后 `Authenticate` 回落授权码流（重走完整授权）；传输失败、5xx、缺 `access_token`、issuer 校验失败等 → `TransientFailure`，**保留缓存令牌**直接失败。`HttpPost` 区分传输失败与 HTTP 状态码并透出 `error_code`，不再把二者混为「空 JSON」
 - 响应缺 `access_token` → 失败，**不回退旧 token**
 - 响应缺 `refresh_token` → 保留旧值（RFC 6749 非轮转）
-- `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）且有 `refresh_token` 时触发自动刷新；无 `refresh_token` 时直接返回缓存 access_token 不报错；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`（并发调用经 `RefreshTokensCoalesced` 合并为一次请求）
+- `GetAccessToken`：`WillExpireSoon()`（默认 margin 60s）且有 `refresh_token` 时触发自动刷新；无 `refresh_token` 时直接返回缓存 access_token 不报错；刷新失败抛 `McpError(InternalError, "OAuth token refresh failed")`（并发调用经单一 single-flight 合并为一次请求，等待者有界返回并读最新令牌）
 - `Revoke`：RFC 7009 best-effort，本地缓存无论 HTTP 结果都清空
 - `StepUpAuthorization`（SEP-2350）：合并 scopes → Revoke → 重新授权
 - T11 遗留（见 [/concepts/tier1-parity.md](/concepts/tier1-parity.md)）：`StepUpAuthorization` 空元数据路径存在解引用风险待加固
