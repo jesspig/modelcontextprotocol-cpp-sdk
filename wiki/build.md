@@ -50,6 +50,7 @@ ctest --preset debug --output-on-failure
 | 依赖 | 版本 | 说明 |
 |------|------|------|
 | OpenSSL | 系统 3.x/4.x | 可选；启用由 `MCP_WITH_OPENSSL` 三态开关（默认 `AUTO`）+ `find_package(OpenSSL)` 结果决定，启用时经 `mcp-openssl` 定义 `MCP_HAVE_OPENSSL`（TLS 与 PKCE 随机数 `RAND_bytes`）并链接；PKCE 的 SHA-256 恒为内置实现（[sha256.hpp](../include/mcp/detail/sha256.hpp)）；支持 3.x/4.x，不支持主版本 configure 失败，详见 [/concepts/openssl-compat.md](/concepts/openssl-compat.md) |
+| rapidyaml | `v0.16.0 @ f8ac8dd50f4f7916579d55a05ebf9c6488e52670` | 固定 submodule（官方 GitHub URL，见 `.gitmodules`），MIT 许可文本随源在 [LICENSE.txt](../../third_party/rapidyaml/LICENSE.txt)；0.16.0 内嵌 c4core 0.6.0，`RYML_SYSTEM_C4CORE=OFF`、`RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS=ON`、`RYML_INSTALL=OFF`，经 `add_subdirectory(third_party/rapidyaml EXCLUDE_FROM_ALL)` 接入并链到 `mcp-client`。供应链身份与 SBOM 候选引用登记于 T-02 `dependency-selection.txt`、`sbom.cdx.json`、`sbom-plan.txt`；产品完整 SBOM 由 T-25 生成 |
 
 ## CI 工作流（.github/workflows/）
 

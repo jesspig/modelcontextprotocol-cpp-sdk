@@ -21,12 +21,24 @@
 
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected }` | `Initial` | 三态状态机，底层用 `std::atomic<int>` |
-| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | 所有会话侧传输的公共基类，持有 `channel_`/`session_id_` |
-| `SetConnected` | `void SetConnected()` | — | 仅 `Initial → Connected` 生效（CAS），否则记 Warning 日志 |
-| `SetDisconnected` | `void SetDisconnected()` | — | 重复调用只触发一次 `on_close_` |
+| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected, Closing }` | `Initial` | 四态状态机（新增 `Closing` 追加在末尾，旧枚举值不变），底层用 `std::atomic<int>` |
+| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | 所有会话侧传输的公共基类，持有 `channel_`/`session_id_`，并持有 `detail::SessionLifecycle` 与 generation |
+| `SetConnected` | `void SetConnected()` | — | 仅 `Initial → Connected` 生效（CAS），否则记 Warning 日志；成功后完成生命周期 `Connecting → Open` |
+| `SetDisconnected` | `void SetDisconnected()` | — | 重复调用只触发一次 `on_close_`；`Closing` 期间由关闭 owner 在 join 后统一触发 |
 | `GetState` | `TransportState GetState() const` | `Initial` | 原子读取当前状态 |
 | `SetOnClose` / `SetOnError` | `void SetOnClose(std::function<void()>)` / `void SetOnError(std::function<void(std::string_view)>)` | 未设置 | 关闭与出错回调，加锁写入；读循环失败经 `SetOnError` 上报 |
+
+### 关闭顺序与 generation（0.3.13）
+
+所有客户端会话传输与流式 HTTP 服务端统一使用 `detail::SessionLifecycle`（`include/mcp/detail/SessionLifecycle.hpp`）管理 `Initial → Connecting → Open → Closing → Closed` 与 generation。一次关闭严格按：进入 `Closing` 停接收 → 关 `MessageChannel` 唤醒等待者 → 经既有失败路径结算 pending → 关 socket/pipe 并中断在途请求 → `detail::JoinThreadSafely` join（回调线程内关闭自动 detach，不 self-join）→ 一次性 `on_close_` 通知。
+
+回调捕获创建时 generation；`Connect` 与 `Close` 按 generation 串行，旧 generation 的消息、错误与关闭回调在新 generation 建立后丢弃。
+
+::: warning 旧行为 / 新行为 / 如何改（源码兼容，行为收紧）
+- 旧行为：同一客户端工厂重复 `Connect()` 返回互不干扰的多个会话，旧会话可继续收发。
+- 新行为：重复 `Connect()` 会先关闭并等待上一 generation 完成，再开启新 generation；旧会话回调不再投递消息。
+- 受影响方：需要并存多个会话时，为每个会话单独创建传输工厂实例；单会话重连无需改动。
+:::
 
 ### `IClientTransport`
 
@@ -87,6 +99,10 @@
 `stderr_path` 与 `on_stderr` 互斥：两者同时设置时 `Connect()` 抛 `McpError(McpErrorCode::InvalidParams, "stderr_path and on_stderr are mutually exclusive")`。
 :::
 
+::: warning
+POSIX 环境与 PATH 行为收紧（源码兼容）：旧行为是覆盖项直接追加到继承环境之后（可能重复），可执行文件搜索读父进程的 `getenv("PATH")`，目录也会因可执行位被误当可执行文件。新行为是继承环境按 key 去重、覆盖项按 key 最后生效；`inherit_environment_variables=false` 完全不读父环境；PATH 取自最终有效环境，空段表示当前目录，目录与不可执行文件被拒绝。无自定义环境仍走系统 `execvp` 语义，`argv[0]` 与显式工作目录不变。受影响的下游若依赖重复键或父环境 PATH，请在 `environment_variables` 中显式设置 `PATH`，并用 `inherit_environment_variables=true` 保留需要的继承项。
+:::
+
 接口声明在 `include/mcp/transport/StdioServerTransport.hpp` 与 `include/mcp/transport/StdioClientTransport.hpp`；子进程与帧读取的行为在 `src/transport/StdioClientTransport.cpp`，进程树终止在 `src/transport/detail/posix_platform.cpp` 与 `src/transport/detail/win32_platform.cpp`。
 
 ## Streamable HTTP 服务端
@@ -101,7 +117,7 @@
 | `RequiresRequestScopedNotifications` | `bool ... const override` | `true` | 恒为真（硬编码） |
 | `IsStateless` | `bool IsStateless() const override` | 取 `options_.stateless` | 无状态模式的判定源 |
 | `ValidateMcpHeaders` | `static bool ValidateMcpHeaders(const std::string&, const std::string&, const JsonValue&, std::string& error_out)` | — | SEP-2243 头与请求体一致性校验 |
-| `AuthResult` | `struct { bool ok{false}; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false` | `BearerAuthConfig::verify` 的返回载体 |
+| `AuthResult` | `struct { bool ok{false}; std::string principal; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false`、`principal` 空 | `BearerAuthConfig::verify` 的返回载体；`principal` 是服务端唯一可信身份来源，不从请求头以外的参数读取 |
 
 ### `StreamableHttpServerOptions`
 
@@ -125,8 +141,9 @@
 | `max_sse_replay_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes`（1 MiB） | 会话模式 GET 流按 `Last-Event-ID` 回放时的字节预算，从最新事件向前截取 |
 | `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s（`kDefaultHttpRequestTimeout`） | POST 等待处理器响应的截止；`0` 无限期等待，超时回 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | 未设置时无鉴权门，行为不变 |
+| `on_authenticated` | `ServerAuthenticatedCallback`（`void(const ServerRequestContext&)`） | 未设置 | 认证与会话解析成功后回调；会话模式下若同 ID 绑定不同 principal 则拒绝（403），回调不触发。用于把 principal 传给 `McpServer::SetSessionPrincipal` |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | 未设置 | 按方法/工具名解析 `Mcp-Param-*` 头注解；未设置时跳过参数头校验 |
-| `enable_server_card` | `bool` | `false` | 注册 `GET /server-card` 发现端点 |
+| `enable_server_card` | `bool` | `false` | 注册 `GET /server-card`，并另注册 `GET <endpoint>/server-card` 以匹配客户端发现路径 |
 | `server_card` | `std::optional<ext::ServerCard>` | `std::nullopt` | 未提供时由 `BuildDefaultServerCard()` 生成 |
 
 ### `StreamableHttpServerOptions::BearerAuthConfig`
@@ -143,7 +160,11 @@
 | `validate_token_resource` | `bool` | `true` | audience 校验开关 |
 | `enable_dpop` | `bool` | `false` | DPoP 证明校验（实验特性，需 OpenSSL） |
 
+卡片响应为 `application/json` 与规范化 body 的强 ETag；`If-None-Match` 支持弱比较、列表与 `*`，命中回 304 空 body 并保留 ETag、`cache-control` 与 CORS 头。CORS 不再由卡片处理器重复写 `Access-Control-Allow-Origin`，统一由 `HttpServerImpl` 的 Host/Origin 准入、OPTIONS 预检与 `Access-Control-Expose-Headers`（含 `ETag`）提供；不新增凭据型 CORS。
+
 接口与 Options 声明在 `include/mcp/transport/StreamableHttpServerTransport.hpp`；路由、头校验与 server-card 端点在 `src/http/StreamableHttpServerTransport.cpp`，Host/Origin 与绑定行为在 `src/http/HttpServerImpl.cpp`。
+
+启用 `bearer_auth` 时，POST/GET 先完成令牌校验，再由 `ServerRequestContext` 统一携带会话状态（`sessionful`/`stateless`）、principal 与授权作用域；同一会话绑定第二个 principal 返回 403，缺失/过期/撤销会话返回 404。pending 登记以「会话 + owner + 请求 id」为原子键，取消、超时、完成与并发同 ID 均按该键移除，避免串线。DELETE 在查询 store、判断会话存在与执行删除之前完成鉴权与 owner 校验；无凭证/错凭证返回 401，跨 owner 与未知会话返回同一 404 `Session expired` 响应，不泄露存在性。`MCP_LOG_LEVEL>=3` 时生命周期日志只写脱敏字段 `correlation=cid-<hex>` 与 `session=sid-<hex>`（stateless 为 `session=stateless`），不写令牌、授权头或正文。未配置 `bearer_auth` 的传输保持旧行为。
 
 ## Streamable HTTP 客户端
 
@@ -160,7 +181,7 @@
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `endpoint` | `std::string` | 空（必填） | 服务端 URL；`https` 走 TLS |
-| `transport_mode` | `HttpTransportMode` | `AutoDetect` | 声明字段：`src/` 内无任何读取点，实际探测由 `McpClient` 版本协商完成 |
+| `transport_mode` | `HttpTransportMode` | `AutoDetect` | `AutoDetect` 首次初始化收到 400/404/405 且 body 非合法 JSON-RPC 错误信封时恰好回退一次 legacy SSE；`StreamableHttp`/`Sse` 直选实现，不回退 |
 | `name` | `std::string` | `""` | 空回退 `"streamable-http"` |
 | `known_session_id` | `std::string` | `""` | 恢复既有会话 |
 | `additional_headers` | `std::map<std::string, std::string>` | `{}` | 静态附加头 |
@@ -188,7 +209,7 @@
 | `AutoDetect` / `StreamableHttp` / `Sse` | `enum class HttpTransportMode` | `AutoDetect` | 声明于 `include/mcp/transport/HttpTransportMode.hpp`，为 `transport_mode` 的取值类型 |
 
 ::: info
-`transport_mode` 与 `HttpTransportMode` 目前只出现在公共头文件与 `tests/unit/StreamableHttpTransportTests.cpp` 里，生产代码路径未消费；不要据此判断连接行为。
+`AutoDetect` 由 `StreamableHttpClientTransport::Connect()` 返回的稳定 facade 消费：facade 持有唯一 `MessageChannel`，内层 Streamable HTTP/SSE 只负责 IO，替换内层不改变调用方持有的 channel。仅首次 `initialize` 响应参与回退判定；`McpClient` 在 `ConnectMode::Pin/Legacy` 下通过 `ITransportFallbackControl::SetFallbackEnabled(false)` 关闭传输回退（协商语义不变）。
 :::
 
 接口与 Options 声明在 `include/mcp/transport/StreamableHttpClientTransport.hpp`；POST、监听流与回放行为在 `src/http/StreamableHttpClientTransport.cpp`，重定向策略常量在 `include/mcp/transport/detail/Limits.hpp`。
@@ -205,11 +226,20 @@
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` | 单事件上限 |
 | `redirect_policy` | `detail::HttpRedirectPolicy` | `SameOriginOnly` | 重定向策略 |
 | `max_redirects` | `int` | `5` | 最大跳数 |
+| `additional_headers` | `std::map<std::string, std::string>` | `{}` | 静态附加头（GET 与 POST） |
+| `auth_challenge_handler` | `std::function<std::string(std::string_view)>` | 未设置 | 401 必调、403 含 `insufficient_scope` 才调；返回非空用于下一次请求 |
+| `apply_per_request_headers` | `std::function<void(const HttpRequestHeaderContext&, std::map<std::string, std::string>&)>` | 未设置 | GET/POST 每次发送前调用，可覆盖附加头 |
+| `observe_response_challenge` | `std::function<void(const HttpResponseChallengeContext&)>` | 未设置 | GET/POST 响应到达后各调用一次 |
+| `on_establish_result` | `std::function<void(bool)>` | 未设置 | 内部回退接线用：首个有效 SSE 事件为 `true`，重试预算耗尽仍未建立为 `false`；普通用户无需设置 |
 | `WebSocketClientTransport` | `class WebSocketClientTransport : public IClientTransport` | — | WebSocket 客户端传输；**没有 Options 结构体**，只有两个构造参数 |
 | 构造 | `WebSocketClientTransport(std::string url, std::string name = "websocket")` | `name = "websocket"` | `Name()` 原样返回构造名，无回退逻辑 |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | 只接受 `ws`/`wss`，`wss` 走 TLS，连接超时 30s |
 
 接口声明在 `include/mcp/transport/SseClientTransport.hpp` 与 `include/mcp/transport/WebSocketClientTransport.hpp`；实现分别在 `src/transport/SseClientTransport.cpp` 与 `src/transport/detail/net/WebSocketClient.cpp`。
+
+::: warning
+WebSocket 握手行为收紧（源码兼容，旧 API 签名不变）：旧行为是 `Connect()` 立即把传输标为 Connected，握手完成前发送的消息无界且失败静默。新行为是 101 前保持 Connecting，仅在状态行、`Upgrade`、`Connection`、`Sec-WebSocket-Accept` 全部验证通过后进入 Open 并把传输标为 Connected；101 前消息按入队顺序延迟发送，条数上限 `kMaxWebSocketHandshakeQueueMessages`（64）与序列化字节上限 `kMaxWebSocketHandshakeQueueBytes`（1 MiB），满载或握手失败经 `SetOnError` 明确报错，Closing/Closed 拒绝新消息；失败、超时、关闭进入唯一终止态且只通知一次。总截止时间覆盖 DNS/TCP/TLS/写请求/读响应/重定向，关闭或超时中断阻塞读写并 join。重定向仅允许同主机同端口或 `ws:80 → wss:443` 升级，最多 `kMaxWebSocketRedirects`（5）跳，拒绝降级、跨主机、其他跨端口、带 userinfo 与畸形 Location，每次跳转更换 Sec-WebSocket-Key 且不放宽 TLS 校验。受影响的下游若依赖跨主机/降级重定向或 101 前无界发送，请改为显式配置合法 URL 并尊重有界队列的报错；构造与 `Connect()` 签名不变。
+:::
 
 ## 进程内传输
 
@@ -243,13 +273,26 @@
 | `HttpRequest` | `struct { std::string method; std::string path; std::unordered_map<std::string, std::string> headers; std::string body; }` | — | 入站请求视图 |
 | `HttpResponse` | `struct`，含 `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`、`"OK"`、其余空/`false` | 后两字段控制 SSE 定向与写完即断 |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | 路由处理体 |
-| `HttpServerOptions` | `struct`，含 `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`、`""`、`kMaxHttpBodyBytes`、`header_read_budget = nullopt` | 传输层把 `host`/`allowed_*` 原样转发到此 |
+| `HttpServerOptions` | `struct`，含 `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`、`""`（= `127.0.0.1` loopback；显式 `0.0.0.0`/`::` 仍可全网监听）、`kMaxHttpBodyBytes`、`header_read_budget = nullopt` | 传输层把 `host`/`allowed_*` 原样转发到此 |
 | `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`，配 `void Start()` / `void Stop()` | 选项默认构造 | 非 `ITransport`，独立生命周期 |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | `(method, path)` 精确匹配 |
 | `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | 无 tag | `SseClientId = uint64_t`；带 tag 版本供定向广播与过滤 |
 | `BroadcastSse` | `void BroadcastSse(std::string_view event[, const std::function<bool(const std::string&)>& accept])` | 全发 | 谓词版按 tag 过滤 |
 
 接口声明在 `include/mcp/http/HttpServer.hpp`，转发层在 `src/http/HttpServer.cpp`，实际调度在 `src/http/HttpServerImpl.cpp`。
+
+::: warning HTTP/SSE/202/bind 行为收紧（源码兼容，旧 API 签名不变）
+- 旧行为：`bind_host` 为空时绑定 `INADDR_ANY`（全网）；请求与响应的 `Content-Length` 用朴素乘加、重复头以最后值覆盖；SSE 各路径自行按 `\n\n` 分块，只有 CRLF/LF 被识别且跨块末尾 `\r` 处理不一致；HTTP 202 无论请求还是通知都只记日志，请求的 pending 可能悬挂。
+- 新行为：`bind_host` 为空只绑定 IPv4 loopback `127.0.0.1`，默认卡片端点仍是 `localhost`；`Content-Length` 先做乘法溢出检查再比 body 上限，空值/非数字/重复冲突/超 `size_t` 确定拒绝，`Transfer-Encoding` 与 `Content-Length` 共存拒绝，chunk size 溢出与累计上限统一；SSE 共用增量解析器，CRLF/LF/单独 CR/混合换行与跨块末尾 `\r` 等价，空行派发、事件上限不变；202 仅确认通知（空 body 直接完成），请求收到 202 立即投递 `ProtocolViolation (-32005)` 并关闭/排空连接，不自动重放。
+- 受影响怎么改：需要全网监听时显式设置 `HttpServerOptions::bind_host = "0.0.0.0"`（IPv6 用 `"::"`）；依赖请求收到 202 后由后续 GET/SSE 补响应的下游应改为让服务端返回正式 JSON-RPC 响应或错误；依赖重复/非法 framing 被宽容的下游应发送合规的单 `Content-Length` 且不同时出现 `Transfer-Encoding`；依赖裸 CR 或跨块尾 `\r` 旧行为的 SSE 服务端应发出标准 CRLF/LF 空行分帧。旧的 `SseClientTransport`/`HttpClientTransportOptions` 构造与 `HttpServerOptions` 字段签名均不变。
+:::
+
+::: warning AutoDetect 单次 legacy SSE 回退（源码兼容，旧 API 签名不变）
+- 旧行为：`transport_mode` 无运行时读取点，`AutoDetect` 始终走 Streamable HTTP；命中 400/404/405 的非协议 body 时只报错，不尝试 legacy SSE。
+- 新行为：`AutoDetect` 首次 `initialize` 响应为 400/404/405 且 body 不是合法 JSON-RPC 错误信封时，先停发并完整关闭旧 Streamable HTTP 会话（POST/listen/resume/DELETE/线程），再用相同 endpoint、附加头、每请求头、challenge 回调、重定向策略与大小上限建立 legacy SSE，并在新会话上恰好重放一次该初始化消息；其他状态、合法错误信封与后续响应不回退。SSE 建立失败时以 `ConnectionClosed` 有界结束 pending、只报一次错误，不循环重试。`StreamableHttp`/`Sse` 显式模式与 `ConnectMode::Pin/Legacy` 不回退。
+- 附带 SSE 收紧（同源兼容面）：旧行为是 endpoint 事件到达前发出的消息被静默丢弃，且任意响应 body 分块都会重置重连预算；新行为是消息等待 endpoint 事件后按序发出（避免回退重放丢失），只有有效 `endpoint`/`message` 事件才重置重连预算，非 SSE 错误体不再无限重连。
+- 受影响怎么改：不希望自动回退的下游把 `transport_mode` 显式设为 `StreamableHttp` 或 `Sse`，或使用 `ConnectMode::Pin/Legacy`（客户端自动关闭传输回退），也可对返回的传输调用 `ITransportFallbackControl::SetFallbackEnabled(false)`；依赖 400/404/405 文本 body 直接报错的下游需改为预期一次 legacy SSE 初始化重放；依赖 endpoint 前发送消息被丢弃或靠错误体重置重连预算的下游需改为等待 endpoint 事件后再发送、并让服务端返回合法 SSE 帧。`SseClientTransportOptions` 新增字段全部有默认值，旧构造与聚合初始化不变。
+:::
 
 ### `EventStore`
 
@@ -285,6 +328,9 @@
 | `kMaxSseEventBytes` | `size_t` | 1 MiB | SSE 单事件默认上限 |
 | `kMaxStdioFrameBytes` | `size_t` | 8 MiB | stdio 单帧默认上限 |
 | `kMaxHttpRedirects` | `int` | `5` | 重定向跳数默认值 |
+| `kMaxWebSocketRedirects` | `int` | `5` | WebSocket 重定向跳数上限 |
+| `kMaxWebSocketHandshakeQueueMessages` | `size_t` | `64` | 101 前排队条数上限 |
+| `kMaxWebSocketHandshakeQueueBytes` | `size_t` | 1 MiB | 101 前排队序列化字节上限 |
 | `kChannelCapacity` | `size_t` | `64` | `MessageChannel` 深度 |
 | `kMaxHttpSessions` | `size_t` | `10000` | 会话存储上限（满 → 503 / `TrySave` 失败） |
 | `kSessionIdleTimeoutMs` | `int64_t` | `1800000` | 会话闲置过期 |

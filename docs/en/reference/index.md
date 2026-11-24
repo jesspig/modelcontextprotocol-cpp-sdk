@@ -30,6 +30,7 @@ The reference layer answers exactly three things: **what the signature is, what 
 | [Client facade](/en/reference/client) | All `McpClient` methods, request handles and cancellation, MRTR, inbound handlers, `ClientOptions`, connect modes | `include/mcp/client/` |
 | [Transports](/en/reference/transports) | Transport contract, the five transports with every Options field, HTTP server substrate | `include/mcp/Transport.hpp`, `include/mcp/transport/`, `include/mcp/http/` |
 | [Types](/en/reference/types) | `JsonValue`, content and every `*Result`/`*RequestParams`, capabilities, task and MRTR types, logging and spans | `include/mcp/McpTypes.hpp` and core headers |
+| [JSON Schema validation](/en/reference/schema-validation) | legacy entry vs `SchemaMode::Modern2020`, pinned RE2 and offline refs, budgets B-37..B-51, dialect fail-closed | `src/detail/SchemaValidation.hpp`, `src/detail/SchemaValidation.cpp`, `src/detail/JsonSchemaValidator.hpp` |
 | [Errors](/en/reference/errors) | Full `McpErrorCode` table, throw sites, era remapping, `RequestOutcome` variants | `include/mcp/ErrorCodes.hpp`, `src/protocol/` |
 | [Process and storage](/en/reference/process-and-storage) | `mcp::Spawn` and `SpawnedProcess`, task/event/session stores, `HttpServer` | `include/mcp/process/`, `include/mcp/storage/`, `include/mcp/http/` |
 | [Auth and extensions](/en/reference/auth-and-extensions) | OAuth and PKCE, DPoP, token cache, server card/apps/triggers, skill verification, method and version constants | `include/mcp/ext/`, `include/mcp/client/auth/` |

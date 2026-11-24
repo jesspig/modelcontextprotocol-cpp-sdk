@@ -3,7 +3,7 @@ type: Concept
 title: _meta 元数据与过滤器管线
 description: 2026 时代每请求 _meta 携带协议信息（线上位于 params._meta），入站/出站 FilterPipeline 用于认证审计限流。
 tags: [协议, meta, filter, 认证]
-timestamp: 2026-10-15T13:14:29+08:00
+timestamp: 2026-11-24T22:58:00+08:00
 resource: include/mcp/Meta.hpp
 ---
 
@@ -27,8 +27,10 @@ resource: include/mcp/Meta.hpp
 ## 过滤器管线
 
 - `FilterPipeline`（[MessageFilter.hpp](../../include/mcp/protocol/MessageFilter.hpp)）：`AddFilter(shared_ptr<MessageFilter>)` + `Execute(message, final_handler)`，无 filter 时直通；链式递归
-- **约束：`next` 必须在 filter 函数返回前同步调用**，延迟调用不安全
+- **延迟 `next` 安全**：链状态由 `shared_ptr` 持有，`next` 的副本可跨线程保存后在 `Execute` 返回后调用；终态 handler 有 one-shot 守卫，filter 重复调 `next` 或改写消息只执行一次最终回调
 - 挂接点：`ServerOptions::incoming_filters / outgoing_filters`（[/classes/mcp-server.md](../classes/mcp-server.md)）；`McpSessionHandler` 构造参数。入站在消息循环分发前执行，出站在 `SendMessage` 中执行（`closed_` 时不再发送）
+- **出站恰好一次**：`SendMessage` 的发送闭包持有 `shared_ptr/shared_from_this` 与 one-shot 标志，filter 改写/丢弃/抛异常、transport 关闭都不重复发送、不把回调异常扩散到 IO 线程；`TransportSend` span 在 `SendMessage` 入口按消息记一对 Begin/End
+- **订阅通知同样经过出站管线**：`NotifySubscribers` 逐条调用 `SendMessage`，保留 `session_id`、`subscriptionId`，modern 会话按协商版本写 `_meta.protocolVersion`、legacy 不写（[/classes/mcp-session-handler.md](../classes/mcp-session-handler.md)）
 - 用途：认证/审计/限流
 
 ## 相关页面

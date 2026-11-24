@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: 实验开关
-description: 服务端 8 开关与客户端 4 开关：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器已实现语义与构造期同步、DPoP 门在传输侧而非 ServerOptions、interceptor 为无门控别名；澄清 enable_file_input 不等于 files 上传下载扩展。
-tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容, files]
-timestamp: 2026-11-19T01:12:29+08:00
+description: 服务端 8 开关与客户端 4 开关：tasks/skills/apps/server-card 门控语义、tasks 隐式兼容已移除（只设 task_store 不再声明，需显式开）、etag/渐进发现/文件输入/触发器已实现语义与构造期同步、文件输入改为显式根目录白名单与请求级预算、DPoP 门在传输侧而非 ServerOptions、interceptor 为无门控别名；澄清 enable_file_input 不等于 files 上传下载扩展。
+tags: [experimental, 实验开关, tasks, skills, apps, server-card, 兼容, files, 文件输入]
+timestamp: 2026-11-25T03:10:32+08:00
 resource: include/mcp/server/ServerOptions.hpp
 ---
 
@@ -23,11 +23,18 @@ resource: include/mcp/server/ServerOptions.hpp
 | `enable_server_card` | 声明 `io.modelcontextprotocol/server-card` 扩展（[ServerCard.hpp](../../include/mcp/ext/ServerCard.hpp) 的 `kServerCardExtensionId`，SEP-2127）；开时 `GetServerCard()` 返回显式卡（`server_card`，[ServerOptions.hpp](../../include/mcp/server/ServerOptions.hpp)）或由 `server_info` + 支持版本构建的默认卡，均经 `ValidateCard` 校验 | 关时 `GetServerCard()` 抛 `HandlerError`（`server card is disabled`）；HTTP `GET /server-card` 仍由传输侧同名开关独立门控 |
 | `enable_etag_cache` | 列表类结果序列化附内容哈希 `etag`（载荷超 `kEtagMaxBytes` 8MB 跳过不附；TTL 语义不动）；客户端 8 读取路径经 meta 扩展附 `ifNoneMatch` 条件发送，服务端回 `notModified` 时以存表回退 | 全局关闭：结果不附 `etag`，客户端存取表短路（`GetStoredEtag`/`StoreEtagBody` 直接返回），无条件发送 |
 | `enable_progressive_discovery` | `tools/list` 支持 `query` 子串过滤 + `pageSize`（1–100）翻页，不再走缓存全量；`subscriptions/listen` 即刷并持开，`list_changed` 按订阅缓冲 | 原路：`tools/list` 走缓存全量返回；`listen` 与 `list_changed` 走原广播路径 |
-| `enable_file_input` | `tools/call` 的 `arguments` 内 `file://`/`resource://` 引用对象按范围切片并内联小文件；`http(s)://` 只透传；越界与超限回错误结果 | 参数原样透传，不做任何引用解析 |
+| `enable_file_input` | `tools/call` 的 `arguments` 内 `file://`/`resource://` 引用对象按范围切片并内联小文件；`file://` 仅放行 `ServerOptions::file_input_config.allowed_roots` 中按组件匹配的路径，未配置根目录时全部拒绝；敏感文件与链接替换拒绝；引用数/字节按请求预算累计；`http(s)://` 只透传；越界与超限回 `is_error` | 参数原样透传，不做任何引用解析 |
 | `enable_triggers_events` | `RegisterTrigger` 注册表 + `EmitTriggerEvent` 按类型匹配，经订阅过滤投递 `notifications/triggers/event`，命中项的 webhook 失败只记 `Warning` 不抛 | `EmitTriggerEvent` 直接返回（事件静默丢弃）；注册/注销本身不限门 |
 
 > [!note] `enable_file_input` ≠ `io.modelcontextprotocol/files` 扩展
 > `enable_file_input` 只是 `tools/call` 参数 `arguments` 内 `file://`/`resource://` 引用的内联解析能力（本地参数处理）。官方 `io.modelcontextprotocol/files` 扩展（2026-11-10 早期草案，依赖协议版本 `2026-07-28+`，目前无参考实现、目标年底稳定）定义的是客户端与工具之间文件上传/下载的独立协议，本仓库尚未支持该扩展，勿将两者等同；预研结论见 `.handoff/discussions/2026-11-18-files-research.md`。
+
+## Apps 宿主桥接不新增开关
+
+`enable_apps_extension` 仍只门控 `ui://` 资源的读取与扩展声明；新增的 [AppsHostBridge.hpp](../../include/mcp/ext/AppsHostBridge.hpp) 是 `mcp-ext` 的独立 API，不引入 `ServerOptions`/`ClientOptions` 新开关，也不改变上表任何开/关语义。桥接默认失败关闭：宿主必须自行填入 `AppsMessageContext`（source/target origin、resource uri、`sandbox_verified=true`、能力凭证），payload 中同类字段作为未知顶层键拒绝；权限取 `UiMeta::permissions` 与宿主方法白名单交集，未知方法、通配符 origin、未证明 sandbox、过期/重放凭证与超限 JSON 一律拒绝。CSP 继续来自 `UiMeta`，桥接不交付 iframe/WebView/DOM/脚本注入或 UI 渲染器。
+
+> [!warning] 文件输入 old → new（B 类行为收紧）
+> 旧：开关打开即隐式信任系统临时目录与进程当前目录；新：必须显式配置 `allowed_roots`，按路径组件匹配并拒绝敏感文件、链接替换与畸形 URI，单次工具调用累计引用数与字节预算且超限不调 handler。需要旧行为的调用方把原目录写进白名单；保持列表为空即完全禁用本地文件。`enable_file_input`、`FileRef` 公共形状、`http(s)://` 透传与 legacy/modern 语义均未改；迁移细节见 [FileInput 信任边界](/howto/protect-an-http-server.md)。
 
 客户端：
 

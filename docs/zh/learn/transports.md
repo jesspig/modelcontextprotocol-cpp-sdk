@@ -8,11 +8,11 @@
 |------|--------|--------|---------|------|
 | stdio | `StdioClientTransport` | `StdioServerTransport` | 子进程的标准输入输出管道 | 本机一对一，宿主拉起服务端进程 |
 | Streamable HTTP | `StreamableHttpClientTransport` | `StreamableHttpServerTransport` | HTTP POST 承载消息，可选 GET 流承载通知与流式结果 | 远程部署的默认选择 |
-| SSE | `SseClientTransport` | 无独立服务端类 | 一条 GET 长连接推送 + POST 上行 | 只对接仍用旧 SSE 端点的服务端 |
+| SSE | `SseClientTransport`（或 `AutoDetect` 回退） | 无独立服务端类 | 一条 GET 长连接推送 + POST 上行 | 只对接仍用旧 SSE 端点的服务端 |
 | WebSocket | `WebSocketClientTransport` | 无 | TCP 上的双向帧 | 对端只提供 WebSocket 时 |
 | InMemory | `InMemoryTransport::CreatePair()` 的两端 | 同左 | 同进程内两条队列互连 | 单元测试与同进程装配 |
 
-两处必须写清的事实：**SSE 与 WebSocket 都只有客户端实现**。服务端侧的 SSE 流由 `StreamableHttpServerTransport` 在同一端点上按 `enable_legacy_sse` 开启（默认关闭，关闭时不注册 GET 路由，监听流与事件回放随之不可用），不存在单独的「SSE 服务端类」。把 InMemory 当成网络替代品或指望 WebSocket 连本 SDK 的服务端，都会在最开始就撞上不存在的类。
+两处必须写清的事实：**SSE 与 WebSocket 都只有客户端实现**。服务端侧的 SSE 流由 `StreamableHttpServerTransport` 在同一端点上按 `enable_legacy_sse` 开启（默认关闭，关闭时不注册 GET 路由，监听流与事件回放随之不可用），不存在单独的「SSE 服务端类」。把 InMemory 当成网络替代品或指望 WebSocket 连本 SDK 的服务端，都会在最开始就撞上不存在的类。`HttpClientTransportOptions::transport_mode` 默认 `AutoDetect`：首次 `initialize` 收到 400/404/405 且 body 不是合法 JSON-RPC 错误信封时，恰好回退一次 legacy SSE 并重放该初始化消息；显式 `StreamableHttp`/`Sse` 与 `ConnectMode::Pin/Legacy` 不走回退。
 
 ## 怎么选
 

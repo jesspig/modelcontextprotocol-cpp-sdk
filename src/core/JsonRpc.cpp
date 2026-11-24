@@ -49,7 +49,10 @@ JsonValue RequestIdToJson(const RequestId& id) {
 
 RequestId RequestIdFromJson(const JsonValue& j) {
     if (j.IsInt()) return j.GetInt();
-    return j.GetString();
+    if (j.IsString()) return j.GetString();
+    throw McpError(McpErrorCode::InvalidRequest,
+        std::string("JSON-RPC id must be int64 or string, got ") +
+        detail::JsonValueTypeName(j));
 }
 
 JsonValue SerializeErrorData(const ErrorData& v) {
@@ -210,31 +213,65 @@ std::string SerializeMessage(JsonRpcMessage&& msg) {
 
 JsonRpcMessage DeserializeMessage(std::string_view json) {
     auto jv = JsonValue::Parse(json);
+    if (!jv.IsObject()) {
+        throw McpError(McpErrorCode::InvalidRequest,
+            "JSON-RPC message must be a JSON object");
+    }
 
-    bool has_method = jv.Contains(detail::kMethod);
-    bool has_result = jv.Contains(detail::kResult);
-    bool has_error = jv.Contains(detail::kError);
-    auto* id_ptr = jv.Find(detail::kId);
-    bool has_id = id_ptr && !id_ptr->IsNull();
+    const JsonValue* version = jv.Find(detail::kJsonrpc);
+    if (!version || !version->IsString()) {
+        throw McpError(McpErrorCode::InvalidRequest,
+            std::string("JSON-RPC 'jsonrpc' field must be the string '") +
+            std::string(kJsonRpcVersion) + "'");
+    }
+    ValidateVersion(version->GetString());
 
-    if (has_method && has_id) {
-        return DeserializeJsonRpcRequest(jv);
-    } else if (has_method) {
-        return DeserializeJsonRpcNotification(jv);
-    } else if (has_result && !has_error) {
-        return DeserializeJsonRpcResponse(jv);
-    } else if (has_error && !has_result) {
-        return DeserializeJsonRpcErrorResponse(jv);
-    } else if (has_result && has_error) {
+    const bool has_method = jv.Contains(detail::kMethod);
+    const bool has_result = jv.Contains(detail::kResult);
+    const bool has_error = jv.Contains(detail::kError);
+    const JsonValue* id_ptr = jv.Find(detail::kId);
+    const bool has_id = id_ptr != nullptr;
+    const bool id_is_null = has_id && id_ptr->IsNull();
+
+    if (has_method && (has_result || has_error)) {
+        throw McpError(McpErrorCode::InvalidRequest,
+            "JSON-RPC 'method' must not coexist with 'result' or 'error'");
+    }
+    if (has_result && has_error) {
         throw McpError(McpErrorCode::InvalidRequest,
             "JSON-RPC message has both 'result' and 'error' fields");
-    } else {
-        throw McpError(McpErrorCode::InvalidRequest,
-            std::string("unknown JSON-RPC message type: method=") +
-            (has_method ? "present" : "absent") +
-            ", result=" + (has_result ? "present" : "absent") +
-            ", error=" + (has_error ? "present" : "absent"));
     }
+
+    if (has_method) {
+        if (has_id) {
+            if (id_is_null) {
+                throw McpError(McpErrorCode::InvalidRequest,
+                    "JSON-RPC request id must not be null (JSON-RPC 2.0 section 5.1)");
+            }
+            (void)RequestIdFromJson(*id_ptr);
+            return DeserializeJsonRpcRequest(jv);
+        }
+        return DeserializeJsonRpcNotification(jv);
+    }
+    if (has_result) {
+        if (!has_id || id_is_null) {
+            throw McpError(McpErrorCode::InvalidRequest,
+                "JSON-RPC response id must be an int64 or string");
+        }
+        (void)RequestIdFromJson(*id_ptr);
+        return DeserializeJsonRpcResponse(jv);
+    }
+    if (has_error) {
+        if (has_id && !id_is_null) {
+            (void)RequestIdFromJson(*id_ptr);
+        }
+        return DeserializeJsonRpcErrorResponse(jv);
+    }
+    throw McpError(McpErrorCode::InvalidRequest,
+        std::string("unknown JSON-RPC message type: method=") +
+        (has_method ? "present" : "absent") +
+        ", result=" + (has_result ? "present" : "absent") +
+        ", error=" + (has_error ? "present" : "absent"));
 }
 
 } // namespace mcp

@@ -21,12 +21,24 @@ This page is the **authoritative field table** for the transport layer and the H
 
 | Symbol | Signature/Type | Default | Notes |
 |---|---|---|---|
-| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected }` | `Initial` | Three-state machine backed by `std::atomic<int>` |
-| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | Common base of every session-side transport; owns `channel_`/`session_id_` |
-| `SetConnected` | `void SetConnected()` | — | Only `Initial → Connected` succeeds (CAS); otherwise a Warning is logged |
-| `SetDisconnected` | `void SetDisconnected()` | — | Repeat calls fire `on_close_` only once |
+| `TransportState` | `enum class TransportState { Initial, Connected, Disconnected, Closing }` | `Initial` | Four-state machine (the new `Closing` value is appended, so old enum values are unchanged) backed by `std::atomic<int>` |
+| `TransportBase` | `class TransportBase : public ITransport, public std::enable_shared_from_this<TransportBase>` | — | Common base of every session-side transport; owns `channel_`/`session_id_` plus `detail::SessionLifecycle` and a generation |
+| `SetConnected` | `void SetConnected()` | — | Only `Initial → Connected` succeeds (CAS); otherwise a Warning is logged; on success the lifecycle advances `Connecting → Open` |
+| `SetDisconnected` | `void SetDisconnected()` | — | Repeat calls fire `on_close_` only once; while `Closing`, the close owner fires it after joins |
 | `GetState` | `TransportState GetState() const` | `Initial` | Atomic read of the current state |
 | `SetOnClose` / `SetOnError` | `void SetOnClose(std::function<void()>)` / `void SetOnError(std::function<void(std::string_view)>)` | unset | Close and error callbacks, written under a lock; read-loop failures surface via `SetOnError` |
+
+### Shutdown order and generation (0.3.13)
+
+All client session transports and the Streamable HTTP server use `detail::SessionLifecycle` (`include/mcp/detail/SessionLifecycle.hpp`) for `Initial → Connecting → Open → Closing → Closed` and generation tracking. One close follows a strict order: enter `Closing` (stop receiving) → close `MessageChannel` to wake waiters → settle pending requests through the existing failure path → close the socket/pipe and interrupt in-flight requests → join with `detail::JoinThreadSafely` (a close from an IO callback detaches instead of self-joining) → fire `on_close_` exactly once.
+
+Callbacks capture the generation at creation time; `Connect` and `Close` are serialized per generation, and message/error/close callbacks from an old generation are dropped once a new generation exists.
+
+::: warning Old behaviour / New behaviour / How to adapt (source compatible, behaviour tightened)
+- Old: repeated `Connect()` on one client factory produced independent sessions that kept sending and receiving.
+- New: a repeated `Connect()` closes and waits for the previous generation to finish closing before starting the new one; old-generation callbacks no longer deliver messages.
+- Affected users: create one transport factory per session when several sessions must coexist; single-session reconnect needs no change.
+:::
 
 ### `IClientTransport`
 
@@ -87,6 +99,10 @@ Declared in `include/mcp/protocol/MessageChannel.hpp`.
 `stderr_path` and `on_stderr` are mutually exclusive: setting both makes `Connect()` throw `McpError(McpErrorCode::InvalidParams, "stderr_path and on_stderr are mutually exclusive")`.
 :::
 
+::: warning
+POSIX environment and PATH behaviour is tightened (source compatible): overrides used to be appended after the inherited environment (possibly duplicating keys), executable lookup read the parent process `getenv("PATH")`, and a directory with the execute bit could be mistaken for an executable. Now inherited entries are deduplicated by key and overrides take effect with the last value for each key; `inherit_environment_variables=false` never reads the parent environment; PATH comes from the final effective environment, an empty segment means the current directory, and directories or non-executable files are rejected. Without a custom environment the system `execvp` semantics still apply, and `argv[0]` plus the explicit working directory are unchanged. Downstream code relying on duplicate keys or the parent PATH should set `PATH` explicitly in `environment_variables` and keep `inherit_environment_variables=true` for the entries it still needs.
+:::
+
 The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` and `include/mcp/transport/StdioClientTransport.hpp`; the spawning and frame-reading behaviour is in `src/transport/StdioClientTransport.cpp`, and process-tree termination in `src/transport/detail/posix_platform.cpp` and `src/transport/detail/win32_platform.cpp`.
 
 ## Streamable HTTP server
@@ -101,7 +117,7 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `RequiresRequestScopedNotifications` | `bool ... const override` | `true` | Hard-coded true |
 | `IsStateless` | `bool IsStateless() const override` | takes `options_.stateless` | Source of the stateless decision |
 | `ValidateMcpHeaders` | `static bool ValidateMcpHeaders(const std::string&, const std::string&, const JsonValue&, std::string& error_out)` | — | SEP-2243 header/body consistency check |
-| `AuthResult` | `struct { bool ok{false}; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false` | Return payload of `BearerAuthConfig::verify` |
+| `AuthResult` | `struct { bool ok{false}; std::string principal; std::vector<std::string> scopes; std::optional<std::string> resource; }` | `ok=false`, empty `principal` | Return payload of `BearerAuthConfig::verify`; `principal` is the only trusted server-side identity and is never inferred from params |
 
 ### `StreamableHttpServerOptions`
 
@@ -125,8 +141,9 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `max_sse_replay_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` (1 MiB) | Byte budget when the session-mode GET stream replays from `Last-Event-ID`, truncated from the newest event backwards |
 | `request_timeout` | `std::optional<std::chrono::milliseconds>` | `nullopt` → 30s (`kDefaultHttpRequestTimeout`) | Deadline for the POST wait on the handler's response; `0` waits forever, expiry answers 504 |
 | `bearer_auth` | `std::optional<BearerAuthConfig>` | `std::nullopt` | Without it there is no auth gate and behaviour is unchanged |
+| `on_authenticated` | `ServerAuthenticatedCallback` (`void(const ServerRequestContext&)`) | unset | Invoked after authentication and session resolution; in session mode a second principal on the same session is rejected (403) and the callback is not invoked. Use it to forward the principal to `McpServer::SetSessionPrincipal` |
 | `resolve_param_annotations` | `std::function<std::vector<McpParamAnnotationInfo>(const std::string& method, const std::string& name)>` | unset | Resolves `Mcp-Param-*` header annotations per method/tool; when unset parameter-header validation is skipped |
-| `enable_server_card` | `bool` | `false` | Registers the `GET /server-card` discovery endpoint |
+| `enable_server_card` | `bool` | `false` | Registers `GET /server-card` and additionally `GET <endpoint>/server-card` for client discovery |
 | `server_card` | `std::optional<ext::ServerCard>` | `std::nullopt` | `BuildDefaultServerCard()` is used when absent |
 
 ### `StreamableHttpServerOptions::BearerAuthConfig`
@@ -143,7 +160,11 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `validate_token_resource` | `bool` | `true` | Audience-validation switch |
 | `enable_dpop` | `bool` | `false` | DPoP proof validation (experimental, requires OpenSSL) |
 
+The card response is `application/json` with a strong ETag over the canonical body; `If-None-Match` supports weak comparison, lists and `*`, and a hit returns 304 with no body while preserving ETag, `cache-control` and CORS headers. The card handler no longer duplicates `Access-Control-Allow-Origin`: Host/Origin admission, OPTIONS preflight and `Access-Control-Expose-Headers` (now including `ETag`) are all provided by `HttpServerImpl`; no credentialed CORS is added.
+
 The interface and Options are declared in `include/mcp/transport/StreamableHttpServerTransport.hpp`; routing, header validation and the server-card endpoint are in `src/http/StreamableHttpServerTransport.cpp`, and Host/Origin plus binding behaviour in `src/http/HttpServerImpl.cpp`.
+
+With `bearer_auth` enabled, POST/GET validate the token first, then `ServerRequestContext` carries the session state (`sessionful`/`stateless`), principal and authorized scopes. Binding a second principal to the same session is rejected with 403; missing, expired or revoked sessions return 404. Pending entries are registered under an atomic `(session, owner, request id)` key and removed by the same key on cancellation, timeout, completion and concurrent same-ID requests. DELETE authenticates and verifies the owner before querying the store, testing existence or erasing anything: absent/invalid credentials return 401, while cross-owner and unknown sessions share the same 404 `Session expired` response and do not reveal existence. At `MCP_LOG_LEVEL>=3`, lifecycle records contain only redacted fields `correlation=cid-<hex>` and `session=sid-<hex>` (`session=stateless` in stateless mode), never tokens, authorization headers or bodies. Transports without `bearer_auth` keep the legacy behaviour.
 
 ## Streamable HTTP client
 
@@ -160,7 +181,7 @@ The interface and Options are declared in `include/mcp/transport/StreamableHttpS
 | Symbol | Signature/Type | Default | Notes |
 |---|---|---|---|
 | `endpoint` | `std::string` | empty (required) | Server URL; `https` uses TLS |
-| `transport_mode` | `HttpTransportMode` | `AutoDetect` | Declared-only field: nothing in `src/` reads it; actual probing happens in `McpClient` version negotiation |
+| `transport_mode` | `HttpTransportMode` | `AutoDetect` | `AutoDetect` falls back to legacy SSE exactly once when the first `initialize` response is 400/404/405 with a body that is not a valid JSON-RPC error envelope; `StreamableHttp`/`Sse` select an implementation directly and never fall back |
 | `name` | `std::string` | `""` | Falls back to `"streamable-http"` |
 | `known_session_id` | `std::string` | `""` | Resumes an existing session |
 | `additional_headers` | `std::map<std::string, std::string>` | `{}` | Static extra headers |
@@ -188,7 +209,7 @@ The interface and Options are declared in `include/mcp/transport/StreamableHttpS
 | `AutoDetect` / `StreamableHttp` / `Sse` | `enum class HttpTransportMode` | `AutoDetect` | Value type of `transport_mode`, declared in `include/mcp/transport/HttpTransportMode.hpp` |
 
 ::: info
-`transport_mode` and `HttpTransportMode` currently appear only in public headers and `tests/unit/StreamableHttpTransportTests.cpp`; no production code path consumes them, so do not infer connection behaviour from them.
+`AutoDetect` is consumed by the stable facade returned from `StreamableHttpClientTransport::Connect()`: the facade owns the single `MessageChannel` while inner Streamable HTTP/SSE sessions only perform IO, so replacing the inner session never changes the caller's channel. Only the first `initialize` response is classified. `McpClient` disables transport fallback for `ConnectMode::Pin/Legacy` through `ITransportFallbackControl::SetFallbackEnabled(false)` without changing negotiation semantics.
 :::
 
 The interface and Options are declared in `include/mcp/transport/StreamableHttpClientTransport.hpp`; POST, listen stream and replay are in `src/http/StreamableHttpClientTransport.cpp`, and the redirect constants in `include/mcp/transport/detail/Limits.hpp`.
@@ -205,11 +226,20 @@ The interface and Options are declared in `include/mcp/transport/StreamableHttpC
 | `max_sse_event_bytes` | `std::optional<std::size_t>` | `detail::kMaxSseEventBytes` | Per-event cap |
 | `redirect_policy` | `detail::HttpRedirectPolicy` | `SameOriginOnly` | Redirect policy |
 | `max_redirects` | `int` | `5` | Maximum hop count |
+| `additional_headers` | `std::map<std::string, std::string>` | `{}` | Static extra headers on GET and POST |
+| `auth_challenge_handler` | `std::function<std::string(std::string_view)>` | unset | Always called on 401, on 403 only with `insufficient_scope`; a non-empty result is used by the next request |
+| `apply_per_request_headers` | `std::function<void(const HttpRequestHeaderContext&, std::map<std::string, std::string>&)>` | unset | Invoked before every GET/POST send and may override static headers |
+| `observe_response_challenge` | `std::function<void(const HttpResponseChallengeContext&)>` | unset | Invoked after each GET/POST response |
+| `on_establish_result` | `std::function<void(bool)>` | unset | Internal fallback hook: `true` on the first valid SSE event, `false` when retries are exhausted without establishment; normal users leave it unset |
 | `WebSocketClientTransport` | `class WebSocketClientTransport : public IClientTransport` | — | WebSocket client transport; **there is no Options struct**, only two constructor arguments |
 | Constructor | `WebSocketClientTransport(std::string url, std::string name = "websocket")` | `name = "websocket"` | `Name()` returns the constructed name verbatim, no fallback logic |
 | `Connect` | `std::shared_ptr<ITransport> Connect() override` | — | Accepts `ws`/`wss` only; `wss` uses TLS; 30s connect timeout |
 
 The interfaces are declared in `include/mcp/transport/SseClientTransport.hpp` and `include/mcp/transport/WebSocketClientTransport.hpp`; the implementations are `src/transport/SseClientTransport.cpp` and `src/transport/detail/net/WebSocketClient.cpp`.
+
+::: warning
+WebSocket handshake behaviour is tightened (source compatible; public signatures unchanged): `Connect()` used to mark the transport Connected immediately and send before 101 without a bound, failing silently. Now the client stays Connecting until the status line, `Upgrade`, `Connection` and `Sec-WebSocket-Accept` all validate, then enters Open and marks the transport Connected; pre-101 messages are queued in order with a message cap of `kMaxWebSocketHandshakeQueueMessages` (64) and a serialized-byte cap of `kMaxWebSocketHandshakeQueueBytes` (1 MiB), with explicit errors through `SetOnError` when full or when the handshake fails, and new messages are rejected in Closing/Closed; failures, timeouts and closes reach one terminal state and notify once. A single deadline covers DNS/TCP/TLS/request write/response read/redirects, and close or timeout interrupts blocking reads before join. Redirects allow only the same host with the same port or a `ws:80 → wss:443` upgrade, at most `kMaxWebSocketRedirects` (5) hops; downgrades, cross-host, other cross-port, userinfo and malformed Locations are rejected, each hop uses a fresh Sec-WebSocket-Key and TLS verification is never relaxed. Downstream code relying on cross-host/downgrade redirects or unbounded pre-101 sends must configure a legal URL and honour the bounded queue errors; constructors and `Connect()` are unchanged.
+:::
 
 ## In-process transport
 
@@ -243,13 +273,26 @@ Declared in `include/mcp/transport/IRequestCanceller.hpp`.
 | `HttpRequest` | `struct { std::string method; std::string path; std::unordered_map<std::string, std::string> headers; std::string body; }` | — | Inbound request view |
 | `HttpResponse` | `struct` with `status_code`/`status_text`/`headers`/`body`/`is_sse`/`sse_close_after_write`/`sse_client_tag` | `200`, `"OK"`, rest empty/`false` | The last two fields control directed SSE writes and close-after-write |
 | `HttpHandler` | `std::function<void(const HttpRequest&, HttpResponse&)>` | — | Route body |
-| `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`, `""`, `kMaxHttpBodyBytes`, `header_read_budget = nullopt` | The transport forwards `host`/`allowed_*` here unchanged |
+| `HttpServerOptions` | `struct` with `on_request`/`on_connect`/`on_disconnect`/`allowed_hosts`/`allowed_origins`/`sse_keep_alive_ms`/`bind_host`/`max_request_body_bytes`/`header_read_budget` | `0`, `""` (= `127.0.0.1` loopback; explicit `0.0.0.0`/`::` still binds all interfaces), `kMaxHttpBodyBytes`, `header_read_budget = nullopt` | The transport forwards `host`/`allowed_*` here unchanged |
 | `HttpServer` | `HttpServer(uint16_t port, const HttpServerOptions& options = {})`, plus `void Start()` / `void Stop()` | default-constructed options | Not an `ITransport`; independent lifecycle |
 | `SetHandler` | `void SetHandler(std::string_view method, std::string_view path, HttpHandler handler)` | — | Exact `(method, path)` match |
 | `AddSseClient` / `RemoveSseClient` / `SseClientCount` | `SseClientId AddSseClient(send_fn[, std::string tag])` / `void RemoveSseClient(SseClientId)` / `std::size_t SseClientCount() const` | no tag | `SseClientId = uint64_t`; the tagged overload enables directed broadcast and filtering |
 | `BroadcastSse` | `void BroadcastSse(std::string_view event[, const std::function<bool(const std::string&)>& accept])` | all clients | Predicate form filters by tag |
 
 The interface is declared in `include/mcp/http/HttpServer.hpp`; `src/http/HttpServer.cpp` forwards, and `src/http/HttpServerImpl.cpp` does the scheduling.
+
+::: warning HTTP/SSE/202/bind tightening (source compatible, unchanged API signatures)
+- Old behavior: an empty `bind_host` bound `INADDR_ANY` (all interfaces); request/response `Content-Length` used naive multiply-add with duplicate headers resolved by last value; each SSE path split on `\n\n` independently, recognizing only CRLF/LF with inconsistent handling of a trailing `\r` across chunks; HTTP 202 was only logged, so a request's pending could hang.
+- New behavior: an empty `bind_host` binds only the IPv4 loopback `127.0.0.1`, while the default server card endpoint stays `localhost`; `Content-Length` checks multiplication overflow before comparing with the body limit and rejects empty, non-numeric, duplicate/conflicting and out-of-`size_t` values; `Transfer-Encoding` together with `Content-Length` is rejected, and chunk size overflow plus cumulative body limits are unified; SSE uses one incremental parser where CRLF/LF/CR/mixed endings and a trailing `\r` split across chunks are equivalent, blank lines dispatch events and the event limit is unchanged; 202 only acknowledges notifications (an empty body completes immediately), while a request receiving 202 immediately gets `ProtocolViolation (-32005)` on its pending and the connection is closed/drained without replay.
+- How to adapt: set `HttpServerOptions::bind_host = "0.0.0.0"` (or `"::"` for IPv6) explicitly when all-interface listening is required; make servers answer requests with a real JSON-RPC response/error instead of relying on a later GET/SSE after 202; send a single valid `Content-Length` and never combine it with `Transfer-Encoding`; make SSE servers emit standard CRLF/LF blank-line framing instead of relying on bare CR or trailing-CR chunk boundaries. Constructor and option field signatures are unchanged.
+:::
+
+::: warning Single legacy SSE fallback for AutoDetect (source compatible, unchanged API signatures)
+- Old behavior: `transport_mode` had no runtime reader, `AutoDetect` always used Streamable HTTP, and a 400/404/405 with a non-protocol body only produced an error.
+- New behavior: when the first `initialize` response is 400/404/405 and the body is not a valid JSON-RPC error envelope, `AutoDetect` stops sending, fully closes the old Streamable HTTP session (POST/listen/resume/DELETE/threads), then creates a legacy SSE session with the same endpoint, extra headers, per-request headers, challenge callbacks, redirect policy and size limits and replays that initialize message exactly once. Other statuses, valid error envelopes and later responses never fall back. If SSE cannot be established, pending ends in bounded fashion with `ConnectionClosed`, one error is reported and there is no retry loop. Explicit `StreamableHttp`/`Sse` modes and `ConnectMode::Pin/Legacy` never fall back.
+- Related SSE tightening (same compatibility surface): messages sent before the `endpoint` event used to be dropped, and any response body chunk reset the reconnect budget. Messages now wait for the `endpoint` event and are then sent in order (so fallback replay cannot be lost), and only a valid `endpoint`/`message` event resets the reconnect budget, so non-SSE error bodies cannot reconnect forever.
+- How to adapt: downstream code that must not fall back should set `transport_mode` to `StreamableHttp` or `Sse`, use `ConnectMode::Pin/Legacy` (the client disables transport fallback), or call `ITransportFallbackControl::SetFallbackEnabled(false)` on the returned transport; code that expected an immediate error on a text 400/404/405 body must expect one replayed legacy SSE initialization instead; code that relied on pre-endpoint sends being dropped or on error-body chunk resets must wait for the endpoint event before sending and have the server emit valid SSE frames. All new `SseClientTransportOptions` fields have defaults, so existing constructors and aggregate initialization remain valid.
+:::
 
 ### `EventStore`
 
@@ -285,6 +328,9 @@ Declared in `include/mcp/http/SessionStore.hpp`; the idle timeout and capacity c
 | `kMaxSseEventBytes` | `size_t` | 1 MiB | Default per-SSE-event cap |
 | `kMaxStdioFrameBytes` | `size_t` | 8 MiB | Default stdio frame cap |
 | `kMaxHttpRedirects` | `int` | `5` | Default redirect hop budget |
+| `kMaxWebSocketRedirects` | `int` | `5` | WebSocket redirect hop cap |
+| `kMaxWebSocketHandshakeQueueMessages` | `size_t` | `64` | Pre-101 queued message cap |
+| `kMaxWebSocketHandshakeQueueBytes` | `size_t` | 1 MiB | Pre-101 queued serialized-byte cap |
 | `kChannelCapacity` | `size_t` | `64` | `MessageChannel` depth |
 | `kMaxHttpSessions` | `size_t` | `10000` | Session-store cap (full → 503 / `TrySave` failure) |
 | `kSessionIdleTimeoutMs` | `int64_t` | `1800000` | Session idle expiry |

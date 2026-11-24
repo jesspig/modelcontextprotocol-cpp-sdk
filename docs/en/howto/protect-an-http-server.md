@@ -59,6 +59,14 @@ This check lives in the generic HTTP layer and gates every path (`src/http/HttpS
 - Exceeding `max_request_body_bytes` answers `413` immediately (`src/http/StreamableHttpServerTransport.cpp`); the default is `kMaxHttpBodyBytes`, and setting it lower is what stops large payloads from exhausting memory.
 - `max_sse_event_bytes` caps one SSE event; `sse_keep_alive_ms` (default 15000) sets the comment-frame heartbeat interval used to survive aggressive intermediary idle timeouts.
 
+## FileInput trust boundary
+
+`enable_file_input` only affects reference resolution inside `tools/call` arguments in this process; it is not a wire extension. When enabled, configure `ServerOptions::file_input_config.allowed_roots` explicitly; with an empty list every `file://` reference returns `is_error`. Roots are compared by path components so a `root-evil` sibling cannot pass by string prefix. Targets go through strict URI decoding (rejecting NUL, query, fragment, UNC, device and drive-relative paths, ADS and double-encoded traversal) and are opened component by component without following links (POSIX `openat` + `O_NOFOLLOW`; Windows rejects reparse points and verifies the final handle path).
+
+Environment files, VCS/SSH/cloud-credential directories, private keys, certificate stores, token caches and common credential filenames are rejected regardless of the allowlist; directories, devices, FIFOs, multiple hard links and short reads or changes during a read are rejected as well. Each local or resource reference first increments a reference count and then adds the bytes actually read; exceeding `max_refs`, `max_total_bytes`, `max_file_bytes` or `max_inline_bytes` stops resolution immediately and the tool handler is never invoked. Tool and resource handlers come from a registry snapshot and run outside the lock, so concurrent registration cannot block reference resolution.
+
+Old versus new behaviour: the switch used to trust the system temporary directory and the working directory implicitly; roots must now be authorised explicitly. Add the former directories to `allowed_roots` to restore equivalent behaviour; leaving it empty disables local files entirely. `http(s)://` references still pass through, and the public `FileRef` shape and legacy/modern tool semantics are unchanged.
+
 ## Stateless versus stateful protection
 
 <<< @/snippets/protect-an-http-server.cpp#stateless-mode

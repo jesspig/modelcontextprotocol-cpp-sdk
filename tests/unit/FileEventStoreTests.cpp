@@ -3,12 +3,23 @@
 #include <gtest/gtest.h>
 #include <mcp/test/McpTestInfo.hpp>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <cstdlib>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using namespace mcp;
 
@@ -108,21 +119,27 @@ TEST_F(FileEventStoreTest, MaxCapacityMatches10000) {
     EXPECT_EQ(EventStore::kMaxEventsPerSession, size_t{10000});
 }
 
-TEST_F(FileEventStoreTest, EventStoreAppendIsConstantTime) {
+TEST_F(FileEventStoreTest, CursorMatchesLogKeepsAppendStable) {
     FileEventStore store(store_dir);
     AppendN(store, "sess1", 3, 0);
     auto file_path = store_dir / "sess-sess1.jsonl";
+    auto meta_path = store_dir / "sess-sess1.meta.json";
     {
         std::ofstream file(file_path, std::ios::binary | std::ios::app);
         ASSERT_TRUE(file.is_open());
         for (int i = 0; i < 50; ++i) {
-            file << "{\"id\":" << (1000 + i) << ",\"data\":\"bulk-"
+            file << "{\"id\":" << (4 + i) << ",\"data\":\"bulk-"
                  << i << "\"}\n";
         }
     }
+    {
+        std::ofstream file(meta_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << "{\"next_id\":54,\"count\":53}";
+    }
 
-    EXPECT_EQ(store.Append("sess1", "after-bulk"), uint64_t{4});
-    EXPECT_EQ(store.Append("sess1", "after-bulk-2"), uint64_t{5});
+    EXPECT_EQ(store.Append("sess1", "after-bulk"), uint64_t{54});
+    EXPECT_EQ(store.Append("sess1", "after-bulk-2"), uint64_t{55});
 
     auto events = store.GetEventsSince("sess1", 0);
     ASSERT_EQ(events.size(), size_t{55});
@@ -280,4 +297,240 @@ TEST_F(FileEventStoreTest, InvalidStorageDirThrows) {
         file << "x";
     }
     EXPECT_THROW(FileEventStore store(file_dir / "child"), std::runtime_error);
+}
+
+TEST_F(FileEventStoreTest, CursorAheadOfLogRebuildsNextId) {
+    {
+        FileEventStore store(store_dir);
+        AppendN(store, "sess1", 2, 0);
+    }
+    {
+        std::ofstream file(store_dir / "sess-sess1.meta.json",
+                           std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << "{\"next_id\":100,\"count\":50}";
+    }
+    FileEventStore store(store_dir);
+    EXPECT_EQ(store.Append("sess1", "after"), uint64_t{3});
+    auto events = store.GetEventsSince("sess1", 0);
+    ASSERT_EQ(events.size(), size_t{3});
+    EXPECT_EQ(events[2].first, uint64_t{3});
+    EXPECT_EQ(events[2].second, "after");
+}
+
+TEST_F(FileEventStoreTest, CursorBehindLogRebuildsNextId) {
+    {
+        FileEventStore store(store_dir);
+        AppendN(store, "sess1", 2, 0);
+    }
+    {
+        std::ofstream file(store_dir / "sess-sess1.meta.json",
+                           std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << "{\"next_id\":1,\"count\":0}";
+    }
+    FileEventStore store(store_dir);
+    EXPECT_EQ(store.Append("sess1", "after"), uint64_t{3});
+    EXPECT_EQ(store.GetEventsSince("sess1", 0).size(), size_t{3});
+}
+
+TEST_F(FileEventStoreTest, CursorMissingAfterAppendRebuildsFromLog) {
+    {
+        FileEventStore store(store_dir);
+        AppendN(store, "sess1", 2, 0);
+    }
+    std::error_code ec;
+    std::filesystem::remove(store_dir / "sess-sess1.meta.json", ec);
+    ASSERT_FALSE(ec);
+
+    FileEventStore store(store_dir);
+    EXPECT_EQ(store.Append("sess1", "after"), uint64_t{3});
+    {
+        FileEventStore reopened(store_dir);
+        EXPECT_EQ(reopened.Append("sess1", "after-2"), uint64_t{4});
+    }
+    auto events = store.GetEventsSince("sess1", 0);
+    ASSERT_EQ(events.size(), size_t{4});
+    EXPECT_EQ(events.back().first, uint64_t{4});
+}
+
+TEST_F(FileEventStoreTest, TrimThenRestartKeepsNextId) {
+    constexpr uint64_t kPrefill = static_cast<uint64_t>(EventStore::kMaxEventsPerSession) + 10;
+    ASSERT_TRUE(std::filesystem::create_directories(store_dir));
+    {
+        std::ofstream file(store_dir / "sess-sess1.jsonl", std::ios::binary);
+        ASSERT_TRUE(file.is_open());
+        for (uint64_t i = 1; i <= kPrefill; ++i) {
+            file << "{\"id\":" << i << ",\"data\":\"bulk-" << i << "\"}\n";
+        }
+    }
+    uint64_t last = 0;
+    {
+        FileEventStore store(store_dir);
+        for (int i = 0; i < 10; ++i) last = store.Append("sess1", "data-" + std::to_string(i));
+    }
+    EXPECT_EQ(last, kPrefill + 10);
+
+    FileEventStore reopened(store_dir);
+    EXPECT_EQ(reopened.Append("sess1", "after-restart"), last + 1);
+    auto events = reopened.GetEventsSince("sess1", 0);
+    ASSERT_EQ(events.size(), EventStore::kMaxEventsPerSession);
+    EXPECT_EQ(events.back().first, last + 1);
+}
+
+TEST_F(FileEventStoreTest, ClearThenRestartResetsNextId) {
+    {
+        FileEventStore store(store_dir);
+        AppendN(store, "sess1", 2, 0);
+        store.Clear("sess1");
+    }
+    FileEventStore reopened(store_dir);
+    EXPECT_EQ(reopened.Append("sess1", "fresh"), uint64_t{1});
+    auto events = reopened.GetEventsSince("sess1", 0);
+    ASSERT_EQ(events.size(), size_t{1});
+    EXPECT_EQ(events[0].second, "fresh");
+}
+
+TEST_F(FileEventStoreTest, NextIdOverflowRejected) {
+    auto max_id = std::to_string((std::numeric_limits<uint64_t>::max)());
+    ASSERT_TRUE(std::filesystem::create_directories(store_dir));
+    {
+        std::ofstream file(store_dir / "sess-sess1.jsonl", std::ios::binary);
+        ASSERT_TRUE(file.is_open());
+        file << "{\"id\":" << max_id << ",\"data\":\"last\"}\n";
+    }
+    FileEventStore store(store_dir);
+    EXPECT_THROW(store.Append("sess1", "overflow"), std::runtime_error);
+    std::string content;
+    {
+        std::ifstream file(store_dir / "sess-sess1.jsonl", std::ios::binary);
+        content.assign(std::istreambuf_iterator<char>(file),
+                       std::istreambuf_iterator<char>());
+    }
+    EXPECT_EQ(content.find("overflow"), std::string::npos);
+}
+
+static std::string EventStoreTestReadEnv(const char* name) {
+#ifdef _WIN32
+    DWORD size = ::GetEnvironmentVariableA(name, nullptr, 0);
+    if (size == 0) return {};
+    std::string value(size, '\0');
+    ::GetEnvironmentVariableA(name, value.data(), size);
+    value.resize(size - 1);
+    return value;
+#else
+    const char* value = std::getenv(name);
+    return value == nullptr ? std::string() : std::string(value);
+#endif
+}
+
+static void EventStoreTestSetEnv(const char* name, const std::string& value) {
+#ifdef _WIN32
+    std::wstring wide_name(name, name + std::strlen(name));
+    std::wstring wide_value(value.begin(), value.end());
+    ::SetEnvironmentVariableW(wide_name.c_str(), wide_value.c_str());
+#else
+    ::setenv(name, value.c_str(), 1);
+#endif
+}
+
+static void EventStoreTestClearEnv(const char* name) {
+#ifdef _WIN32
+    std::wstring wide_name(name, name + std::strlen(name));
+    ::SetEnvironmentVariableW(wide_name.c_str(), nullptr);
+#else
+    ::unsetenv(name);
+#endif
+}
+
+static std::string EventStoreTestSelfPath() {
+#ifdef _WIN32
+    std::vector<wchar_t> buffer(4096);
+    DWORD length = ::GetModuleFileNameW(nullptr, buffer.data(),
+                                        static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) return {};
+    std::wstring wide(buffer.data(), length);
+    int needed = ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0,
+                                       nullptr, nullptr);
+    if (needed <= 0) return {};
+    std::string result(static_cast<size_t>(needed - 1), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, result.data(), needed,
+                          nullptr, nullptr);
+    return result;
+#else
+    char buffer[4096];
+    ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (length <= 0) return {};
+    buffer[length] = '\0';
+    return std::string(buffer);
+#endif
+}
+
+TEST_F(FileEventStoreTest, ChildProcessAppender) {
+    auto dir = EventStoreTestReadEnv("MCP_EVENT_TEST_CHILD_DIR");
+    auto session = EventStoreTestReadEnv("MCP_EVENT_TEST_CHILD_SESSION");
+    auto count_text = EventStoreTestReadEnv("MCP_EVENT_TEST_CHILD_COUNT");
+    if (dir.empty() || session.empty() || count_text.empty()) return;
+    FileEventStore store{std::filesystem::path(dir)};
+    int count = std::stoi(count_text);
+    for (int i = 0; i < count; ++i) {
+        store.Append(session, "child-" + std::to_string(i));
+    }
+}
+
+TEST_F(FileEventStoreTest, MultiProcessAppendKeepsUniqueIds) {
+    auto exe = EventStoreTestSelfPath();
+    if (exe.empty()) GTEST_SKIP() << "self executable path unavailable";
+
+    EventStoreTestSetEnv("MCP_EVENT_TEST_CHILD_DIR", store_dir.string());
+    EventStoreTestSetEnv("MCP_EVENT_TEST_CHILD_SESSION", "sess1");
+    EventStoreTestSetEnv("MCP_EVENT_TEST_CHILD_COUNT", "20");
+
+    int child_exit = -1;
+#ifdef _WIN32
+    std::wstring wide_exe(exe.begin(), exe.end());
+    std::wstring command = L"\"" + wide_exe +
+        L"\" --gtest_filter=FileEventStoreTest.ChildProcessAppender";
+    std::vector<wchar_t> command_buffer(command.begin(), command.end());
+    command_buffer.push_back(L'\0');
+    STARTUPINFOW startup{};
+    PROCESS_INFORMATION process{};
+    ASSERT_TRUE(::CreateProcessW(nullptr, command_buffer.data(), nullptr, nullptr,
+        FALSE, 0, nullptr, nullptr, &startup, &process));
+    ASSERT_EQ(::WaitForSingleObject(process.hProcess, 60000), DWORD{WAIT_OBJECT_0});
+    DWORD code = 0;
+    ASSERT_TRUE(::GetExitCodeProcess(process.hProcess, &code));
+    child_exit = static_cast<int>(code);
+    ::CloseHandle(process.hThread);
+    ::CloseHandle(process.hProcess);
+#else
+    pid_t child = ::fork();
+    ASSERT_NE(child, -1);
+    if (child == 0) {
+        ::execl(exe.c_str(), exe.c_str(),
+                "--gtest_filter=FileEventStoreTest.ChildProcessAppender",
+                static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    child_exit = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+    EventStoreTestClearEnv("MCP_EVENT_TEST_CHILD_DIR");
+    EventStoreTestClearEnv("MCP_EVENT_TEST_CHILD_SESSION");
+    EventStoreTestClearEnv("MCP_EVENT_TEST_CHILD_COUNT");
+    ASSERT_EQ(child_exit, 0);
+
+    FileEventStore store(store_dir);
+    for (int i = 0; i < 20; ++i) store.Append("sess1", "parent-" + std::to_string(i));
+    auto events = store.GetEventsSince("sess1", 0);
+    ASSERT_EQ(events.size(), size_t{40});
+    std::set<uint64_t> ids;
+    for (const auto& [id, data] : events) ids.insert(id);
+    EXPECT_EQ(ids.size(), size_t{40});
+    uint64_t expected = 1;
+    for (auto id : ids) {
+        EXPECT_EQ(id, expected);
+        ++expected;
+    }
 }

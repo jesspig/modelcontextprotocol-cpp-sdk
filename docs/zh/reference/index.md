@@ -30,6 +30,7 @@
 | [客户端门面](/zh/reference/client) | `McpClient` 全方法、请求句柄与取消、MRTR、被动侧 handler、`ClientOptions`、协商档位 | `include/mcp/client/` |
 | [传输层](/zh/reference/transports) | 传输契约与五种传输的类与 Options 全字段、HTTP 服务端底座 | `include/mcp/Transport.hpp`、`include/mcp/transport/`、`include/mcp/http/` |
 | [类型总表](/zh/reference/types) | `JsonValue`、内容与各 `*Result`/`*RequestParams`、能力、任务与 MRTR 类型、日志与 span | `include/mcp/McpTypes.hpp` 等核心头 |
+| [JSON Schema 校验](/zh/reference/schema-validation) | legacy 旧入口与 `SchemaMode::Modern2020` 新引擎、RE2 固定版本与离线引用、预算 B-37..B-51、方言 fail-closed | `src/detail/SchemaValidation.hpp`、`src/detail/SchemaValidation.cpp`、`src/detail/JsonSchemaValidator.hpp` |
 | [错误码](/zh/reference/errors) | `McpErrorCode` 全表、抛出点、时代重映射、`RequestOutcome` 分型 | `include/mcp/ErrorCodes.hpp`、`src/protocol/` |
 | [进程与存储](/zh/reference/process-and-storage) | `mcp::Spawn` 与 `SpawnedProcess`、任务/事件/会话存储、`HttpServer` | `include/mcp/process/`、`include/mcp/storage/`、`include/mcp/http/` |
 | [授权与扩展](/zh/reference/auth-and-extensions) | OAuth 与 PKCE、DPoP、token 缓存、server card/apps/triggers、技能校验、方法名与版本常量 | `include/mcp/ext/`、`include/mcp/client/auth/` |

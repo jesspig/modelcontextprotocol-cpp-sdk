@@ -620,6 +620,11 @@ McpClient::McpClient(
     elicitation_handler_ = options_.elicitation_handler;
     url_elicitation_handler_ = options_.url_elicitation_handler;
     options_.capabilities = DeriveClientCapabilities(options_);
+    if (options.connect_mode != ConnectMode::Auto) {
+        if (auto* control = dynamic_cast<ITransportFallbackControl*>(transport_.get())) {
+            control->SetFallbackEnabled(false);
+        }
+    }
 
     auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
     handler_ = std::make_shared<McpSessionHandler>(
@@ -684,12 +689,24 @@ std::unique_ptr<McpClient> McpClient::Create(
 {
     auto client = std::unique_ptr<McpClient>(
         new McpClient(std::move(transport), options));
-    client->negotiation_ = client->NegotiateProtocol();
+    client->PublishNegotiation(client->NegotiateProtocol());
     return client;
 }
 
 NegotiationResult McpClient::NegotiateProtocol() {
     return VersionNegotiation::Negotiate(*handler_, options_);
+}
+
+void McpClient::PublishNegotiation(NegotiationResult result) {
+    auto snapshot = std::make_shared<const NegotiationResult>(std::move(result));
+    std::lock_guard<std::mutex> lock(negotiation_mutex_);
+    negotiation_history_.push_back(snapshot);
+    negotiation_snapshot_ = std::move(snapshot);
+}
+
+std::shared_ptr<const NegotiationResult> McpClient::CurrentNegotiation() const {
+    std::lock_guard<std::mutex> lock(negotiation_mutex_);
+    return negotiation_snapshot_;
 }
 
 void McpClient::ClearPendingSubscriptionAck() {
@@ -713,7 +730,7 @@ void McpClient::WireClientHandlers() {
             if (req.params) params = DeserializeElicitRequestParams(*req.params);
             if (params.mode == "url") {
                 const bool modern_era =
-                    IsModernProtocolVersion(negotiation_.negotiated_version);
+                    IsModernProtocolVersion(CurrentNegotiation()->negotiated_version);
                 if (!modern_era && !params.elicitation_id) {
                     p.set_exception(std::make_exception_ptr(
                         McpError(McpErrorCode::InvalidParams,
@@ -825,23 +842,23 @@ void McpClient::WireClientHandlers() {
 }
 
 const ServerCapabilities& McpClient::GetServerCapabilities() const {
-    return negotiation_.capabilities;
+    return CurrentNegotiation()->capabilities;
 }
 
 const Implementation& McpClient::GetServerInfo() const {
-    return negotiation_.server_info;
+    return CurrentNegotiation()->server_info;
 }
 
 std::optional<std::string> McpClient::GetInstructions() const {
-    return negotiation_.instructions;
+    return CurrentNegotiation()->instructions;
 }
 
 std::string_view McpClient::GetNegotiatedProtocolVersion() const {
-    return negotiation_.negotiated_version;
+    return CurrentNegotiation()->negotiated_version;
 }
 
 bool McpClient::IsModernProtocol() const {
-    return negotiation_.is_modern;
+    return CurrentNegotiation()->is_modern;
 }
 
 void McpClient::SetSamplingHandler(SamplingHandler handler) {
@@ -1147,28 +1164,26 @@ void McpClient::RecoverExpiredSession() {
     uint64_t observed = session_generation_.load();
     std::lock_guard<std::mutex> lk(reinit_mutex_);
     if (session_generation_.load() != observed) return;
-    negotiation_ = NegotiateProtocol();
+    PublishNegotiation(NegotiateProtocol());
     session_generation_.fetch_add(1);
 }
 
 void McpClient::CacheIfHinted(std::string_view key, const JsonValue& result,
     std::string_view auth_context)
 {
-    auto* ttl = result.Find(detail::kCacheHint);
-    if (ttl && ttl->IsObject()) ttl = ttl->Find(detail::kTTLMs);
-    if (!ttl) ttl = result.Find(detail::kTTLMs);
-    if (ttl && ttl->IsInt() && ttl->GetInt() > 0) {
-        auto* hint = result.Find(detail::kCacheHint);
-        auto* scope = hint && hint->IsObject() ? hint->Find(detail::kCacheScope)
-                                               : result.Find(detail::kCacheScope);
-        auto entry_scope = scope && scope->IsString() &&
-                scope->GetString() == detail::kCacheScopePrivate
-            ? detail::ResponseCache::Scope::Private
-            : detail::ResponseCache::Scope::Public;
-        response_cache_->Store(
-            key, entry_scope, result,
-            std::chrono::milliseconds(ttl->GetInt()), auth_context);
-    }
+    auto* hint = result.Find(detail::kCacheHint);
+    auto* ttl = result.Find(detail::kTTLMs);
+    if (!ttl && hint && hint->IsObject()) ttl = hint->Find(detail::kTTLMs);
+    if (!ttl || !ttl->IsInt() || ttl->GetInt() <= 0) return;
+    auto* scope = result.Find(detail::kCacheScope);
+    if (!scope && hint && hint->IsObject()) scope = hint->Find(detail::kCacheScope);
+    auto entry_scope = scope && scope->IsString() &&
+            scope->GetString() == detail::kCacheScopePrivate
+        ? detail::ResponseCache::Scope::Private
+        : detail::ResponseCache::Scope::Public;
+    response_cache_->Store(
+        key, entry_scope, result,
+        std::chrono::milliseconds(ttl->GetInt()), auth_context);
 }
 
 std::string McpClient::CurrentCacheAuthContext() {
@@ -1224,7 +1239,7 @@ void McpClient::MaybeAttachEtag(const std::string& key, RequestMeta& meta) {
 ListToolsResult McpClient::ListTools(
     std::optional<std::string> cursor)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto key = CacheKey(methods::kListTools,
         cursor ? std::string_view(*cursor) : std::string_view());
     auto auth_context = CurrentCacheAuthContext();
@@ -1265,7 +1280,7 @@ ListToolsResult McpClient::SearchTools(
     ListToolsResult all;
     std::optional<std::string> cursor;
     for (size_t page = 0; page < kMaxListPages; ++page) {
-        auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+        auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
         PaginatedRequestParams params;
         params.cursor = cursor;
         JsonValue req_json = SerializePaginatedRequestParams(params);
@@ -1327,7 +1342,7 @@ CallToolResult McpClient::CallTool(
     params.name = std::string(name);
     params.arguments = std::move(arguments);
 
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
     auto progress_key = AttachProgressCallback(options, meta);
     std::optional<ScopedProgressCleanup> progress_cleanup;
@@ -1368,7 +1383,7 @@ CallToolResult McpClient::CallTool(
 ListResourcesResult McpClient::ListResources(
     std::optional<std::string> cursor)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto key = CacheKey(methods::kListResources,
         cursor ? std::string_view(*cursor) : std::string_view());
     auto auth_context = CurrentCacheAuthContext();
@@ -1406,7 +1421,7 @@ ListResourcesResult McpClient::ListResourcesAll() {
 ListResourceTemplatesResult McpClient::ListResourceTemplates(
     std::optional<std::string> cursor)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto key = CacheKey(methods::kListResourceTemplates,
         cursor ? std::string_view(*cursor) : std::string_view());
     auto auth_context = CurrentCacheAuthContext();
@@ -1444,7 +1459,7 @@ ListResourceTemplatesResult McpClient::ListResourceTemplatesAll() {
 ReadResourceResult McpClient::ReadResource(
     std::string_view uri, const CacheableRequestOptions& options)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
     auto mode = options.cache_mode.value_or("use");
@@ -1481,7 +1496,7 @@ ReadResourceResult McpClient::ReadResource(
 EmptyResult McpClient::SubscribeResource(std::string_view uri) {
     SubscribeRequestParams params;
     params.uri = std::string(uri);
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto result = DoSendRequest(*handler_, methods::kSubscribeResource,
         SerializeResourceRequestParams(params), meta, kDefaultRequestTimeout);
     return DeserializeEmptyResult(result);
@@ -1490,7 +1505,7 @@ EmptyResult McpClient::SubscribeResource(std::string_view uri) {
 EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
     UnsubscribeRequestParams params;
     params.uri = std::string(uri);
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto result = DoSendRequest(*handler_, methods::kUnsubscribeResource,
         SerializeResourceRequestParams(params), meta, kDefaultRequestTimeout);
     return DeserializeEmptyResult(result);
@@ -1499,7 +1514,7 @@ EmptyResult McpClient::UnsubscribeResource(std::string_view uri) {
 ListPromptsResult McpClient::ListPrompts(
     std::optional<std::string> cursor)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto key = CacheKey(methods::kListPrompts,
         cursor ? std::string_view(*cursor) : std::string_view());
     auto auth_context = CurrentCacheAuthContext();
@@ -1538,7 +1553,7 @@ GetPromptResult McpClient::GetPrompt(
     std::optional<JsonValue> arguments,
     const RequestOptions& options)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
     auto progress_key = AttachProgressCallback(options, meta);
     std::optional<ScopedProgressCleanup> progress_cleanup;
@@ -1572,7 +1587,12 @@ SkillsListResult McpClient::ListSkills(
     if (!options_.enable_skills_extension) {
         throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
     }
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    if (ResolveSkillRoute(CurrentNegotiation()->negotiated_version, CurrentNegotiation()->capabilities) ==
+        SkillRoute::Legacy) {
+        throw McpError(McpErrorCode::MethodNotFound,
+            "skills extension requires a modern protocol version");
+    }
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto key = CacheKey(methods::kListSkills,
         cursor ? std::string_view(*cursor) : std::string_view());
     auto auth_context = CurrentCacheAuthContext();
@@ -1606,7 +1626,12 @@ SkillsGetResult McpClient::GetSkill(
     if (!options_.enable_skills_extension) {
         throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
     }
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    if (ResolveSkillRoute(CurrentNegotiation()->negotiated_version, CurrentNegotiation()->capabilities) ==
+        SkillRoute::Legacy) {
+        throw McpError(McpErrorCode::MethodNotFound,
+            "skills extension requires a modern protocol version");
+    }
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
     auto mode = options.cache_mode.value_or("use");
@@ -1647,7 +1672,12 @@ ReadDirectoryResult McpClient::ReadDirectory(
     if (!options_.enable_skills_extension) {
         throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
     }
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    if (ResolveSkillRoute(CurrentNegotiation()->negotiated_version, CurrentNegotiation()->capabilities) ==
+        SkillRoute::Legacy) {
+        throw McpError(McpErrorCode::MethodNotFound,
+            "skills extension requires a modern protocol version");
+    }
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
 
     auto mode = options.cache_mode.value_or("use");
@@ -1690,6 +1720,12 @@ ReadDirectoryResult McpClient::ReadDirectory(
 SkillReadResult McpClient::ReadSkill(
     std::string_view uri, const CacheableRequestOptions& options)
 {
+    return ReadSkill(uri, options, SkillReadParts::All);
+}
+
+SkillReadResult McpClient::ReadSkill(
+    std::string_view uri, const CacheableRequestOptions& options, SkillReadParts parts)
+{
     SkillReadResult result;
     auto get = GetSkill(uri, options);
     result.skill = std::move(get.skill);
@@ -1703,19 +1739,52 @@ SkillReadResult McpClient::ReadSkill(
         return result;
     }
 
-    if (auto* manifest = std::get_if<std::vector<SkillResource>>(&result.skill.resources)) {
+    const bool need_body = parts != SkillReadParts::FrontmatterOnly;
+    const bool need_frontmatter = parts != SkillReadParts::BodyOnly;
+
+    auto load_bytes = [&](const SkillResource& file, std::string& bytes,
+                          std::string& error_out) -> bool {
+        auto read = ReadResource(file.uri, options);
+        std::string raw;
+        bool is_blob = false;
+        for (const auto& content : read.contents) {
+            if (auto* text = std::get_if<TextResourceContents>(&content)) {
+                raw = text->text;
+                break;
+            }
+            if (auto* blob = std::get_if<BlobResourceContents>(&content)) {
+                raw = blob->blob;
+                is_blob = true;
+                break;
+            }
+        }
+        std::string prep_error;
+        SkillBlob blob = is_blob
+            ? SkillBlob::FromEncoded(std::move(raw), prep_error)
+            : SkillBlob::FromText(std::move(raw), prep_error);
+        if (!prep_error.empty()) {
+            error_out = prep_error;
+            return false;
+        }
+        if (!blob.Decode(error_out)) return false;
+        bytes = blob.Decoded();
+        return true;
+    };
+
+    auto* manifest = std::get_if<std::vector<SkillResource>>(&result.skill.resources);
+    std::optional<std::string> entry_bytes;
+    bool entry_failed = false;
+    if (manifest && need_body) {
         for (const auto& file : *manifest) {
-            auto read = ReadResource(file.uri, options);
             std::string bytes;
-            for (const auto& content : read.contents) {
-                if (auto* text = std::get_if<TextResourceContents>(&content)) {
-                    bytes = text->text;
-                    break;
-                }
-                if (auto* blob = std::get_if<BlobResourceContents>(&content)) {
-                    bytes = blob->blob;
-                    break;
-                }
+            std::string load_error;
+            if (!load_bytes(file, bytes, load_error)) {
+                SkillDiagnostic diagnostic;
+                diagnostic.uri = file.uri;
+                diagnostic.reason = "invalid_encoding";
+                result.diagnostics.push_back(std::move(diagnostic));
+                if (file.uri == result.skill.uri) entry_failed = true;
+                continue;
             }
             std::string file_error;
             if (!VerifyFileBytes(file, bytes, file_error)) {
@@ -1724,8 +1793,10 @@ SkillReadResult McpClient::ReadSkill(
                 diagnostic.reason = file_error.find("size") != std::string::npos
                     ? "size_mismatch" : "digest_mismatch";
                 result.diagnostics.push_back(std::move(diagnostic));
+                if (file.uri == result.skill.uri) entry_failed = true;
                 continue;
             }
+            if (file.uri == result.skill.uri) entry_bytes = bytes;
             SkillFileContent content;
             content.uri = file.uri;
             content.bytes = std::move(bytes);
@@ -1733,12 +1804,67 @@ SkillReadResult McpClient::ReadSkill(
         }
     }
 
-    std::string frontmatter_error;
-    if (!VerifyFrontmatter(result.skill, result.skill.frontmatter, frontmatter_error)) {
-        SkillDiagnostic diagnostic;
-        diagnostic.uri = result.skill.uri;
-        diagnostic.reason = "frontmatter_mismatch";
-        result.diagnostics.push_back(std::move(diagnostic));
+    if (need_frontmatter && !entry_failed) {
+        const SkillResource* entry = nullptr;
+        if (manifest) {
+            for (const auto& file : *manifest) {
+                if (file.uri == result.skill.uri) {
+                    entry = &file;
+                    break;
+                }
+            }
+            if (!entry) {
+                constexpr std::string_view kSuffix = "/SKILL.md";
+                for (const auto& file : *manifest) {
+                    if (file.uri.size() >= kSuffix.size() &&
+                        file.uri.compare(file.uri.size() - kSuffix.size(),
+                            kSuffix.size(), kSuffix) == 0) {
+                        entry = &file;
+                        break;
+                    }
+                }
+            }
+        }
+        std::string bytes;
+        bool ready = false;
+        if (entry) {
+            if (entry_bytes.has_value()) {
+                bytes = *entry_bytes;
+                ready = true;
+            } else {
+                std::string load_error;
+                if (load_bytes(*entry, bytes, load_error)) {
+                    std::string file_error;
+                    ready = VerifyFileBytes(*entry, bytes, file_error);
+                    if (!ready) {
+                        SkillDiagnostic diagnostic;
+                        diagnostic.uri = entry->uri;
+                        diagnostic.reason = file_error.find("size") != std::string::npos
+                            ? "size_mismatch" : "digest_mismatch";
+                        result.diagnostics.push_back(std::move(diagnostic));
+                    }
+                } else {
+                    SkillDiagnostic diagnostic;
+                    diagnostic.uri = entry->uri;
+                    diagnostic.reason = "invalid_encoding";
+                    result.diagnostics.push_back(std::move(diagnostic));
+                }
+            }
+        }
+        std::string frontmatter_error;
+        const bool verified = ready
+            ? VerifyFrontmatterBytes(result.skill, bytes, frontmatter_error)
+            : VerifyFrontmatter(result.skill, result.skill.frontmatter, frontmatter_error);
+        if (!verified) {
+            const bool invalid = frontmatter_error.find("yaml") != std::string::npos ||
+                frontmatter_error.find("encoded") != std::string::npos ||
+                frontmatter_error.find("decoded") != std::string::npos ||
+                frontmatter_error.find("unterminated") != std::string::npos;
+            SkillDiagnostic diagnostic;
+            diagnostic.uri = result.skill.uri;
+            diagnostic.reason = invalid ? "frontmatter_invalid" : "frontmatter_mismatch";
+            result.diagnostics.push_back(std::move(diagnostic));
+        }
     }
     return result;
 }
@@ -1783,7 +1909,7 @@ GetTaskResult McpClient::CallToolAsTask(
     params.name = std::string(name);
     params.arguments = std::move(arguments);
 
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
     auto progress_key = AttachProgressCallback(options, meta);
     std::optional<ScopedProgressCleanup> progress_cleanup;
@@ -1833,7 +1959,7 @@ GetTaskResult McpClient::CallToolAsTask(
 GetTaskResult McpClient::GetTask(std::string_view task_id) {
     GetTaskRequestParams params;
     params.task_id = std::string(task_id);
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto result = DoSendRequest(*handler_, methods::kGetTask,
         SerializeGetTaskRequestParams(params), meta, kTaskRequestTimeout);
     return DeserializeGetTaskResult(result);
@@ -1851,7 +1977,7 @@ UpdateTaskResult McpClient::UpdateTask(
     params.task_id = std::string(task_id);
     params.result = std::move(result);
     params.input_responses = std::move(input_responses);
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto res = DoSendRequest(*handler_, methods::kUpdateTask,
         SerializeUpdateTaskRequestParams(params), meta, kTaskRequestTimeout);
     return DeserializeEmptyResult(res);
@@ -1864,7 +1990,7 @@ CancelTaskResult McpClient::CancelTask(
     CancelTaskRequestParams params;
     params.task_id = std::string(task_id);
     params.reason = std::move(reason);
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto result = DoSendRequest(*handler_, methods::kCancelTask,
         SerializeCancelTaskRequestParams(params), meta, kTaskRequestTimeout);
     return DeserializeEmptyResult(result);
@@ -1909,7 +2035,7 @@ GetTaskResult McpClient::PollTaskToCompletion(
 }
 
 CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     auto result = DoSendRequest(*handler_, methods::kComplete,
         SerializeCompleteRequestParams(params), meta, kDefaultRequestTimeout);
     return DeserializeCompleteResult(result);
@@ -1917,7 +2043,7 @@ CompleteResult McpClient::Complete(const CompleteRequestParams& params) {
 
 EmptyResult McpClient::Ping() {
     RequestMeta ping_meta;
-    ping_meta.protocol_version = negotiation_.negotiated_version;
+    ping_meta.protocol_version = CurrentNegotiation()->negotiated_version;
     auto result = DoSendRequest(*handler_, methods::kPing,
         JsonValue(JsonValue::object_tag), ping_meta, kPingTimeout);
     (void)result;
@@ -1942,7 +2068,7 @@ RequestHandle McpClient::SendRequest(
     JsonValue params,
     const RequestOptions& options)
 {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     if (options.meta) meta.extensions = options.meta;
     auto progress_key = AttachProgressCallback(options, meta);
 
@@ -1994,7 +2120,7 @@ std::future<JsonValue> McpClient::SendRequestRaw(
 {
     auto effective_meta = HasExplicitRequestMeta(meta)
         ? meta
-        : BuildClientMeta(options_, negotiation_.negotiated_version);
+        : BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     return handler_->SendRequest(method, std::move(params), effective_meta, timeout);
 }
 
@@ -2007,21 +2133,21 @@ void McpClient::CancelRequest(const RequestId& id, std::string_view reason) {
 }
 
 void McpClient::SetLoggingLevel(LoggingLevel level) {
-    if (IsModernProtocolVersion(negotiation_.negotiated_version)) {
+    if (IsModernProtocolVersion(CurrentNegotiation()->negotiated_version)) {
         throw McpError(McpErrorCode::ProtocolViolation,
             "logging/setLevel is not available in protocol version " +
-            negotiation_.negotiated_version +
+            CurrentNegotiation()->negotiated_version +
             "; use a per-request logLevel instead");
     }
     SetLevelRequestParams params;
     params.level = level;
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     (void)DoSendRequest(*handler_, methods::kSetLoggingLevel,
         SerializeSetLevelRequestParams(params), meta, kDefaultRequestTimeout);
 }
 
 void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
-    auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
+    auto meta = BuildClientMeta(options_, CurrentNegotiation()->negotiated_version);
     std::string subscription_id;
     if (params.meta && params.meta->extensions) {
         if (auto* v = params.meta->extensions->Find(detail::kMetaSubscriptionIdKey);
@@ -2087,7 +2213,7 @@ void McpClient::SubscribeAsync(const SubscriptionsListenRequestParams& params) {
 
 void McpClient::SendRootsListChanged() {
     static constexpr std::string_view kMinVersion = "2025-06-18";
-    const std::string_view negotiated = negotiation_.negotiated_version;
+    const std::string_view negotiated = CurrentNegotiation()->negotiated_version;
     if (IsModernProtocolVersion(negotiated)) {
         throw McpError(McpErrorCode::ProtocolViolation,
             "notifications/roots/list_changed was removed in protocol version " +

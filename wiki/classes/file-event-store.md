@@ -1,9 +1,9 @@
 ---
 type: Class
 title: FileEventStore
-description: EventStore 的 JSONL 文件持久化实现：跨进程文件锁、崩溃残留容错、1024 事件裁剪。
-tags: [storage, event-store, sse, 文件锁, 持久化]
-timestamp: 2026-11-18T16:15:39+08:00
+description: EventStore 的 JSONL 文件持久化实现：跨进程文件锁、日志权威游标校验与重建、崩溃残留容错、10000 事件裁剪与 uint64 溢出拒绝。
+tags: [storage, event-store, sse, 文件锁, 游标, 持久化]
+timestamp: 2026-11-24T23:00:00+08:00
 resource: include/mcp/storage/FileEventStore.hpp
 ---
 
@@ -15,9 +15,9 @@ resource: include/mcp/storage/FileEventStore.hpp
 
 ## 持久化布局
 
-- 每会话两个文件：`<storage_dir>/sess-<id>.jsonl`（事件）与 `<storage_dir>/sess-<id>.lock`（锁）
+- 每会话两个文件：`<storage_dir>/sess-<id>.jsonl`（事件）与 `<storage_dir>/sess-<id>.lock`（锁）；旁路 `<storage_dir>/sess-<id>.meta.json` 只缓存 `next_id`/`count`
 - 会话 id **双射净化**为安全文件名成分：`[A-Za-z0-9_-]` 透传，其余字节转义为 `~hh`（防路径穿越与非法字符）
-- 每行 `{"id":N,"data":"..."}`，id 为会话内单调递增（`Append` 时重读文件取最大 id + 1，天然支持多实例续号）
+- 每行 `{"id":N,"data":"..."}`；`Append` 在会话锁内每次扫描 JSONL 取 `max_id + 1`，cursor 只作加速缓存，天然支持多进程续号；`max_id` 达 `uint64` 上限时拒绝追加
 
 ## 跨进程文件锁
 
@@ -29,8 +29,9 @@ resource: include/mcp/storage/FileEventStore.hpp
 
 - **崩溃残留（torn tail）**：读取时跳过无法 JSON 解析或缺键的行；追加时若文件不以换行结尾先补 `\n`（损坏尾行被自然隔断，不会污染新事件）
 - 文件不存在/不可读 → 空存储（`GetEventsSince` 返回空，不抛）
-- **trim**：事件数超过 `kMaxEventsPerSession`（1024）时保留尾部，经 `detail::WriteAtomic` 全量重写（原子替换，见 [/concepts/storage.md](../concepts/storage.md)）；写失败抛异常
-- `Clear` 删除会话文件（删除失败抛异常）；锁文件不清除（后续操作复用）
+- **游标以日志为准**：日志缺失、截断、裁剪、cursor 缺失/损坏/超前/落后，或追加已成功但 cursor 未落盘，均从 JSONL 重建 `next_id`/`count`，不产生重复 id；cursor 落盘失败只记日志，下次仍从日志重建
+- **trim**：事件数超过 `kMaxEventsPerSession`（10000）时保留尾部，经 `detail::WriteAtomic` 全量重写（原子替换，见 [/concepts/storage.md](../concepts/storage.md)）；写失败抛异常
+- `Clear` 同时删除会话文件与 `.meta.json` 游标（删除失败抛异常）；锁文件不清除（后续操作复用），重启后 id 从 1 重新计数
 
 ## 构建注意
 
@@ -38,7 +39,7 @@ resource: include/mcp/storage/FileEventStore.hpp
 
 ## 测试
 
-`mcp-event-store-tests`（[FileEventStoreTests.cpp](../../tests/unit/FileEventStoreTests.cpp)）13 用例：双实例共享、进程重启恢复、并发追加 id 单调、trim、净化文件名、损坏尾行容错等。
+`mcp-event-store-tests`（[FileEventStoreTests.cpp](../../tests/unit/FileEventStoreTests.cpp)）21 用例：双实例共享、进程重启恢复、同进程并发与多进程并发追加 id 单调、cursor 一致/超前/落后/缺失、追加成功游标未落盘、trim 后重启、Clear 后重启、`uint64` 溢出拒绝、净化文件名、损坏尾行容错等。
 
 ## 相关页面
 

@@ -12,22 +12,45 @@ Declared in `include/mcp/client/auth/OAuthClientProvider.hpp`, implemented in `s
 |---|---|---|---|
 | `server_url` | `std::string` | empty | MCP server URL, the base for metadata discovery and the resource indicator |
 | `redirect_uri` | `std::string` | empty | Authorization callback address, used by registration, the authorization URL and code exchange |
-| `client_id` | `std::optional<std::string>` | `nullopt` | When empty and the server advertises a registration endpoint, dynamic registration runs; when the value itself is an http(s) URL it is fetched as a client metadata document |
+| `client_id` | `std::optional<std::string>` | `nullopt` | When empty and the server advertises a registration endpoint, dynamic registration runs; a URL-shaped value is fetched as a client metadata document only when it is HTTPS with a non-root path and no fragment or userinfo, otherwise authentication entry points reject it |
 | `client_secret` | `std::optional<std::string>` | `nullopt` | Only required by the `client_credentials` branch when no private-key assertion is used |
 | `scopes` | `std::vector<std::string>` | empty | Requested scopes; `StepUpAuthorization` appends in place |
 | `scope_filter` | `std::function<std::vector<std::string>(const std::vector<std::string>&)>` | unset | Called with `scopes` as the input on every scope resolution; unset means use them verbatim |
 | `token_cache` | `std::shared_ptr<ITokenCache>` | `nullptr` | Construction substitutes an `InMemoryTokenCache` when empty |
-| `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 resource indicator; falls back to the normalized `server_url` when unset |
+| `resource` | `std::optional<std::string>` | `nullopt` | RFC 8707 resource indicator; falls back to `server_url` when unset and is compared byte-for-byte with metadata `resource` |
 | `application_type` | `std::string` | `"native"` | Dynamic-registration body field; an empty string is sent as `native` |
 | `enable_dpop` | `bool` | `false` | When on, token-endpoint requests carry a `DPoP` header and `Authorization` switches to the `DPoP` scheme |
 | `private_key_pem` | `std::optional<std::string>` | `nullopt` | Signing key for `private_key_jwt` assertions; only effective when the server advertises that auth method |
 | `signing_algorithm` | `std::string` | `"ES256"` | Assertion algorithm name; anything other than `ES256` throws `InvalidParams` while building the assertion |
 | `client_assertion_clock_seconds` | `std::function<int64_t()>` | unset | Clock source for assertion `iat`/`exp`; unset uses `dpop::NowSeconds` |
 | `allowed_authorization_server_origins` | `std::vector<std::string>` | empty | Authorization-server origin allow-list, checked against the issuer and each endpoint; empty means no narrowing |
-| `require_iss_when_advertised` | `bool` | `false` | Takes effect when the server advertises `authorization_response_iss_parameter_supported`: with it true an authorization response missing `iss` fails, with it false the response is accepted per local policy |
+| `require_iss_when_advertised` | `bool` | `true` | Takes effect when the server advertises `authorization_response_iss_parameter_supported`: by default an authorization response with missing, empty or mismatched `iss` fails before code exchange; explicitly setting it to `false` is compatibility-only |
+| `require_pkce_metadata` | `bool` | `true` | By default a metadata document missing `code_challenge_methods_supported` or lacking `S256` rejects the authorization-code flow (the challenge is never dropped); explicitly setting it to `false` restores the old flow |
+| `allow_legacy_metadata_fallback` | `bool` | `false` | By default failed PRM/AS discovery fails closed; explicitly setting it to `true` re-enables direct RFC 8414 fallback and hard-coded `server_url` endpoints |
 | `authorization_redirect_handler` | `std::function<void(std::string_view url)>` | unset | Invoked with the full authorization URL so the caller can open a browser; does not influence the flow outcome |
 | `authorization_code_callback` | `std::function<std::optional<AuthorizationCodeResult>()>` | unset | Mandatory, otherwise the authorization flow returns `false` immediately; an empty result, a `state` mismatch or an `iss` mismatch all fail |
 | `token_update_handler` | `std::function<void(const TokenContainer&)>` | unset | Invoked every time tokens land in the cache |
+| `outbound_origin_allowlist` | `std::optional<std::vector<std::string>>` | `nullopt` | Explicitly appends authorized origins (`scheme://host[:port]`); together with `server_url`, `redirect_uri` and `allowed_authorization_server_origins` it forms the outbound allow-list, which metadata responses cannot expand |
+| `loopback_port_exceptions` | `std::vector<std::pair<std::string, std::uint16_t>>` | empty | Adds exact loopback host+port exceptions; exceptions for configured loopback origins are derived automatically, every other loopback port is rejected |
+| `dns_resolver` | `std::shared_ptr<mcp::detail::net::IUrlSecurityResolver>` | empty | Resolver injection point used before every outbound connection; empty uses the system `getaddrinfo`. Tests inject a fake resolver and never touch public DNS |
+| `allow_cross_origin_redirect` | `bool` | `false` | Cross-origin redirects are rejected by default; enabling them still requires an allow-list hit and drops `Authorization`/`Cookie`/secret headers on origin changes |
+
+### Outbound network security policy (SSRF)
+
+Every OAuth outbound request (PRM, AS metadata, CIMD, DCR registration, token, refresh, revocation, challenge metadata; JWKS is parsed but never fetched) goes through one policy entry point:
+
+1. **Origin allow-list**: only caller-configured scheme/host/port values are accepted, compared exactly after normalizing default ports (http 80, https 443); userinfo, `%`-encoded hosts, numeric/hex encoded addresses and invalid ports are rejected.
+2. **Address policy after DNS**: all A/AAAA answers (at most 16) are resolved before connecting and each is checked; loopback, private, link-local, multicast, unspecified and reserved addresses plus IPv4-mapped IPv6 are rejected, and one bad answer rejects the whole set. Loopback is only allowed with an exact host+port exception.
+3. **Rebinding binding**: the validated address set is bound to the actual connection; after connect and before sending any bytes, `getpeername()` must still report an address from that set, otherwise the connection is closed and `ProtocolViolation` is thrown. `HttpRequestSpec::peer_address_override` is the test seam for peer observation.
+4. **Per-hop redirects**: each hop re-runs scheme + origin allow-list + DNS + address policy; cross-origin redirects are rejected by default, exceeding the budget (5 hops) fails closed, and `Authorization`, `Cookie`, `client_secret`, `registration_access_token` and similar headers are dropped on origin changes. The HTTP client has no proxy path, so no proxy branch can bypass a validated address.
+
+Old behavior → new behavior → affected callers: unknown origins and private addresses used to be reachable; they are now rejected before connect. Deployments needing explicit access must add the origin to `allowed_authorization_server_origins` or `outbound_origin_allowlist`, and local loopback fixtures use `loopback_port_exceptions` (or the exception derived from `server_url`). Cross-origin redirects used to be followed with only `Authorization` stripped; they are now rejected by default — callers that rely on them must both authorize the origin and set `allow_cross_origin_redirect = true`.
+
+### Unified DCR `client_secret` resolution
+
+`ResolveClientSecret()` is the single entry point with a fixed priority: explicit `client_secret` → the `client_secret` from the DCR registration response → a previously stored value isolated by issuer/client_id/resource. Empty values, control characters and values over 4096 bytes fail closed with `InvalidParams`; exceptions and log records name only the source category, never the value, and temporary copies are zeroed by `detail::SecureClear` on failure paths. Cache keys come from `SecretCacheKey(issuer, client_id, resource)`, so a secret cannot cross issuer or principal boundaries.
+
+Old behavior → new behavior → affected callers: a DCR `client_secret` used to be parsed into the registration record but never used for client authentication; it now participates in `client_secret_post`/`client_secret_basic`, while an explicit secret still takes precedence. Invalid secrets used to be sent as empty values; they now throw `InvalidParams`, so old registration responses relying on an empty secret must supply a valid value or switch to `private_key_jwt`.
 
 ### `OAuthClientProvider` public methods
 
@@ -38,18 +61,21 @@ Declared in the same header; private nested types and members are not user API a
 | Construct/destruct | `explicit OAuthClientProvider(OAuthClientOptions options)` / `~OAuthClientProvider()` | — | Options are taken by value; the token cache is self-created by default |
 | `IsSecureEndpoint` | `static bool IsSecureEndpoint(std::string_view url)` | `bool` | https check, loopback hosts excepted |
 | `IsSameOrigin` | `static bool IsSameOrigin(std::string_view lhs, std::string_view rhs)` | `bool` | Origin (scheme+host+port) comparison; `false` if either side yields no origin |
-| `Authenticate` | `bool Authenticate()` | whether a usable token exists | Discover metadata → register / fetch document as needed → fresh cache returns true → refresh expired tokens, with `invalid_grant`/`invalid_client` falling back to the full authorization flow; cached tokens with a mismatched resource are cleared first |
+| `SecretCacheKey` | `static std::string SecretCacheKey(std::string_view issuer, std::string_view client_id, std::string_view resource)` | isolation key | Builds the secret cache key from issuer / client_id / resource |
+| `ResolveClientSecret` | `std::optional<std::string> ResolveClientSecret() const` | resolved secret, `nullopt` when absent | Unified entry point; invalid values throw `InvalidParams` and messages never contain the secret |
+| `Authenticate` | `bool Authenticate()` | whether a usable token exists | Strict metadata discovery (no legacy fallback by default) → register / fetch CIMD document as needed → fresh cache returns true → refresh expired tokens, with `invalid_grant`/`invalid_client` falling back to the full authorization flow; cached tokens with a mismatched resource are cleared first |
 | `AuthenticateClientCredentials` | `bool AuthenticateClientCredentials()` | whether tokens were stored | Requires `client_id`, plus `client_secret` when no assertion is used; never runs the code flow |
 | `GetAccessToken` | `std::string GetAccessToken()` | token string, empty when none | When nearing expiry with a refresh token, joins coalesced refreshing (concurrent callers share one refresh); refresh failure throws `InternalError` |
-| `RefreshTokens` | `bool RefreshTokens()` | whether the refresh succeeded | Refreshes directly, no coalescing; both `invalid_grant` and transient failure return `false` |
+| `RefreshTokens` | `bool RefreshTokens()` | whether the refresh succeeded | Shares one single-flight with `GetAccessToken` / `Authenticate`; `invalid_grant` clears tokens and returns `false`, transient failure keeps the cache and waiters read the latest token |
 | `Revoke` | `void Revoke()` | void | POSTs only when a revocation endpoint exists (non-https throws `InvalidParams`); clears the cache regardless |
 | `IsAuthenticated` / `HasToken` | `bool IsAuthenticated() const` / `bool HasToken() const` | `bool` | The former requires an unexpired token, the latter only a non-empty access token; both check resource matching |
 | `GetAuthorizationHeader` | `std::string GetAuthorizationHeader() const` | `DPoP <token>` or `Bearer <token>`, empty when none | Read-only, never triggers a refresh; the scheme name follows `enable_dpop` |
-| `BuildDPoPProof` | `std::string BuildDPoPProof(std::string_view htm, std::string_view htu, std::optional<std::string_view> access_token = std::nullopt)` | proof JWT; empty when `enable_dpop` is false | Lazily generates the P-256 key on first use and attaches the recorded nonce |
-| `ApplyDPoPProofHeader` | `void ApplyDPoPProofHeader(const HttpRequestHeaderContext& context, std::map<std::string, std::string>& headers)` | void | Builds the proof from the context method and URL into `headers["DPoP"]`; leaves headers untouched when dpop is off, the method is missing or the URL is unparseable |
-| `ObserveDPoPNonce` / `SetDPoPNonce` | `void ObserveDPoPNonce(std::string_view dpop_nonce)` / `void SetDPoPNonce(std::string nonce)` | void | The former ignores empty strings and anything over 1024 bytes; the latter overwrites unconditionally, ignoring the dpop switch |
+| `BuildDPoPProof` | `std::string BuildDPoPProof(std::string_view htm, std::string_view htu, std::optional<std::string_view> access_token = std::nullopt)` | proof JWT; empty when `enable_dpop` is false | Restores a validated P-256 key from the token cache (generates and persists one otherwise); reads the nonce from the bucket keyed by the normalized origin of `htu` and token_type |
+| `ApplyDPoPProofHeader` | `void ApplyDPoPProofHeader(const HttpRequestHeaderContext& context, std::map<std::string, std::string>& headers)` | void | Builds the proof from the context method and URL into `headers["DPoP"]` and switches the current nonce bucket to that URL / token_type; leaves headers untouched when dpop is off, the method is missing or the URL is unparseable |
+| `ObserveDPoPNonce` / `SetDPoPNonce` | `void ObserveDPoPNonce(std::string_view dpop_nonce)` / `void SetDPoPNonce(std::string nonce)` | void | Legacy entries delegate to the current bucket (set by the latest proof/context call); empty or >1024-byte observed values are ignored; the setter overwrites unconditionally and ignores the dpop switch |
+| Context-aware nonce API | `void ObserveDPoPNonce(std::string_view url, std::string_view token_type, std::string_view dpop_nonce)` / `void SetDPoPNonceContext(std::string_view url, std::string_view token_type)` / `std::optional<std::string> GetDPoPNonce(std::string_view url, std::string_view token_type) const` | void / `optional<string>` | Observes and reads nonces in an explicit normalized-origin + token_type bucket; no cross-bucket reuse; host case and default port are normalized |
 | `StepUpAuthorization` | `bool StepUpAuthorization(const std::vector<std::string>& additional_scopes)` | whether re-authorization succeeded | Append scopes → `Revoke()` → rerun the authorization flow, which drops the current tokens |
-| `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | whether metadata was rebuilt from it | Recognizes only `resource_metadata="…"`; headers over 4096 bytes, non-https URLs, documents over 65536 bytes, resource mismatch or an authorization server outside the allow-list all return `false` |
+| `HandleAuthChallenge` | `bool HandleAuthChallenge(std::string_view www_authenticate)` | whether metadata was rebuilt from it | Recognizes only `resource_metadata="…"`; headers over 4096 bytes, non-https URLs, documents over 65536 bytes, a metadata `resource` that is not byte-for-byte equal to the configured resource identifier, or an authorization server outside the allow-list all return `false` |
 
 ### PKCE helpers and the OpenSSL dependency boundary
 
@@ -95,7 +121,8 @@ All three fields are declared in `include/mcp/transport/StreamableHttpClientTran
 | Symbol | Signature/type | Default | Notes |
 |---|---|---|---|
 | `EcP256Jwk` | `struct { std::string x; std::string y; std::string d; }` | three empty strings | P-256 JWK where `d` is the private scalar; `CreateProof` requires all three |
-| `GenerateKey` | `EcP256Jwk GenerateKey()` | — | Generates a P-256 key |
+| `GenerateKey` | `EcP256Jwk GenerateKey()` | — | Generates a P-256 key (requires OpenSSL) |
+| `ValidateKey` | `bool ValidateKey(const EcP256Jwk& key)` | — | OpenSSL-independent: requires 32-byte x/y/d, scalar in `[1,n-1]`, a point on P-256, and `d·G == (x,y)`; returns `false` on mismatch |
 | `ComputeThumbprint` | `std::string ComputeThumbprint(std::string_view x, std::string_view y)` | — | SHA-256 over `{"crv":"P-256","kty":"EC","x":…,"y":…}` then base64url; throws `InvalidParams` when x or y is empty; independent of OpenSSL |
 | `PublicJwkJson` | `std::string PublicJwkJson(const EcP256Jwk& key)` | — | Emits only `crv`/`kty`/`x`/`y`, never `d`; independent of OpenSSL |
 | `CreateProof` | `std::string CreateProof(const EcP256Jwk& key, std::string_view htm, std::string_view htu, std::optional<std::string_view> access_token = std::nullopt, std::optional<std::string_view> nonce = std::nullopt, std::optional<int64_t> iat_override_seconds = std::nullopt)` | three `nullopt` | Produces the DPoP JWT: header `typ=dpop+jwt`, `alg=ES256`, embedded `jwk`; payload `htm`/`htu`/`jti`/`iat`, plus `ath` when an access token is given |
@@ -143,7 +170,8 @@ Both builds come from the same `src/ext/DPoP.cpp`, split by `#if defined(MCP_HAV
 | `GetTokens` | `virtual std::optional<TokenContainer> GetTokens() = 0` | — | Non-const member |
 | `StoreBoundIssuer` | `virtual void StoreBoundIssuer(const std::string& issuer)` | empty body (overridable) | Issuer-bound persistence anchor; the provider writes the issuer it first discovers and thereafter rejects any issuer change |
 | `GetBoundIssuer` | `virtual std::optional<std::string> GetBoundIssuer()` | `nullopt` (overridable) | Reads the bound issuer back; the default means no persistence |
-| `OAuthMetadata` | `struct`: issuer, authorization/token/revocation/registration/jwks/resource endpoints and four `*_supported` lists; `static std::optional<OAuthMetadata> Discover(std::string_view server_url)` | empty strings/lists | The last four endpoints and `resource` are `optional`; `Discover` fetches `/.well-known/oauth-authorization-server` and returns empty on failure |
+| DPoP key extension | `virtual void StoreDpopKey(const ext::dpop::EcP256Jwk& key)` / `virtual std::optional<ext::dpop::EcP256Jwk> GetDpopKey()` / `virtual void ClearDpopKey()` | empty body / `nullopt` / empty body (all overridable) | All three have default implementations, so legacy custom `ITokenCache` implementations need no changes; the provider restores a validated key from here on restart |
+| `OAuthMetadata` | `struct`: issuer, authorization/token/revocation/registration/jwks/resource endpoints and four `*_supported` lists; `static std::optional<OAuthMetadata> Discover(std::string_view server_url, bool allow_legacy_fallback = false, std::optional<std::string_view> expected_resource = std::nullopt)` | empty strings/lists | The last four endpoints and `resource` are `optional`; PRM must provide a `resource` byte-for-byte equal to the expected resource identifier or it is not used; direct RFC 8414 fallback is off by default |
 | `OAuthTokenResponse` | `struct`: `access_token`/`refresh_token`/`expires_in`/`token_type`/`scope` | `expires_in = 3600`, `token_type = "Bearer"` | Token-endpoint payload carrier |
 | `ClientRegistrationInfo::Register` | `static std::optional<ClientRegistrationInfo> Register(std::string_view registration_endpoint, std::string_view redirect_uri, std::string_view client_name, std::string_view application_type = "native")` | `"native"` | Dynamic client registration entry point |
 
@@ -154,7 +182,8 @@ Both builds come from the same `src/ext/DPoP.cpp`, split by `#if defined(MCP_HAV
 | `InMemoryTokenCache` | `class : public ITokenCache` | In-process implementation, overrides all five interfaces including issuer binding, internally locked |
 | `FileTokenCache` construct/destruct | `explicit FileTokenCache(std::filesystem::path cache_path)` / `~FileTokenCache() override` | The constructor loads from disk (a missing file means an empty cache); destructor persistence failures are logged as Error only, never thrown |
 | `StoreTokens` / `GetTokens` / `ClearTokens` | `override` | Every write is flushed synchronously; with no tokens the flush deletes the file |
-| `StoreBoundIssuer` / `GetBoundIssuer` | `override` | The anchor lives in `<cache_path>.issuer`; an empty string removes that file, write failures are logged as Error |
+| `StoreBoundIssuer` / `GetBoundIssuer` | `override` | The anchor lives in `<cache_path>.issuer`; an empty string removes that file, write failures are logged as Error; reads reject symlinks, non-regular files, over-permissive modes, content over 4096 bytes, control characters and short reads, returning `nullopt` without clearing tokens or deleting the anchor |
+| DPoP key persistence | `StoreDpopKey` / `GetDpopKey` / `ClearDpopKey` `override` | Written into the same JSON / DPAPI file as tokens; loading fully validates x/y/d curve and key-pair match, rejects corruption without overwriting the original field; Windows uses DPAPI as well |
 | Permission semantics (POSIX) | Before loading, `stat` requires the current uid as owner and all group/other bits clear; otherwise the load is refused with an Error log | Refusal equals an empty cache and throws nothing |
 | Permission semantics (Windows) | The whole cache is protected per user through DPAPI (`CryptProtectData`/`CryptUnprotectData`); decryption failure discards the cache | Never plaintext JSON on disk; writes go through the internal owner-only atomic secure writer |
 
@@ -186,12 +215,21 @@ Triggers have no extension id constant: the only outward identifier is the notif
 | `ServerCardEndpoint` | `struct { std::string url; std::map<std::string,std::string> headers; std::map<std::string,std::string> variables; }` | empty string/tables | One endpoint; `headers` and `variables` are passed through as-is |
 | `ServerCardRepository` | `struct { std::optional<std::string> url; }` | `nullopt` | Repository wrapper, yet `ServerCard::repository` is a plain string and does not use this struct |
 | Required fields | `name`, `version` (`std::string`) | empty | Empty values fail validation |
-| Optional fields | `description`, `title`, `website_url`, `repository`, `meta` (the first four `std::optional<std::string>`, `meta` a `std::optional<JsonValue>`) | all `nullopt` | Serialization writes `description` as an empty string when absent and omits the other optional fields |
-| List fields | `icons` (`std::vector<Icon>`), `endpoints` (`std::vector<ServerCardEndpoint>`), `supported_protocol_versions` (`std::vector<std::string>`) | empty | An empty `endpoints` list fails validation |
-| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | Requires non-empty name/version/endpoints and an http/https url per endpoint; violations throw `InvalidParams` |
-| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | Calls `ValidateCard` first; emitted keys are `name`/`version`/`description`/`endpoints`/`supportedProtocolVersions` |
+| Optional fields | `description`, `title`, `website_url`, `repository`, `meta` (the first four `std::optional<std::string>`, `meta` a `std::optional<JsonValue>`) | all `nullopt` | `description` is still written as an empty string when absent; `title`/`website_url`/`repository`/`meta` are written only when set |
+| List fields | `icons` (`std::vector<Icon>`), `endpoints` (`std::vector<ServerCardEndpoint>`), `supported_protocol_versions` (`std::vector<std::string>`) | empty | An empty `endpoints` list fails validation; `icons` is now emitted with the card |
+| `ValidateCard` | `void ValidateCard(const ServerCard& card)` | — | Validates required fields, http(s) URLs (rejecting userinfo and malformed ports), icon `src`/`mimeType`/`sizes`/`theme`, endpoint header names/values, variable names/values and date-shaped `supportedProtocolVersions`; violations throw `InvalidParams` |
+| `SerializeCard` | `JsonValue SerializeCard(const ServerCard& card)` | — | Calls `ValidateCard` first; fixed keys `name`/`version`/`description`/`icons`/`endpoints`/`supportedProtocolVersions`, other optional keys only when set |
+| `ServerCardClientOptions` | `struct { std::optional<std::string> if_none_match; std::optional<ServerCard> cached_card; std::optional<std::size_t> max_response_bytes; std::chrono::milliseconds timeout{30000}; int max_redirects{5}; }` | no conditional header/cache, 1 MiB cap | `if_none_match` with `cached_card` drives conditional requests; a 304 without a cached card throws `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; std::string etag; bool from_cache{false}; }` | — | `from_cache=true` means a 304 hit and the caller's cached card was returned |
+| `BuildServerCardDiscoveryUrl` | `std::string BuildServerCardDiscoveryUrl(std::string_view endpoint_url)` | — | Derives `<path>/server-card` from the endpoint scheme/host/port/path; strips query/fragment and rejects userinfo, non-HTTP(S) and malformed URLs |
+| `IsServerCardJsonMediaType` / `ServerCardEtagMatches` | `bool` (case-insensitive media type/parameters; weak comparison and list syntax, `*` supported) | — | Reusable admission helpers for callers |
+| `CanonicalizeServerCardBody` / `ComputeServerCardEtag` | `std::string` (canonical JSON / quoted SHA-256 strong ETag) | — | The same canonical serialization backs the server ETag and client comparison |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | Parses every field, then calls `ValidateCard`; non-objects, wrong types and invalid fields throw `InvalidParams` |
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | GETs the discovery URL; accepts only a JSON media type and bounded body, follows same-origin redirects by default, and throws `McpError` on empty bodies or error statuses |
 
-Declared in `include/mcp/ext/ServerCard.hpp`; validation and serialization are in `src/ext/ServerCard.cpp`.
+The client free functions above are `[[nodiscard]]`; callers that intentionally discard a result should write `(void)mcp::ext::FetchServerCard(endpoint)`.
+
+The server-side API stays in `include/mcp/ext/ServerCard.hpp` with validation and serialization in `src/ext/ServerCard.cpp`; the client API is declared in `include/mcp/ext/ServerCardClient.hpp` and implemented in `src/ext/ServerCardClient.cpp`. `GetServerCard`, `ValidateCard`, `SerializeCard` and `GET /server-card` all remain. Serialization now includes optional fields that are set; older readers can ignore the extra keys. Cards carrying invalid optional fields are now rejected by both the new client and the server validator (old/new behaviour and how affected callers adapt are listed above).
 
 ### Apps
 
@@ -200,7 +238,42 @@ Declared in `include/mcp/ext/ServerCard.hpp`; validation and serialization are i
 | `UiMeta` | `struct { std::string resource_uri; std::vector<std::string> csp; std::vector<std::string> permissions; }` | empty string/tables/tables | The ui declaration carried in `_meta` |
 | `ValidateUiMeta` | `void ValidateUiMeta(const UiMeta& meta)` | — | `resource_uri` must be non-empty and start with `ui://`, otherwise `InvalidParams` is thrown; `csp`/`permissions` are not validated |
 
-Declared in `include/mcp/ext/Apps.hpp`; validation is in `src/ext/Apps.cpp`.
+Declared in `include/mcp/ext/Apps.hpp`; validation is in `src/ext/Apps.cpp`. `UiMeta`, `ValidateUiMeta`, `kAppsExtensionId`, `kAppsMimeType` and `kAppsUriScheme` are unchanged.
+
+### Apps host bridge
+
+Declared in `include/mcp/ext/AppsHostBridge.hpp`, implemented in `src/ext/AppsHostBridge.cpp`. This section covers only the JSON message bridge between a host and a sandboxed UI; no iframe, WebView, DOM, script injection or UI renderer is delivered.
+
+| Symbol | Signature/type | Default | Notes |
+|---|---|---|---|
+| `kAppsMessageSchemaVersion` | `std::string_view` | `"2026-07-28"` | The only supported schema version; malformed or missing values are rejected |
+| `kAppsCapabilityTokenBytes` | `size_t` | `32` | Random bytes in a capability token; exposed as a 64-character hex string |
+| `kDefaultAppsCapabilityTtl` | `std::chrono::milliseconds` | `60000` | Default capability lifetime |
+| `AppsHostBridgeOptions` | `struct` | see below | `ui_meta` (from `UiMeta`: `resource_uri`/`csp`/`permissions`), `allowed_origins` (host-trusted origin allowlist), `host_allowed_methods` (explicit host method allowlist), `max_message_bytes`(65536), `max_depth`(32), `max_nodes`(10000), `max_string_bytes`(65536), `max_id_bytes`(128), `max_method_bytes`(128), `capability_ttl`(60s), `single_use_sensitive_methods`(`true`) |
+| `AppsPostMessage` | `struct` | schema version preset, empty id/method/params | Carries only JSON values, schema version, optional `request_id`, `method` and `params`; no function/DOM/executable-code fields |
+| `AppsMessageContext` | `struct` | `sandbox_verified=false`, other fields empty | Host-trusted context: `source_origin`, `target_origin`, `resource_uri`, `sandbox_verified` and `capability`, all supplied by the host |
+| `AppsSandboxPolicy` | `struct` | all five deny flags `true`, `csp` empty | Exposes opaque origin, bans `allow-same-origin`, top navigation, popups, forms and downloads; `csp` comes verbatim from `UiMeta` |
+| `AppsHostBridge::Create` | `static std::unique_ptr<AppsHostBridge> Create(AppsHostBridgeOptions)` | — | Validates `UiMeta`, budgets and origin/method syntax; effective permissions = `UiMeta::permissions` ∩ `host_allowed_methods`, empty means deny every method |
+| `SerializeHostMessage` | `std::string SerializeHostMessage(const AppsPostMessage&, const AppsMessageContext&) const` | — | Host-to-app serialization; still checks trusted context, schema version, method permission and byte budget |
+| `ParseAppMessage` | `AppsPostMessage ParseAppMessage(std::string_view, const AppsMessageContext&) const` | — | App-to-host parsing; checks total bytes before parsing, then origin, sandbox, capability, schema, method and id |
+| `IsMethodAllowed` | `bool IsMethodAllowed(std::string_view, const AppsMessageContext&) const` | — | Read-only predicate; unknown methods, excess permissions and expired/consumed capabilities return `false` |
+| `CreateCapability` | `std::string CreateCapability(const AppsMessageContext&) const` | — | Issues an opaque token bound to `resource_uri`, allowed origins, effective permissions, expiry, message byte cap and the single-use flag |
+| `GetSandboxPolicy` | `AppsSandboxPolicy GetSandboxPolicy() const` | — | Returns fixed sandbox deny flags plus the CSP from `UiMeta` |
+| `NormalizeOrigin` | `bool NormalizeOrigin(std::string_view, std::string&)` | — | Lowercases scheme/host, supplies the default port (80 for http, 443 for https) and emits `scheme://host:port`; rejects `*`, `null`, userinfo, paths, wildcards and non-HTTP(S) schemes |
+| `IsAppsSensitiveMethod` | `bool IsAppsSensitiveMethod(std::string_view)` | — | `tools/call` and `resources/read` are sensitive: denied unless explicitly permitted, and require a single-use capability |
+
+Trust boundary:
+
+- `source_origin`, `target_origin`, `resource_uri` and `sandbox_verified` are read only from `AppsMessageContext`. Payload fields with those names, plus `permissions` or `capability`, are unknown top-level keys and are rejected; they never take part in an authorization decision.
+- Origins are normalized and compared exactly on scheme/host/effective port; omitting a default port is equivalent to writing it explicitly. A wildcard or opaque target, an origin outside the allowlist, and an unproven sandbox are always rejected.
+- Effective permissions are the intersection of `UiMeta::permissions` and `host_allowed_methods`. Sensitive methods are denied by default; with `single_use_sensitive_methods=true` the capability is single-use. Tokens use 32 unpredictable bytes, are compared in constant time, and are bound to resource/origins/permissions/expiry/byte cap; expiry, replay, cross-context use and permission changes are rejected.
+- JSON parsing checks total bytes first, then depth/node/string budgets. Duplicate keys, non-finite numbers, overlong ids/methods and malformed schema versions throw `McpError` with fixed classifier messages that never echo payload content.
+
+::: warning Old behaviour / new behaviour / how affected callers adapt
+- Old behaviour: before 0.3.13 there was no Apps host bridge API; hosts assembled postMessage themselves with no single enforcement point for origin, sandbox or permissions.
+- New behaviour: the new API fails closed by default; any message without a proven sandbox, with an unlisted origin, an unknown method or an unissued capability is rejected.
+- How to adapt: hosts that assembled postMessage manually should populate `AppsMessageContext` on the host side (never from message payload), call `CreateCapability`, and route traffic through `SerializeHostMessage`/`ParseAppMessage`. `UiMeta`/`ValidateUiMeta`, the Apps MIME and URI constants, and the server `ui://` resource read gate are unchanged and need no migration.
+:::
 
 ### Triggers
 
@@ -267,6 +340,7 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kGetTask` / `kUpdateTask` / `kCancelTask` | `"tasks/get"` / `"tasks/update"` / `"tasks/cancel"` | both eras (task switch required) |
 | `kGetTaskPayload` / `kLegacyGetTaskPayload` | both `"tasks/result"` | legacy only; `kLegacy*` is a same-value alias |
 | `kListTasks` / `kLegacyListTasks` | both `"tasks/list"` | legacy only; as above |
+| `kDeleteTask` | `"tasks/delete"` | modern only; removes a task after the owner check |
 | `kListSkills` / `kGetSkill` | `"skills/list"` / `"skills/get"` | modern only |
 | `kSetLoggingLevel` | `"logging/setLevel"` | legacy only |
 | `kListExtensions` | `"server/extensions/list"` | both eras |
@@ -284,7 +358,8 @@ The era column is a symbol index only; [Protocol versions](/en/learn/protocol-ve
 | `kRootsListChanged` | `"notifications/roots/list_changed"` | legacy only; the client additionally requires a negotiated version of at least `2025-06-18` |
 | `kElicitationComplete` | `"notifications/elicitation/complete"` | legacy only |
 | `kSubscriptionsAcknowledged` | `"notifications/subscriptions/acknowledged"` | modern only |
-| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`, `"…/working"`, `"…/completed"`, `"…/failed"`, `"…/cancelled"`, `"…/input_required"` | both eras |
+| `kTasks` | `"notifications/tasks"` | modern only; `params` is a full `DetailedTask`, filterable by `taskIds` subscriptions |
+| `kTaskStatus` / `kTaskWorking` / `kTaskCompleted` / `kTaskFailed` / `kTaskCancelled` / `kTaskInputRequired` | `"notifications/tasks/status"`, `"…/working"`, `"…/completed"`, `"…/failed"`, `"…/cancelled"`, `"…/input_required"` | legacy only; modern no longer sends or accepts these |
 | `kTriggersEvent` | `"notifications/triggers/event"` | both eras |
 
 ### Protocol version constants
@@ -306,7 +381,7 @@ Task-shaped guides: [/en/howto/add-oauth-to-a-client](/en/howto/add-oauth-to-a-c
 ## Source files behind this page
 
 - `include/mcp/client/auth/OAuthClientProvider.hpp`, `include/mcp/client/auth/TokenCache.hpp`, `include/mcp/storage/FileTokenCache.hpp`, `include/mcp/client/SkillVerify.hpp`
-- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
+- `include/mcp/ext/DPoP.hpp`, `include/mcp/ext/ServerCard.hpp`, `include/mcp/ext/ServerCardClient.hpp`, `include/mcp/ext/Apps.hpp`, `include/mcp/ext/AppsHostBridge.hpp`, `include/mcp/ext/Triggers.hpp`, `include/mcp/Capabilities.hpp`
 - `include/mcp/Methods.hpp`, `include/mcp/ProtocolVersion.hpp`, `include/mcp/McpTypes.hpp`, `include/mcp/transport/StreamableHttpClientTransport.hpp`, `include/mcp/server/ServerOptions.hpp`
-- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/Apps.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
+- `src/client/auth/OAuthClientProvider.cpp`, `src/client/FileTokenCache.cpp`, `src/client/SkillVerify.cpp`, `src/ext/DPoP.cpp`, `src/ext/ServerCard.cpp`, `src/ext/ServerCardClient.cpp`, `src/ext/Apps.cpp`, `src/ext/AppsHostBridge.cpp`, `src/ext/Triggers.cpp`, `src/server/McpServer.cpp`
 - `cmake/FetchDependencies.cmake`, `cmake/OpenSslVersion.cmake`, `CMakeLists.txt`

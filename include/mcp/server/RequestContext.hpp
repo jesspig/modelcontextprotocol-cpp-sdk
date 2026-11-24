@@ -61,6 +61,12 @@ public:
     [[nodiscard]] std::optional<LoggingLevel> LogLevel() const { return log_level_; }
     std::string_view SessionId() const { return session_id_; }
 
+    [[nodiscard]] const ServerRequestContext& Identity() const {
+        if (jsonrpc_request_.request_context)
+            return *jsonrpc_request_.request_context;
+        return fallback_context_;
+    }
+
     void Log(LoggingLevel level, std::string_view data) const {
         if (require_request_log_level_ && !log_level_)
             return;
@@ -82,6 +88,7 @@ private:
     std::shared_ptr<const std::atomic<bool>> cancellation_flag_;
     bool require_request_log_level_{false};
     std::string session_id_;
+    ServerRequestContext fallback_context_;
 };
 
 } // namespace mcp

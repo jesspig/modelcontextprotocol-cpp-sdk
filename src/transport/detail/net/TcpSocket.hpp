@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <shared_mutex>
+#include <string>
 #include <string_view>
 
 #ifdef _WIN32
@@ -43,6 +45,7 @@ public:
     void Close();
     bool IsEof() const { return closed_.load() || eof_.load(); }
     bool IsConnected() const { return !closed_.load() && !eof_.load() && fd_.load() != kInvalidFd; }
+    [[nodiscard]] std::optional<std::string> PeerAddress() const;
 
     NativeFd NativeHandle() const { return fd_.load(); }
 

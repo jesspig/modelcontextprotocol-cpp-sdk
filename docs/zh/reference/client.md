@@ -42,6 +42,8 @@
 | `ListSkills` | `SkillsListResult ListSkills(std::optional<std::string> cursor = std::nullopt)` | 分页结果 | `enable_skills_extension=false` 时抛 `McpError(MethodNotFound, "skills extension is disabled")` |
 | `GetSkill` | `SkillsGetResult GetSkill(std::string_view uri, const CacheableRequestOptions& options = {})` | `SkillsGetResult` | 同上开关门控；走 MRTR 与缓存 |
 | `ReadDirectory` | `ReadDirectoryResult ReadDirectory(std::string_view uri, std::optional<std::string> cursor = std::nullopt, const CacheableRequestOptions& options = {})` | 子项列表 | 同上开关门控；服务端还需 `SetSkillsDirectoryRead(true)` |
+| `ReadSkill` | `SkillReadResult ReadSkill(std::string_view uri, const CacheableRequestOptions& options = {})` | `SkillReadResult{skill, files[], diagnostics[]}` | 保留的 eager 入口：先计量原始字节 size/SHA-256，再严格 Base64 解码、校验 size/digest，最后用真实 YAML 解析 frontmatter；legacy 会话抛 `MethodNotFound` |
+| `ReadSkill`（惰性重载） | `SkillReadResult ReadSkill(std::string_view uri, const CacheableRequestOptions& options, SkillReadParts parts)` | 同上 | `FrontmatterOnly` 只读入口资源、不展开其他 manifest 文件；`BodyOnly` 只解码与校验正文；`All` 等价旧入口；两路均执行预算检查 |
 | `CallToolAsTask` | `GetTaskResult CallToolAsTask(std::string_view name, std::optional<JsonValue> arguments = std::nullopt, const RequestOptions& options = {})` | 任务句柄（`task_id`/`status`） | 对端未任务化时**降级**返回 `task_id="<none>"`、`status="completed"`、`result` 为原始工具结果 JSON |
 | `GetTask` | `GetTaskResult GetTask(std::string_view task_id)` | `GetTaskResult` | 固定 600s 超时；**不检查** `enable_tasks_extension` |
 | `UpdateTask` | `UpdateTaskResult UpdateTask(std::string_view task_id, std::optional<JsonValue> result = std::nullopt, std::optional<JsonValue> input_responses = std::nullopt)` | `EmptyResult` 别名 | 需 `enable_tasks_extension`；`result` 与 `input_responses` 由服务端互斥校验 |
@@ -109,6 +111,17 @@
 | `SubscribeAsync` | `void SubscribeAsync(const SubscriptionsListenRequestParams& params = {})` | — | 生成或复用 `_meta` 中的订阅 id，发送 `subscriptions/listen` 并等待 acknowledged 帧（上限 5000ms）；未收到抛 `InternalError`；非 modern 版本由服务端回 `MethodNotFound` |
 | `SetLoggingLevel` | `void SetLoggingLevel(LoggingLevel level)` | — | 发 `logging/setLevel`（60s 超时）；**modern 版本抛 `ProtocolViolation`**，提示改用每请求 `logLevel` |
 | `SendRootsListChanged` | `void SendRootsListChanged()` | — | modern 版本抛 `ProtocolViolation`（已移除）；版本低于 `2025-06-18` 同样抛 `ProtocolViolation` |
+
+## Server Card 客户端发现
+
+| 符号 | 签名/类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `FetchServerCard` | `ServerCardFetchResult FetchServerCard(std::string_view endpoint_url, const ServerCardClientOptions& options = {})` | — | 从 endpoint 推导发现地址并 GET 卡片；只接受 JSON media type 和有界 body，默认仅同 origin 重定向 |
+| `ServerCardClientOptions` | `struct { optional<string> if_none_match; optional<ServerCard> cached_card; optional<size_t> max_response_bytes; milliseconds timeout{30000}; int max_redirects{5}; }` | 上限 1 MiB | 条件请求需同时给 `if_none_match` 与 `cached_card`；304 无缓存抛 `InvalidParams` |
+| `ServerCardFetchResult` | `struct { ServerCard card; string etag; bool from_cache{false}; }` | — | 命中 304 时返回调用方缓存并把 `from_cache` 置真 |
+| `ParseServerCard` | `ServerCard ParseServerCard(std::string_view json)` | — | 独立解析/校验卡片，不依赖 `McpClient` 连接 |
+
+发现地址是 endpoint 的 scheme/host/port/path 末尾拼 `/server-card`（去 query/fragment，拒 userinfo、非 http(s) 与畸形 URL），例如 `http://localhost:3001/mcp?x=1` → `http://localhost:3001/mcp/server-card`。`application/json`（大小写不敏感、允许 charset 等参数）是兼容基线，`application/*+json` 也接受；HTML/纯文本、空 body、超限 body 与无效 JSON 均抛 `McpError`。声明在 `include/mcp/ext/ServerCardClient.hpp`，实现在 `src/ext/ServerCardClient.cpp`；不改变 `McpClient` 的连接与版本协商行为。
 
 ## 已废弃但仍可调用
 
@@ -200,6 +213,16 @@
 | `VerifyFrontmatter` | `bool VerifyFrontmatter(const Skill& advertised, const JsonValue& fetched, std::string& error_out)` | `false` + 原因 | 比对广告与实取 frontmatter |
 | `IsApprovalStillValid` | `bool IsApprovalStillValid(const Skill& approved, const Skill& current)` | `bool` | 已批准的技能是否仍然有效 |
 | `ApprovalKey` | `std::string ApprovalKey(const std::string& host_label, const Skill&)` | 键串 | 审批记录的键 |
+| `SkillBlob` | `FromEncoded(std::string, std::string&)` / `FromText(std::string, std::string&)` / `Decode` / `Frontmatter` / `Body` | 惰性对象 | `FromEncoded` 在解码前算 raw size 与 SHA-256；`Frontmatter` 与 `Body` 按需展开，各自复用预算；`Metrics()` 给出 raw/decoded 字节数 |
+| `kMaxSkillEncodedChars` / `kMaxSkillDecodedBytes` | `constexpr size_t` | `1398104` / `1048576` | 编码 blob 字符上限与解码后字节上限（B-65/B-64） |
+| `kMaxSkillFrontmatterBytes` / `kMaxYamlDepth` / `kMaxYamlNodes` | `constexpr size_t` | `1048576` / `64` / `10000` | frontmatter 字节、深度与节点预算（B-52/B-53/B-54） |
+| `kMaxYamlScalarBytes` / `kMaxYamlKeyBytes` | `constexpr size_t` | `65536` / `1024` | 单标量与键名预算（B-56/B-57） |
+| `SkillRoute` / `ResolveSkillRoute` | `enum class` / `SkillRoute ResolveSkillRoute(std::string_view, const ServerCapabilities&)` | `Modern` / `Legacy` | 按协商版本与已声明扩展 capability 双路由：legacy 版本或显式未声明 skills 扩展走 `Legacy`；能力表缺省视为未知、保持旧行为 |
+| `ParseFrontmatter` | `bool ParseFrontmatter(std::string_view yaml, JsonValue& out, std::string& error_out)` | `false` + 原因 | rapidyaml `parse_in_arena` 真实解析；拒绝重复键、别名/锚点、自定义 tag、`<<` merge、隐式标量、多文档与 `%` 指令；失败不回退字符串搜索 |
+| `SplitSkillDocument` / `VerifyFrontmatterBytes` | `bool`、`bool` | `false` + 原因 | 解析 `---` 分隔符并把广告 frontmatter 与真实字节解析结果比对；无分隔符时沿用旧自比较行为 |
+| `ResolveSkillLocalPath` | `bool ResolveSkillLocalPath(std::string_view root, std::string_view relative, std::string& resolved, std::string& error_out)` | 规范化绝对路径 | 先做根目录规范化与 `..` 拒绝，再以 `weakly_canonical` 做符号链接逃逸检查；拒绝绝对路径与越界相对路径 |
+
+`ReadSkill` 的诊断 `reason` 在既有 `size_mismatch`/`digest_mismatch`/`frontmatter_mismatch` 之外新增 `invalid_encoding`（严格 Base64/预算失败）与 `frontmatter_invalid`（真实 YAML 解析或分隔符失败）；失败不返回部分正文。
 
 ## 内部符号（非用户 API，勿当接口引用）
 

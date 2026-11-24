@@ -1,5 +1,6 @@
 #include <mcp/ext/DPoP.hpp>
 #include <mcp/detail/Base64Url.hpp>
+#include <mcp/detail/P256.hpp>
 #include <mcp/detail/sha256.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/JsonValue.hpp>
@@ -572,6 +573,10 @@ std::string SignEs256JwtWithPem(std::string_view,
 } // namespace detail
 
 #endif
+
+bool ValidateKey(const EcP256Jwk& key) {
+    return mcp::detail::p256::IsValidKey(key.x, key.y, key.d);
+}
 
 } // namespace mcp::ext::dpop
 

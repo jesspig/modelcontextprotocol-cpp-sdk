@@ -2,11 +2,13 @@
 
 #include <mcp/Transport.hpp>
 #include <mcp/transport/HttpTransportMode.hpp>
+#include <mcp/transport/detail/HttpHooks.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -19,27 +21,9 @@
 
 namespace mcp {
 
-enum class HttpRequestPurpose {
-    MessagePost,
-    ListenStream,
-    ResumeStream,
-    SessionDelete,
-    ToolAnnotationsRefresh,
-};
-
-struct HttpRequestHeaderContext {
-    std::string_view http_method;
-    std::string_view url;
-    HttpRequestPurpose purpose = HttpRequestPurpose::MessagePost;
-    std::optional<RequestId> request_id;
-    int attempt_index = 0;
-};
-
-struct HttpResponseChallengeContext {
-    int status_code = 0;
-    std::string_view www_authenticate;
-    std::string_view dpop_nonce;
-};
+using detail::HttpRequestPurpose;
+using detail::HttpRequestHeaderContext;
+using detail::HttpResponseChallengeContext;
 
 struct HttpClientTransportOptions {
     std::string endpoint;
@@ -70,6 +54,8 @@ public:
 
 private:
     HttpClientTransportOptions options_;
+    std::shared_ptr<ITransport> current_;
+    std::mutex connect_mutex_;
 };
 
 } // namespace mcp
