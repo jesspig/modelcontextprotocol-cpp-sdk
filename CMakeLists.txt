@@ -87,6 +87,18 @@ include(Lto)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(ABSL_BUILD_TEST_HELPERS OFF CACHE BOOL "" FORCE)
+set(ABSL_MSVC_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(RE2_USE_ICU OFF CACHE BOOL "" FORCE)
+set(USEPCRE OFF CACHE BOOL "" FORCE)
+set(RE2_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/abseil-cpp EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/re2 EXCLUDE_FROM_ALL)
+
 set(MCP_LIBRARY_TARGETS
     mcp-core
     mcp-transport
@@ -124,10 +136,12 @@ target_sources(mcp-core PRIVATE
     src/core/Content.cpp
     src/core/Capabilities.cpp
     src/core/CancelToken.cpp
-    src/detail/AtomicJsonFile.cpp)
+    src/detail/AtomicJsonFile.cpp
+    src/detail/SchemaValidation.cpp)
 target_include_directories(mcp-core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 mcp_setup_library(mcp-core)
 target_link_libraries(mcp-core PUBLIC Threads::Threads)
+target_link_libraries(mcp-core PRIVATE $<BUILD_INTERFACE:re2::re2>)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
@@ -254,7 +268,7 @@ if(MCP_BUILD_TESTS)
     add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
     add_subdirectory(tests)
     foreach(_t
-        mcp-core-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
+        mcp-core-tests mcp-schema-tests mcp-wire-codec-tests mcp-server-tests mcp-client-tests
         mcp-oauth-tests mcp-transport-tests mcp-net-tests mcp-http-tests
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
         mcp-event-store-tests mcp-streamable-http-tests mcp-websocket-tests
