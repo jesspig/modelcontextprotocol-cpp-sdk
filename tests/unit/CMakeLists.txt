@@ -21,7 +21,7 @@ add_executable(mcp-server-tests McpServerTests.cpp)
 target_link_libraries(mcp-server-tests PRIVATE mcp-client mcp-server mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-server-tests)
 
-add_executable(mcp-client-tests McpClientTests.cpp)
+add_executable(mcp-client-tests McpClientTests.cpp SkillSafetyTests.cpp)
 target_link_libraries(mcp-client-tests PRIVATE mcp-client mcp-server mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-client-tests)
 

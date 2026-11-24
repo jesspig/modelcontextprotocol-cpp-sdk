@@ -86,6 +86,10 @@ public:
     SkillReadResult ReadSkill(
         std::string_view uri,
         const CacheableRequestOptions& options = {});
+    SkillReadResult ReadSkill(
+        std::string_view uri,
+        const CacheableRequestOptions& options,
+        SkillReadParts parts);
     SkillDirectoryReadResult ReadSkillDirectory(
         std::string_view uri,
         const CacheableRequestOptions& options = {});

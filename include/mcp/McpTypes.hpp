@@ -533,6 +533,8 @@ struct ReadDirectoryResult : Result {
     std::optional<std::string> cache_scope;
 };
 
+enum class SkillReadParts { All, FrontmatterOnly, BodyOnly };
+
 struct SkillDiagnostic {
     std::string uri;
     std::string reason;

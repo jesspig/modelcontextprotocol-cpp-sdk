@@ -87,6 +87,20 @@ include(Lto)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rapidyaml/CMakeLists.txt")
+    message(FATAL_ERROR
+        "[mcp] rapidyaml submodule missing — run: git submodule update --init third_party/rapidyaml")
+endif()
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(RYML_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(RYML_BUILD_API OFF CACHE BOOL "" FORCE)
+set(RYML_SYSTEM_C4CORE OFF CACHE BOOL "" FORCE)
+set(RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS ON CACHE BOOL "" FORCE)
+set(RYML_WITH_LEGACY_OPERATORS OFF CACHE BOOL "" FORCE)
+set(RYML_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/rapidyaml EXCLUDE_FROM_ALL)
+message(STATUS "[mcp] rapidyaml: v0.16.0 @ f8ac8dd50f4f7916579d55a05ebf9c6488e52670 (MIT, embedded c4core 0.6.0)")
+
 set(MCP_LIBRARY_TARGETS
     mcp-core
     mcp-transport
@@ -185,6 +199,7 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol mcp-ext)
+target_link_libraries(mcp-client PRIVATE $<BUILD_INTERFACE:ryml>)
 if(WIN32)
     target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
 endif()

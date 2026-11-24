@@ -1572,6 +1572,11 @@ SkillsListResult McpClient::ListSkills(
     if (!options_.enable_skills_extension) {
         throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
     }
+    if (ResolveSkillRoute(negotiation_.negotiated_version, negotiation_.capabilities) ==
+        SkillRoute::Legacy) {
+        throw McpError(McpErrorCode::MethodNotFound,
+            "skills extension requires a modern protocol version");
+    }
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     auto key = CacheKey(methods::kListSkills,
         cursor ? std::string_view(*cursor) : std::string_view());
@@ -1605,6 +1610,11 @@ SkillsGetResult McpClient::GetSkill(
 {
     if (!options_.enable_skills_extension) {
         throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
+    }
+    if (ResolveSkillRoute(negotiation_.negotiated_version, negotiation_.capabilities) ==
+        SkillRoute::Legacy) {
+        throw McpError(McpErrorCode::MethodNotFound,
+            "skills extension requires a modern protocol version");
     }
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
@@ -1646,6 +1656,11 @@ ReadDirectoryResult McpClient::ReadDirectory(
 {
     if (!options_.enable_skills_extension) {
         throw McpError(McpErrorCode::MethodNotFound, "skills extension is disabled");
+    }
+    if (ResolveSkillRoute(negotiation_.negotiated_version, negotiation_.capabilities) ==
+        SkillRoute::Legacy) {
+        throw McpError(McpErrorCode::MethodNotFound,
+            "skills extension requires a modern protocol version");
     }
     auto meta = BuildClientMeta(options_, negotiation_.negotiated_version);
     if (options.meta) meta.extensions = options.meta;
@@ -1690,6 +1705,12 @@ ReadDirectoryResult McpClient::ReadDirectory(
 SkillReadResult McpClient::ReadSkill(
     std::string_view uri, const CacheableRequestOptions& options)
 {
+    return ReadSkill(uri, options, SkillReadParts::All);
+}
+
+SkillReadResult McpClient::ReadSkill(
+    std::string_view uri, const CacheableRequestOptions& options, SkillReadParts parts)
+{
     SkillReadResult result;
     auto get = GetSkill(uri, options);
     result.skill = std::move(get.skill);
@@ -1703,19 +1724,52 @@ SkillReadResult McpClient::ReadSkill(
         return result;
     }
 
-    if (auto* manifest = std::get_if<std::vector<SkillResource>>(&result.skill.resources)) {
+    const bool need_body = parts != SkillReadParts::FrontmatterOnly;
+    const bool need_frontmatter = parts != SkillReadParts::BodyOnly;
+
+    auto load_bytes = [&](const SkillResource& file, std::string& bytes,
+                          std::string& error_out) -> bool {
+        auto read = ReadResource(file.uri, options);
+        std::string raw;
+        bool is_blob = false;
+        for (const auto& content : read.contents) {
+            if (auto* text = std::get_if<TextResourceContents>(&content)) {
+                raw = text->text;
+                break;
+            }
+            if (auto* blob = std::get_if<BlobResourceContents>(&content)) {
+                raw = blob->blob;
+                is_blob = true;
+                break;
+            }
+        }
+        std::string prep_error;
+        SkillBlob blob = is_blob
+            ? SkillBlob::FromEncoded(std::move(raw), prep_error)
+            : SkillBlob::FromText(std::move(raw), prep_error);
+        if (!prep_error.empty()) {
+            error_out = prep_error;
+            return false;
+        }
+        if (!blob.Decode(error_out)) return false;
+        bytes = blob.Decoded();
+        return true;
+    };
+
+    auto* manifest = std::get_if<std::vector<SkillResource>>(&result.skill.resources);
+    std::optional<std::string> entry_bytes;
+    bool entry_failed = false;
+    if (manifest && need_body) {
         for (const auto& file : *manifest) {
-            auto read = ReadResource(file.uri, options);
             std::string bytes;
-            for (const auto& content : read.contents) {
-                if (auto* text = std::get_if<TextResourceContents>(&content)) {
-                    bytes = text->text;
-                    break;
-                }
-                if (auto* blob = std::get_if<BlobResourceContents>(&content)) {
-                    bytes = blob->blob;
-                    break;
-                }
+            std::string load_error;
+            if (!load_bytes(file, bytes, load_error)) {
+                SkillDiagnostic diagnostic;
+                diagnostic.uri = file.uri;
+                diagnostic.reason = "invalid_encoding";
+                result.diagnostics.push_back(std::move(diagnostic));
+                if (file.uri == result.skill.uri) entry_failed = true;
+                continue;
             }
             std::string file_error;
             if (!VerifyFileBytes(file, bytes, file_error)) {
@@ -1724,8 +1778,10 @@ SkillReadResult McpClient::ReadSkill(
                 diagnostic.reason = file_error.find("size") != std::string::npos
                     ? "size_mismatch" : "digest_mismatch";
                 result.diagnostics.push_back(std::move(diagnostic));
+                if (file.uri == result.skill.uri) entry_failed = true;
                 continue;
             }
+            if (file.uri == result.skill.uri) entry_bytes = bytes;
             SkillFileContent content;
             content.uri = file.uri;
             content.bytes = std::move(bytes);
@@ -1733,12 +1789,67 @@ SkillReadResult McpClient::ReadSkill(
         }
     }
 
-    std::string frontmatter_error;
-    if (!VerifyFrontmatter(result.skill, result.skill.frontmatter, frontmatter_error)) {
-        SkillDiagnostic diagnostic;
-        diagnostic.uri = result.skill.uri;
-        diagnostic.reason = "frontmatter_mismatch";
-        result.diagnostics.push_back(std::move(diagnostic));
+    if (need_frontmatter && !entry_failed) {
+        const SkillResource* entry = nullptr;
+        if (manifest) {
+            for (const auto& file : *manifest) {
+                if (file.uri == result.skill.uri) {
+                    entry = &file;
+                    break;
+                }
+            }
+            if (!entry) {
+                constexpr std::string_view kSuffix = "/SKILL.md";
+                for (const auto& file : *manifest) {
+                    if (file.uri.size() >= kSuffix.size() &&
+                        file.uri.compare(file.uri.size() - kSuffix.size(),
+                            kSuffix.size(), kSuffix) == 0) {
+                        entry = &file;
+                        break;
+                    }
+                }
+            }
+        }
+        std::string bytes;
+        bool ready = false;
+        if (entry) {
+            if (entry_bytes.has_value()) {
+                bytes = *entry_bytes;
+                ready = true;
+            } else {
+                std::string load_error;
+                if (load_bytes(*entry, bytes, load_error)) {
+                    std::string file_error;
+                    ready = VerifyFileBytes(*entry, bytes, file_error);
+                    if (!ready) {
+                        SkillDiagnostic diagnostic;
+                        diagnostic.uri = entry->uri;
+                        diagnostic.reason = file_error.find("size") != std::string::npos
+                            ? "size_mismatch" : "digest_mismatch";
+                        result.diagnostics.push_back(std::move(diagnostic));
+                    }
+                } else {
+                    SkillDiagnostic diagnostic;
+                    diagnostic.uri = entry->uri;
+                    diagnostic.reason = "invalid_encoding";
+                    result.diagnostics.push_back(std::move(diagnostic));
+                }
+            }
+        }
+        std::string frontmatter_error;
+        const bool verified = ready
+            ? VerifyFrontmatterBytes(result.skill, bytes, frontmatter_error)
+            : VerifyFrontmatter(result.skill, result.skill.frontmatter, frontmatter_error);
+        if (!verified) {
+            const bool invalid = frontmatter_error.find("yaml") != std::string::npos ||
+                frontmatter_error.find("encoded") != std::string::npos ||
+                frontmatter_error.find("decoded") != std::string::npos ||
+                frontmatter_error.find("unterminated") != std::string::npos;
+            SkillDiagnostic diagnostic;
+            diagnostic.uri = result.skill.uri;
+            diagnostic.reason = invalid ? "frontmatter_invalid" : "frontmatter_mismatch";
+            result.diagnostics.push_back(std::move(diagnostic));
+        }
     }
     return result;
 }
