@@ -813,3 +813,33 @@ TEST(WireCodecTest, VerifyCapabilityObjectShape) {
         server->Close();
     }
 }
+
+TEST(WireCodecTest, StrictEntryKeepsResponseAndRequestStampGuards) {
+    auto codec = MakeWireCodec(std::string(kLatestProtocolVersion));
+
+    JsonRpcResponse response;
+    response.id = RequestId{int64_t{7}};
+    response.result = JsonValue(JsonValue::object_tag);
+    response.result["resultType"] = JsonValue("complete");
+    auto parsed_response = DeserializeMessage(SerializeMessage(JsonRpcMessage(response)));
+    auto* strict_response = AsResponse(parsed_response);
+    ASSERT_NE(strict_response, nullptr);
+    EXPECT_EQ(codec->ValidateResponse("tools/list", strict_response->result),
+              WireValidation::Ok);
+
+    JsonValue body(JsonValue::object_tag);
+    body["jsonrpc"] = JsonValue(std::string(kJsonRpcVersion));
+    body["id"] = JsonValue(int64_t{8});
+    body["method"] = JsonValue(std::string(methods::kListTools));
+    RequestMeta meta;
+    meta.protocol_version = std::string(kLatestProtocolVersion);
+    meta.client_info = Implementation{"guard-client", "1.0"};
+    codec->StampOutgoingRequest(body, meta);
+    auto parsed_request = DeserializeMessage(body.Dump());
+    auto* strict_request = AsRequest(parsed_request);
+    ASSERT_NE(strict_request, nullptr);
+    ASSERT_TRUE(strict_request->meta);
+    auto* declared = strict_request->meta->Find("io.modelcontextprotocol/protocolVersion");
+    ASSERT_NE(declared, nullptr);
+    EXPECT_EQ(declared->GetString(), std::string(kLatestProtocolVersion));
+}
