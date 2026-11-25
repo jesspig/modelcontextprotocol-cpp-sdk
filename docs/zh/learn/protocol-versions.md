@@ -77,7 +77,7 @@
 | 仅旧时代（9） | `notifications/initialized`、`notifications/elicitation/complete`、`notifications/roots/list_changed`、六个 `notifications/tasks/status|working|completed|failed|cancelled|input_required` |
 | 仅现代时代（2） | `notifications/subscriptions/acknowledged`、`notifications/tasks`（载荷为完整 `DetailedTask`，需先订阅，可用 `taskIds` 过滤） |
 
-覆盖 19 个通知名。**0.3.13 起现代任务通知只发/收单个 `notifications/tasks`**，六个旧任务通知仅旧时代可用；触发器事件通知仍在双时代公共集合内。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。细节见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
+覆盖 19 个通知名。**0.3.13 起现代任务通知只发/收单个 `notifications/tasks`**，六个旧任务通知仅旧时代可用；触发器事件通知仍在双时代公共集合内。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。细节见 [0.3.13 发布说明](/zh/migration/0.3.13)。
 
 ## `_meta` 的位置与强制性
 
@@ -121,7 +121,7 @@ Pin 模式跳过协商，也就跳过了服务端能力与信息的获取——�
 
 ## 2026-07-28 修订的破坏性变更
 
-按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](/zh/migration/0.3.9)；0.3.12 已发布内容见 [0.3.12 发布说明](/zh/migration/0.3.12)；最新候选的行为收紧与逐项迁移见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](/zh/migration/0.3.9)；0.3.12 已发布内容见 [0.3.12 发布说明](/zh/migration/0.3.12)；最新版的行为收紧与逐项迁移见 [0.3.13 发布说明](/zh/migration/0.3.13)。
 
 - **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
 - **`_meta` 省略**——空的每请求 `_meta` 改为线上省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。

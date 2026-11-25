@@ -77,7 +77,7 @@ That covers 28 method names. Three easy misreadings: the three task methods appe
 | Legacy only (9) | `notifications/initialized`, `notifications/elicitation/complete`, `notifications/roots/list_changed`, and the six `notifications/tasks/status|working|completed|failed|cancelled|input_required` |
 | Modern only (2) | `notifications/subscriptions/acknowledged`, `notifications/tasks` (complete `DetailedTask` payload; subscription required, `taskIds` filtering available) |
 
-That covers 19 notification names. **From 0.3.13, modern task notifications use only the single `notifications/tasks`**; the six old task notifications are legacy-only, and the trigger-event notification remains in the shared set. The modern era adds a shape rule: a notification must not carry `id`, `result` or `error`, otherwise it is invalid. The roots-changed notification additionally requires a negotiated version of at least `2025-06-18` on the client side. See the [0.3.13 migration notes](/en/migration/0.3.13).
+That covers 19 notification names. **From 0.3.13, modern task notifications use only the single `notifications/tasks`**; the six old task notifications are legacy-only, and the trigger-event notification remains in the shared set. The modern era adds a shape rule: a notification must not carry `id`, `result` or `error`, otherwise it is invalid. The roots-changed notification additionally requires a negotiated version of at least `2025-06-18` on the client side. See the [0.3.13 release notes](/en/migration/0.3.13).
 
 ## Where `_meta` Lives and When It Is Required
 
@@ -121,7 +121,7 @@ Pin mode skips negotiation, and with it the server's capabilities and info — t
 
 ## Breaking Changes in the 2026-07-28 Revision
 
-Each change below is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](/en/migration/0.3.9) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.12 release notes](/en/migration/0.3.12) cover the last released patch; the latest candidate's tightening and itemized migration are in the [0.3.13 migration notes](/en/migration/0.3.13).
+Each change below is summarized in one sentence followed by its migration note. The [0.3.9 migration guide](/en/migration/0.3.9) has the full old/new forms for the 0.3.8 → 0.3.9 public-header breaks; the [0.3.12 release notes](/en/migration/0.3.12) cover the previous patch; the latest release's tightening and itemized migration are in the [0.3.13 release notes](/en/migration/0.3.13).
 
 - **URL elicitation modern semantics** — `url` elicitation follows modern-era semantics only. Migration: in the modern era `ElicitUrl` no longer waits on `elicitationId` + `notifications/elicitation/complete`; instead the server converts the request into an MRTR input round-trip (`inputRequests["elicitation"]`, `requestState`-signed when `request_state_key` is set) fulfilled via `tasks/update` `inputResponses`, and the client handles it with `SetUrlElicitationHandler` (decline by default); the legacy `elicitationId` wait path is unchanged.
 - **`_meta` omission** — empty per-request `_meta` is omitted from the wire instead of being sent as an empty object. Migration: peers must treat a missing `params._meta` as "no metadata" rather than assuming an empty object arrives, and senders need not backfill one; legacy `SendRequest` also drops `params` entirely when it would be empty/null.

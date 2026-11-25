@@ -24,7 +24,7 @@
 
 - 本轮逐条核对公共头文件的 `[[deprecated]]` 属性：`ResourceNotFound` 标注 `since 0.3.11, removed in 0.4.0`，替代写法为 `InvalidParams`，弃用窗口跨 0.3.11 → 0.3.13 一个以上 minor，尚未到期，实现保留。
 - `Ping`、`SetSamplingHandler`、`SetRootsHandler`、`SetLegacyUrlElicitationHandler`、`TasksImplicitlyEnabled`、`SkillsImplicitlyEnabled` 的起始与移除由协议修订或更早版本决定，登记表统一写「随协议」，属性中的替代写法与上表逐字一致；实现均保留。
-- **0.3.13 候选没有新增弃用项，也没有到期删除项**；没有为了「清理」而静默删除旧 API。`tests/compat/expected_breaks.txt` 与 0.3.12 逐字一致，条目只减不增。
+- **0.3.13 没有新增弃用项，也没有到期删除项**；没有为了「清理」而静默删除旧 API。`tests/compat/expected_breaks.txt` 与 0.3.12 逐字一致，条目只减不增。
 - 逐项核对记录见 `.handoff/evidence/T-24/deprecation-review.txt`，迁移对照见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
 
 ## 到期检查

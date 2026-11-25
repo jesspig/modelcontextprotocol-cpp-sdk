@@ -33,7 +33,7 @@ ctest --preset debug --output-on-failure
 - [安装与集成](docs/zh/start/installation.md)——依赖、构建选项、`find_package` 与安装布局。
 - [架构](docs/zh/learn/architecture.md) · [协议版本](docs/zh/learn/protocol-versions.md) · [扩展](docs/zh/learn/extensions.md)
 - [注册一个工具](docs/zh/howto/register-a-tool.md) · [连接服务端](docs/zh/howto/connect-to-a-server.md) · [处理错误](docs/zh/howto/handle-errors.md)
-- [API 参考](docs/zh/reference/index.md) · [兼容性与弃用登记表](docs/zh/learn/compatibility.md) · [发布说明](docs/zh/migration/0.3.12.md)
+- [API 参考](docs/zh/reference/index.md) · [兼容性与弃用登记表](docs/zh/learn/compatibility.md) · [发布说明](docs/zh/migration/0.3.13.md)
 - 英文手册：[docs/en/](docs/en/)。可运行示例：[examples/](examples/)。
 
 ## 许可证

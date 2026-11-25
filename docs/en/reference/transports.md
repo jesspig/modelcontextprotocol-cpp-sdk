@@ -1,6 +1,6 @@
 # Transports Reference
 
-This page is the **authoritative field table** for the transport layer and the HTTP server substrate; every field, type, and default is checked against the headers. For the conceptual narrative and trade-offs see [Transport concepts](/en/learn/transports); for facade signatures see [Server reference](/en/reference/server) and [Client reference](/en/reference/client); for persistence and processes see [Process and storage reference](/en/reference/process-and-storage). No procedural steps on this page. The 0.3.13 HTTP binding, framing, AutoDetect, and session tightening are in the [0.3.13 migration notes](/en/migration/0.3.13).
+This page is the **authoritative field table** for the transport layer and the HTTP server substrate; every field, type, and default is checked against the headers. For the conceptual narrative and trade-offs see [Transport concepts](/en/learn/transports); for facade signatures see [Server reference](/en/reference/server) and [Client reference](/en/reference/client); for persistence and processes see [Process and storage reference](/en/reference/process-and-storage). No procedural steps on this page. The 0.3.13 HTTP binding, framing, AutoDetect, and session tightening are in the [0.3.13 release notes](/en/migration/0.3.13).
 
 ## Transport contract
 

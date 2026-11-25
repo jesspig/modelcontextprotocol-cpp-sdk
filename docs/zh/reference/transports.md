@@ -1,6 +1,6 @@
 # 传输层参考
 
-本页是传输层与 HTTP 服务端底座公共符号的**唯一权威字段表**，字段、类型、默认值逐条对照头文件；概念叙述与选型理由见 [传输层概念](/zh/learn/transports)，服务端/客户端门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，持久化与进程见 [进程与存储参考](/zh/reference/process-and-storage)。本页不含操作步骤。0.3.13 的 HTTP 绑定、边界、AutoDetect 与会话收紧见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
+本页是传输层与 HTTP 服务端底座公共符号的**唯一权威字段表**，字段、类型、默认值逐条对照头文件；概念叙述与选型理由见 [传输层概念](/zh/learn/transports)，服务端/客户端门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，持久化与进程见 [进程与存储参考](/zh/reference/process-and-storage)。本页不含操作步骤。0.3.13 的 HTTP 绑定、边界、AutoDetect 与会话收紧见 [0.3.13 发布说明](/zh/migration/0.3.13)。
 
 ## 传输契约
 
