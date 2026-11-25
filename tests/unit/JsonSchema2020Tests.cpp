@@ -158,6 +158,23 @@ TEST(JsonSchema2020Test, InvalidPatternFailsClosed) {
     EXPECT_NE(error.find("SL.RegexFailOpen"), std::string::npos) << error;
 }
 
+TEST(JsonSchema2020Test, CachedRegexRemainsValidAcrossEvaluations) {
+    auto schema = JsonValue::Parse(R"({
+        "type":"object",
+        "patternProperties":{"^x-":{"type":"string","pattern":"^ok$"}}
+    })");
+    auto compiled = mcp::detail::SchemaCompiler::Compile(schema);
+    std::string error;
+    JsonValue instance(JsonValue::object_tag);
+    instance["x-name"] = JsonValue("ok");
+    EXPECT_TRUE(mcp::detail::EvaluationEngine::Validate(compiled, instance, error)) << error;
+    instance["x-name"] = JsonValue("bad");
+    EXPECT_FALSE(mcp::detail::EvaluationEngine::Validate(compiled, instance, error));
+    EXPECT_NE(error.find("SL.Pattern"), std::string::npos) << error;
+    instance["x-name"] = JsonValue("ok");
+    EXPECT_TRUE(mcp::detail::EvaluationEngine::Validate(compiled, instance, error)) << error;
+}
+
 TEST(JsonSchema2020Test, RemoteRefRejectedByDefault) {
     std::string error;
     auto schema = JsonValue::Parse(R"({"$ref":"https://example.com/s.json"})");

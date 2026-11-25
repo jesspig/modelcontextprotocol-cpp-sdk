@@ -3,7 +3,7 @@ type: Transport
 title: Streamable HTTP 传输
 description: 2026 时代 HTTP 传输：双端实现、stateless 默认、Bearer 鉴权挑战与 audience 校验、外部 SessionStore 会话接管（含容量上限与闲置过期）、任务头校验、版本头主动校验、x-mcp-header 参数头、逐请求头注入口与 use_dpop_nonce 单次重试、POST SSE 请求响应（边读边分发）、GET SSE 接收流、404 类型化与 503/504 语义。
 tags: [transport, http, streamable, stateless, winhttp, sse, bearer, audience, dpop]
-timestamp: 2026-11-25T02:17:20+08:00
+timestamp: 2026-11-25T19:14:24+08:00
 resource: src/http/StreamableHttpServerTransport.cpp
 ---
 
@@ -25,7 +25,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
     - 成功：**200 + `text/event-stream`**，body 为 SSE 首帧 `event: message\ndata: <serialized response>\n\n`，头含 `cache-control: no-cache`、`x-accel-buffering: no`；`sse_close_after_write = true`（见 HttpServer 页）——**响应不再经 GET 流广播**（2025-era 客户端依赖 GET 收响应属已知协议行为变化）
     - 协议错误（JsonRpcErrorResponse）按规范映射 HTTP 状态码：`-32020/-32021/-32022/-32600/-32602/-32700` → **400**，`-32601` → **404**，body 为 JSON-RPC error JSON（`application/json`）；其余错误码仍 200 + SSE 流
     - 30s（`kStatelessTimeout`）无响应 → **504** + JSON `-32000`
-  - 通知：fire-and-forget，**202**（202 仅用于确认客户端发来的通知/响应，不等待也不承载 JSON-RPC 响应）；推荐空 body，客户端对 202 一律不进 JSON/SSE 解析
+  - 通知/客户端响应：fire-and-forget，**202**（202 仅用于确认客户端发来的通知或 JSON-RPC 响应，不等待也不承载新的 JSON-RPC 响应）；推荐空 body，客户端对 202 一律不进 JSON/SSE 解析
 - **GET（SSE 流）**：承载 `SendMessageAsync` 中未匹配 pending 响应的服务端→客户端消息——通知与**请求**（如 `McpServer::Elicit` 的 `elicitation/create`）都经 `BroadcastSse` 走本流，响应则走 POST 流；stateful 下 GET 按 `mcp-session-id` 解析会话，`sse_client_tag` 编入 `__session`/`__stream:"get"`，只接收同会话广播；非 stateless 时按 `Last-Event-ID` 回放**该会话**的 EventStore 事件（stateless 不回放）；首帧 `event: endpoint`；连接存活期间按 `sse_keep_alive_ms`（默认 15s）周期性广播注释帧 `: ping\r\n\r\n`（对齐 python `_SSE_PING_INTERVAL=15s` / ts `DEFAULT_SSE_KEEP_ALIVE_MS=15000`）
 - **DELETE**：stateless → 405 `-32601`；启用 `bearer_auth` 时先校验令牌（无/错凭证 401），再核对 `ServerRequestContext` 的 principal 与该会话登记的 owner，之后才查 SessionStore、判断存在性并执行删除；跨 owner 与未知/过期会话统一 404 `-32009 "Session expired"` 不泄露存在性，未授权零副作用；owner 删除关闭该会话（移除本地注册与 SessionStore 记录、清该会话 EventStore、丢弃该会话 pending 并回 `SessionExpired "session closed"`），不关 channel、不影响其他会话，200 `{}`；重复/并发删除由 `deletes_in_flight_` 收敛为确定性结果。未配置 `bearer_auth` 时保持旧行为（无头 DELETE 200 空操作）。生命周期日志只写脱敏 `correlation=cid-<hex>`/`session=sid-<hex>`，不含令牌或正文
 - `SendMessageAsync`：**无条件**先查 `pending_responses_`（响应/错误响应按 id 匹配则 set promise 并返回，不广播）；未匹配的消息中 **`IsRequest`（`JsonRpcRequest`）与 `IsNotification`（`JsonRpcNotification`）在 `!stateless || enable_legacy_sse` 且 `SseClientCount() == 0` 时有界等待监听者**——以 50ms 步长（`kSseListenerWaitStep`）轮询至多 2s（`kSseListenerWaitBudget`），期间 `TransportState::Disconnected` 可中断退出，超时记 Warning（`server-initiated message '<method>' broadcast with no SSE listener`）后仍走广播路径（`stateless` 持开 POST 流模式跳过等待：无 GET 监听者会到来，等待纯属空耗并拖住消费线程）。通知等待修复的是首条通知丢失竞态：客户端异步打开 GET SSE 流与请求处理并发，流注册（`HttpServerImpl::AddSseClient`，写在 endpoint 帧之后）可能晚于请求处理器发出的首条通知（progress/日志均在工具入口零延迟发出），无等待时该条广播到零监听者被静默丢弃；经 `TryBufferRequestStreamNotification` 裁决的持开请求流通知（modern 路径：按会话前缀过滤，匹配则缓冲进所属 POST 流、不匹配则直接丢弃）在等待前已返回，不受影响；之后经 `BuildSseEvent(std::move(message))`（`SerializeMessage(std::move)`）生成 `event: message`，非 stateless 时 Append 到该消息 `session_id` 对应的 EventStore 分区并带 `id:` 前缀，最后 `BroadcastSse`：带会话 id 的通知只投递给 `__session` 匹配的监听流（GET 流全收，listen 流再叠加 filter 判定），无会话 id 的通知保持全局广播（空会话 EventStore 分区，兼容 server 级通知）
@@ -45,7 +45,7 @@ resource: src/http/StreamableHttpServerTransport.cpp
 - **Close 顺序**：`running_.exchange(false)` 选唯一 owner → `BeginShutdown()` 进入 `Closing` → **先关 `MessageChannel` 唤醒等待者** → 置 `delete_pending_` 唤醒发送线程 → 再停 listen 流（Win32 缩短 `listen_request_` 接收超时、POSIX `listen_client_->Close()` 中断在途 GET，`close listen/resume 请求` 统一所有权，再 join 监听线程）→ join 发送线程（发送线程退出循环后**仅当已持有会话 id** 时同步发送 `DELETE`，Win32 独立 WinHTTP 请求 / POSIX `HttpClient`；无会话 id（stateless）不发 DELETE）→ `CompleteShutdown()` 一次性通知。两平台共享同一顺序与 generation 守卫（`DeliverIncoming` 丢弃旧 generation 消息）；工厂 `Connect()` 先关闭并等待上一 generation 完成
 - **响应分流**（两分支一致）：
   - 4xx/5xx：401 必走 challenge 回调、`WWW-Authenticate` 含 `insufficient_scope` 的 403 才走回调（其余 403 直接按错误体处理）；body 可解析为 JSON-RPC error（如 404 + `-32601`）则**入 channel**（连接保持）；**body 不可解析且状态码 404 → 构造 `SessionExpired(-32009)` 错误响应交付 channel**（`MakeSessionExpiredError`，会话过期自愈入口，客户端层据此重协商重放）；仍无法交付才 `NotifyError`
-  - **202**：**只作为通知/响应确认**，空 body 直接完成，不进入 JSON/SSE 解析；带 `id` 的请求收到 202 时立即向 pending 投递 `ProtocolViolation (-32005)` 明确失败并关闭/排空连接（不自动重放、不悬挂），非空或不合规 body 不污染后续 keep-alive 响应；不再存在"伪响应"路径
+  - **202**：**只作为通知/客户端响应确认**，空 body 直接完成，不进入 JSON/SSE 解析；请求分类要求 body 同时具有 `method` 与 `id`，响应上的 `id` 不会注册为 pending；带 `method` 的请求收到 202 时立即向 pending 投递 `ProtocolViolation (-32005)` 明确失败并关闭/排空连接（不自动重放、不悬挂），非空或不合规 body 不污染后续 keep-alive 响应；不再存在"伪响应"路径
   - `Content-Type` 含 `text/event-stream`：**边读边分块分发**——分块回调内即时按 `\n\n` 切块（`DispatchSseBlock`；空 `data:` 块静默忽略）反序列化入 channel，server→client 请求在流打开期间即可达（读由 POST 线程承担，`sse_request_` 仅作 Close 中断句柄）；**响应体累积超过 8MB（`kMaxMessageSize`）→ 丢弃 + `NotifyError`**（Win32/POSIX 一致）
   - 其余：单 JSON 响应解析入 channel（超限 → 错误）
 - **Win32 增量读**：`WinHttpReadData` 的"填满缓冲"语义改为 `WinHttpQueryDataAvailable` 先查可用字节数再按量读（DoPost SSE 与 DoListenGet 同修），消除流式响应尾部等待

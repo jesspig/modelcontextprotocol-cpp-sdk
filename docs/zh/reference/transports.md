@@ -283,7 +283,7 @@ WebSocket 握手行为收紧（源码兼容，旧 API 签名不变）：旧行�
 
 ::: warning HTTP/SSE/202/bind 行为收紧（源码兼容，旧 API 签名不变）
 - 旧行为：`bind_host` 为空时绑定 `INADDR_ANY`（全网）；请求与响应的 `Content-Length` 用朴素乘加、重复头以最后值覆盖；SSE 各路径自行按 `\n\n` 分块，只有 CRLF/LF 被识别且跨块末尾 `\r` 处理不一致；HTTP 202 无论请求还是通知都只记日志，请求的 pending 可能悬挂。
-- 新行为：`bind_host` 为空只绑定 IPv4 loopback `127.0.0.1`，默认卡片端点仍是 `localhost`；`Content-Length` 先做乘法溢出检查再比 body 上限，空值/非数字/重复冲突/超 `size_t` 确定拒绝，`Transfer-Encoding` 与 `Content-Length` 共存拒绝，chunk size 溢出与累计上限统一；SSE 共用增量解析器，CRLF/LF/单独 CR/混合换行与跨块末尾 `\r` 等价，空行派发、事件上限不变；202 仅确认通知（空 body 直接完成），请求收到 202 立即投递 `ProtocolViolation (-32005)` 并关闭/排空连接，不自动重放。
+- 新行为：`bind_host` 为空只绑定 IPv4 loopback `127.0.0.1`，默认卡片端点仍是 `localhost`；`Content-Length` 先做乘法溢出检查再比 body 上限，空值/非数字/重复冲突/超 `size_t` 确定拒绝，`Transfer-Encoding` 与 `Content-Length` 共存拒绝，chunk size 溢出与累计上限统一；SSE 共用增量解析器，CRLF/LF/单独 CR/混合换行与跨块末尾 `\r` 等价，空行派发、事件上限不变；202 仅确认通知或客户端 JSON-RPC 响应（空 body 直接完成），带 `method` 的请求收到 202 立即投递 `ProtocolViolation (-32005)` 并关闭/排空连接，不自动重放。
 - 受影响怎么改：需要全网监听时显式设置 `HttpServerOptions::bind_host = "0.0.0.0"`（IPv6 用 `"::"`）；依赖请求收到 202 后由后续 GET/SSE 补响应的下游应改为让服务端返回正式 JSON-RPC 响应或错误；依赖重复/非法 framing 被宽容的下游应发送合规的单 `Content-Length` 且不同时出现 `Transfer-Encoding`；依赖裸 CR 或跨块尾 `\r` 旧行为的 SSE 服务端应发出标准 CRLF/LF 空行分帧。旧的 `SseClientTransport`/`HttpClientTransportOptions` 构造与 `HttpServerOptions` 字段签名均不变。
 :::
 

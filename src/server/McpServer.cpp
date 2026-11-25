@@ -1151,6 +1151,11 @@ struct FileInputResourceSnapshot {
         const std::string&, const std::map<std::string, std::string>&)> template_handler;
 };
 
+struct FileInputRoot {
+    FileInputPathParts configured;
+    FileInputPathParts canonical;
+};
+
 class FileInputResolver {
 public:
     FileInputResolver(const ServerOptions::FileInputConfig& config,
@@ -1161,12 +1166,17 @@ public:
         if (!config_.allowed_roots.empty() &&
             config_.allowed_roots.size() <= kMaxFileInputRoots) {
             for (const auto& root_text : config_.allowed_roots) {
-                FileInputPathParts root;
-                if (!FileInputCanonicalParts(
-                        std::filesystem::path(root_text), root) ||
-                    FileInputIsSensitive(root)) {
+                const std::filesystem::path root_path(root_text);
+                FileInputRoot root;
+                if (!FileInputCanonicalParts(root_path, root.canonical) ||
+                    FileInputIsSensitive(root.canonical)) {
                     continue;
                 }
+                std::error_code ec;
+                const auto configured = std::filesystem::absolute(root_path, ec);
+                if (ec) continue;
+                root.configured = FileInputPathPartsFrom(configured.lexically_normal());
+                if (root.configured.empty()) continue;
                 roots_.push_back(std::move(root));
             }
         }
@@ -1289,10 +1299,10 @@ private:
             error = "file input not allowed: " + ref.uri;
             return false;
         }
-        const FileInputPathParts* selected = nullptr;
+        const FileInputRoot* selected = nullptr;
         for (const auto& root : roots_) {
-            if (FileInputIsPrefix(root, relative_full) &&
-                FileInputIsPrefix(root, canonical)) {
+            if (FileInputIsPrefix(root.configured, relative_full) &&
+                FileInputIsPrefix(root.canonical, canonical)) {
                 selected = &root;
                 break;
             }
@@ -1302,14 +1312,15 @@ private:
             return false;
         }
         const FileInputPathParts relative(
-            relative_full.begin() + static_cast<std::ptrdiff_t>(selected->size()),
+            relative_full.begin() +
+                static_cast<std::ptrdiff_t>(selected->configured.size()),
             relative_full.end());
         if (relative.empty()) {
             error = "file input not allowed: " + ref.uri;
             return false;
         }
         std::string content;
-        if (!FileInputReadSecure(FileInputBuildPath(*selected), relative,
+        if (!FileInputReadSecure(FileInputBuildPath(selected->canonical), relative,
                 canonical, config_.max_file_bytes, ref.offset, ref.length,
                 content, error)) {
             return false;
@@ -1327,7 +1338,7 @@ private:
     const ServerOptions::FileInputConfig& config_;
     const std::vector<FileInputResourceSnapshot>& resources_;
     FileInputBudget& budget_;
-    std::vector<FileInputPathParts> roots_;
+    std::vector<FileInputRoot> roots_;
 };
 
 std::string ToolExecutionFailureMessage(const std::string& name) {

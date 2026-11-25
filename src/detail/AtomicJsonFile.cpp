@@ -50,10 +50,12 @@ bool AtomicStageMatches(AtomicWriteStage stage) {
     return true;
 }
 
+#ifdef _WIN32
 void AtomicJsonRemoveTemp(const std::filesystem::path& tmp_path) {
     std::error_code ec;
     std::filesystem::remove(tmp_path, ec);
 }
+#endif
 
 struct AtomicWriteOutcome {
     bool ok{true};
