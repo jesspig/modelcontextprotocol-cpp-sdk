@@ -265,6 +265,16 @@ TEST(AppsHostBridgeTest, DuplicateKeyRejected) {
     }
 }
 
+TEST(AppsHostBridgeTest, FloatingNumbersParsed) {
+    const auto bridge = AppsHostBridge::Create(MakeOptions());
+    const AppsMessageContext context = MakeContext(*bridge);
+    const auto incoming = bridge->ParseAppMessage(
+        MakePayload("ui/initialize", "{\"fraction\":1.25,\"exponent\":2.5e2}"), context);
+    ASSERT_TRUE(incoming.params.IsObject());
+    EXPECT_DOUBLE_EQ(incoming.params["fraction"].GetDouble(), 1.25);
+    EXPECT_DOUBLE_EQ(incoming.params["exponent"].GetDouble(), 250.0);
+}
+
 TEST(AppsHostBridgeTest, NonFiniteNumberRejected) {
     const auto bridge = AppsHostBridge::Create(MakeOptions());
     const AppsMessageContext context = MakeContext(*bridge);

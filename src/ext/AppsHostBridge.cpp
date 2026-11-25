@@ -3,10 +3,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <clocale>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <random>
@@ -332,6 +336,42 @@ private:
         return continuation + 1;
     }
 
+    double ParseFloatingNumber(std::string_view token) const {
+#if defined(_LIBCPP_VERSION)
+        std::string adjusted(token);
+        const lconv* lc = std::localeconv();
+        const char* decimal = lc == nullptr ? "." : lc->decimal_point;
+        if (decimal == nullptr || decimal[0] == '\0') decimal = ".";
+        const std::size_t decimal_length = std::strlen(decimal);
+        if (decimal_length != 1 || decimal[0] != '.') {
+            std::string converted;
+            converted.reserve(adjusted.size());
+            for (char c : adjusted) {
+                if (c == '.') {
+                    converted.append(decimal, decimal_length);
+                } else {
+                    converted.push_back(c);
+                }
+            }
+            adjusted = std::move(converted);
+        }
+        char* end = nullptr;
+        errno = 0;
+        const double value = std::strtod(adjusted.c_str(), &end);
+        if (end != adjusted.c_str() + adjusted.size() || errno == ERANGE || !std::isfinite(value)) {
+            Reject("apps bridge: non-finite number");
+        }
+        return value;
+#else
+        double value = 0.0;
+        const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
+        if (result.ec != std::errc{} || result.ptr != token.data() + token.size() || !std::isfinite(value)) {
+            Reject("apps bridge: non-finite number");
+        }
+        return value;
+#endif
+    }
+
     JsonValue ParseNumber() {
         const std::size_t start = pos_;
         std::size_t i = pos_;
@@ -369,12 +409,7 @@ private:
             }
             return JsonValue(value);
         }
-        double value = 0.0;
-        const auto result = std::from_chars(first, last, value);
-        if (result.ec != std::errc{} || result.ptr != last || !std::isfinite(value)) {
-            Reject("apps bridge: non-finite number");
-        }
-        return JsonValue(value);
+        return JsonValue(ParseFloatingNumber(token));
     }
 
     std::string_view input_;
