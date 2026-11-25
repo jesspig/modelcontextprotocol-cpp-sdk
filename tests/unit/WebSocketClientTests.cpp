@@ -476,7 +476,10 @@ TEST(WebSocketClientTest, CloseHandshake) {
         [](std::string_view) {});
     client.Open("ws://127.0.0.1:" + std::to_string(server.Port()) + "/mcp");
 
-    ASSERT_TRUE(WaitFor([&] { return handshake_done.load(); }));
+    ASSERT_TRUE(WaitFor([&] {
+        return handshake_done.load() &&
+               client.State() == net::WebSocketClient::HandshakeState::Open;
+    }));
     client.Close();
     EXPECT_TRUE(WaitFor([&] { return server_got_close.load(); }));
     EXPECT_EQ(closed.get_future().wait_for(std::chrono::seconds(3)), std::future_status::ready);

@@ -133,6 +133,19 @@ const snippetLocalTypes = new Set(
 
 const isTypeName = (value) => value[0] >= 'A' && value[0] <= 'Z'
 
+const cmakeTargets = new Map()
+const cmakeSources = [
+  ...walk(path.join(repoRoot, 'cmake'), (file) => path.extname(file) === '.cmake' || file.endsWith('.cmake.in')),
+  path.join(repoRoot, 'CMakeLists.txt'),
+]
+for (const file of cmakeSources) {
+  if (!fs.existsSync(file)) continue
+  fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, index) => {
+    const match = /\badd_(?:library|executable)\((mcp::[A-Za-z0-9_.-]+)/.exec(line)
+    if (match) cmakeTargets.set(match[1], `${relative(file)}:${index + 1}`)
+  })
+}
+
 // (?!\*) 跳过 methods::k* 之类通配写法；非大写字母开头的限定名只有确实是 namespace 时才检查，
 // 以免把 json::object() 这种"本仓库不存在的名字"反例说明当成引用
 const referencePattern = /\b([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)(?!\*)/g
@@ -221,6 +234,13 @@ function resolve(ref) {
   if (snippetLocalTypes.has(scopeName)) {
     return { status: 'LOCAL', detail: `${scopeName} 是文档片段内自定义的演示类型，非 SDK 符号` }
   }
+  const cmakeTarget = cmakeTargets.get(ref)
+  if (cmakeTarget) {
+    return {
+      status: 'CMAKE',
+      detail: `${ref} 是 CMake target（定义于 ${cmakeTarget}），不是 C++ 公共符号`,
+    }
+  }
   const publicHit = findIn(corpus, ref)
   if (publicHit.evidence) {
     return { status: 'HIT', evidence: publicHit.evidence }
@@ -261,6 +281,7 @@ const hits = results.filter((item) => item.status === 'HIT')
 const misses = results.filter((item) => item.status === 'MISS')
 const exempted = results.filter((item) => item.status === 'EXEMPT')
 const locals = results.filter((item) => item.status === 'LOCAL')
+const cmakeRefs = results.filter((item) => item.status === 'CMAKE')
 
 console.log(
   `check-api-symbols: 扫描 ${docFiles.length} 个文档/片段文件，` +
@@ -283,6 +304,13 @@ if (exempted.length > 0) {
   console.log('\n显式豁免：')
   for (const item of exempted) {
     console.log(`  EXEMPT ${item.ref} — ${item.detail}`)
+  }
+}
+
+if (cmakeRefs.length > 0) {
+  console.log('\nCMake target（不属于 C++ 公共符号）：')
+  for (const item of cmakeRefs) {
+    console.log(`  CMAKE ${item.ref} — ${item.detail}`)
   }
 }
 
@@ -521,7 +549,7 @@ if (citationProblems.length > 40) {
 }
 
 console.log(
-  `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}`
+  `\n汇总：命中 ${hits.length}，未命中 ${misses.length}，豁免 ${exempted.length}，片段自定义类型 ${locals.length}，CMake target ${cmakeRefs.length}`
 )
 
 if (

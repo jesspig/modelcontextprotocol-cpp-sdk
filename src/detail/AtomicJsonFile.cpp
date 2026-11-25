@@ -64,6 +64,19 @@ AtomicWriteOutcome AtomicWriteFail(const std::string& message) {
     return AtomicWriteOutcome{false, message};
 }
 
+#ifdef _WIN32
+constexpr int kAtomicRenameAttempts = 8;
+constexpr DWORD kAtomicRenameRetryDelayMs = 20;
+
+bool AtomicRenameErrorIsTransient(DWORD error) {
+    return error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+           error == ERROR_LOCK_VIOLATION ||
+           error == ERROR_UNABLE_TO_REMOVE_REPLACED ||
+           error == ERROR_UNABLE_TO_MOVE_REPLACEMENT ||
+           error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2;
+}
+#endif
+
 bool AtomicTargetIsSpecial(const std::filesystem::path& path) {
 #ifdef _WIN32
     DWORD attributes = GetFileAttributesW(path.c_str());
@@ -151,16 +164,26 @@ AtomicWriteOutcome AtomicWriteBytes(const std::filesystem::path& path,
         AtomicJsonRemoveTemp(tmp_path);
         return AtomicWriteFail("atomic write: injected rename failure for " + path.string());
     }
-    DWORD target_attributes = GetFileAttributesW(path.c_str());
     BOOL replaced = FALSE;
-    if (target_attributes != INVALID_FILE_ATTRIBUTES) {
-        replaced = ReplaceFileW(path.c_str(), tmp_path.c_str(), nullptr, 0, nullptr, nullptr);
-    } else {
-        replaced = MoveFileExW(tmp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    DWORD rename_error = ERROR_SUCCESS;
+    for (int attempt = 0; attempt < kAtomicRenameAttempts; ++attempt) {
+        DWORD target_attributes = GetFileAttributesW(path.c_str());
+        bool use_replace = target_attributes != INVALID_FILE_ATTRIBUTES;
+        replaced = use_replace
+            ? ReplaceFileW(path.c_str(), tmp_path.c_str(), nullptr, 0, nullptr, nullptr)
+            : MoveFileExW(tmp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        if (replaced) break;
+        rename_error = GetLastError();
+        MCP_LOG(Warning, "atomic write: rename attempt failed for " + path.string() +
+                         " (win32=" + std::to_string(rename_error) + ")");
+        bool transient = AtomicRenameErrorIsTransient(rename_error);
+        if (!transient || attempt + 1 == kAtomicRenameAttempts) break;
+        Sleep(kAtomicRenameRetryDelayMs);
     }
     if (!replaced) {
         AtomicJsonRemoveTemp(tmp_path);
-        return AtomicWriteFail("atomic write: rename failed for " + path.string());
+        return AtomicWriteFail("atomic write: rename failed for " + path.string() +
+                               " (win32=" + std::to_string(rename_error) + ")");
     }
     if (AtomicStageMatches(AtomicWriteStage::ParentSync)) {
         return AtomicWriteFail("atomic write: injected parent sync failure for " + path.string());
