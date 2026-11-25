@@ -325,7 +325,7 @@ TEST(ServerCardClientTest, ServerCardRouteServesCanonicalJsonAndStrongEtag) {
     ASSERT_TRUE(server.ready);
     const auto base = "http://127.0.0.1:" + std::to_string(server.port);
     const auto expected = mcp::ext::SerializeCard(MakeFullCard()).Dump();
-    for (const std::string& path : {"/server-card", "/mcp/server-card"}) {
+    for (const char* path : {"/server-card", "/mcp/server-card"}) {
         auto response = SendRequest("GET", base + path);
         EXPECT_EQ(response.status_code, 200);
         EXPECT_EQ(response.body, expected);
