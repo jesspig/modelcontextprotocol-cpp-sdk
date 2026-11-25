@@ -40,6 +40,10 @@ namespace {
 constexpr std::string_view kModernSpecVersion = "2026-07-28";
 
 bool IsModernConformanceRun() {
+    const char* force_legacy = std::getenv("MCP_CONFORMANCE_FORCE_LEGACY");
+    if (force_legacy != nullptr && std::string_view(force_legacy) == "1") {
+        return false;
+    }
     const char* version = std::getenv("MCP_CONFORMANCE_PROTOCOL_VERSION");
     return version != nullptr && std::string_view(version) == kModernSpecVersion;
 }
@@ -199,7 +203,9 @@ void RunRequestMetadataClient(const std::string& server_url) {
 }
 
 void RunHttpStandardHeadersClient(const std::string& server_url) {
-    auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
+    ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                : ConnectMode::Legacy;
+    auto client = ConnectClient(server_url, "test-client", mode,
         ClientCapabilities{});
 
     auto tools = client->ListTools();
@@ -235,7 +241,9 @@ void RunHttpCustomHeadersClient(const std::string& server_url) {
 }
 
 void RunHttpInvalidToolHeadersClient(const std::string& server_url) {
-    auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
+    ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                : ConnectMode::Legacy;
+    auto client = ConnectClient(server_url, "test-client", mode,
         ClientCapabilities{});
     auto tools = client->ListTools();
     std::cout << "post-exclusion tools:";

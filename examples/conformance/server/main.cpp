@@ -18,6 +18,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -60,6 +61,45 @@ bool ParseStatelessFlag(int argc, char** argv)
 {
     for (int i = 1; i < argc; ++i) {
         if (std::string_view(argv[i]) == "--stateless") return true;
+    }
+    return false;
+}
+
+std::string ParseHost(int argc, char** argv)
+{
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--host" && i + 1 < argc) {
+            return argv[++i];
+        }
+    }
+    return {};
+}
+
+std::vector<std::string> ParseAllowedHosts(int argc, char** argv)
+{
+    std::vector<std::string> hosts;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--allowed-host" && i + 1 < argc) {
+            hosts.push_back(argv[++i]);
+        }
+    }
+    return hosts;
+}
+
+std::string ParseOption(int argc, char** argv, std::string_view name)
+{
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == name && i + 1 < argc) {
+            return argv[++i];
+        }
+    }
+    return {};
+}
+
+bool HasFlag(int argc, char** argv, std::string_view name)
+{
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == name) return true;
     }
     return false;
 }
@@ -133,10 +173,35 @@ int main(int argc, char** argv)
 
     const uint16_t port = ParsePort(argc, argv);
     const bool stateless = ParseStatelessFlag(argc, argv);
+    const std::string host = ParseHost(argc, argv);
 
     StreamableHttpServerOptions transport_options;
     transport_options.port = port;
     transport_options.endpoint = "/mcp";
+    transport_options.host = host;
+    transport_options.allowed_hosts = ParseAllowedHosts(argc, argv);
+    if (HasFlag(argc, argv, "--oauth")) {
+        const std::string as_url = ParseOption(argc, argv, "--as-url");
+        const std::string resource_url = "http://127.0.0.1:" +
+            std::to_string(port) + "/mcp";
+        StreamableHttpServerOptions::BearerAuthConfig auth;
+        auth.verify = [resource_url](const std::string& token) -> AuthResult {
+            if (token != "t23-access-token") return AuthResult{};
+            AuthResult result;
+            result.ok = true;
+            result.principal = "t23-user";
+            result.scopes = {"mcp:tools"};
+            result.resource = resource_url;
+            return result;
+        };
+        auth.resource_metadata_url = "http://127.0.0.1:" +
+            std::to_string(port) + "/.well-known/oauth-protected-resource";
+        auth.scopes_supported = {"mcp:tools"};
+        auth.required_scopes = {"mcp:tools"};
+        auth.authorization_servers = {as_url};
+        auth.expected_resource = resource_url;
+        transport_options.bearer_auth = std::move(auth);
+    }
     transport_options.stateless = stateless;
     transport_options.enable_legacy_sse = true;
     if (stateless) transport_options.listen_hold_open = true;
