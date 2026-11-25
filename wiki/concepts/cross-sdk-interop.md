@@ -18,7 +18,7 @@ T-23（ST-05）以官方 SDK 精确版本验证四个方向的互操作。证据
 | 官方 Python SDK | `mcp` 2.3.0 | wheel SHA256 `dd0c44c0...` |
 | Node | v22.23.3（npm 10.9.9） | nvm 精确安装 |
 | Python | 3.14.4 | venv 固定依赖 |
-| C++ | MCP_SDK_VERSION 0.3.12 | WSL clang++ 21.1.8 构建 conformance fixture |
+| C++ | MCP_SDK_VERSION 0.3.13 | WSL clang++ 21.1.8 构建 conformance fixture |
 
 无 `latest`、无版本漂移；完整清单见 `.handoff/evidence/T-23/sdk-versions.txt`。
 

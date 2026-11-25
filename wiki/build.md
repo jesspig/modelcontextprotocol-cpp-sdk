@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL，由 MCP_WITH_OPENSSL 三态开关控制）。
 tags: [cmake, ninja, unity, lto, conformance]
-timestamp: 2026-11-18T16:15:39+08:00
+timestamp: 2026-11-25T15:08:55+08:00
 resource: CMakePresets.json
 ---
 
@@ -43,14 +43,17 @@ ctest --preset debug --output-on-failure
 - Clang/GCC：`-Wall -Wextra -Wpedantic -Wno-unused-parameter`
 - **GCC 独有 `-Wdangling-else`**：属 `-Wall` 成员（clang 不启用，显式加同参数亦不报该形态，实测 clang 22 + 真实 gtest 头静默）——断言宏（`EXPECT_*`/`ASSERT_*`）自带 `if/else`，作无括号单语句体时（`if (c) EXPECT_EQ(a, b);`）只有 Linux-gcc 两个 job 报 `-Werror`；CI run 38764091884 即因 `tests/unit/HttpServerTests.cpp` 该形态失败，现三处同类已补 `{}`，详见 [/AGENTS.md](../AGENTS.md) 关键陷阱第 8 条
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
-- 配置期生成 `build_config.txt` 摘要
+- 配置期生成 `build_config.txt` 摘要：`version=` 与包版本文件同源于 [McpVersion.hpp](../include/mcp/McpVersion.hpp) 的 `kSdkVersion`（当前 **0.3.13**），源码中无第二份 SDK 版本常量
+- **安装导出可消费**：`mcpTargets.cmake` 现在把私有静态依赖写成非空 `$<LINK_ONLY:re2::re2>` 与 `$<LINK_ONLY:mcp::ryml>`；re2/abseil 随包安装并由包配置 `find_dependency(re2 CONFIG)` 声明（abseil 由 re2 配置间接声明），rapidyaml 归档安装为 `lib/mcp-third-party/ryml.lib` 并导出 `mcp::ryml` imported target；Consumer 只需 `-DCMAKE_PREFIX_PATH=<安装前缀>`
+- **0.x 包版本规则**：`write_basic_package_version_file(... COMPATIBILITY SameMinorVersion)`；安装 0.3.13 时 0.3.12/0.3.13 可消费，0.3.14/0.4.0 拒绝
+- **消费期 OpenSSL 复核**：ON 档随包安装 `mcpOpenSslVersion.cmake`，`find_package(mcp)` 在 `find_dependency(OpenSSL)` 后复核主版本只能为 3/4；OFF 档不链接、不定义 `MCP_HAVE_OPENSSL`
 
 ## 依赖（无第三方拉取）
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
 | OpenSSL | 系统 3.x/4.x | 可选；启用由 `MCP_WITH_OPENSSL` 三态开关（默认 `AUTO`）+ `find_package(OpenSSL)` 结果决定，启用时经 `mcp-openssl` 定义 `MCP_HAVE_OPENSSL`（TLS 与 PKCE 随机数 `RAND_bytes`）并链接；PKCE 的 SHA-256 恒为内置实现（[sha256.hpp](../include/mcp/detail/sha256.hpp)）；支持 3.x/4.x，不支持主版本 configure 失败，详见 [/concepts/openssl-compat.md](/concepts/openssl-compat.md) |
-| rapidyaml | `v0.16.0 @ f8ac8dd50f4f7916579d55a05ebf9c6488e52670` | 固定 submodule（官方 GitHub URL，见 `.gitmodules`），MIT 许可文本随源在 [LICENSE.txt](../../third_party/rapidyaml/LICENSE.txt)；0.16.0 内嵌 c4core 0.6.0，`RYML_SYSTEM_C4CORE=OFF`、`RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS=ON`、`RYML_INSTALL=OFF`，经 `add_subdirectory(third_party/rapidyaml EXCLUDE_FROM_ALL)` 接入并链到 `mcp-client`。供应链身份与 SBOM 候选引用登记于 T-02 `dependency-selection.txt`、`sbom.cdx.json`、`sbom-plan.txt`；产品完整 SBOM 由 T-25 生成 |
+| rapidyaml | `v0.16.0 @ f8ac8dd50f4f7916579d55a05ebf9c6488e52670` | 固定 submodule（官方 GitHub URL，见 `.gitmodules`），MIT 许可文本随源在 [LICENSE.txt](../../third_party/rapidyaml/LICENSE.txt)；0.16.0 内嵌 c4core 0.6.0，`RYML_SYSTEM_C4CORE=OFF`、`RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS=ON`、`RYML_INSTALL=OFF`，经 `add_subdirectory(third_party/rapidyaml EXCLUDE_FROM_ALL)` 接入并链到 `mcp-client`。供应链身份与 SBOM 候选引用登记于 T-02 `dependency-selection.txt`、`sbom.cdx.json`、`sbom-plan.txt`；产品完整 SBOM 由 T-25 生成（CycloneDX 1.6，见 `.handoff/evidence/T-25/sbom.json`，已过 schema 与引用完整性校验） |
 
 ## CI 工作流（.github/workflows/）
 
