@@ -19,6 +19,8 @@ T-22 fuzz、sanitizer、压力与性能（2026-11-25，WT-RELEASE / `b3f7946` �
 
 目标数 18 → 17（该分支迁移删除 `mcp-framework-self-tests`）：本分支（tasks/skills/HTTP 加固/OAuth/conformance）全部测试并入既有目标，未新增目标——与原计划 20 目标的差异原因即此（任务存储测入 `mcp-task-store-tests`、技能类型测入 `mcp-core-tests`、服务端技能/任务分流测入 `mcp-server-tests`、客户端技能/任务守卫测入 `mcp-client-tests`、头/会话/重试测入 `mcp-streamable-http-tests` 与 `mcp-transport-tests`）。G 系列冻结批同样无新目标（T11b 基线 691 → 本批 715，增量并入 `mcp-server-tests` +9、`mcp-client-tests` +7、`mcp-streamable-http-tests` +5、`mcp-wire-codec-tests` +2、`mcp-core-tests` +1）。spec-20260728-tier1-parity 批同样无新目标（715 → 748，+33 并入 `mcp-server-tests` +18、`mcp-streamable-http-tests` +7、`mcp-task-store-tests` +4、`mcp-client-tests` +3、`mcp-core-tests` +1；断言 2857 → 3145，+288）；其后 748 → 769（前瞻六开关批，见下）→ 874（+105，后续批次，同样全部并入既有目标，目标数仍 18，分布见上表；715 → 748 起始基线见 [/changelog/2026-10-12-log.md](/changelog/2026-10-12-log.md)）。
 
+T-24 文档与兼容门禁（2026-11-25，WT-RELEASE / `98f7988`）：新增中英 0.3.13 迁移说明（在线文档 `/zh/migration/0.3.13`、`/en/migration/0.3.13`）及可编译片段 `docs/snippets/migration-0.3.13.cpp`；`mcp-docs-snippets` 语法检查 20 个片段退出码 0，`check-parity` 62 页成对/标题差异 0，`check-api-symbols` 未命中 0。`mcp-compat-smoke` 在 Windows clang-cl 档退出码 0：baseline 翻译单元编译、12 个已知破坏全部按预期失败、运行时检查通过；WSL2 clang++ 21.1.8 交叉编译档 12 个探针同样按预期失败（本机 WSL2 未安装 g++，不能声称 GCC 档实跑）。`expected_breaks.txt` 与 0.3.12 逐字一致（SHA256 `F97418A82F52EE6ACBD58005B13E0A212BA89CB5498AB7FC3A944DE029BE82ED`，新增/删除/修改均为 0）。上表测试目标与用例数未被本任务改动；D-07/OQ-06 并发 p99 0.291 → 0.390 ms（+34%）与本机无 OpenSSL 的 9 项环境限制在迁移页如实披露，未改写为达标。证据见 `.handoff/evidence/T-24/`。
+
 ## 目标清单
 
 | 目标 | 文件 | 用例 | 断言 |

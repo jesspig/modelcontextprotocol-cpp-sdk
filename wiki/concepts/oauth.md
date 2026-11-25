@@ -3,11 +3,13 @@ type: Concept
 title: OAuth 授权流程
 description: 客户端授权码 + PKCE（S256）、CIMD 客户端标识、private_key_jwt 客户端断言（ES256，aud 取 issuer）、RFC 8707 资源指示符与 audience 绑定、RFC 9207 授权响应 iss 校验与 token 响应「存在即校验」、发行者绑定、刷新合并与重入短路、吊销/提权、令牌缓存；服务端 Bearer 资源服务器（RFC 6750/9728，expectedResource audience 校验与 403 分流）。
 tags: [oauth, pkce, 安全, rfc8707, rfc9207, rfc7523, cimd, bearer, audience, private_key_jwt]
-timestamp: 2026-11-25T21:30:00+08:00
+timestamp: 2026-11-25T14:20:00+08:00
 resource: src/client/auth/OAuthClientProvider.cpp
 ---
 
 # OAuth 授权流程
+
+0.3.13 候选把发现与出站策略默认收紧（`require_iss_when_advertised`、`require_pkce_metadata` 为 `true`，`allow_legacy_metadata_fallback` 为 `false`，resource 逐字比较，origin/DNS/重定向/peer 全链路策略，DCR secret 单一入口）；T-21 的 `DiscoverWithPolicy` legacy fallback 补 OIDC discovery 候选属 A 类缺陷修复，默认语义不变。旧行为/新行为/调用方改法见在线文档 `/zh/migration/0.3.13` 与 `/en/migration/0.3.13`，逐条证据见 `.handoff/evidence/T-04/`、`T-05/`、`T-21/`。
 
 `OAuthClientProvider`（[OAuthClientProvider.cpp](../../src/client/auth/OAuthClientProvider.cpp)）——`GetAccessToken` 缓存命中路径**不持任何锁**；`GetAccessToken`、`Authenticate`、公开 `RefreshTokens` 三个入口共用一组 `refresh_mutex_` / `refresh_cv_` / `refresh_in_flight_` / `refresh_owner_` single-flight（通用 `RunSingleFlight`）：抢到标志的线程记录 owner 后释放锁执行实际工作（网络 I/O **不在锁内**），其余线程在条件变量上**有界等待**（30s），醒来后读最新令牌并按入口语义返回，不重复发请求；同线程重入（如 `token_update_handler` 回调里再调 `GetAccessToken`）直接读当前值而不等待，避免死锁；`SingleFlightGuard` 析构在正常与异常路径都清标志并 `notify_all`。`GetAccessToken` 刷新失败仍抛 `InternalError`，`Authenticate` / `RefreshTokens` 按 `RefreshOutcome` 区分 `invalid_grant` 与瞬时失败。metadata 与动态注册状态由 `state_mutex_`（`std::recursive_mutex`）保护，读取一律走快照；并发授权流由 `auth_flow_mutex_` 串行化，授权状态为局部变量。无 token_cache 时默认 `InMemoryTokenCache`。
 

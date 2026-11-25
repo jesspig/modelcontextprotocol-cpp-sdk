@@ -3,11 +3,13 @@ type: Concept
 title: 任务扩展
 description: SEP-2663 任务扩展与 Tasks v2：双时代 tasks/get|update|cancel、modern tasks/delete 与 notifications/tasks/DetailedTask/taskIds、legacy tasks/result|list 与 notifications/tasks/*、principal owner、任务化 tools/call 与订阅路由。
 tags: [tasks, 扩展, 双时代, 2026, owner]
-timestamp: 2026-11-25T20:55:00+08:00
+timestamp: 2026-11-25T14:21:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
 # 任务扩展
+
+0.3.13 候选的 modern 任务通知收敛为单 `notifications/tasks`（完整 `DetailedTask` + `taskIds` 过滤，需先订阅），六个 `notifications/tasks/*` 仅 legacy；owner 来自 authenticated principal，modern 未绑定失败关闭，`tasks/delete` 为 modern-only 且越权统一 `TaskNotFound`。旧行为/新行为/调用方改法见在线文档 `/zh/migration/0.3.13` 与 `/en/migration/0.3.13`，证据见 `.handoff/evidence/T-06/` 与 `T-08/session-isolation-contract.txt`。
 
 SEP-2663 任务扩展（扩展标识 `io.modelcontextprotocol/tasks`，[Capabilities.hpp](../../include/mcp/Capabilities.hpp) 的 `kTasksExtensionId`）允许长耗时工具调用以任务句柄立即返回、后台执行、轮询取结果。
 

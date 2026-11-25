@@ -44,7 +44,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Prefer a tag (`0.3.12`) over a branch in `GIT_TAG`; use `master` only for the development line. Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
+Prefer a tag (`0.3.12`) over a branch in `GIT_TAG`; use `master` only for the development line. **0.3.13 is a release candidate**: build the `feature/sdk-release-gates` branch to get it, but `kSdkVersion`, the tag, and release metadata are not closed out yet — do not write `0.3.13` into `GIT_TAG` ahead of the release. Behavior differences are in the [0.3.13 migration notes](/en/migration/0.3.13). Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
 
 ### Option 2: install, then find_package
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect configure to print `[mcp] SDK version: 0.3.12` plus the OpenSSL decision, the build to complete without errors, and `ctest` to pass in full (currently 18 test targets, 1037 registered cases on Windows). To verify linking only, build a minimal executable that includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
+Expect configure to print `[mcp] SDK version: 0.3.12` plus the OpenSSL decision (the candidate has not changed the version constant yet), the build to complete without errors, and `ctest` to pass in full. Measured candidate baselines are 1242 registered cases on Windows clang-cl (T-20) / 1243 after the T-21 fix, and 1266 cases on WSL2/Linux Release and sanitizer builds (T-22); the 1037 figure belongs to the released 0.3.12 tag and must not be used to judge candidate regressions. To verify linking only, build a minimal executable that includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
 
 ## Next steps
 

@@ -44,7 +44,7 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-`GIT_TAG` 建议锁 tag（`0.3.12`）而非分支，取最新开发线才用 `master`。库之间是 PUBLIC 传递依赖，链 `mcp-client` 或 `mcp-server` 就够了，不必手写整条链。
+`GIT_TAG` 建议锁 tag（`0.3.12`）而非分支，取最新开发线才用 `master`。**0.3.13 目前是发布候选**：从 `feature/sdk-release-gates` 分支构建即可获得候选，但 `kSdkVersion`、tag 与发布元数据尚未收口，不要提前把 `0.3.13` 写进 `GIT_TAG`。升级行为差异见 [0.3.13 迁移说明](/zh/migration/0.3.13)。库之间是 PUBLIC 传递依赖，链 `mcp-client` 或 `mcp-server` 就够了，不必手写整条链。
 
 ### 方式二：安装后 find_package
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-期望：configure 打印 `[mcp] SDK version: 0.3.12` 与 OpenSSL 档位结论；构建零错误；`ctest` 全量通过（当前规模 18 个测试目标、Windows 本机注册 1037 例）。只想验证库能链上，就写一个只 `#include <mcp/client/McpClient.hpp>` 并 `target_link_libraries(... mcp-client)` 的最小可执行文件构建一次。
+期望：configure 打印 `[mcp] SDK version: 0.3.12` 与 OpenSSL 档位结论（0.3.13 候选尚未改版本号）；构建零错误；`ctest` 全量通过。候选实测基线为 Windows clang-cl 注册 1242 例（T-20）/ 修复后 1243 例（T-21），WSL2/Linux Release 与 sanitizer 档 1266 例（T-22）；旧发布 tag 的 1037 例是 0.3.12 口径，不要用它判断候选回归。只想验证库能链上，就写一个只 `#include <mcp/client/McpClient.hpp>` 并 `target_link_libraries(... mcp-client)` 的最小可执行文件构建一次。
 
 ## 下一步
 

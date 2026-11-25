@@ -1,6 +1,6 @@
 # Client Facade (`McpClient`) Reference
 
-This page is the **single authoritative source for signatures and field tables** of `McpClient`, `ClientOptions`, `RequestHandle`/`RequestOutcome` and `ConnectMode`; step-by-step usage lives in later how-to pages, which only link here and never duplicate the tables. Protocol-version semantics: `/en/learn/protocol-versions`; data types: `/en/reference/types`; error codes: `/en/reference/errors`; transport construction: `/en/reference/transports`.
+This page is the **single authoritative source for signatures and field tables** of `McpClient`, `ClientOptions`, `RequestHandle`/`RequestOutcome` and `ConnectMode`; step-by-step usage lives in later how-to pages, which only link here and never duplicate the tables. Protocol-version semantics: `/en/learn/protocol-versions`; data types: `/en/reference/types`; error codes: `/en/reference/errors`; transport construction: `/en/reference/transports`. The 0.3.13 Tasks/Skills/session tightening and itemized migration are in the [0.3.13 migration notes](/en/migration/0.3.13).
 
 ## Factory and lifecycle
 
