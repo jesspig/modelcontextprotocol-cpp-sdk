@@ -33,7 +33,7 @@ Full manual: <https://jesspig.github.io/modelcontextprotocol-cpp-sdk/>. Sources:
 - [Installation & CMake integration](docs/en/start/installation.md) — dependencies, build options, `find_package`, install layout.
 - [Architecture](docs/en/learn/architecture.md) · [Protocol versions](docs/en/learn/protocol-versions.md) · [Extensions](docs/en/learn/extensions.md)
 - [Register a tool](docs/en/howto/register-a-tool.md) · [Connect to a server](docs/en/howto/connect-to-a-server.md) · [Handle errors](docs/en/howto/handle-errors.md)
-- [API reference](docs/en/reference/index.md) · [Compatibility & deprecation registry](docs/en/learn/compatibility.md) · [Release notes](docs/en/migration/0.3.12.md)
+- [API reference](docs/en/reference/index.md) · [Compatibility & deprecation registry](docs/en/learn/compatibility.md) · [Release notes](docs/en/migration/0.3.13.md)
 - Chinese manual: [docs/zh/](docs/zh/). Runnable examples: [examples/](examples/).
 
 ## License

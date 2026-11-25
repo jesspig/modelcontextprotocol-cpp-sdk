@@ -1,6 +1,6 @@
 # 授权与扩展参考
 
-本页是授权层（OAuth、PKCE、DPoP、token 缓存）与扩展层（server card、apps、triggers、技能校验）公共符号的**唯一权威字段表**，逐条对照头文件；门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，传输选项见 [传输层参考](/zh/reference/transports)，扩展开关语义见 [扩展开关概念](/zh/learn/extensions)，双时代归属的唯一权威表是 [协议版本](/zh/learn/protocol-versions)，`Skill`/`SkillResource` 等字段见 [类型总表](/zh/reference/types)。本页不含操作步骤；`detail/` 下的类型与函数不属于用户 API，只在解释行为时点名文件，不列入接口表。0.3.13 的 OAuth/扩展行为收紧与逐项迁移见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
+本页是授权层（OAuth、PKCE、DPoP、token 缓存）与扩展层（server card、apps、triggers、技能校验）公共符号的**唯一权威字段表**，逐条对照头文件；门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，传输选项见 [传输层参考](/zh/reference/transports)，扩展开关语义见 [扩展开关概念](/zh/learn/extensions)，双时代归属的唯一权威表是 [协议版本](/zh/learn/protocol-versions)，`Skill`/`SkillResource` 等字段见 [类型总表](/zh/reference/types)。本页不含操作步骤；`detail/` 下的类型与函数不属于用户 API，只在解释行为时点名文件，不列入接口表。0.3.13 的 OAuth/扩展行为收紧与逐项迁移见 [0.3.13 发布说明](/zh/migration/0.3.13)。
 
 ## OAuth 客户端提供者
 
