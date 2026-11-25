@@ -3,7 +3,7 @@ type: Build
 title: 构建系统
 description: CMake 预设、编译器探测、Unity/LTO/缓存优化、conformance fixture 开关、系统依赖（仅可选 OpenSSL，由 MCP_WITH_OPENSSL 三态开关控制）。
 tags: [cmake, ninja, unity, lto, conformance]
-timestamp: 2026-11-25T15:08:55+08:00
+timestamp: 2026-11-25T19:14:24+08:00
 resource: CMakePresets.json
 ---
 
@@ -26,7 +26,7 @@ ctest --preset debug --output-on-failure
 |----|----|
 | 预设 | `debug` / `release`（对应 buildPresets/testPresets 各 2 枚） |
 | 默认关闭 | `MCP_BUILD_TESTS`、`MCP_BUILD_EXAMPLES`、`MCP_BUILD_CONFORMANCE` 三开关在 `CMakeLists.txt:52-54` 默认全 OFF；预设仅置 `MCP_BUILD_TESTS=ON` / `MCP_BUILD_EXAMPLES=OFF`（无 `CONFORMANCE`，见 `CMakePresets.json:9-14`）；CI conformance job 双开（`conformance.yml:38`），`CMakeLists.txt:234-238` 以 `NOT EXAMPLES` 防 client fixture 重加 |
-| Werror | 仅 `-DMCP_WERROR=ON`（CI 自动添加；MSVC `/WX`） |
+| Werror | 仅 `-DMCP_WERROR=ON`（CI 自动添加；MSVC `/WX`），只施加到 SDK 自有库、测试与示例目标 |
 | OpenSSL 开关 | `-DMCP_WITH_OPENSSL=AUTO\|ON\|OFF`，默认 `AUTO`：`AUTO` 按 `find_package(OpenSSL)` 结果启用，`ON` 未找到即 configure 失败，`OFF` 强制禁用（装有 OpenSSL 也不启用）；启用时由单一 INTERFACE 目标 `mcp-openssl` 统一向 `mcp-transport`/`mcp-client`/`mcp-ext` 施加 `MCP_HAVE_OPENSSL` 定义与链接，构建系统不做 `__has_include` 头文件嗅探 |
 | `MCP_IS_CI` | 由环境变量 `CI` 定义与否决定 |
 | job pool | 自动调优：compile = `min(mem/1500MB, cpu-2)`（下限 1）、link ≈ `mem/4000MB`（上限 2）；可用 `MCP_COMPILE_JOBS`/`MCP_LINK_JOBS` 覆盖 |
@@ -41,6 +41,7 @@ ctest --preset debug --output-on-failure
 - **`-march=native` 仅本地且非 Apple**（`MCP_IS_CI` 与 `APPLE` 门控），本地构建的二进制不可跨机分发
 - MSVC 系编译标志：`/utf-8 /bigobj /W4 /wd4100 /wd4324 /wd4244 /wd4267 /EHsc` + 宏 `_CRT_SECURE_NO_WARNINGS`、`_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS`、`_WIN32_WINNT=0x0A00`、**`NOMINMAX` + `NOGDI`**（clang-cl 与 MSVC 两分支同加；`NOGDI` 排除 `wingdi.h` 的 GDI 定义（含与 `JsonValue::GetObject` 冲突的 `GetObject` 宏），`NOMINMAX` 排除 `min`/`max` 宏；配合全仓 `(std::min)`/`(std::max)` 括号防御纵深）
 - Clang/GCC：`-Wall -Wextra -Wpedantic -Wno-unused-parameter`
+- **第三方警告策略隔离**：Abseil/RE2/rapidyaml 接入期间临时清空根目录的 `COMPILE_OPTIONS`/`COMPILE_DEFINITIONS`，随后恢复给 SDK 自有目标；Abseil 开启 `ABSL_USE_SYSTEM_INCLUDES`，RE2/rapidyaml 的接口包含目录标为 `SYSTEM`，避免 macOS 的 `-Wnullability-extension` 等第三方头警告被 SDK `Werror` 放大
 - **GCC 独有 `-Wdangling-else`**：属 `-Wall` 成员（clang 不启用，显式加同参数亦不报该形态，实测 clang 22 + 真实 gtest 头静默）——断言宏（`EXPECT_*`/`ASSERT_*`）自带 `if/else`，作无括号单语句体时（`if (c) EXPECT_EQ(a, b);`）只有 Linux-gcc 两个 job 报 `-Werror`；CI run 38764091884 即因 `tests/unit/HttpServerTests.cpp` 该形态失败，现三处同类已补 `{}`，详见 [/AGENTS.md](../AGENTS.md) 关键陷阱第 8 条
 - 非 Ninja 生成器提示警告；MSVC cl.exe + Ninja 自动加 `/lldlink`
 - 配置期生成 `build_config.txt` 摘要：`version=` 与包版本文件同源于 [McpVersion.hpp](../include/mcp/McpVersion.hpp) 的 `kSdkVersion`（当前 **0.3.13**），源码中无第二份 SDK 版本常量

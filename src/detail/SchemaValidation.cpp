@@ -309,7 +309,7 @@ std::string TranslateEcmaPattern(std::string_view pattern) {
     return result;
 }
 
-const RE2& GetRegex(const std::string& pattern, EvalContext& ctx, const std::string& location) {
+const RE2* GetRegex(std::string_view pattern, EvalContext& ctx, std::string location) {
     if (pattern.size() > ctx.budgets.max_pattern_bytes) {
         SchemaFail("SL.RegexPatternBytes", "pattern exceeds byte budget", location);
     }
@@ -320,7 +320,7 @@ const RE2& GetRegex(const std::string& pattern, EvalContext& ctx, const std::str
     if (!found->second.expression || !found->second.expression->ok()) {
         SchemaFail("SL.RegexFailOpen", "invalid regular expression", location);
     }
-    return *found->second.expression;
+    return found->second.expression.get();
 }
 
 bool RegexMatches(const RE2& expression, const std::string& subject,
@@ -970,10 +970,10 @@ void EvaluateObject(const JsonValue& instance, const JsonValue& schema,
     }
     if (patterns) {
         for (const auto& [pattern, sub] : patterns->GetObject()) {
-            const RE2& expression = GetRegex(pattern, ctx,
+            const RE2* expression = GetRegex(pattern, ctx,
                                              SchemaPath(schema_path, "patternProperties"));
             for (const auto& [key, value] : object) {
-                if (!RegexMatches(expression, key, ctx,
+                if (!RegexMatches(*expression, key, ctx,
                                   SchemaPath(schema_path, "patternProperties"))) continue;
                 EvalResult child = Evaluate(value, sub, resource, resource_id,
                                             InstancePath(instance_path, "properties/" + key),
@@ -1412,9 +1412,9 @@ EvalResult Evaluate(const JsonValue& instance, const JsonValue& schema,
             }
         }
         if (const JsonValue* pattern = schema.Find("pattern")) {
-            const RE2& expression = GetRegex(pattern->GetString(), ctx,
+            const RE2* expression = GetRegex(pattern->GetString(), ctx,
                                              SchemaPath(schema_path, "pattern"));
-            if (!RegexMatches(expression, text, ctx, SchemaPath(schema_path, "pattern"))) {
+            if (!RegexMatches(*expression, text, ctx, SchemaPath(schema_path, "pattern"))) {
                 fail("SL.Pattern", "string does not match pattern");
                 return result;
             }

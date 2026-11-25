@@ -209,6 +209,8 @@ void ObserveResponseChallenge(
 std::optional<RequestId> RequestIdFromBody(const std::string& body) {
     try {
         auto parsed = JsonValue::Parse(body);
+        const auto* method = parsed.Find("method");
+        if (!method || !method->IsString()) return std::nullopt;
         auto* id = parsed.Find("id");
         if (!id || id->IsNull()) return std::nullopt;
         return RequestIdFromJson(*id);

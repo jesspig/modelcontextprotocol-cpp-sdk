@@ -1035,6 +1035,7 @@ TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
     auto port = PickFreePort(kTestBasePort + 1550);
     HttpServer mock(port);
     std::atomic<int> post_calls{0};
+    std::atomic<bool> answer_received{false};
     mock.SetHandler("POST", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
         auto method_it = req.headers.find("mcp-method");
         if (post_calls.fetch_add(1) == 0 && method_it != req.headers.end() &&
@@ -1050,8 +1051,7 @@ TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
             auto jv = JsonValue::Parse(req.body);
             auto* id = jv.Find("id");
             if (id && id->IsInt() && id->GetInt() == 100) {
-                mock.BroadcastSse(
-                    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"action\":\"accept\"}}\n\n");
+                answer_received.store(true);
             }
         } catch (...) {
         }
@@ -1116,6 +1116,20 @@ TEST(StreamableHttpTransportTest, PostSseStreamDeliversServerRequestWhileOpen) {
             }
         });
     });
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!answer_received.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(answer_received.load());
+    if (!answer_received.load()) {
+        mock.Stop();
+        transport->Close();
+        receiver2.join();
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    mock.BroadcastSse(
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"action\":\"accept\"}}\n\n");
 
     deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!got_result.load() && std::chrono::steady_clock::now() < deadline)

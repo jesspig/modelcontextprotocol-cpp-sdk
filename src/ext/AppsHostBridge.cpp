@@ -96,17 +96,6 @@ bool IsKnownField(std::string_view key) {
     return key == "schema_version" || key == "id" || key == "method" || key == "params";
 }
 
-struct CapabilityRecord {
-    std::array<uint8_t, kAppsCapabilityTokenBytes> token{};
-    std::string resource_uri;
-    std::vector<std::string> allowed_origins;
-    std::vector<std::string> permissions;
-    int64_t expires_at_ms = 0;
-    std::size_t max_message_bytes = 0;
-    bool single_use = false;
-    bool consumed = false;
-};
-
 bool SamePermissions(const std::vector<std::string>& stored,
                      const std::set<std::string>& effective) {
     if (stored.size() != effective.size()) return false;
@@ -469,6 +458,17 @@ bool IsAppsSensitiveMethod(std::string_view method) {
 }
 
 struct AppsHostBridge::Impl {
+    struct CapabilityRecord {
+        std::array<uint8_t, kAppsCapabilityTokenBytes> token{};
+        std::string resource_uri;
+        std::vector<std::string> allowed_origins;
+        std::vector<std::string> permissions;
+        int64_t expires_at_ms = 0;
+        std::size_t max_message_bytes = 0;
+        bool single_use = false;
+        bool consumed = false;
+    };
+
     AppsHostBridgeOptions options;
     std::vector<std::string> normalized_origins;
     std::set<std::string> effective_permissions;
@@ -499,8 +499,8 @@ bool AppsHostBridge::CheckCapability(const AppsMessageContext& context, std::str
     std::array<uint8_t, kAppsCapabilityTokenBytes> token{};
     if (!DecodeToken(context.capability, token)) return false;
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    const CapabilityRecord* matched = nullptr;
-    for (const CapabilityRecord& record : impl_->capabilities) {
+    const Impl::CapabilityRecord* matched = nullptr;
+    for (const Impl::CapabilityRecord& record : impl_->capabilities) {
         if (TokenDiff(record.token, token) == 0) matched = &record;
     }
     if (matched == nullptr) return false;
@@ -513,7 +513,7 @@ bool AppsHostBridge::CheckCapability(const AppsMessageContext& context, std::str
     valid = valid && SamePermissions(matched->permissions, impl_->effective_permissions);
     if (IsAppsSensitiveMethod(method) && !matched->single_use) valid = false;
     if (consume && valid && matched->single_use) {
-        const_cast<CapabilityRecord*>(matched)->consumed = true;
+        const_cast<Impl::CapabilityRecord*>(matched)->consumed = true;
     }
     return valid;
 }
@@ -645,7 +645,7 @@ std::string AppsHostBridge::CreateCapability(const AppsMessageContext& context) 
     ValidateTrustedContext(context);
     std::array<uint8_t, kAppsCapabilityTokenBytes> token{};
     FillRandom(token.data(), token.size());
-    CapabilityRecord record;
+    Impl::CapabilityRecord record;
     record.token = token;
     record.resource_uri = context.resource_uri;
     record.allowed_origins = impl_->normalized_origins;
