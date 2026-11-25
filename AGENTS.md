@@ -26,11 +26,19 @@ ctest --preset debug --output-on-failure
 7. **Auto 模式协商回退按传输分类**：stdio 类（`IsStdioLikeTransport` RTTI 匹配 `InMemoryTransportImpl`/`StdioClientSessionTransport`）探测失败回退 `initialize`，网络类抛错；`-32022` 且 supported 含最新版本时 corrective 重试一次，二次拒绝为硬错误。详见 [wiki/concepts/version-negotiation.md](wiki/concepts/version-negotiation.md)。
 8. **GCC 独有 `-Wdangling-else`**：断言宏自带 `if/else`，禁止作无括号单语句体——`if (c) EXPECT_EQ(a, b);` 在 GCC 下即 `-Werror` 硬错误，必须补 `{}`；只有 Linux-gcc job 能兜住。
 
+## 版本与发布边界
+
+- 版本目标不等于发布授权：用户只给出 `0.Y.X` 目标或要求更新版本号时，不代表允许发布、打 tag、推送或宣称“已发布”。没有用户明确声明或明确下达发布指令，任何时候都不得自称发布某个版本，也不得把本地验证、RC 建议或“GO”表述成发布完成。
+- 未收到明确版本指令时，只更新 `0.Y.X` 中的 `X`（补丁位）；即使存在破坏性变更，也不得自行提升 `Y`（次版本位）。确需变更 `Y` 或采用其他版本策略时，必须取得用户明确指令。
+- 破坏性变更通过迁移文档说明「旧行为 / 新行为 / 受影响调用方 / 完整迁移代码」，并登记兼容性影响；不得通过提升 `Y` 来替代文档说明，也不得静默删除旧 API。
+- 本地 `ctest`、构建或兼容检查通过不等于 CI 通过。只有远端 CI 已实际运行且结果已核验，才能声称 CI 通过；未 push、未运行 CI 时必须明确标注“仅本地验证”。
+- tag、push、创建远端发布资源与正式发布说明均需用户明确授权；授权本地归并不等于授权发布。
+
 ## 代码 / 提交 / 兼容 / 编辑
 
 - 命名：类/接口 PascalCase（接口 `I` 前缀）、方法 PascalCase、成员 `snake_case_` 尾下划线、常量 `k` 前缀、`enum class` 值 PascalCase。**零代码注释**：仅留 `// namespace xxx` 结尾注释与有功能效应的工具指令（`NOLINT`、`clang-format`、`IWYU pragma` 等）；`/* 参数名 */`、`TODO`、解释性注释一律删除，新增代码不得引入注释。
 - API：`McpServer/McpClient::Create` 返回 `unique_ptr`，`IClientTransport::Connect()` 返回 `shared_ptr`，`JsonValue` 按值传递，可选字段用 `std::optional`；错误抛 `McpError(McpErrorCode, message)`（继承 `std::runtime_error`）；`HandlerError` 用于本地回调/扩展前置条件不满足，工具 handler 抛出的普通异常在服务端映射为 `InternalError`。
-- 提交：带 scope 的 Conventional Commits，scope 与描述均中文（如 `refactor(网络栈):`）；`feature/*` → `develop`，`release/*` → tag `X.Y.Z`（无 v 前缀）。**docs.yml 只允许 `master` 触发并部署 GitHub Pages**，不得改为其他分支，也不得为其他分支开通 Pages。
+- 提交格式：`<type>(<scope>): <描述>`；type 仅用 `feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`，scope 与描述用中文，描述用祈使句现时态，header 不超过 72 字符。除合并提交外，每笔提交必须有正文：header 后空一行，正文只用 `- xxx` 列表，每点一句话、一行，覆盖本次提交的全部实质变更；普通提交用 `git commit -F <消息文件>`，仅合并提交可用 `git commit -m`。暂存只用 `git add -p` 或 `git add -- <显式路径>`，禁用 `git add -A`/`git add .`；暂存后复核 `git diff --staged`。执行任何 git 写操作前上报完整命令待确认；已进入按计划执行流程的本地提交与归并按该流程授权执行。`feature/*` → `develop`，`release/*` 仅在用户明确授权后打 tag `X.Y.Z`（无 v 前缀）。**docs.yml 只允许 `master` 触发并部署 GitHub Pages**，不得改为其他分支，也不得为其他分支开通 Pages。
 - **兼容优先**（高于其余小节）：先评估能否不破坏源码与线协议。A 仅改内部实现；B 源码兼容但行为/线协议收紧，迁移指南须写「旧行为 / 新行为 / 受影响怎么改」；C 新增编译警告（如 `[[nodiscard]]`）须给下游消除方式（`(void)` 或改为检查），禁删属性。
 - **弃用优于删除**：保留实现并标 `[[deprecated("since X.Y.Z, removed in A.B.C; <替代写法>")]]`，窗口至少跨一个 minor；禁直接删除或改语义。**破坏性变更三条件**：迁移指南说明为何无兼容路径 + old/new 完整代码块 + `docs/snippets/` 新写法通过 `mcp-docs-snippets` 编译；缺一退回弃用；齐备才可新增 `tests/compat/expected_breaks.txt` 条目。新增默认不改旧行为：用 `std::optional` 且默认 `nullopt` 等价旧行为，三态用 `std::optional<bool>`。
 - **文档同批 + 零破坏举证**：行为变更与迁移说明同批提交，`expected_breaks.txt` 与迁移表格逐条对应；发版前 `mcp-compat-smoke` 必过，`expected_breaks.txt` 与上一版逐字一致（E 类例外须满足三条件）。弃用逐条登记 `docs/{zh,en}/learn/compatibility.md`，含替代写法与移除版本；到期不删除即违约，例外须用户明确批准并记入任务 `STATE.md` 偏离段。
