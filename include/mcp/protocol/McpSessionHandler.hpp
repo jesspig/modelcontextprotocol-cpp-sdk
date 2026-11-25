@@ -54,6 +54,7 @@ public:
     inline static constexpr std::chrono::milliseconds kTimeoutPollInterval{100};
     inline static constexpr std::size_t kDefaultResponseQueueCapacity{1024};
     inline static constexpr std::size_t kMaxSubscriptionEntriesPerSession{64};
+    inline static constexpr std::chrono::seconds kCloseWaitBudget{5};
     inline static constexpr std::chrono::seconds kSubscriptionEntryTtl{3600};
 
     McpSessionHandler(
@@ -232,6 +233,12 @@ private:
     std::shared_ptr<const std::string> negotiated_version_;
     mutable std::shared_mutex versions_mutex_;
     std::vector<std::string> supported_versions_;
+
+    std::mutex close_mutex_;
+    std::condition_variable close_cv_;
+    bool close_claimed_ = false;
+    bool close_done_ = false;
+    std::thread::id close_owner_thread_{};
 
     std::thread message_loop_thread_;
     std::thread timeout_thread_;

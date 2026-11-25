@@ -3,6 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <utility>
+
 using namespace mcp;
 
 TEST(MessageFilterTest, EmptyPipeline) {
@@ -86,4 +89,38 @@ TEST(MessageFilterTest, FilterModifiesMessage) {
                      [&received](const JsonRpcMessage& msg) { received = msg; });
     EXPECT_TRUE(IsRequest(received));
     EXPECT_FALSE(IsNotification(received));
+}
+
+TEST(MessageFilterTest, DeferredNextCompletesChainExactlyOnce) {
+    FilterPipeline pipeline;
+    std::optional<MessageFilterNext> deferred;
+    pipeline.AddFilter(std::make_shared<MessageFilterFuncAdapter>(
+        [&deferred](const JsonRpcMessage&, MessageFilterNext next) {
+            deferred = std::move(next);
+        }));
+
+    JsonRpcNotification notif;
+    notif.method = "notifications/initialized";
+    int final_calls = 0;
+    pipeline.Execute(JsonRpcMessage{notif},
+        [&final_calls](const JsonRpcMessage&) { ++final_calls; });
+    EXPECT_EQ(final_calls, 0);
+    ASSERT_TRUE(deferred.has_value());
+    (*deferred)(JsonRpcMessage{notif});
+    EXPECT_EQ(final_calls, 1);
+    (*deferred)(JsonRpcMessage{notif});
+    EXPECT_EQ(final_calls, 1);
+}
+
+TEST(MessageFilterTest, FinalHandlerIgnoresRepeatedNext) {
+    FilterPipeline pipeline;
+    pipeline.AddFilter(std::make_shared<MessageFilterFuncAdapter>(
+        [](const JsonRpcMessage& msg, MessageFilterNext next) {
+            next(msg);
+            next(msg);
+        }));
+    int final_calls = 0;
+    pipeline.Execute(JsonRpcMessage{},
+        [&final_calls](const JsonRpcMessage&) { ++final_calls; });
+    EXPECT_EQ(final_calls, 1);
 }

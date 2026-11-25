@@ -5,17 +5,20 @@
 #include <mcp/http/HttpServer.hpp>
 #include <mcp/http/SessionStore.hpp>
 #include <mcp/ext/DPoP.hpp>
+#include <mcp/Log.hpp>
 #include <gtest/gtest.h>
 #include "TestServerUtil.hpp"
 
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <future>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -929,6 +932,102 @@ TEST(StreamableHttpTransportTest, ImmediatePostWhileRequestInFlight) {
     ASSERT_TRUE(got_response.load());
 
     transport->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, RequestReceiving202FailsPendingWithProtocolError) {
+    auto port = PickFreePort(kTestBasePort + 1655);
+    HttpServer mock(port);
+    mock.SetHandler("POST", "/mcp", [](const HttpRequest&, HttpResponse& resp) {
+        resp.status_code = 202;
+        resp.status_text = "Accepted";
+        resp.body.clear();
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.enable_listen_stream = false;
+    StreamableHttpClientTransport client(opts);
+    auto session = client.Connect();
+    ASSERT_NE(session, nullptr);
+
+    JsonRpcRequest request;
+    request.method = "tools/call";
+    request.id = int64_t{77};
+    session->SendMessageAsync(std::move(request));
+
+    std::atomic<int> error_code{0};
+    auto& channel = session->GetMessageChannel();
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (ec) return;
+        if (auto* error = AsError(msg))
+            error_code.store(static_cast<int>(error->error.code));
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (error_code.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_EQ(error_code.load(), -32005);
+
+    session->Close();
+    mock.Stop();
+}
+
+TEST(StreamableHttpTransportTest, EmptyBody202NotificationDoesNotPolluteNextResponse) {
+    auto port = PickFreePort(kTestBasePort + 1656);
+    HttpServer mock(port);
+    std::atomic<int> notifications{0};
+    mock.SetHandler("POST", "/mcp", [&](const HttpRequest& req, HttpResponse& resp) {
+        auto method = req.headers.find("mcp-method");
+        if (method != req.headers.end() && method->second == "notifications/message") {
+            notifications.fetch_add(1);
+            resp.status_code = 202;
+            resp.status_text = "Accepted";
+            resp.body.clear();
+            return;
+        }
+        resp.body = R"({"jsonrpc":"2.0","id":88,"result":{}})";
+    });
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    opts.enable_listen_stream = false;
+    StreamableHttpClientTransport client(opts);
+    auto session = client.Connect();
+    ASSERT_NE(session, nullptr);
+
+    JsonRpcNotification note;
+    note.method = "notifications/message";
+    session->SendMessageAsync(std::move(note));
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (notifications.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_GE(notifications.load(), 1);
+
+    JsonRpcRequest request;
+    request.method = "tools/list";
+    request.id = int64_t{88};
+    session->SendMessageAsync(std::move(request));
+
+    std::atomic<bool> got_response{false};
+    auto& channel = session->GetMessageChannel();
+    channel.AsyncReceive([&](std::error_code ec, JsonRpcMessage msg) {
+        if (ec) return;
+        if (auto* response = AsResponse(msg)) {
+            if (response->id == RequestId{int64_t{88}}) got_response.store(true);
+        }
+    });
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!got_response.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(got_response.load());
+
+    session->Close();
     mock.Stop();
 }
 
@@ -3152,4 +3251,908 @@ TEST(StreamableHttpTransportTest, StatelessRequestsAreIndependentConnections) {
 
     server.Close();
     consumer.join();
+}
+
+namespace session_isolation_test_impl {
+
+using HeaderMap = std::unordered_map<std::string, std::string>;
+
+mcp::detail::net::HttpResponseInfo SendHttp(
+    const std::string& method, uint16_t port, const std::string& body,
+    const HeaderMap& headers)
+{
+    mcp::detail::net::HttpClient client;
+    mcp::detail::net::HttpRequestSpec req;
+    req.method = method;
+    req.url = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    req.body = body;
+    req.timeout = std::chrono::seconds(5);
+    for (const auto& [key, value] : headers) req.headers[key] = value;
+    return client.Request(req);
+}
+
+std::string Bearer(const std::string& token) { return "Bearer " + token; }
+
+int64_t NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void SaveSession(const std::shared_ptr<SessionStore>& store,
+                 const std::string& session_id, int64_t age_ms = 0)
+{
+    SessionRecord record;
+    record.protocol_version = "2025-03-26";
+    record.created_at_ms = NowMs() - age_ms;
+    record.last_seen_ms = record.created_at_ms;
+    store->Save(session_id, record);
+}
+
+StreamableHttpServerOptions AuthOptions(uint16_t port,
+                                        std::shared_ptr<SessionStore> store)
+{
+    StreamableHttpServerOptions opts;
+    opts.port = port;
+    opts.stateless = false;
+    opts.session_store = std::move(store);
+    opts.bearer_auth = StreamableHttpServerOptions::BearerAuthConfig{};
+    opts.bearer_auth->resource_metadata_url =
+        "http://127.0.0.1:" + std::to_string(port) +
+        "/.well-known/oauth-protected-resource";
+    opts.bearer_auth->serve_metadata_endpoint = false;
+    opts.bearer_auth->verify = [](const std::string& token) {
+        AuthResult result;
+        result.ok = token == "alice-token" || token == "bob-token" ||
+                    token == "token-super-secret-value";
+        if (token == "alice-token" || token == "token-super-secret-value")
+            result.principal = "alice";
+        if (token == "bob-token") result.principal = "bob";
+        if (result.ok) result.scopes = {"mcp:read"};
+        return result;
+    };
+    return opts;
+}
+
+void SendRawResult(StreamableHttpServerTransport& server, const RequestId& id,
+                   const std::string& session_id, const std::string& winner)
+{
+    JsonRpcResponse response;
+    response.id = id;
+    response.session_id = session_id;
+    JsonValue result(JsonValue::object_tag);
+    result["winner"] = JsonValue(winner);
+    response.result = std::move(result);
+    server.SendMessageAsync(JsonRpcMessage(std::move(response)));
+}
+
+struct LogCapture {
+    std::vector<std::string> records;
+    LogLevel previous{LogLevel::Off};
+    LogCapture() {
+        previous = GetLogLevel();
+        SetLogLevel(LogLevel::Info);
+        SetLogHandler([this](const LogRecord& record) {
+            records.emplace_back(record.message);
+        });
+    }
+    ~LogCapture() {
+        SetLogHandler(nullptr);
+        SetLogLevel(previous);
+    }
+};
+
+} // namespace session_isolation_test_impl
+
+using namespace session_isolation_test_impl;
+
+TEST(SessionIsolationTest, AuthenticatedContextCarriesPrincipalAndRedactedSession) {
+    auto port = PickFreePort(kTestBasePort + 2200);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-context-alice");
+    auto opts = AuthOptions(port, store);
+    std::vector<ServerRequestContext> observed;
+    opts.on_authenticated = [&](const ServerRequestContext& ctx) {
+        observed.push_back(ctx);
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-context-alice"}});
+
+    EXPECT_EQ(resp.status_code, 202);
+    ASSERT_EQ(observed.size(), size_t{1});
+    EXPECT_TRUE(observed[0].IsSessionful());
+    EXPECT_FALSE(observed[0].IsStateless());
+    EXPECT_EQ(observed[0].Principal(), "alice");
+    EXPECT_EQ(observed[0].SessionId(), "sess-context-alice");
+    ASSERT_EQ(observed[0].Scopes().size(), size_t{1});
+    EXPECT_EQ(observed[0].Scopes()[0], "mcp:read");
+    EXPECT_EQ(observed[0].RedactedSession().substr(0, 4), "sid-");
+    EXPECT_EQ(observed[0].CorrelationId().substr(0, 4), "cid-");
+    EXPECT_EQ(observed[0].RedactedSession().find("sess-context-alice"),
+              std::string::npos);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, TwoPrincipalsOnSameSessionFailClosed) {
+    auto port = PickFreePort(kTestBasePort + 2220);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-shared");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto first = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-shared"}});
+    auto conflict = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-shared"}});
+    auto again = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-shared"}});
+
+    EXPECT_EQ(first.status_code, 202);
+    EXPECT_EQ(conflict.status_code, 403);
+    EXPECT_EQ(again.status_code, 202);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, ForgedPrincipalInBodyAndMetaIsIgnored) {
+    auto port = PickFreePort(kTestBasePort + 2240);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-forged");
+    auto opts = AuthOptions(port, store);
+    std::vector<ServerRequestContext> observed;
+    opts.on_authenticated = [&](const ServerRequestContext& ctx) {
+        observed.push_back(ctx);
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    const std::string body = R"({"jsonrpc":"2.0","method":"notifications/initialized",)"
+        R"("params":{"owner":"attacker","principal":"attacker",)"
+        R"("_meta":{"principal":"attacker","owner":"attacker"}}})";
+    auto resp = SendHttp("POST", port, body,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-forged"}});
+
+    EXPECT_EQ(resp.status_code, 202);
+    ASSERT_EQ(observed.size(), size_t{1});
+    EXPECT_EQ(observed[0].Principal(), "alice");
+    server.Close();
+}
+
+TEST(SessionIsolationTest, ExpiredAndRevokedSessionsFailClosed) {
+    auto port = PickFreePort(kTestBasePort + 2260);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-expired", 31 * 60 * 1000);
+    SaveSession(store, "sess-revoked");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto expired = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-expired"}});
+    auto live = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-revoked"}});
+    store->Remove("sess-revoked");
+    auto revoked = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-revoked"}});
+
+    EXPECT_EQ(expired.status_code, 404);
+    EXPECT_EQ(live.status_code, 202);
+    EXPECT_EQ(revoked.status_code, 404);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, StatelessContextIsExplicitlyMarkedWithoutSession) {
+    auto port = PickFreePort(kTestBasePort + 2280);
+    auto opts = AuthOptions(port, nullptr);
+    opts.stateless = true;
+    std::vector<ServerRequestContext> observed;
+    opts.on_authenticated = [&](const ServerRequestContext& ctx) {
+        observed.push_back(ctx);
+    };
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto resp = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")}});
+
+    EXPECT_EQ(resp.status_code, 202);
+    ASSERT_EQ(observed.size(), size_t{1});
+    EXPECT_TRUE(observed[0].IsStateless());
+    EXPECT_FALSE(observed[0].IsSessionful());
+    EXPECT_TRUE(observed[0].SessionId().empty());
+    EXPECT_EQ(observed[0].RedactedSession(), "stateless");
+    EXPECT_EQ(observed[0].Principal(), "alice");
+    server.Close();
+}
+
+TEST(SessionIsolationTest, DeleteRequiresValidCredentialBeforeAnyStoreAccess) {
+    auto port = PickFreePort(kTestBasePort + 2300);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-auth");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-auth"}});
+    auto missing = SendHttp("DELETE", port, "", {{"Mcp-Session-Id", "sess-delete-auth"}});
+    auto invalid = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("wrong-token")},
+         {"Mcp-Session-Id", "sess-delete-auth"}});
+    auto valid = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-auth"}});
+
+    EXPECT_EQ(bind.status_code, 202);
+    EXPECT_EQ(missing.status_code, 401);
+    EXPECT_EQ(invalid.status_code, 401);
+    EXPECT_EQ(valid.status_code, 200);
+    EXPECT_FALSE(store->Load("sess-delete-auth").has_value());
+    server.Close();
+}
+
+TEST(SessionIsolationTest, DeleteByNonOwnerHasNoSideEffect) {
+    auto port = PickFreePort(kTestBasePort + 2320);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-owner");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto foreign = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto still_alive = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto owner = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+    auto gone = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-owner"}});
+
+    EXPECT_EQ(bind.status_code, 202);
+    EXPECT_EQ(foreign.status_code, 404);
+    EXPECT_EQ(still_alive.status_code, 202);
+    EXPECT_EQ(owner.status_code, 200);
+    EXPECT_EQ(gone.status_code, 404);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, UnknownAndForeignSessionDeleteAreIndistinguishable) {
+    auto port = PickFreePort(kTestBasePort + 2340);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-known");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-known"}});
+    auto unknown = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-unknown"}});
+    auto foreign = SendHttp("DELETE", port, "",
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-delete-known"}});
+
+    EXPECT_EQ(bind.status_code, 202);
+    EXPECT_EQ(unknown.status_code, foreign.status_code);
+    EXPECT_EQ(unknown.body, foreign.body);
+    EXPECT_EQ(unknown.status_code, 404);
+    EXPECT_TRUE(store->Load("sess-delete-known").has_value());
+    server.Close();
+}
+
+TEST(SessionIsolationTest, ConcurrentDeletesDoNotDoubleSideEffects) {
+    auto port = PickFreePort(kTestBasePort + 2360);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-concurrent");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-concurrent"}});
+    ASSERT_EQ(bind.status_code, 202);
+
+    std::atomic<int> ok_count{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back([&] {
+            auto resp = SendHttp("DELETE", port, "",
+                {{"Authorization", Bearer("alice-token")},
+                 {"Mcp-Session-Id", "sess-delete-concurrent"}});
+            if (resp.status_code == 200) ok_count.fetch_add(1);
+        });
+    }
+    for (auto& worker : workers) worker.join();
+
+    EXPECT_GE(ok_count.load(), 1);
+    EXPECT_FALSE(store->Load("sess-delete-concurrent").has_value());
+    server.Close();
+}
+
+TEST(SessionIsolationTest, CloseDuringDeleteDoesNotSelfJoin) {
+    auto port = PickFreePort(kTestBasePort + 2390);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-delete-close");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+    auto bind = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-delete-close"}});
+    ASSERT_EQ(bind.status_code, 202);
+
+    std::atomic<bool> finished{false};
+    std::thread deleter([&] {
+        try {
+            (void)SendHttp("DELETE", port, "",
+                {{"Authorization", Bearer("alice-token")},
+                 {"Mcp-Session-Id", "sess-delete-close"}});
+        } catch (...) {
+        }
+        finished.store(true);
+    });
+    server.Close();
+    deleter.join();
+    EXPECT_TRUE(finished.load());
+}
+
+TEST(SessionIsolationTest, PendingRequestsWithSameIdDoNotCrosstalk) {
+    auto port = PickFreePort(kTestBasePort + 2380);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-pending-a");
+    SaveSession(store, "sess-pending-b");
+    auto opts = AuthOptions(port, store);
+    opts.request_timeout = std::chrono::seconds(5);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    auto bind_a = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("alice-token")},
+         {"Mcp-Session-Id", "sess-pending-a"}});
+    auto bind_b = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("bob-token")},
+         {"Mcp-Session-Id", "sess-pending-b"}});
+    ASSERT_EQ(bind_a.status_code, 202);
+    ASSERT_EQ(bind_b.status_code, 202);
+    for (int i = 0; i < 2; ++i) {
+        std::promise<void> drained;
+        auto drained_future = drained.get_future();
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code, JsonRpcMessage) {
+                try { drained.set_value(); } catch (...) {}
+            });
+        drained_future.wait();
+    }
+
+    const std::string body = R"({"jsonrpc":"2.0","id":777,"method":"tools/call",)"
+        R"("params":{"name":"probe","arguments":{}}})";
+    mcp::detail::net::HttpResponseInfo result_a;
+    mcp::detail::net::HttpResponseInfo result_b;
+    std::thread caller_a([&] {
+        result_a = SendHttp("POST", port, body,
+            {{"Authorization", Bearer("alice-token")},
+             {"Mcp-Session-Id", "sess-pending-a"}});
+    });
+    std::thread caller_b([&] {
+        result_b = SendHttp("POST", port, body,
+            {{"Authorization", Bearer("bob-token")},
+             {"Mcp-Session-Id", "sess-pending-b"}});
+    });
+
+    std::vector<JsonRpcRequest> received;
+    std::mutex received_mutex;
+    for (int i = 0; i < 2; ++i) {
+        std::promise<void> one;
+        auto one_future = one.get_future();
+        server.GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage msg) {
+                if (!ec) {
+                    if (auto* req = AsRequest(msg)) {
+                        std::lock_guard<std::mutex> lock(received_mutex);
+                        received.push_back(*req);
+                    }
+                }
+                try { one.set_value(); } catch (...) {}
+            });
+        one_future.wait();
+    }
+    ASSERT_EQ(received.size(), size_t{2});
+    for (auto it = received.rbegin(); it != received.rend(); ++it) {
+        SendRawResult(server, it->id, it->session_id,
+                      it->session_id == "sess-pending-a" ? "alice" : "bob");
+    }
+    caller_a.join();
+    caller_b.join();
+
+    EXPECT_EQ(result_a.status_code, 200);
+    EXPECT_EQ(result_b.status_code, 200);
+    EXPECT_NE(result_a.body.find("alice"), std::string::npos);
+    EXPECT_EQ(result_a.body.find("bob"), std::string::npos);
+    EXPECT_NE(result_b.body.find("bob"), std::string::npos);
+    EXPECT_EQ(result_b.body.find("alice"), std::string::npos);
+    server.Close();
+}
+
+TEST(SessionIsolationTest, LogsRedactCredentialsAndSessionIdentifiers) {
+    auto port = PickFreePort(kTestBasePort + 2400);
+    auto store = std::make_shared<InMemorySessionStore>();
+    SaveSession(store, "sess-log-secret");
+    auto opts = AuthOptions(port, store);
+    StreamableHttpServerTransport server(opts);
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    LogCapture capture;
+    auto resp = SendHttp("POST", port, kNotificationBody,
+        {{"Authorization", Bearer("token-super-secret-value")},
+         {"Mcp-Session-Id", "sess-log-secret"}});
+    EXPECT_EQ(resp.status_code, 202);
+    bool saw_context = false;
+    for (const auto& record : capture.records) {
+        EXPECT_EQ(record.find("token-super-secret-value"), std::string::npos);
+        EXPECT_EQ(record.find("Bearer"), std::string::npos);
+        EXPECT_EQ(record.find("Authorization"), std::string::npos);
+        EXPECT_EQ(record.find("sess-log-secret"), std::string::npos);
+        if (record.find("correlation=cid-") != std::string::npos &&
+            record.find("session=sid-") != std::string::npos) {
+            saw_context = true;
+        }
+    }
+    EXPECT_TRUE(saw_context);
+    server.Close();
+}
+
+namespace {
+
+struct AutoDetectReader {
+    struct State {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::queue<JsonRpcMessage> messages;
+        bool closed = false;
+    };
+
+    explicit AutoDetectReader(MessageChannel& channel) : channel_(channel) {
+        auto state = state_;
+        MessageChannel* source = &channel_;
+        worker_ = std::thread([state, source] {
+            for (;;) {
+                source->AsyncReceive([state](std::error_code ec, JsonRpcMessage msg) {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (ec) {
+                        state->closed = true;
+                    } else {
+                        state->messages.push(std::move(msg));
+                    }
+                    state->cv.notify_all();
+                });
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->closed) break;
+            }
+        });
+    }
+
+    ~AutoDetectReader() {
+        channel_.Close();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    bool Wait(JsonRpcMessage& out,
+              std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+        auto state = state_;
+        std::unique_lock<std::mutex> lock(state->mutex);
+        if (!state->cv.wait_for(lock, timeout, [&state] {
+                return !state->messages.empty() || state->closed;
+            })) {
+            return false;
+        }
+        if (state->messages.empty()) return false;
+        out = std::move(state->messages.front());
+        state->messages.pop();
+        return true;
+    }
+
+private:
+    MessageChannel& channel_;
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::thread worker_;
+};
+
+struct AutoDetectMock {
+    explicit AutoDetectMock(uint16_t p) : port(p), server(p) {}
+
+    void Start() {
+        server.SetHandler("POST", "/mcp", [this](const HttpRequest& req, HttpResponse& resp) {
+            const int index = mcp_posts.fetch_add(1);
+            if (success_first && index == 0) {
+                resp.status_code = 200;
+                resp.body = InitBody(req.body);
+                return;
+            }
+            resp.status_code = status_code;
+            resp.status_text = "Error";
+            resp.body = error_body;
+        });
+        server.SetHandler("GET", "/mcp", [this](const HttpRequest& req, HttpResponse& resp) {
+            if (req.headers.find("mcp-protocol-version") != req.headers.end()) {
+                listen_gets.fetch_add(1);
+                resp.status_code = 405;
+                resp.body = "listen disabled";
+                return;
+            }
+            sse_gets.fetch_add(1);
+            if (!sse_available) {
+                resp.status_code = 404;
+                resp.body = "no legacy sse";
+                return;
+            }
+            resp.is_sse = true;
+            resp.body = "event: endpoint\ndata: /message\n\n";
+        });
+        server.SetHandler("POST", "/message", [this](const HttpRequest& req, HttpResponse& resp) {
+            message_posts.fetch_add(1);
+            auto body = JsonValue::Parse(req.body);
+            auto* method = body.Find("method");
+            {
+                std::lock_guard<std::mutex> lock(methods_mutex);
+                methods.push_back(method && method->IsString() ? method->GetString() : std::string{});
+            }
+            std::string result = "{}";
+            if (method && method->IsString() && method->GetString() == "initialize") {
+                result = R"({"protocolVersion":"2025-11-25","capabilities":{},)"
+                         R"("serverInfo":{"name":"legacy","version":"1"}})";
+            }
+            auto response = "{\"jsonrpc\":\"2.0\",\"id\":" + IdLiteral(body) +
+                            ",\"result\":" + result + "}";
+            server.BroadcastSse("event: message\ndata: " + response + "\n\n");
+        });
+        server.Start();
+    }
+
+    void Stop() { server.Stop(); }
+
+    static std::string IdLiteral(const JsonValue& body) {
+        auto* id = body.Find("id");
+        if (id && id->IsInt()) return std::to_string(id->GetInt());
+        if (id && id->IsString()) return "\"" + id->GetString() + "\"";
+        return "null";
+    }
+
+    static std::string InitBody(const std::string& request) {
+        auto body = JsonValue::Parse(request);
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + IdLiteral(body) +
+               R"(,"result":{"protocolVersion":"2025-11-25","capabilities":{},)"
+               R"("serverInfo":{"name":"mock","version":"1"}}})";
+    }
+
+    uint16_t port;
+    HttpServer server;
+    int status_code = 400;
+    std::string error_body = "<html>legacy only</html>";
+    bool sse_available = true;
+    bool success_first = false;
+    std::atomic<int> mcp_posts{0};
+    std::atomic<int> listen_gets{0};
+    std::atomic<int> sse_gets{0};
+    std::atomic<int> message_posts{0};
+    std::mutex methods_mutex;
+    std::vector<std::string> methods;
+};
+
+JsonRpcRequest AutoDetectRequest(std::string method, int64_t id) {
+    JsonRpcRequest request;
+    request.method = std::move(method);
+    request.id = id;
+    return request;
+}
+
+bool IsResponseTo(const JsonRpcMessage& message, int64_t id) {
+    auto* response = std::get_if<JsonRpcResponse>(&message);
+    return response != nullptr && std::holds_alternative<int64_t>(response->id) &&
+           std::get<int64_t>(response->id) == id;
+}
+
+} // namespace
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackReplaysInitializeOnceAndKeepsOrder) {
+    auto port = PickFreePort(kTestBasePort + 2500);
+    AutoDetectMock mock(port);
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    ASSERT_NE(transport, nullptr);
+    AutoDetectReader reader(transport->GetMessageChannel());
+
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 1));
+    JsonRpcMessage message;
+    if (!reader.Wait(message)) {
+        ADD_FAILURE() << "mcp_posts=" << mock.mcp_posts.load()
+                      << " sse_gets=" << mock.sse_gets.load()
+                      << " listen_gets=" << mock.listen_gets.load()
+                      << " message_posts=" << mock.message_posts.load();
+        transport->Close();
+        mock.Stop();
+        return;
+    }
+    EXPECT_TRUE(IsResponseTo(message, 1));
+
+    transport->SendMessageAsync(AutoDetectRequest("tools/list", 2));
+    ASSERT_TRUE(reader.Wait(message));
+    EXPECT_TRUE(IsResponseTo(message, 2));
+
+    JsonRpcNotification note;
+    note.method = "notifications/initialized";
+    transport->SendMessageAsync(std::move(note));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    transport->Close();
+    mock.Stop();
+
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.listen_gets.load(), 0);
+    EXPECT_GE(mock.sse_gets.load(), 1);
+    EXPECT_EQ(mock.message_posts.load(), 3);
+    std::lock_guard<std::mutex> lock(mock.methods_mutex);
+    EXPECT_EQ(mock.methods, (std::vector<std::string>{
+                                "initialize", "tools/list", "notifications/initialized"}));
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackStatusAndBodyMatrix) {
+    struct Case {
+        int status;
+        std::string body;
+    };
+    const Case cases[] = {
+        {400, "<html>legacy only</html>"},
+        {400, "plain text legacy"},
+        {400, ""},
+        {404, "<html>legacy only</html>"},
+        {404, "plain text legacy"},
+        {404, ""},
+        {405, "<html>legacy only</html>"},
+        {405, "plain text legacy"},
+        {405, ""},
+    };
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        auto port = PickFreePort(static_cast<uint16_t>(kTestBasePort + 2520 + i));
+        AutoDetectMock mock(port);
+        mock.status_code = cases[i].status;
+        mock.error_body = cases[i].body;
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        AutoDetectReader reader(transport->GetMessageChannel());
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 41));
+
+        JsonRpcMessage message;
+        ASSERT_TRUE(reader.Wait(message)) << "case " << i;
+        EXPECT_TRUE(IsResponseTo(message, 41)) << "case " << i;
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 1) << "case " << i;
+        EXPECT_GE(mock.sse_gets.load(), 1) << "case " << i;
+        EXPECT_EQ(mock.message_posts.load(), 1) << "case " << i;
+    }
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectKeepsJsonRpcErrorEnvelopeOn400) {
+    auto port = PickFreePort(kTestBasePort + 2560);
+    AutoDetectMock mock(port);
+    mock.status_code = 400;
+    mock.error_body =
+        R"({"jsonrpc":"2.0","id":7,"error":{"code":-32600,"message":"bad request"}})";
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    AutoDetectReader reader(transport->GetMessageChannel());
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 7));
+
+    JsonRpcMessage message;
+    ASSERT_TRUE(reader.Wait(message));
+    auto* error = std::get_if<JsonRpcErrorResponse>(&message);
+    ASSERT_TRUE(error != nullptr);
+    EXPECT_EQ(static_cast<int64_t>(error->error.code), -32600);
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.sse_gets.load(), 0);
+    EXPECT_EQ(mock.message_posts.load(), 0);
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectSkipsFallbackForNonLegacyStatuses) {
+    struct Case {
+        uint16_t offset;
+        int status;
+    };
+    const Case cases[] = {
+        {2570, 401}, {2571, 403}, {2572, 500},
+    };
+    for (const auto& item : cases) {
+        auto port = PickFreePort(static_cast<uint16_t>(kTestBasePort + item.offset));
+        AutoDetectMock mock(port);
+        mock.status_code = item.status;
+        mock.error_body = "plain failure";
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 9));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 1) << item.status;
+        EXPECT_EQ(mock.sse_gets.load(), 0) << item.status;
+    }
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectDoesNotFallBackAfterFirstResponse) {
+    auto port = PickFreePort(kTestBasePort + 2580);
+    AutoDetectMock mock(port);
+    mock.success_first = true;
+    mock.status_code = 400;
+    mock.error_body = "plain legacy";
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    AutoDetectReader reader(transport->GetMessageChannel());
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 11));
+    JsonRpcMessage message;
+    ASSERT_TRUE(reader.Wait(message));
+    EXPECT_TRUE(IsResponseTo(message, 11));
+
+    transport->SendMessageAsync(AutoDetectRequest("tools/list", 12));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 2);
+    EXPECT_EQ(mock.sse_gets.load(), 0);
+    EXPECT_EQ(mock.message_posts.load(), 0);
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectExplicitModesChooseImplementationDirectly) {
+    {
+        auto port = PickFreePort(kTestBasePort + 2590);
+        AutoDetectMock mock(port);
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        opts.transport_mode = HttpTransportMode::StreamableHttp;
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 13));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 1);
+        EXPECT_EQ(mock.sse_gets.load(), 0);
+    }
+    {
+        auto port = PickFreePort(kTestBasePort + 2591);
+        AutoDetectMock mock(port);
+        mock.Start();
+        ASSERT_TRUE(WaitUntilReady(port));
+        HttpClientTransportOptions opts;
+        opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+        opts.transport_mode = HttpTransportMode::Sse;
+        StreamableHttpClientTransport factory(opts);
+        auto transport = factory.Connect();
+        AutoDetectReader reader(transport->GetMessageChannel());
+        transport->SendMessageAsync(AutoDetectRequest("initialize", 14));
+        JsonRpcMessage message;
+        ASSERT_TRUE(reader.Wait(message));
+        EXPECT_TRUE(IsResponseTo(message, 14));
+        transport->Close();
+        mock.Stop();
+        EXPECT_EQ(mock.mcp_posts.load(), 0);
+        EXPECT_GE(mock.sse_gets.load(), 1);
+        EXPECT_EQ(mock.message_posts.load(), 1);
+    }
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackFailureEndsPendingOnce) {
+    auto port = PickFreePort(kTestBasePort + 2600);
+    AutoDetectMock mock(port);
+    mock.sse_available = false;
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    std::atomic<int> errors{0};
+    dynamic_cast<TransportBase*>(transport.get())->SetOnError(
+        [&](std::string_view) { errors.fetch_add(1); });
+    AutoDetectReader reader(transport->GetMessageChannel());
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 15));
+
+    JsonRpcMessage message;
+    ASSERT_TRUE(reader.Wait(message, std::chrono::seconds(12)));
+    auto* error = std::get_if<JsonRpcErrorResponse>(&message);
+    ASSERT_TRUE(error != nullptr);
+    ASSERT_TRUE(error->id.has_value());
+    EXPECT_EQ(std::get<int64_t>(*error->id), 15);
+    EXPECT_EQ(static_cast<int64_t>(error->error.code),
+              static_cast<int64_t>(McpErrorCode::ConnectionClosed));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(errors.load(), 1);
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.message_posts.load(), 0);
+    EXPECT_LE(mock.sse_gets.load(), 3);
+}
+
+TEST(StreamableHttpTransportTest, AutoDetectFallbackCanBeDisabledByControl) {
+    auto port = PickFreePort(kTestBasePort + 2610);
+    AutoDetectMock mock(port);
+    mock.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    HttpClientTransportOptions opts;
+    opts.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    StreamableHttpClientTransport factory(opts);
+    auto transport = factory.Connect();
+    auto* control = dynamic_cast<ITransportFallbackControl*>(transport.get());
+    ASSERT_TRUE(control != nullptr);
+    control->SetFallbackEnabled(false);
+    transport->SendMessageAsync(AutoDetectRequest("initialize", 16));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    transport->Close();
+    mock.Stop();
+    EXPECT_EQ(mock.mcp_posts.load(), 1);
+    EXPECT_EQ(mock.sse_gets.load(), 0);
+    EXPECT_EQ(mock.message_posts.load(), 0);
 }

@@ -1,4 +1,5 @@
 #include <mcp/storage/FileTaskStore.hpp>
+#include <mcp/detail/AtomicJsonFile.hpp>
 
 #include <gtest/gtest.h>
 #include <mcp/test/McpTestInfo.hpp>
@@ -640,3 +641,175 @@ TEST_F(FileTaskStoreTest, CompactionFailureKeepsSubsequentWritesSucceeding) {
     EXPECT_EQ(reloaded->owner, "owner-199");
 }
 #endif
+
+static std::string ReadTaskStoreBytes(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file),
+                       std::istreambuf_iterator<char>());
+}
+
+TEST_F(FileTaskStoreTest, MiddleLineCorruptionBacksUpAndRebuildsRecoveredPrefix) {
+    const std::string good =
+        R"({"task_id":"task-a","state":{"task_id":"task-a","status":1,)"
+        R"("progress":0.0,"created_at":"1700000000000"}})";
+    const std::string corrupted = good + "\n{bad json\n" +
+        R"({"task_id":"task-b","state":{"task_id":"task-b","status":1,)"
+        R"("progress":0.0,"created_at":"1700000000000"}})" + "\n";
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << corrupted;
+    }
+
+    FileTaskStore store(store_path);
+    ASSERT_TRUE(store.GetTask("task-a").has_value());
+    EXPECT_FALSE(store.GetTask("task-b").has_value());
+    EXPECT_EQ(ReadTaskStoreBytes(store_path.string() + ".corrupt"), corrupted);
+
+    auto rebuilt = ReadTaskStoreBytes(store_path);
+    EXPECT_EQ(std::count(rebuilt.begin(), rebuilt.end(), '\n'), 1);
+    EXPECT_NE(rebuilt.find("task-a"), std::string::npos);
+    EXPECT_EQ(rebuilt.find("task-b"), std::string::npos);
+
+    FileTaskStore reopened(store_path);
+    ASSERT_TRUE(reopened.GetTask("task-a").has_value());
+    EXPECT_FALSE(reopened.GetTask("task-b").has_value());
+}
+
+TEST_F(FileTaskStoreTest, CorruptBackupFailureKeepsOriginalFileAndThrows) {
+    const std::string corrupted = R"({"task_id":"task-a","state":{}})" "\n" "{bad\n";
+    ASSERT_TRUE(std::filesystem::create_directory(store_path.string() + ".corrupt"));
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << corrupted;
+    }
+
+    EXPECT_THROW({ FileTaskStore store(store_path); }, McpError);
+    EXPECT_EQ(ReadTaskStoreBytes(store_path), corrupted);
+}
+
+TEST_F(FileTaskStoreTest, TruncatedTailIsRewrittenToLegalPrefix) {
+    const std::string good =
+        R"({"task_id":"task-a","state":{"task_id":"task-a","status":1,)"
+        R"("progress":0.0,"created_at":"1700000000000"}})";
+    const std::string truncated = good + "\n" +
+        R"({"task_id":"task-b","state":{"task";)";
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << truncated;
+    }
+
+    FileTaskStore store(store_path);
+    ASSERT_TRUE(store.GetTask("task-a").has_value());
+    EXPECT_FALSE(store.GetTask("task-b").has_value());
+    EXPECT_FALSE(std::filesystem::exists(store_path.string() + ".corrupt"));
+
+    auto rebuilt = ReadTaskStoreBytes(store_path);
+    EXPECT_EQ(std::count(rebuilt.begin(), rebuilt.end(), '\n'), 1);
+    EXPECT_EQ(rebuilt.find("task-b"), std::string::npos);
+
+    FileTaskStore reopened(store_path);
+    EXPECT_EQ(ReadTaskStoreBytes(store_path), rebuilt);
+    ASSERT_TRUE(reopened.GetTask("task-a").has_value());
+    EXPECT_FALSE(reopened.GetTask("task-b").has_value());
+}
+
+TEST_F(FileTaskStoreTest, TruncatedTailRewriteFailureThrowsAndKeepsOriginal) {
+    const std::string good =
+        R"({"task_id":"task-a","state":{"task_id":"task-a","status":1,)"
+        R"("progress":0.0,"created_at":"1700000000000"}})";
+    const std::string truncated = good + "\n" +
+        R"({"task_id":"task-b","state":{"task";)";
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << truncated;
+    }
+
+    detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::Create);
+    EXPECT_THROW({ FileTaskStore store(store_path); }, McpError);
+    detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::None);
+    EXPECT_EQ(ReadTaskStoreBytes(store_path), truncated);
+}
+
+TEST_F(FileTaskStoreTest, CorruptRebuildFailureThrowsAfterBackup) {
+    const std::string good =
+        R"({"task_id":"task-a","state":{"task_id":"task-a","status":1,)"
+        R"("progress":0.0,"created_at":"1700000000000"}})";
+    const std::string corrupted = good + "\n{bad json\n" + good + "\n";
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << corrupted;
+    }
+
+    detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::Create);
+    EXPECT_THROW({ FileTaskStore store(store_path); }, McpError);
+    detail::SetAtomicWriteFailureInjection(detail::AtomicWriteStage::None);
+    EXPECT_EQ(ReadTaskStoreBytes(store_path), corrupted);
+    EXPECT_EQ(ReadTaskStoreBytes(store_path.string() + ".corrupt"), corrupted);
+}
+
+TEST_F(FileTaskStoreTest, ReadsLegacyRecordWithoutOwnerAndKeepsIt) {
+    const auto legacy = R"({"task_id":"legacy-task","state":{"task_id":"legacy-task","status":2,"created_at":"0"}})";
+    {
+        std::ofstream file(store_path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(file.is_open());
+        file << legacy << '\n';
+    }
+    {
+        FileTaskStore store(store_path);
+        auto task = store.GetTask("legacy-task");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_TRUE(task->owner.empty());
+        store.CreateTask("owned-task", "principal-a", 300000);
+    }
+    {
+        FileTaskStore store(store_path);
+        auto legacy_task = store.GetTask("legacy-task");
+        ASSERT_TRUE(legacy_task.has_value());
+        EXPECT_TRUE(legacy_task->owner.empty());
+        auto owned_task = store.GetTask("owned-task");
+        ASSERT_TRUE(owned_task.has_value());
+        EXPECT_EQ(owned_task->owner, "principal-a");
+        ASSERT_TRUE(owned_task->ttl_ms.has_value());
+        EXPECT_EQ(*owned_task->ttl_ms, 300000);
+    }
+}
+
+TEST_F(FileTaskStoreTest, InMemoryStorePreservesOwnerAndLegacyRecords) {
+    InMemoryTaskStore store;
+    store.CreateTask("legacy-task");
+    store.CreateTask("owned-task", "principal-a", 60000);
+    auto legacy_task = store.GetTask("legacy-task");
+    ASSERT_TRUE(legacy_task.has_value());
+    EXPECT_TRUE(legacy_task->owner.empty());
+    auto owned_task = store.GetTask("owned-task");
+    ASSERT_TRUE(owned_task.has_value());
+    EXPECT_EQ(owned_task->owner, "principal-a");
+    EXPECT_TRUE(store.SetTaskOwner("legacy-task", "principal-b"));
+    EXPECT_EQ(store.GetTask("legacy-task")->owner, "principal-b");
+    EXPECT_TRUE(store.RemoveTask("owned-task"));
+    EXPECT_FALSE(store.GetTask("owned-task").has_value());
+}
+
+TEST_F(FileTaskStoreTest, PersistsOwnerAndAuthorizedScopesAcrossInstances) {
+    {
+        FileTaskStore store(store_path);
+        store.CreateTask("scoped-task", "stateless-principal",
+            std::vector<std::string>{"mcp:read", "tasks:write"}, 300000);
+    }
+    {
+        FileTaskStore store(store_path);
+        auto task = store.GetTask("scoped-task");
+        ASSERT_TRUE(task.has_value());
+        EXPECT_EQ(task->owner, "stateless-principal");
+        ASSERT_EQ(task->authorized_scopes.size(), size_t{2});
+        EXPECT_EQ(task->authorized_scopes[0], "mcp:read");
+        EXPECT_EQ(task->authorized_scopes[1], "tasks:write");
+        ASSERT_TRUE(task->ttl_ms.has_value());
+        EXPECT_EQ(*task->ttl_ms, 300000);
+    }
+}

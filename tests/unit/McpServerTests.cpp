@@ -3,6 +3,7 @@
 #include <mcp/client/McpClient.hpp>
 #include <mcp/ext/Apps.hpp>
 #include <mcp/ext/ServerCard.hpp>
+#include <mcp/ext/ServerCardClient.hpp>
 #include <mcp/transport/InMemoryTransport.hpp>
 #include <mcp/storage/FileTaskStore.hpp>
 
@@ -3023,6 +3024,7 @@ ModernTaskEnv MakeModernTaskEnv() {
     sopts.task_store = env.store;
     sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.server->SetDefaultPrincipal("test-principal");
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
     env.client->Start();
@@ -3064,6 +3066,7 @@ ModernTaskEnv MakeBareModernTaskEnv() {
     sopts.task_store = env.store;
     sopts.enable_tasks_extension = true;
     env.server = McpServer::Create(std::move(pair.server), sopts);
+    env.server->SetDefaultPrincipal("test-principal");
     env.client = std::make_shared<McpSessionHandler>(
         std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
     env.client->Start();
@@ -4889,6 +4892,55 @@ std::string WriteFileInputTemp(
     return std::string("file://") + path.generic_string();
 }
 
+std::filesystem::path MakeFileInputRoot(
+    const std::string& name, std::vector<std::filesystem::path>& tracked)
+{
+    auto root = std::filesystem::temp_directory_path() / name;
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    tracked.push_back(root);
+    return root;
+}
+
+ServerOptions::FileInputConfig MakeFileInputConfig(
+    const std::filesystem::path& root, std::size_t max_refs = 16,
+    int64_t max_file_bytes = 8 * 1024 * 1024,
+    int64_t max_total_bytes = 8 * 1024 * 1024,
+    int64_t max_inline_bytes = 256 * 1024)
+{
+    ServerOptions::FileInputConfig config;
+    config.allowed_roots = {root.string()};
+    config.max_refs = max_refs;
+    config.max_file_bytes = max_file_bytes;
+    config.max_total_bytes = max_total_bytes;
+    config.max_inline_bytes = max_inline_bytes;
+    return config;
+}
+
+std::string WriteFileInputAt(
+    const std::filesystem::path& directory,
+    const std::string& name, const std::string& data)
+{
+    auto path = directory / name;
+    FILE* file = std::fopen(path.string().c_str(), "wb");
+    if (file) {
+        if (!data.empty()) std::fwrite(data.data(), 1, data.size(), file);
+        std::fclose(file);
+    }
+    return std::string("file://") + path.generic_string();
+}
+
+JsonValue MakeFileInputRef(
+    const std::string& uri, int64_t offset = 0, int64_t length = 0)
+{
+    JsonValue ref(JsonValue::object_tag);
+    ref["uri"] = JsonValue(uri);
+    if (offset != 0) ref["offset"] = JsonValue(offset);
+    if (length != 0) ref["length"] = JsonValue(length);
+    return ref;
+}
+
 struct FileInputEnv {
     std::unique_ptr<McpServer> server;
     std::shared_ptr<McpSessionHandler> client;
@@ -4896,13 +4948,15 @@ struct FileInputEnv {
     std::vector<std::filesystem::path> files;
 };
 
-FileInputEnv MakeFileInputEnv(bool enabled) {
+FileInputEnv MakeFileInputEnv(
+    bool enabled, ServerOptions::FileInputConfig config = {}) {
     FileInputEnv env;
     auto pair = InMemoryTransport::CreatePair();
     ServerOptions sopts;
     sopts.server_info = Implementation{"test-server", "1.0.0"};
     sopts.protocol_version = std::string(kLatestProtocolVersion);
     sopts.enable_file_input = enabled;
+    sopts.file_input_config = std::move(config);
     env.server = McpServer::Create(std::move(pair.server), sopts);
     env.captured = std::make_shared<std::optional<JsonValue>>();
     auto captured = env.captured;
@@ -4953,13 +5007,14 @@ void CloseFileInputEnv(FileInputEnv& env) {
     env.server->Close();
     env.client->Close();
     std::error_code ec;
-    for (const auto& p : env.files) std::filesystem::remove(p, ec);
+    for (const auto& p : env.files) std::filesystem::remove_all(p, ec);
 }
 
 } // namespace
 
 TEST(McpServerTest, FileInputRangeReadInlinesSlice) {
-    auto env = MakeFileInputEnv(true);
+    auto env = MakeFileInputEnv(true,
+        MakeFileInputConfig(std::filesystem::temp_directory_path()));
     std::string uri = WriteFileInputTemp(
         "mcp_file_input_range.txt", "0123456789abcdef", env.files);
     env.server->RegisterResource("file-input-doc", "resource://file-input-doc",
@@ -5008,7 +5063,8 @@ TEST(McpServerTest, FileInputRangeReadInlinesSlice) {
 }
 
 TEST(McpServerTest, FileInputOutOfRangeReturnsIsError) {
-    auto env = MakeFileInputEnv(true);
+    auto env = MakeFileInputEnv(true,
+        MakeFileInputConfig(std::filesystem::temp_directory_path()));
     std::string uri = WriteFileInputTemp(
         "mcp_file_input_range_oob.txt", "abc", env.files);
 
@@ -5030,7 +5086,8 @@ TEST(McpServerTest, FileInputOutOfRangeReturnsIsError) {
 }
 
 TEST(McpServerTest, FileInputOutsideWhitelistRejected) {
-    auto env = MakeFileInputEnv(true);
+    auto env = MakeFileInputEnv(true,
+        MakeFileInputConfig(std::filesystem::temp_directory_path()));
     auto temp_base = std::filesystem::temp_directory_path();
     if (temp_base.filename().empty()) temp_base = temp_base.parent_path();
     auto outside = temp_base.parent_path() /
@@ -5101,6 +5158,340 @@ TEST(McpServerTest, FileInputDisabledByDefault) {
     ASSERT_NE(file_uri, nullptr);
     EXPECT_EQ(file_uri->GetString(), uri);
     EXPECT_FALSE(file_arg->Contains("content"));
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputNoRootsRejectsLocalRef) {
+    auto env = MakeFileInputEnv(true);
+    std::string uri = WriteFileInputTemp(
+        "mcp_file_input_no_roots.txt", "secret", env.files);
+
+    JsonValue args(JsonValue::object_tag);
+    args["file"] = MakeFileInputRef(uri);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("no allowed roots"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputAllowlistComponentBoundary) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_allow_root", tracked);
+    auto sibling = MakeFileInputRoot("mcp_fi_allow_root_sibling", tracked);
+    const std::string inside = WriteFileInputAt(root, "ok.txt", "inside");
+    const std::string outside = WriteFileInputAt(sibling, "bad.txt", "outside");
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    JsonValue good_args(JsonValue::object_tag);
+    good_args["file"] = MakeFileInputRef(inside);
+    auto good_resp = SendFileInputToolCall(env.client, std::move(good_args));
+    ASSERT_FALSE(good_resp.Contains("code"));
+    auto good_result = DeserializeCallToolResult(good_resp);
+    EXPECT_FALSE(good_result.is_error) << FileInputErrorText(good_result);
+    ASSERT_TRUE(env.captured->has_value());
+    auto* good_content = (*env.captured)->Find("file")->Find("content");
+    ASSERT_NE(good_content, nullptr);
+    EXPECT_EQ(good_content->GetString(), "inside");
+
+    *env.captured = std::nullopt;
+    JsonValue bad_args(JsonValue::object_tag);
+    bad_args["file"] = MakeFileInputRef(outside);
+    auto bad_resp = SendFileInputToolCall(env.client, std::move(bad_args));
+    ASSERT_FALSE(bad_resp.Contains("code"));
+    auto bad_result = DeserializeCallToolResult(bad_resp);
+    EXPECT_TRUE(bad_result.is_error);
+    EXPECT_NE(FileInputErrorText(bad_result).find("not allowed"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputSensitiveFilesRejectedInsideRoot) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_sensitive", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::vector<std::string> uris = {
+        WriteFileInputAt(root, ".env", "KEY=secret"),
+        WriteFileInputAt(root, ".env.local", "KEY=secret"),
+        WriteFileInputAt(root, "id_rsa", "PRIVATE KEY"),
+        WriteFileInputAt(root, "server.p12", "CERT"),
+        WriteFileInputAt(root, "credentials.json", "TOKEN")
+    };
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_NE(FileInputErrorText(result).find("sensitive"),
+            std::string::npos) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputSymlinkAndHardLinkRejected) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_links", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::string target_uri = WriteFileInputTemp(
+        "mcp_fi_link_target.txt", "TOPSECRET", env.files);
+    const std::filesystem::path target(target_uri.substr(7));
+    std::error_code ec;
+
+    const auto link = root / "link.txt";
+    std::filesystem::create_symlink(target, link, ec);
+    const bool has_symlink = !ec;
+    if (!has_symlink) ec.clear();
+
+    const auto hard_link = root / "hard.txt";
+    std::filesystem::create_hard_link(target, hard_link, ec);
+    const bool has_hard_link = !ec;
+
+    if (!has_symlink && !has_hard_link) {
+        CloseFileInputEnv(env);
+        GTEST_SKIP() << "link creation not permitted on this platform";
+    }
+    if (has_symlink) env.files.push_back(link);
+    if (has_hard_link) env.files.push_back(hard_link);
+
+    std::vector<std::string> uris;
+    if (has_symlink) uris.push_back(std::string("file://") + link.generic_string());
+    if (has_hard_link) uris.push_back(std::string("file://") + hard_link.generic_string());
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_EQ(FileInputErrorText(result).find("TOPSECRET"),
+            std::string::npos) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputEncodedTraversalAndMalformedUriRejected) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_encoded", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::string base = "file://" + root.generic_string();
+    const std::vector<std::string> uris = {
+        base + "/%252e%252e/secret.txt",
+        base + "/%2e%2e/secret.txt",
+        base + "/%2Fetc%2Fpasswd",
+        base + "/nul%00.txt",
+        base + "/ok.txt?x=1",
+        base + "/ok.txt#fragment",
+        "file://///server/share/secret.txt",
+        "file://server/share/secret.txt"
+    };
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputAdsAndDevicePathsRejected) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_ads", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    const std::vector<std::string> uris = {
+        "file:///C:/Windows/win.ini:stream",
+        "file://localhost/C:/Windows/win.ini:stream",
+        "file:///C:relative.txt",
+        "file:///C:/CON.txt",
+        "file://"
+    };
+    for (const auto& uri : uris) {
+        *env.captured = std::nullopt;
+        JsonValue args(JsonValue::object_tag);
+        args["file"] = MakeFileInputRef(uri);
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_TRUE(result.is_error) << uri;
+        EXPECT_FALSE(env.captured->has_value()) << uri;
+    }
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputTotalByteBudgetStopsBeforeTool) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_total_budget", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(
+        root, 16, 8 * 1024 * 1024, 4, 256 * 1024));
+    env.files = std::move(tracked);
+
+    const std::string first = WriteFileInputAt(root, "a.txt", "abc");
+    const std::string second = WriteFileInputAt(root, "b.txt", "def");
+    JsonValue args(JsonValue::object_tag);
+    args["a"] = MakeFileInputRef(first);
+    args["b"] = MakeFileInputRef(second);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("byte budget exceeded"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputRefCountBudgetStopsBeforeTool) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_ref_budget", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root, 1));
+    env.files = std::move(tracked);
+
+    const std::string first = WriteFileInputAt(root, "a.txt", "a");
+    const std::string second = WriteFileInputAt(root, "b.txt", "b");
+    JsonValue args(JsonValue::object_tag);
+    args["a"] = MakeFileInputRef(first);
+    args["b"] = MakeFileInputRef(second);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("reference budget exceeded"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputRepeatedReferenceCountsBudget) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_repeat_budget", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(
+        root, 16, 8 * 1024 * 1024, 3, 256 * 1024));
+    env.files = std::move(tracked);
+
+    const std::string uri = WriteFileInputAt(root, "repeat.txt", "ab");
+    JsonValue args(JsonValue::object_tag);
+    args["a"] = MakeFileInputRef(uri);
+    args["b"] = MakeFileInputRef(uri);
+
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    EXPECT_TRUE(result.is_error);
+    EXPECT_NE(FileInputErrorText(result).find("byte budget exceeded"),
+        std::string::npos);
+    EXPECT_FALSE(env.captured->has_value());
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputResourceHandlerRunsWithoutRegistryLock) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_lock", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(root));
+    env.files = std::move(tracked);
+
+    auto* server = env.server.get();
+    static int registered = 0;
+    env.server->RegisterResource("fi-lock-doc", "resource://fi-lock-doc",
+        ResourceOptions{},
+        [server](const std::string& uri) -> ReadResourceResult {
+            const std::string name =
+                "fi-lock-doc-" + std::to_string(registered++);
+            server->RegisterResource(name, "resource://" + name,
+                ResourceOptions{}, [](const std::string&) {
+                    return ReadResourceResult{};
+                });
+            TextResourceContents text;
+            text.uri = uri;
+            text.text = "lockfree";
+            ReadResourceResult result;
+            result.contents = {mcp::ResourceContents{text}};
+            return result;
+        });
+
+    JsonValue args(JsonValue::object_tag);
+    args["doc"] = MakeFileInputRef("resource://fi-lock-doc");
+    MCP_RUN_WITH_TIMEOUT(std::chrono::seconds(5), [&]() {
+        auto resp = SendFileInputToolCall(env.client, std::move(args));
+        ASSERT_FALSE(resp.Contains("code"));
+        auto result = DeserializeCallToolResult(resp);
+        EXPECT_FALSE(result.is_error);
+        ASSERT_TRUE(env.captured->has_value());
+        auto* content = (*env.captured)->Find("doc")->Find("content");
+        ASSERT_NE(content, nullptr);
+        EXPECT_EQ(content->GetString(), "lockfree");
+    });
+
+    CloseFileInputEnv(env);
+}
+
+TEST(McpServerTest, FileInputShortReadNeverReturnsPartialContent) {
+    std::vector<std::filesystem::path> tracked;
+    auto root = MakeFileInputRoot("mcp_fi_short_read", tracked);
+    auto env = MakeFileInputEnv(true, MakeFileInputConfig(
+        root, 16, 8 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024));
+    env.files = std::move(tracked);
+
+    const std::string data(128 * 1024, 'A');
+    const std::string uri = WriteFileInputAt(root, "big.txt", data);
+    const std::filesystem::path path(uri.substr(7));
+    std::atomic<bool> done{false};
+    std::thread truncator([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        std::error_code ec;
+        std::filesystem::resize_file(path, 16, ec);
+        done.store(true);
+    });
+
+    JsonValue args(JsonValue::object_tag);
+    args["file"] = MakeFileInputRef(uri, 0, static_cast<int64_t>(data.size()));
+    auto resp = SendFileInputToolCall(env.client, std::move(args));
+    truncator.join();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto result = DeserializeCallToolResult(resp);
+    if (!result.is_error) {
+        ASSERT_TRUE(env.captured->has_value());
+        auto* content = (*env.captured)->Find("file")->Find("content");
+        ASSERT_NE(content, nullptr);
+        EXPECT_EQ(content->GetString().size(), data.size());
+    } else {
+        EXPECT_FALSE(env.captured->has_value());
+    }
+    EXPECT_TRUE(done.load());
 
     CloseFileInputEnv(env);
 }
@@ -5389,6 +5780,38 @@ TEST(McpServerTest, AppsAndServerCardGatesMatrix) {
         EXPECT_FALSE(card.supported_protocol_versions.empty());
         CloseAppsCardEnv(env);
     }
+}
+
+TEST(McpServerTest, ServerCardLegacyApiAndClientRoundTrip) {
+    ext::ServerCard card;
+    card.name = "legacy-card";
+    card.version = "2.0.0";
+    card.description = "legacy description";
+    ext::ServerCardEndpoint endpoint;
+    endpoint.url = "https://example.com/mcp";
+    endpoint.headers["x-legacy"] = "yes";
+    card.endpoints.push_back(std::move(endpoint));
+    card.supported_protocol_versions = {std::string(kLatestProtocolVersion)};
+
+    auto env = MakeAppsCardEnv(false, true, card);
+    EXPECT_TRUE(CapabilityDeclares(
+        env.server->GetCapabilities(), ext::kServerCardExtensionId));
+    auto kept = env.server->GetServerCard();
+    EXPECT_EQ(kept.name, card.name);
+    EXPECT_EQ(kept.version, card.version);
+    ASSERT_EQ(kept.endpoints.size(), 1u);
+    EXPECT_EQ(kept.endpoints[0].url, card.endpoints[0].url);
+    auto serialized = ext::SerializeCard(kept);
+    EXPECT_TRUE(serialized.Contains("name"));
+    EXPECT_TRUE(serialized.Contains("endpoints"));
+    EXPECT_TRUE(serialized.Contains("supportedProtocolVersions"));
+    auto parsed = ext::ParseServerCard(serialized.Dump());
+    EXPECT_EQ(parsed.name, card.name);
+    EXPECT_EQ(parsed.description, card.description);
+    EXPECT_EQ(parsed.endpoints[0].headers, card.endpoints[0].headers);
+    EXPECT_EQ(parsed.supported_protocol_versions, card.supported_protocol_versions);
+    EXPECT_FALSE(env.server->GetCapabilities().extensions->empty());
+    CloseAppsCardEnv(env);
 }
 
 TEST(McpServerTest, TasksRequireExplicitExtensionFlag) {
@@ -6417,6 +6840,372 @@ TEST(McpServerTest, LegacyElicitResolvesCapabilitiesForSingleStatefulSession) {
     auto* explicit_text = std::get_if<TextContent>(&explicit_tool.content[0]);
     ASSERT_NE(explicit_text, nullptr);
     EXPECT_EQ(explicit_text->text, "sess-e:accept");
+
+    server->Close();
+}
+
+TEST(McpServerTest, ModernTaskOwnerComesFromPrincipalNotRequestFields) {
+    auto env = MakeModernTaskEnv();
+    env.server->RegisterTool("owned_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "ok"});
+            return r;
+        });
+
+    CallToolRequestParams params;
+    params.name = "owned_task";
+    JsonValue forged(JsonValue::object_tag);
+    forged["owner"] = JsonValue("attacker");
+    params.arguments = forged;
+    auto meta = MetaWithTasksExtension();
+    meta.extensions = forged;
+    auto future = env.client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), meta,
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code")) << resp.Dump();
+    auto created = DeserializeCreateTaskResult(resp);
+    auto stored = env.store->GetTask(created.task_id);
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->owner, "test-principal");
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, ModernTaskWithoutPrincipalFailsClosed) {
+    auto env = MakeBareModernTaskEnv();
+    env.server->SetDefaultPrincipal("");
+    GetTaskRequestParams params;
+    params.task_id = "task-1";
+    auto resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(params), MetaWithTasksExtension());
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, CrossPrincipalTaskOperationsRejectUniformly) {
+    auto env = MakeModernTaskEnv();
+    const std::string task_id = "task-cross-principal";
+    env.store->CreateTask(task_id, "test-principal", 300000);
+    env.server->SetDefaultPrincipal("other-principal");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = task_id;
+    auto get_resp = SendBareRequest(env.client, methods::kGetTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_TRUE(get_resp.Contains("code"));
+    EXPECT_EQ(get_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+    EXPECT_EQ(get_resp["message"].GetString(), "task not found: " + task_id);
+
+    UpdateTaskRequestParams update_params;
+    update_params.task_id = task_id;
+    JsonValue result(JsonValue::object_tag);
+    result["ok"] = JsonValue(true);
+    update_params.result = result;
+    auto update_resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(update_params), MetaWithTasksExtension());
+    EXPECT_EQ(update_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    CancelTaskRequestParams cancel_params;
+    cancel_params.task_id = task_id;
+    auto cancel_resp = SendBareRequest(env.client, methods::kCancelTask,
+        SerializeCancelTaskRequestParams(cancel_params), MetaWithTasksExtension());
+    EXPECT_EQ(cancel_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    auto delete_resp = SendBareRequest(env.client, methods::kDeleteTask,
+        SerializeGetTaskRequestParams(get_params), MetaWithTasksExtension());
+    ASSERT_TRUE(delete_resp.Contains("code"));
+    EXPECT_EQ(delete_resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    EXPECT_EQ(delete_resp["message"].GetString(), "task not found: " + task_id);
+
+    EXPECT_TRUE(env.store->GetTask(task_id).has_value());
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, ModernTaskNotificationHonorsTaskIdsFilterAndAck) {
+    auto env = MakeModernTaskEnv();
+    env.store->CreateTask("task-a", "test-principal", 300000);
+    env.store->CreateTask("task-b", "test-principal", 300000);
+
+    std::mutex observed_mutex;
+    std::vector<std::string> observed_ids;
+    env.client->SetNotificationHandler(notifications::kTasks,
+        [&observed_mutex, &observed_ids](const JsonRpcNotification& n) {
+            auto id = NotificationField(n, "taskId");
+            std::lock_guard<std::mutex> lock(observed_mutex);
+            observed_ids.push_back(id);
+        });
+    std::vector<std::string> acknowledged_ids;
+    env.client->SetNotificationHandler(notifications::kSubscriptionsAcknowledged,
+        [&acknowledged_ids](const JsonRpcNotification& n) {
+            auto params = DeserializeSubscriptionsAcknowledgedNotificationParams(*n.params);
+            acknowledged_ids = params.notifications.task_ids;
+        });
+
+    SubscriptionsListenRequestParams listen;
+    listen.notifications.task_ids.push_back("task-a");
+    auto listen_future = env.client->SendRequest(methods::kSubscribe,
+        SerializeSubscriptionsListenRequestParams(listen),
+        MetaWithSubscriptionId("sub-tasks"),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(listen_future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_FALSE(listen_future.get().Contains("code"));
+    ASSERT_EQ(acknowledged_ids.size(), 1u);
+    EXPECT_EQ(acknowledged_ids[0], "task-a");
+
+    env.server->SendTaskStatus("task-a", TaskStatus::Working);
+    env.server->SendTaskStatus("task-b", TaskStatus::Working);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    {
+        std::lock_guard<std::mutex> lock(observed_mutex);
+        ASSERT_EQ(observed_ids.size(), 1u);
+        EXPECT_EQ(observed_ids[0], "task-a");
+    }
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, LegacyTaskListFiltersByPrincipalAndKeepsOldOwnerlessTasks) {
+    auto env = MakeTaskEraEnv();
+    env.server->SetDefaultPrincipal("principal-a");
+    env.store->CreateTask("legacy-owned", "principal-a", 300000);
+    env.store->CreateTask("legacy-other", "principal-b", 300000);
+    env.store->CreateTask("legacy-old");
+
+    auto future = env.client->SendRequest(methods::kListTasks,
+        JsonValue(JsonValue::object_tag), {},
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_FALSE(resp.Contains("code"));
+    auto* tasks = resp.Find("tasks");
+    ASSERT_NE(tasks, nullptr);
+    ASSERT_TRUE(tasks->IsArray());
+    std::vector<std::string> ids;
+    for (const auto& entry : tasks->GetArray()) {
+        auto* id = entry.Find("taskId");
+        if (id && id->IsString()) ids.push_back(id->GetString());
+    }
+    EXPECT_EQ(ids.size(), 2u);
+    EXPECT_TRUE(std::find(ids.begin(), ids.end(), "legacy-owned") != ids.end());
+    EXPECT_TRUE(std::find(ids.begin(), ids.end(), "legacy-old") != ids.end());
+    EXPECT_TRUE(std::find(ids.begin(), ids.end(), "legacy-other") == ids.end());
+    CloseTaskEraEnv(env);
+}
+
+TEST(McpServerTest, ConcurrentTaskCreateKeepsSingleOwnerAndState) {
+    InMemoryTaskStore store;
+    constexpr int kThreads = 8;
+    std::atomic<int> created{0};
+    std::atomic<int> rejected{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < kThreads; ++i) {
+        workers.emplace_back([&]() {
+            try {
+                store.CreateTask("same-id", "principal-a", 300000);
+                ++created;
+            } catch (const McpError&) {
+                ++rejected;
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    EXPECT_EQ(created.load(), 1);
+    EXPECT_EQ(rejected.load(), kThreads - 1);
+    auto task = store.GetTask("same-id");
+    ASSERT_TRUE(task.has_value());
+    EXPECT_EQ(task->owner, "principal-a");
+    EXPECT_TRUE(store.SetTaskStatus("same-id", TaskStatus::Working));
+    EXPECT_EQ(store.GetTask("same-id")->owner, "principal-a");
+    EXPECT_TRUE(store.SetTaskStatus("same-id", TaskStatus::Completed));
+    EXPECT_FALSE(store.SetTaskStatus("same-id", TaskStatus::Working));
+    EXPECT_EQ(store.GetTask("same-id")->status, TaskStatus::Completed);
+    EXPECT_EQ(store.GetTask("same-id")->owner, "principal-a");
+}
+
+TEST(McpServerTest, TaskPayloadBeyondBudgetIsRejected) {
+    auto env = MakeModernTaskEnv();
+    const std::string task_id = "task-payload-budget";
+    env.store->CreateTask(task_id, "test-principal", 300000);
+    UpdateTaskRequestParams params;
+    params.task_id = task_id;
+    params.result = JsonValue(std::string(kMaxTaskResultBytes + 1, 'x'));
+    auto resp = SendBareRequest(env.client, methods::kUpdateTask,
+        SerializeUpdateTaskRequestParams(params), MetaWithTasksExtension());
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    auto stored = env.store->GetTask(task_id);
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->status, TaskStatus::Pending);
+    CloseModernTaskEnv(env);
+}
+
+TEST(McpServerTest, TaskCountBeyondBudgetIsRejected) {
+    auto pair = InMemoryTransport::CreatePair();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    auto store = std::make_shared<InMemoryTaskStore>();
+    for (size_t i = 0; i < kMaxTasksPerPrincipal; ++i)
+        store->CreateTask("bulk-" + std::to_string(i), "test-principal", 300000);
+    sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
+    auto server = McpServer::Create(std::move(pair.server), sopts);
+    server->SetDefaultPrincipal("test-principal");
+    auto client = std::make_shared<McpSessionHandler>(
+        std::move(pair.client), MakeWireCodec(std::string(kLatestProtocolVersion)));
+    client->Start();
+    server->RegisterTool("bulk_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult r;
+            r.content.push_back(TextContent{"text", "ok"});
+            return r;
+        });
+    CallToolRequestParams params;
+    params.name = "bulk_task";
+    auto future = client->SendRequest(methods::kCallTool,
+        SerializeCallToolRequestParams(params), MetaWithTasksExtension(),
+        std::chrono::milliseconds(2000));
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto resp = future.get();
+    ASSERT_TRUE(resp.Contains("code"));
+    EXPECT_EQ(resp["code"].GetInt(),
+              static_cast<int64_t>(McpErrorCode::TaskNotFound));
+    EXPECT_EQ(store->GetAllTasks().size(), kMaxTasksPerPrincipal);
+    server->Close();
+    client->Close();
+}
+
+namespace server_request_context_test_impl {
+
+JsonRpcMessage SubmitRawRequest(
+    const std::shared_ptr<ITransport>& server_transport,
+    const std::shared_ptr<ITransport>& client_transport,
+    JsonRpcRequest request)
+{
+    std::promise<void> done;
+    auto future = done.get_future();
+    JsonRpcMessage reply;
+    std::thread reader([&] {
+        client_transport->GetMessageChannel().AsyncReceive(
+            [&](std::error_code ec, JsonRpcMessage message) {
+                if (!ec) reply = std::move(message);
+                try { done.set_value(); } catch (...) {}
+            });
+    });
+    if (!server_transport->GetMessageChannel().Send(std::move(request))) {
+        client_transport->GetMessageChannel().Close();
+    } else if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        client_transport->GetMessageChannel().Close();
+    }
+    if (reader.joinable()) reader.join();
+    return reply;
+}
+
+} // namespace server_request_context_test_impl
+
+using namespace server_request_context_test_impl;
+
+TEST(ServerRequestContextTest, CorrelationIsStableRedactedAndPrincipalSpecific) {
+    auto alice_session = ServerRequestContext::Sessionful(
+        "sess-raw-identifier", "alice", {"mcp:read"});
+    auto alice_again = ServerRequestContext::Sessionful(
+        "sess-raw-identifier", "alice", {"mcp:read"});
+    auto bob_same_session = ServerRequestContext::Sessionful(
+        "sess-raw-identifier", "bob", {"mcp:read"});
+    auto alice_stateless = ServerRequestContext::Stateless(
+        "alice", {"mcp:read"});
+
+    EXPECT_EQ(alice_session.CorrelationId(), alice_again.CorrelationId());
+    EXPECT_NE(alice_session.CorrelationId(), bob_same_session.CorrelationId());
+    EXPECT_NE(alice_session.CorrelationId(), alice_stateless.CorrelationId());
+    EXPECT_EQ(alice_session.RedactedSession().substr(0, 4), "sid-");
+    EXPECT_EQ(alice_stateless.RedactedSession(), "stateless");
+    EXPECT_EQ(alice_session.RedactedSession().find("sess-raw-identifier"),
+              std::string::npos);
+    EXPECT_EQ(alice_session.CorrelationId().find("alice"), std::string::npos);
+    EXPECT_EQ(alice_session.CorrelationId().find("sess-raw-identifier"),
+              std::string::npos);
+}
+
+TEST(McpServerTest, StatelessTaskOwnerAndScopesFromRequestContext) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto store = std::make_shared<InMemoryTaskStore>();
+    ServerOptions sopts;
+    sopts.server_info = Implementation{"test-server", "1.0.0"};
+    sopts.protocol_version = std::string(kLatestProtocolVersion);
+    sopts.task_store = store;
+    sopts.enable_tasks_extension = true;
+    auto server = McpServer::Create(pair.server, sopts);
+    server->SetDefaultPrincipal("fallback-principal");
+    server->RegisterTool("context_task", MakeTaskToolOptions(),
+        [](const Ctx&) {
+            CallToolResult result;
+            result.content.push_back(TextContent{"text", "ok"});
+            return result;
+        });
+
+    CallToolRequestParams call_params;
+    call_params.name = "context_task";
+    JsonRpcRequest create_request;
+    create_request.id = int64_t(4242);
+    create_request.method = methods::kCallTool;
+    create_request.params = SerializeCallToolRequestParams(call_params);
+    create_request.meta = SerializeRequestMeta(MetaWithTasksExtension());
+    create_request.request_context = std::make_shared<ServerRequestContext>(
+        ServerRequestContext::Stateless(
+            "context-alice", std::vector<std::string>{"mcp:read"}));
+    auto create_reply = SubmitRawRequest(
+        pair.server, pair.client, std::move(create_request));
+    auto* create_response = AsResponse(create_reply);
+    ASSERT_NE(create_response, nullptr) << SerializeMessage(create_reply);
+    ASSERT_FALSE(create_response->result.Contains("code"));
+    auto created = DeserializeCreateTaskResult(create_response->result);
+    ASSERT_FALSE(created.task_id.empty());
+    auto stored = store->GetTask(created.task_id);
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->owner, "context-alice");
+    ASSERT_EQ(stored->authorized_scopes.size(), size_t{1});
+    EXPECT_EQ(stored->authorized_scopes[0], "mcp:read");
+
+    GetTaskRequestParams get_params;
+    get_params.task_id = created.task_id;
+    JsonRpcRequest replay_request;
+    replay_request.id = int64_t(4243);
+    replay_request.method = methods::kGetTask;
+    replay_request.params = SerializeGetTaskRequestParams(get_params);
+    replay_request.meta = SerializeRequestMeta(MetaWithTasksExtension());
+    replay_request.request_context = std::make_shared<ServerRequestContext>(
+        ServerRequestContext::Stateless(
+            "context-bob", std::vector<std::string>{"mcp:read"}));
+    auto replay_reply = SubmitRawRequest(
+        pair.server, pair.client, std::move(replay_request));
+    auto* replay_error = AsError(replay_reply);
+    ASSERT_NE(replay_error, nullptr) << SerializeMessage(replay_reply);
+    EXPECT_EQ(static_cast<int64_t>(replay_error->error.code),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
+
+    JsonRpcRequest narrowed_request;
+    narrowed_request.id = int64_t(4244);
+    narrowed_request.method = methods::kGetTask;
+    narrowed_request.params = SerializeGetTaskRequestParams(get_params);
+    narrowed_request.meta = SerializeRequestMeta(MetaWithTasksExtension());
+    narrowed_request.request_context = std::make_shared<ServerRequestContext>(
+        ServerRequestContext::Stateless(
+            "context-alice", std::vector<std::string>{"mcp:write"}));
+    auto narrowed_reply = SubmitRawRequest(
+        pair.server, pair.client, std::move(narrowed_request));
+    auto* narrowed_error = AsError(narrowed_reply);
+    ASSERT_NE(narrowed_error, nullptr) << SerializeMessage(narrowed_reply);
+    EXPECT_EQ(static_cast<int64_t>(narrowed_error->error.code),
+              static_cast<int64_t>(McpErrorCode::InvalidParams));
 
     server->Close();
 }

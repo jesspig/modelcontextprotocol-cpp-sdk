@@ -1,0 +1,7 @@
+event: message
+data: {"jsonrpc":"2.0","method":"notifications/message"}
+id: 7
+retry: 1000
+
+: keepalive
+

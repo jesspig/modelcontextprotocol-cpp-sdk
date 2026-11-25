@@ -5,6 +5,7 @@
 #include <mcp/ext/DPoP.hpp>
 #include <mcp/McpTypes.hpp>
 #include <mcp/transport/StreamableHttpClientTransport.hpp>
+#include <mcp/transport/detail/UrlSecurityPolicy.hpp>
 
 #include <condition_variable>
 #include <functional>
@@ -40,12 +41,18 @@ struct OAuthClientOptions {
     std::string signing_algorithm{"ES256"};
     std::function<int64_t()> client_assertion_clock_seconds;
     std::vector<std::string> allowed_authorization_server_origins;
-    bool require_iss_when_advertised{false};
-    bool allow_legacy_metadata_fallback{true};
+    bool require_iss_when_advertised{true};
+    bool require_pkce_metadata{true};
+    bool allow_legacy_metadata_fallback{false};
 
     std::function<void(std::string_view url)> authorization_redirect_handler;
     std::function<std::optional<AuthorizationCodeResult>()> authorization_code_callback;
     std::function<void(const TokenContainer&)> token_update_handler;
+
+    std::optional<std::vector<std::string>> outbound_origin_allowlist;
+    std::vector<std::pair<std::string, std::uint16_t>> loopback_port_exceptions;
+    std::shared_ptr<mcp::detail::net::IUrlSecurityResolver> dns_resolver;
+    bool allow_cross_origin_redirect{false};
 };
 
 class OAuthClientProvider {
@@ -56,6 +63,11 @@ public:
     [[nodiscard]] static bool IsSecureEndpoint(std::string_view url);
 
     [[nodiscard]] static bool IsSameOrigin(std::string_view lhs, std::string_view rhs);
+
+    [[nodiscard]] static std::string SecretCacheKey(
+        std::string_view issuer, std::string_view client_id, std::string_view resource);
+
+    [[nodiscard]] std::optional<std::string> ResolveClientSecret() const;
 
     [[nodiscard]] bool Authenticate();
 
@@ -80,8 +92,12 @@ public:
                               std::map<std::string, std::string>& headers);
 
     void ObserveDPoPNonce(std::string_view dpop_nonce);
-
+    void ObserveDPoPNonce(std::string_view url, std::string_view token_type,
+                          std::string_view dpop_nonce);
     void SetDPoPNonce(std::string nonce);
+    void SetDPoPNonceContext(std::string_view url, std::string_view token_type);
+    [[nodiscard]] std::optional<std::string> GetDPoPNonce(
+        std::string_view url, std::string_view token_type) const;
 
     [[nodiscard]] bool StepUpAuthorization(const std::vector<std::string>& additional_scopes);
 
@@ -115,14 +131,14 @@ private:
         }
     };
 
+    bool AuthenticateUncoalesced();
+
     bool DiscoverMetadata();
     bool EnsureMetadata();
     bool RegisterClient();
     bool StartAuthorizationFlow();
     bool ExchangeCodeForToken(std::string_view code, std::string_view code_verifier);
     bool ParseAndStoreTokenResponse(const JsonValue& json);
-
-    void RefreshTokensCoalesced();
 
     RefreshOutcome RefreshTokensInternal();
 
@@ -144,6 +160,12 @@ private:
 
     void RequireSecureEndpoint(std::string_view url, std::string_view kind) const;
 
+    [[nodiscard]] std::string SecretScope() const;
+
+    void RememberClientSecret(const std::string& secret);
+
+    void ValidateClientId() const;
+
     void ValidateMetadataEndpoints(const OAuthMetadata& meta) const;
 
     std::optional<OAuthMetadata> MetadataSnapshot() const;
@@ -155,6 +177,11 @@ private:
     std::vector<std::string> ResolveScopes() const;
 
     bool FetchClientMetadataDocument();
+
+    [[nodiscard]] static std::string DPoPNonceBucket(
+        std::string_view url, std::string_view token_type);
+    void RememberDPoPNonce(std::string_view url, std::string_view token_type,
+                           std::string_view nonce);
 
     bool PrivateKeyJwtAdvertised() const;
 
@@ -180,12 +207,16 @@ private:
     std::optional<OAuthMetadata> metadata_;
     std::optional<ClientRegistrationInfo> registration_;
     std::optional<std::string> bound_issuer_;
+    std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> network_policy_;
+    std::map<std::string, std::string> client_secret_cache_;
 
     mutable std::recursive_mutex state_mutex_;
     std::mutex auth_flow_mutex_;
 
     std::optional<ext::dpop::EcP256Jwk> dpop_key_;
-    std::optional<std::string> dpop_nonce_;
+    std::map<std::string, std::string> dpop_nonces_;
+    std::string dpop_nonce_context_url_;
+    std::string dpop_nonce_context_token_type_{"Bearer"};
     mutable std::mutex dpop_mutex_;
 
     std::mutex refresh_mutex_;

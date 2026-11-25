@@ -2,8 +2,8 @@
 type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发、Streamable HTTP 监听流按 stateless 判默认）、Close self-join 陷阱、异步 handler 收尾。
-tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-10-13T11:10:48+08:00
+tags: [并发, 线程, 生命周期, 死锁, sanitizer, 快照]
+timestamp: 2026-11-25T06:00:00+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -27,7 +27,11 @@ resource: include/mcp/detail/ThreadUtils.hpp
 
 - `EnqueueResponse`：`response_queue_mutex_` 锁内检查 `closed_`（已关闭则**跳过投递直接丢弃**）
 - 队列任务：先 `wait_for(0)` 快检（同步 handler 零延迟），未就绪则 10ms 间隔轮询 future；等待中观察到 `closed_` 立即中止——**Close 永不阻塞在未被满足的 promise 上**
-- `Close()`：置 `closed_` → 关通道唤醒消息循环 → `JoinThreadSafely` 依次 join 消息循环线程与超时线程 → `response_cv_.notify_all()` → join response_worker_ → pending 全部以 `ConnectionClosed` 回调（**锁外执行**，防回调死锁）→ `transport_->Close()`
+- `Close()`：`close_mutex_` 中 CAS 选出**唯一 join owner**（其他调用者以 `kCloseWaitBudget=5s` 有界等 `close_cv_`，同线程重入直接返回）→ 置 `closed_`/`running_` 停接收 → 关通道唤醒消息循环 → pending 全部以既有 `ConnectionClosed` 失败路径结算（**锁外执行**，防回调死锁）→ `response_cv_.notify_all()` → `transport_->Close()`（关 socket/pipe）→ `JoinThreadSafely` 依次 join 消息循环、超时与 response_worker_ → 一次性 `close_done_` 通知
+
+## 协商快照的原子性（T-22 / TSan）
+
+`McpClient` 的四个能力 getter（server capabilities、server info、instructions、negotiated version）都从同一份 `shared_ptr<const NegotiationResult>` 快照读取；发布在 `negotiation_mutex_` 下完成，历史快照保留不销毁，因此单个 getter 不会读到半更新结构。TSan 全量在 `McpClientTest.ConcurrentNegotiationSnapshotIsTornFree` 暴露的是**跨四次独立 getter 调用**的交错：重协商在调用之间发布新快照时，旧守护用例把这种合法交错误判为撕裂。修复为新增公开 `CurrentNegotiationSnapshot()`（[McpClient.hpp](../../include/mcp/client/McpClient.hpp)），守护循环固定同一份不可变快照后逐字段断言，断言强度不变；TSan 未报告数据竞争。不要把四次 getter 的结果拼成跨调用的“事务”快照，需要一致性时读一次 `CurrentNegotiationSnapshot()`。
 
 ## 易翻车点
 
@@ -41,7 +45,18 @@ resource: include/mcp/detail/ThreadUtils.hpp
 - `HttpServer::Stop()`：`running_` 原子化（`exchange(false)`）；自研 `Impl::Stop()` 关 listen/连接 fd 解除阻塞后 join accept 与全部连接线程，故在独立 stopper 线程中执行并 `JoinThreadSafely(stopper)`（self-join 防护，[HttpServer.cpp](../../src/http/HttpServer.cpp)）
 - 超时回调同样在锁外执行
 - `MessageChannel`：回调在锁外调用；`Send` 满则阻塞（`TrySend` 不阻塞）
-- 写侧串行化：`FileTaskStore` 双锁（详见 [/concepts/storage.md](storage.md)）、`OAuthClientProvider::GetAccessToken` 的 `refresh_mutex_`（详见 [/concepts/oauth.md](oauth.md)）
+- 写侧串行化：`FileTaskStore` 双锁（详见 [/concepts/storage.md](storage.md)）；`OAuthClientProvider` 的 `GetAccessToken`、`Authenticate`、公开 `RefreshTokens` 共用一组 `refresh_mutex_` / `refresh_cv_` single-flight：仅一个线程执行，等待者有界返回并读最新令牌，重入线程直接取当前值，RAII 守卫保证异常路径也通知（详见 [/concepts/oauth.md](oauth.md)）
+- `McpClient` 协商结果为 `shared_ptr<const NegotiationResult>` 不可变快照：getter 在 `negotiation_mutex_` 下取同一快照，历史快照随客户端对象存活；重协商成功才整份替换，失败保留上一份，杜绝 version/capabilities/server_info/instructions 撕裂（[/classes/mcp-client.md](../classes/mcp-client.md)）
+
+## 会话生命周期与 generation
+
+`detail::SessionLifecycle`（[SessionLifecycle.hpp](../../include/mcp/detail/SessionLifecycle.hpp)）是传输层统一原语，状态为 `Initial → Connecting → Open → Closing → Closed`，并持有单调递增的 generation。客户端工厂 `Connect()` 先关闭并 `WaitClosed` 上一会话，再 `BeginConnect()` 开启新 generation；`SetConnected()` 完成 `Connecting → Open`，`BeginShutdown()` 进入 `Closing`，`CompleteShutdown()` 落到 `Closed` 并唤醒等待者。
+
+统一关闭顺序：进入 `Closing` 停接收 → 关 `MessageChannel` 唤醒等待者 → 经既有失败路径结算 pending → 关 socket/pipe 并中断在途请求 → `JoinThreadSafely` join（回调线程内关闭 detach 而非 self-join）→ 一次性终止通知。generation 守卫让旧会话的 `message/error/close` 回调在新 generation 后全部丢弃；`TransportState` 新增末尾枚举值 `Closing`，旧值语义不变。
+
+确定性测试：`TransportLifecycleTest.*`（阶段、generation 失效、关闭等待、并发通知一次、并发 socket 关闭）与 `SessionHandlerTest.ConcurrentCloseHasSingleOwnerAndWakesPending`；所有等待均有界，不改 `MCP_RUN_WITH_TIMEOUT` 护栏。
+
+WebSocket 在该原语之下另有更细的握手状态（`WebSocketClient::HandshakeState`）：`Connecting → Open → Closing → Closed`，`SetConnected()` 改由 `on_open` 回调触发，即 101 完整验证后才把会话生命周期推进到 Open。Connecting 期间发送走有界队列（条数与序列化字节双上限），失败时逐条经 `on_error` 结算；`Closed` 为唯一终止态且只通知一次。总截止时间覆盖 DNS/TCP/TLS/写请求/读响应/重定向，`Close()` 先关 socket 打断阻塞读再 `JoinThreadSafely` join，IO 回调内 self-close 走 detach（见 [/transports/websocket.md](../transports/websocket.md)）。
 
 ## 相关页面
 

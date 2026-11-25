@@ -1,13 +1,15 @@
 ---
 type: Concept
 title: 任务扩展
-description: SEP-2663 任务扩展：双时代 tasks/get|update|cancel、2025-only tasks/result|list、任务化 tools/call、inputResponses 推进、Mcp-Name 头校验与现代订阅路由。
-tags: [tasks, 扩展, 双时代, 2026]
-timestamp: 2026-11-18T16:15:39+08:00
+description: SEP-2663 任务扩展与 Tasks v2：双时代 tasks/get|update|cancel、modern tasks/delete 与 notifications/tasks/DetailedTask/taskIds、legacy tasks/result|list 与 notifications/tasks/*、principal owner、任务化 tools/call 与订阅路由。
+tags: [tasks, 扩展, 双时代, 2026, owner]
+timestamp: 2026-11-25T14:21:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
 # 任务扩展
+
+0.3.13 候选的 modern 任务通知收敛为单 `notifications/tasks`（完整 `DetailedTask` + `taskIds` 过滤，需先订阅），六个 `notifications/tasks/*` 仅 legacy；owner 来自 authenticated principal，modern 未绑定失败关闭，`tasks/delete` 为 modern-only 且越权统一 `TaskNotFound`。旧行为/新行为/调用方改法见在线文档 `/zh/migration/0.3.13` 与 `/en/migration/0.3.13`，证据见 `.handoff/evidence/T-06/` 与 `T-08/session-isolation-contract.txt`。
 
 SEP-2663 任务扩展（扩展标识 `io.modelcontextprotocol/tasks`，[Capabilities.hpp](../../include/mcp/Capabilities.hpp) 的 `kTasksExtensionId`）允许长耗时工具调用以任务句柄立即返回、后台执行、轮询取结果。
 
@@ -20,15 +22,16 @@ SEP-2663 任务扩展（扩展标识 `io.modelcontextprotocol/tasks`，[Capabili
 
 | 方法 | 2025 | 2026 |
 |------|------|------|
-| tasks/get、tasks/update、tasks/cancel | 可用 | 可用（头校验 + 订阅路由） |
+| tasks/get、tasks/update、tasks/cancel | 可用 | 可用（头校验 + 订阅路由 + principal owner） |
 | tasks/result、tasks/list | 可用 | `MethodNotFound`（`kLegacyGetTaskPayload`/`kLegacyListTasks`，服务端硬拒绝） |
+| tasks/delete | `NotInEra` | 可用（按 principal owner 校验后移除） |
 | tools/call（`ToolExecutionMode::Task` + task_store） | 立即返回 `CreateTaskResult` | 立即返回 `CreateTaskResult` |
 
-wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../../src/protocol/WireCodec.cpp) 的 `k2025OnlyRequestMethods` 与 `k2026OnlyRequestMethods` 均含），`tasks/result`/`tasks/list` 仅前者含。
+wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../../src/protocol/WireCodec.cpp) 的 `k2025OnlyRequestMethods` 与 `k2026OnlyRequestMethods` 均含），`tasks/result`/`tasks/list` 仅前者含，`tasks/delete` 仅后者含。
 
 ## 现代语义差异
 
-- **通知路由**：modern 下任务状态通知不再抑制，改经 `McpSessionHandler::NotifySubscribers` 按订阅路由——任务化 `tools/call` 的初始 Working、终态 `finish`、`tasks/update` 的 `tasks/completed`/`tasks/working`、`tasks/cancel` 的 `tasks/cancelled` 均投递给**全部现存订阅者**（任务类通知不过滤器，`should_notify` 恒为 true）；每帧 `_meta` 携带 `io.modelcontextprotocol/subscriptionId`（`subscriptions/listen` 传入 id 则回显，否则用服务端自增 id）；无订阅者时直接丢弃（`subscriptions_` 为空即返回）。legacy 保持 `SendNotification` 广播全量语义（`notifications/tasks/*`）
+- **通知路由**：modern 只发送/接收单 `notifications/tasks`（`notifications::kTasks`），`params` 为完整 `DetailedTask`（必填 `taskId`/`status`/`createdAt`，可选 `lastUpdatedAt`/`ttlMs`/`result`/`error`/`inputRequired`/`inputRequests`；`completed` 必带 `result`、`failed` 必带 `error`），经 `McpSessionHandler::NotifySubscribers` 与 Streamable HTTP listen tag 双重按 `taskIds` 过滤；`subscriptions/listen` 的 `_meta` 携带 `io.modelcontextprotocol/subscriptionId` 时 ack 回显同一 id 与所接受的过滤器（含 `taskIds`）。legacy 保持 `SendNotification` 广播 `notifications/tasks/status|working|completed|failed|cancelled|input_required`，modern 的 WireCodec 通知集合不再接受这些旧方法
 - **`Mcp-Name` 头校验**：modern 下 tasks 三处理器在请求 meta 携带 `Mcp-Name`（同时认 `mcp-name` 小写）时经 `WireCodec::ValidateTaskHeaders` 比对 `params.taskId`——缺失/空 taskId → `InvalidParams`，头值不等 → `HeaderMismatch`；无头时跳过。HTTP 层（`ValidateMcpHeaders`）对三方法**强制**要求该头（缺失/失配 → 400），客户端对三方法按 `params.taskId` 发送 `Mcp-Name`
 - **结果形态**：`CreateTaskResult` 按时代分形态——2026 时代扁平直写顶层 `taskId/status/createdAt`（+ 可选 statusMessage/lastUpdatedAt/ttlMs/pollIntervalMs/inputRequests）并抹掉嵌套 `task` 对象，2025 时代保留嵌套 `task` 对象做兼容；反序列化顶层优先、嵌套兜底（`DeserializeCreateTaskResult` 双形态接受）。`ResultType` 新增 `Task` 枚举值（wire `"task"`），2026 `EncodeResult` 不改写 task 结果的 `resultType`
 
@@ -38,13 +41,24 @@ wire 层三方法同时属于 2025 与 2026 方法集合（[WireCodec.cpp](../..
 
 ## 会话作用域与生命周期守卫
 
-- **owner 会话隔离**：服务端构造时生成安全随机 `session_id`（`McpServer::SessionId()`），任务 ID 形如 `task-<session>-<16 字节随机 hex>`（不可枚举、非顺序）；任务化 `tools/call` 创建任务时记 `owner = session_id`，`tasks/get`、`tasks/update`、`tasks/cancel`、`tasks/list` 一律按 owner 过滤——他人任务与不存在任务同样回 `InvalidParams "task not found"`（不泄露存在性），`tasks/list` 仅列本会话任务
+- **principal owner 隔离**：任务 owner 只能来自 authenticated principal，由 `McpServer::SetSessionPrincipal`/`SetDefaultPrincipal` 注入；modern 任务操作（get/update/cancel/delete 与任务化 tools/call）在无 principal 时失败关闭（`TaskNotFound -32006`），不从 `params`、`_meta`、`taskId` 或客户端自报字段读取 owner；legacy 在无 principal 时按旧语义回退会话 id。任务 ID 形如 `task-<owner>-<16 字节随机 hex>`（不可枚举）；跨 owner 与不存在任务返回同一拒绝语义（`tasks/delete` 用 `TaskNotFound -32006`），`tasks/list` 仅列本 owner 任务
+- **任务预算**：`include/mcp/server/McpTaskStore.hpp` 定义 `kMaxTasksPerPrincipal=10000`（B-77）、`kMaxTaskResultBytes=8388608`/`kMaxTaskNotificationBytes=1048576`（B-78）、`kMaxTaskIdsPerSubscription=1024`；超限分别拒绝创建/写入/过滤，modern 通知超字节上限则丢弃，跨 principal 放行数 0（B-79）
 - **TTL 与回收**：任务创建默认 `ttl_ms = 300000`（5 分钟，`kDefaultTaskTtlMs`）；`IMcpTaskStore::GetExpiredTaskIds/RemoveTask` 供回收用，服务端在每次创建新任务前顺带清扫过期任务（`SweepExpiredTasks`）
 - **终态守卫**：`tasks/update` 对已终态（Completed/Failed/Cancelled）任务直接回 `InvalidParams`（存储层 `UpdateTask/CancelTask/FailTask/ParkTaskForInput` 同样拒绝再变更，`SetTaskStatus` 保留同状态幂等）；服务端失败落态经 `FailTask` 一步原子完成
 
 ## 存储字段
 
-`TaskState` 含 `status_message`、`last_updated_at`（Create/Update/Cancel/SetStatus/Advance 全路径刷新）、`ttl_ms`、`poll_interval_ms`、`input_requests`、`input_responses`、`owner`，`FileTaskStore` 持久化（旧文件容缺可读），经 `MakeGetTaskResultJson` 透传到 `GetTaskResult`。持久化格式为 JSONL 追加 + 阈值压缩，详见 [/classes/file-task-store.md](../classes/file-task-store.md)。
+`TaskState` 含 `status_message`、`last_updated_at`（Create/Update/Cancel/SetStatus/Advance 全路径刷新）、`ttl_ms`、`poll_interval_ms`、`input_requests`、`input_responses`、`owner`，`FileTaskStore` 与 `InMemoryTaskStore` 均持久化/保留该字段（旧记录 `owner` 为空且不删除、不重写），新增任务经 `CreateTask(id, owner, ttl)` 写入 principal。modern 通知另经 `SerializeDetailedTask`/`IsValidDetailedTask` 生成与校验，经 `MakeGetTaskResultJson` 透传到 `GetTaskResult`。持久化格式为 JSONL 追加 + 阈值压缩，详见 [/classes/file-task-store.md](../classes/file-task-store.md)。
+
+## 官方 conformance 扩展验证（T-21，2026-11-25）
+
+referee `@modelcontextprotocol/conformance@0.2.0-alpha.12` 的 `list --requirements 2026-07-28` 定义 10 个 server 侧 tasks 场景：`tasks-lifecycle`、`tasks-capability-negotiation`、`tasks-wire-fields`、`tasks-request-state-removal`、`tasks-mrtr-input`、`tasks-request-headers`、`tasks-dispatch-and-envelope`、`tasks-status-notifications`、`tasks-required-task-error`、`tasks-mrtr-composition`。WT-RELEASE / `6c947db` 在 Node 22.23.3 下显式执行：
+
+- server modern `--requirements 2026-07-28 --force`：**169 passed / 26 failed / 0 warnings**，退出码 0；26 项失败全部来自上述 10 个场景（`tasks-lifecycle` 2/7、`tasks-capability-negotiation` 2/3、`tasks-wire-fields` 1/3、`tasks-request-state-removal` 1/1、`tasks-mrtr-input` 1/3、`tasks-request-headers` 3/2、`tasks-dispatch-and-envelope` 4/5、`tasks-status-notifications` 0/0、`tasks-required-task-error` 1/1、`tasks-mrtr-composition` 1/1）。referee 在 requirements 模式下把这些 extension 场景判为 expected（for visibility），不计入 core MUST，基线检查通过。
+- server legacy `--suite all --force`：81 passed / 0 failed，退出码 1；唯一 unexpected 为 pending `server-sse-polling` 0/0（fixture 未覆盖该 SSE 轮询语义，不写基线、不以 skip 冒充通过）。
+- 扩展 schema 侧：官方 [ext-tasks](https://github.com/modelcontextprotocol/ext-tasks) v2 固定快照 @ `cc9aaac1...`（v0.2.3）含 76 个 `$defs`，其中 `Task`/`DetailedTask`/`CreateTaskResult`/`GetTaskRequest|Result`/`UpdateTaskRequest|Result`/`CancelTaskRequest|Result`/`Error` 等 22 个正反例全部符合预期（必填字段、状态迁移、任务头 `ttlMs` 类型与错误结构均被正确约束）。
+
+结论：本 SDK 的任务扩展**核心 wire 契约与 schema 形状已对齐官方定义**，但 conformance 的 10 个 tasks 扩展场景仍有 26 项未通过（fixture 能力覆盖缺口，非 core MUST 回归）；已逐场景留证，等待后续补齐 fixture 后复跑，不写基线、不声称全绿。证据见 `.handoff/evidence/T-21/extensions-tasks-skills/` 与 `schema-positive-negative.md`。
 
 ## 相关页面
 

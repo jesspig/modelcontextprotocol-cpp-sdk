@@ -94,6 +94,9 @@ public:
     void SendLoggingMessage(LoggingLevel level, std::string_view data, std::optional<LoggingLevel> min_level);
     void SetCacheable(std::function<std::optional<CacheHint>(std::string_view method)> resolver);
     void SendTaskStatus(std::string_view task_id, TaskStatus status);
+    void SetSessionPrincipal(std::string_view session_id, std::string_view principal);
+    void ClearSessionPrincipal(std::string_view session_id);
+    void SetDefaultPrincipal(std::string_view principal);
     void SendProgress(const ProgressToken& token, double progress,
                       std::optional<double> total = std::nullopt,
                       std::optional<std::string> message = std::nullopt);
@@ -179,6 +182,17 @@ private:
     void SweepExpiredTasks(const std::shared_ptr<IMcpTaskStore>& store);
     bool IsTaskOwnedBySession(const TaskState& task, std::string_view owner) const;
     std::string TaskOwnerFor(const JsonRpcRequest& req) const;
+    [[nodiscard]] std::optional<std::string> AuthenticatedPrincipalFor(
+        std::string_view session_id) const;
+    [[nodiscard]] std::optional<std::string> AuthenticatedPrincipalFor(
+        const JsonRpcRequest& req) const;
+    [[nodiscard]] std::vector<std::string> AuthorizedScopesFor(
+        const JsonRpcRequest& req) const;
+    [[nodiscard]] bool TaskScopeAllows(const TaskState& task,
+                                       const JsonRpcRequest& req) const;
+    void RequireTaskPrincipal(const JsonRpcRequest& req) const;
+    void SendTaskDetail(const TaskState& task, std::string_view session_id = {});
+    void EnforceTaskBudgets(std::string_view owner);
     std::shared_ptr<const ClientCapabilities> ClientCapabilitiesFor(
         std::string_view session_id) const;
     std::shared_ptr<const Implementation> ClientInfoFor(
@@ -251,6 +265,10 @@ private:
     bool is_stateless_{false};
 
     std::atomic<uint64_t> next_subscription_id_{1};
+
+    mutable std::mutex task_principal_mutex_;
+    std::unordered_map<std::string, std::string> session_principals_;
+    std::string default_principal_;
 
     std::atomic<uint64_t> next_elicitation_id_{1};
 

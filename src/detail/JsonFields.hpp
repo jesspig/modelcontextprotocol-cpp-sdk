@@ -18,6 +18,7 @@ inline constexpr char kUri[] = "uri";
 inline constexpr char kType[] = "type";
 inline constexpr char kNextCursor[] = "nextCursor";
 inline constexpr char kTaskId[] = "taskId";
+inline constexpr char kTaskIds[] = "taskIds";
 inline constexpr char kRequestState[] = "requestState";
 inline constexpr char kJsonrpc[] = "jsonrpc";
 inline constexpr char kContent[] = "content";

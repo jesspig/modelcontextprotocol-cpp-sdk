@@ -8,7 +8,7 @@ C++17 implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)
 
-**Status**: 0.3.12 (`mcp::kSdkVersion`), five protocol versions in two eras, 124 conformance tests. Windows (MSVC, clang-cl), Linux (GCC, Clang), macOS (Clang).
+**Status**: 0.3.13 (`mcp::kSdkVersion`), five protocol versions in two eras, 124 conformance tests. Windows (MSVC, clang-cl), Linux (GCC, Clang), macOS (Clang).
 
 ## Requirements
 

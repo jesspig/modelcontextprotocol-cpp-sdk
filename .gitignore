@@ -20,6 +20,7 @@ cmake_install.cmake
 CTestTestfile.cmake
 *.cmake.in
 !cmake/mcpConfig.cmake.in
+!cmake/mcpThirdParty.cmake.in
 
 # ── MSVC / Windows ──
 *.aps

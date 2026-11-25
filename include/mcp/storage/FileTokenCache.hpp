@@ -18,6 +18,9 @@ public:
     void ClearTokens() override;
     void StoreBoundIssuer(const std::string& issuer) override;
     std::optional<std::string> GetBoundIssuer() override;
+    void StoreDpopKey(const ext::dpop::EcP256Jwk& key) override;
+    std::optional<ext::dpop::EcP256Jwk> GetDpopKey() override;
+    void ClearDpopKey() override;
 
 private:
     void Load();
@@ -25,6 +28,8 @@ private:
 
     std::filesystem::path cache_path_;
     std::optional<TokenContainer> tokens_;
+    std::optional<ext::dpop::EcP256Jwk> dpop_key_;
+    std::optional<JsonValue> rejected_dpop_key_json_;
     std::mutex mutex_;
 };
 
