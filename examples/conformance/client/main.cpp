@@ -40,6 +40,10 @@ namespace {
 constexpr std::string_view kModernSpecVersion = "2026-07-28";
 
 bool IsModernConformanceRun() {
+    const char* force_legacy = std::getenv("MCP_CONFORMANCE_FORCE_LEGACY");
+    if (force_legacy != nullptr && std::string_view(force_legacy) == "1") {
+        return false;
+    }
     const char* version = std::getenv("MCP_CONFORMANCE_PROTOCOL_VERSION");
     return version != nullptr && std::string_view(version) == kModernSpecVersion;
 }
@@ -199,7 +203,9 @@ void RunRequestMetadataClient(const std::string& server_url) {
 }
 
 void RunHttpStandardHeadersClient(const std::string& server_url) {
-    auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
+    ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                : ConnectMode::Legacy;
+    auto client = ConnectClient(server_url, "test-client", mode,
         ClientCapabilities{});
 
     auto tools = client->ListTools();
@@ -235,7 +241,9 @@ void RunHttpCustomHeadersClient(const std::string& server_url) {
 }
 
 void RunHttpInvalidToolHeadersClient(const std::string& server_url) {
-    auto client = ConnectClient(server_url, "test-client", ConnectMode::Auto,
+    ConnectMode mode = IsModernConformanceRun() ? ConnectMode::Auto
+                                                : ConnectMode::Legacy;
+    auto client = ConnectClient(server_url, "test-client", mode,
         ClientCapabilities{});
     auto tools = client->ListTools();
     std::cout << "post-exclusion tools:";
@@ -1046,6 +1054,23 @@ std::vector<std::string> SelectAuthScopes(const DiscoveredAuth& auth) {
     return {};
 }
 
+class ConformanceLoopbackResolver
+    : public mcp::detail::net::IUrlSecurityResolver {
+public:
+    std::vector<mcp::detail::net::UrlSecurityAddress> Resolve(
+        std::string_view host) override {
+        if (host == "localhost") {
+            std::vector<mcp::detail::net::UrlSecurityAddress> result;
+            auto ipv4 = mcp::detail::net::ParseIpv4Literal("127.0.0.1");
+            auto ipv6 = mcp::detail::net::ParseIpv6Literal("::1");
+            if (ipv4) result.push_back(*ipv4);
+            if (ipv6) result.push_back(*ipv6);
+            return result;
+        }
+        return mcp::detail::net::CreateSystemUrlSecurityResolver()->Resolve(host);
+    }
+};
+
 std::string ExtractAuthState(std::string_view url);
 std::unique_ptr<McpClient> ConnectBearerClient(const std::string& server_url,
     const std::string& scheme, const std::string& token);
@@ -1073,6 +1098,9 @@ bool AuthenticateForAttempt(const DiscoveredAuth& auth,
         oauth_options.resource = auth.prm_resource;
     oauth_options.redirect_uri = "http://localhost/callback";
     oauth_options.scopes = scopes;
+    oauth_options.allow_legacy_metadata_fallback = true;
+    oauth_options.allowed_authorization_server_origins.push_back(auth.as_base);
+    oauth_options.dns_resolver = std::make_shared<ConformanceLoopbackResolver>();
     if (!client_id.empty()) oauth_options.client_id = client_id;
     if (!client_secret.empty()) oauth_options.client_secret = client_secret;
     oauth_options.authorization_redirect_handler =
@@ -1100,6 +1128,8 @@ bool AuthenticateForAttempt(const DiscoveredAuth& auth,
             AuthorizationCodeResult result;
             result.code = code;
             result.state = ExtractAuthState(seen_url);
+            if (HasQueryKey(location, "iss"))
+                result.iss = QueryValue(location, "iss");
             return result;
         };
     auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
@@ -1562,6 +1592,9 @@ bool DriveClientCredentialsJwtScenario(const std::string& server_url,
     oauth_options.client_id = client_id;
     if (!client_secret.empty()) oauth_options.client_secret = client_secret;
     oauth_options.scopes = SelectAuthScopes(auth);
+    oauth_options.allow_legacy_metadata_fallback = true;
+    oauth_options.allowed_authorization_server_origins.push_back(auth.as_base);
+    oauth_options.dns_resolver = std::make_shared<ConformanceLoopbackResolver>();
     oauth_options.signing_algorithm = signing_algorithm;
     oauth_options.private_key_pem = std::move(private_key_pem);
     auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
@@ -1607,6 +1640,9 @@ bool DriveDPoPScenario(const std::string& server_url,
     oauth_options.redirect_uri = "http://localhost/callback";
     oauth_options.client_id = client_id;
     oauth_options.enable_dpop = true;
+    oauth_options.allow_legacy_metadata_fallback = true;
+    oauth_options.allowed_authorization_server_origins.push_back(auth.as_base);
+    oauth_options.dns_resolver = std::make_shared<ConformanceLoopbackResolver>();
     oauth_options.token_cache = token_cache;
     auto provider = std::make_shared<OAuthClientProvider>(oauth_options);
     std::string scope_text;

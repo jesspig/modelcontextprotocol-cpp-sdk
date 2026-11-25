@@ -5,6 +5,7 @@
 #include <mcp/McpError.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/detail/Base64Url.hpp>
+#include <mcp/detail/SecureClear.hpp>
 #include <mcp/detail/sha256.hpp>
 
 #include <transport/detail/net/HttpClient.hpp>
@@ -71,13 +72,6 @@ std::string BasicAuthorizationValue(std::string_view client_id,
     }
     while (encoded.size() % 4 != 0) encoded += '=';
     return "Basic " + encoded;
-}
-
-std::string NormalizeResourceUrl(std::string_view url) {
-    std::string out(url);
-    if (auto hash = out.find('#'); hash != std::string::npos) out.resize(hash);
-    if (out.size() > 1 && out.back() == '/') out.pop_back();
-    return out;
 }
 
 std::string DpopHtu(std::string_view url) {
@@ -172,12 +166,16 @@ bool IsSecureEndpointUrl(std::string_view url) {
     return IsLoopbackHost(parts->host);
 }
 
-std::optional<NetResponse> HttpGetUrl(const std::string& url) {
+std::optional<NetResponse> HttpGetUrl(
+    const std::string& url,
+    const std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy>& policy = nullptr)
+{
     try {
         mcp::detail::net::HttpClient client;
         mcp::detail::net::HttpRequestSpec req;
         req.method = "GET";
         req.url = url;
+        req.security_policy = policy;
         return client.Request(req);
     } catch (...) {
         return std::nullopt;
@@ -186,7 +184,8 @@ std::optional<NetResponse> HttpGetUrl(const std::string& url) {
 
 std::optional<NetResponse> HttpPostUrl(
     const std::string& url, const std::string& body,
-    const std::unordered_map<std::string, std::string>& headers = {})
+    const std::unordered_map<std::string, std::string>& headers = {},
+    const std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy>& policy = nullptr)
 {
     try {
         mcp::detail::net::HttpClient client;
@@ -195,15 +194,24 @@ std::optional<NetResponse> HttpPostUrl(
         req.url = url;
         req.body = body;
         req.headers = headers;
+        req.security_policy = policy;
         return client.Request(req);
     } catch (...) {
         return std::nullopt;
     }
 }
 
-class RefreshInFlightGuard {
+struct ClientSecretGuard {
+    explicit ClientSecretGuard(std::string value) : value(std::move(value)) {}
+    ~ClientSecretGuard() { mcp::detail::SecureClear(value); }
+    ClientSecretGuard(const ClientSecretGuard&) = delete;
+    ClientSecretGuard& operator=(const ClientSecretGuard&) = delete;
+    std::string value;
+};
+
+class SingleFlightGuard {
 public:
-    RefreshInFlightGuard(std::mutex& mutex,
+    SingleFlightGuard(std::mutex& mutex,
                         bool& in_flight,
                         std::thread::id& owner,
                         std::condition_variable& finished)
@@ -212,7 +220,7 @@ public:
         , owner_(owner)
         , finished_(finished) {}
 
-    ~RefreshInFlightGuard() {
+    ~SingleFlightGuard() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             in_flight_ = false;
@@ -221,8 +229,8 @@ public:
         finished_.notify_all();
     }
 
-    RefreshInFlightGuard(const RefreshInFlightGuard&) = delete;
-    RefreshInFlightGuard& operator=(const RefreshInFlightGuard&) = delete;
+    SingleFlightGuard(const SingleFlightGuard&) = delete;
+    SingleFlightGuard& operator=(const SingleFlightGuard&) = delete;
 
 private:
     std::mutex& mutex_;
@@ -230,6 +238,29 @@ private:
     std::thread::id& owner_;
     std::condition_variable& finished_;
 };
+
+template <typename T>
+T RunSingleFlight(std::mutex& mutex,
+                  std::condition_variable& finished,
+                  bool& in_flight,
+                  std::thread::id& owner,
+                  std::function<T()> work,
+                  std::function<T()> after_wait,
+                  std::function<T()> reentrant)
+{
+    std::unique_lock<std::mutex> lock(mutex);
+    if (!in_flight) {
+        in_flight = true;
+        owner = std::this_thread::get_id();
+        SingleFlightGuard guard(mutex, in_flight, owner, finished);
+        lock.unlock();
+        return work();
+    }
+    if (owner == std::this_thread::get_id()) return reentrant();
+    finished.wait_for(lock, std::chrono::seconds(30));
+    lock.unlock();
+    return after_wait();
+}
 
 } // anonymous namespace
 
@@ -278,22 +309,28 @@ void VerifyResourceMatch(const std::string& requested_url,
                          const std::optional<std::string>& resource)
 {
     if (!resource || resource->empty()) return;
-    if (NormalizeResourceUrl(*resource) == NormalizeResourceUrl(requested_url)) return;
-    auto scheme_end = requested_url.find("://");
-    if (scheme_end != std::string::npos) {
-        auto host_end = requested_url.find_first_of("/?#", scheme_end + 3);
-        std::string host_root = host_end == std::string::npos
-            ? requested_url : requested_url.substr(0, host_end);
-        if (NormalizeResourceUrl(*resource) == NormalizeResourceUrl(host_root)) return;
-    }
+    if (*resource == requested_url) return;
     throw McpError(McpErrorCode::InternalError,
-        "OAuth resource_metadata resource does not match the request URL");
+        "OAuth resource_metadata resource does not match the configured resource identifier");
 }
 
-bool IsClientIdMetadataDocumentUrl(std::string_view client_id) {
-    bool http = client_id.size() >= 7 && client_id.substr(0, 7) == "http://";
-    bool https = client_id.size() >= 8 && client_id.substr(0, 8) == "https://";
-    return http || https;
+bool IsUrlShapedClientId(std::string_view client_id) {
+    return client_id.find("://") != std::string_view::npos;
+}
+
+bool IsValidCimdClientId(std::string_view client_id) {
+    if (client_id.size() < 9 || client_id.substr(0, 8) != "https://") return false;
+    if (!IsSafeHttpUrl(client_id)) return false;
+    auto rest = client_id.substr(8);
+    auto authority_end = rest.find_first_of("/?#");
+    if (authority_end == std::string_view::npos) return false;
+    auto authority = rest.substr(0, authority_end);
+    if (authority.empty() || authority.find('@') != std::string_view::npos) return false;
+    if (rest.find('#') != std::string_view::npos) return false;
+    auto path_end = rest.find_first_of("?#", authority_end);
+    auto path = path_end == std::string_view::npos
+        ? rest.substr(authority_end) : rest.substr(authority_end, path_end - authority_end);
+    return path.size() > 1 && path.front() == '/';
 }
 
 } // anonymous namespace
@@ -369,6 +406,21 @@ std::optional<std::string> InMemoryTokenCache::GetBoundIssuer() {
     return bound_issuer_;
 }
 
+void InMemoryTokenCache::StoreDpopKey(const ext::dpop::EcP256Jwk& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    dpop_key_ = key;
+}
+
+std::optional<ext::dpop::EcP256Jwk> InMemoryTokenCache::GetDpopKey() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dpop_key_;
+}
+
+void InMemoryTokenCache::ClearDpopKey() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    dpop_key_.reset();
+}
+
 OAuthClientProvider::TokenEndpointResponse OAuthClientProvider::HttpPost(
     std::string_view url_str,
     const std::map<std::string, std::string>& form_data,
@@ -388,7 +440,7 @@ OAuthClientProvider::TokenEndpointResponse OAuthClientProvider::HttpPost(
     }
 
     TokenEndpointResponse response;
-    auto resp = HttpPostUrl(std::string(url_str), body, headers);
+    auto resp = HttpPostUrl(std::string(url_str), body, headers, network_policy_);
     if (!resp) return response;
     response.transport_ok = true;
     response.status_code = resp->status_code;
@@ -411,14 +463,55 @@ OAuthClientProvider::OAuthClientProvider(OAuthClientOptions options)
     , token_cache_(options_.token_cache
         ? options_.token_cache
         : std::make_shared<InMemoryTokenCache>())
-{}
+{
+    mcp::detail::net::UrlSecurityPolicyConfig config;
+    auto add_origin = [&](const std::string& url) {
+        auto origin = mcp::detail::net::ParseUrlSecurityOrigin(url);
+        if (!origin) return;
+        config.allowed_origins.push_back(origin->Key());
+        auto literal = mcp::detail::net::ParseIpLiteral(origin->host);
+        if (origin->host == "localhost" ||
+            (literal && mcp::detail::net::ClassifyAddress(*literal)
+                == mcp::detail::net::UrlAddressClass::Loopback)) {
+            config.loopback_exceptions.emplace_back(origin->host, origin->port);
+        }
+    };
+    add_origin(options_.server_url);
+    add_origin(options_.redirect_uri);
+    for (const auto& origin : options_.allowed_authorization_server_origins)
+        add_origin(origin);
+    if (options_.outbound_origin_allowlist) {
+        for (const auto& origin : *options_.outbound_origin_allowlist)
+            add_origin(origin);
+    }
+    for (const auto& exception : options_.loopback_port_exceptions)
+        config.loopback_exceptions.emplace_back(
+            mcp::detail::net::ToLowerAsciiCopy(exception.first), exception.second);
+    config.resolver = options_.dns_resolver;
+    config.allow_cross_origin_redirect = options_.allow_cross_origin_redirect;
+    network_policy_ = std::make_shared<mcp::detail::net::UrlSecurityPolicy>(
+        std::move(config));
+    if (options_.enable_dpop) {
+        auto persisted = token_cache_->GetDpopKey();
+        if (persisted && ext::dpop::ValidateKey(*persisted))
+            dpop_key_ = std::move(persisted);
+    }
+}
 
 OAuthClientProvider::~OAuthClientProvider() = default;
 
 bool OAuthClientProvider::Authenticate() {
+    auto after_wait = [this] { return IsAuthenticated(); };
+    return RunSingleFlight<bool>(refresh_mutex_, refresh_cv_, refresh_in_flight_,
+        refresh_owner_, [this] { return AuthenticateUncoalesced(); },
+        after_wait, after_wait);
+}
+
+bool OAuthClientProvider::AuthenticateUncoalesced() {
+    ValidateClientId();
     if (!DiscoverMetadata()) return false;
 
-    if (options_.client_id && IsClientIdMetadataDocumentUrl(*options_.client_id)) {
+    if (options_.client_id && IsUrlShapedClientId(*options_.client_id)) {
         FetchClientMetadataDocument();
     } else if (!options_.client_id) {
         auto meta = MetadataSnapshot();
@@ -444,6 +537,7 @@ bool OAuthClientProvider::Authenticate() {
 }
 
 bool OAuthClientProvider::AuthenticateClientCredentials() {
+    ValidateClientId();
     if (!EnsureMetadata()) return false;
     auto meta = MetadataSnapshot();
     if (!meta) return false;
@@ -474,35 +568,44 @@ bool OAuthClientProvider::AuthenticateClientCredentials() {
 }
 
 bool OAuthClientProvider::DiscoverMetadata() {
-    std::optional<OAuthMetadata> discovered = OAuthMetadata::Discover(
-        options_.server_url, options_.allow_legacy_metadata_fallback);
-    bool from_discovery = discovered && !discovered->issuer.empty();
-    OAuthMetadata meta;
-    if (from_discovery) {
-        meta = std::move(*discovered);
-    } else {
-        if (discovered) {
-            MCP_LOG(Warning, "OAuth metadata discovery response missing required 'issuer'; falling back to server_url defaults");
+    std::optional<std::string_view> expected_resource;
+    if (options_.resource && !options_.resource->empty())
+        expected_resource = *options_.resource;
+    std::optional<OAuthMetadata> discovered = OAuthMetadata::DiscoverWithPolicy(
+        options_.server_url, options_.allow_legacy_metadata_fallback,
+        expected_resource, network_policy_);
+    if (!discovered || discovered->issuer.empty()) {
+        if (!options_.allow_legacy_metadata_fallback) {
+            MCP_LOG(Error, "OAuth metadata discovery failed; legacy server_url defaults are "
+                "disabled by default");
+            return false;
         }
         if (options_.server_url.empty()) {
             MCP_LOG(Error, "OAuth metadata discovery failed and server_url is empty");
             return false;
         }
-        MCP_LOG(Warning, "OAuth metadata discovery failed; falling back to server_url defaults");
-        meta.issuer = options_.server_url;
-        meta.authorization_endpoint = options_.server_url + "/authorize";
-        meta.token_endpoint = options_.server_url + "/token";
+        MCP_LOG(Warning, "OAuth metadata discovery failed; using server_url defaults because "
+            "allow_legacy_metadata_fallback was explicitly enabled");
+        OAuthMetadata legacy_meta;
+        legacy_meta.issuer = options_.server_url;
+        legacy_meta.authorization_endpoint = options_.server_url + "/authorize";
+        legacy_meta.token_endpoint = options_.server_url + "/token";
+        ValidateMetadataEndpoints(legacy_meta);
+        std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+        metadata_ = std::move(legacy_meta);
+        return true;
     }
+    OAuthMetadata meta = std::move(*discovered);
     ValidateMetadataEndpoints(meta);
 
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-    if (from_discovery && !IssuerBindingAllows(meta.issuer)) {
+    if (!IssuerBindingAllows(meta.issuer)) {
         MCP_LOG(Error, "OAuth issuer mismatch: refusing to bind to an authorization server "
             "other than the pinned one");
         return false;
     }
     metadata_ = std::move(meta);
-    if (from_discovery) EnforceIssuerBinding();
+    EnforceIssuerBinding();
     return true;
 }
 
@@ -526,8 +629,7 @@ std::optional<ClientRegistrationInfo> OAuthClientProvider::RegistrationSnapshot(
 
 bool OAuthClientProvider::TokenResourceMatches(const TokenContainer& tokens) const {
     if (!tokens.resource || tokens.resource->empty()) return true;
-    return NormalizeResourceUrl(*tokens.resource) ==
-        NormalizeResourceUrl(ResolveResourceIndicator());
+    return *tokens.resource == ResolveResourceIndicator();
 }
 
 bool OAuthClientProvider::IssuerBindingAllows(const std::string& issuer) const {
@@ -557,6 +659,17 @@ void OAuthClientProvider::RequireSecureEndpoint(
     throw McpError(McpErrorCode::InvalidParams,
         std::string("OAuth ") + std::string(kind) +
         " endpoint must use https (loopback hosts excepted)");
+}
+
+void OAuthClientProvider::ValidateClientId() const {
+    if (!options_.client_id || options_.client_id->empty()) return;
+    if (!IsUrlShapedClientId(*options_.client_id)) return;
+    if (IsValidCimdClientId(*options_.client_id)) return;
+    MCP_LOG(Error, "OAuth CIMD client_id rejected: an https URL with a non-root path "
+        "and no fragment or userinfo is required");
+    throw McpError(McpErrorCode::InvalidParams,
+        "OAuth CIMD client_id must be an https URL with a non-root path, "
+        "without a fragment or userinfo");
 }
 
 void OAuthClientProvider::ValidateMetadataEndpoints(const OAuthMetadata& meta) const {
@@ -637,32 +750,42 @@ bool OAuthClientProvider::ValidateAuthorizationResponseIssuer(
     auto meta = MetadataSnapshot();
     if (!meta) return false;
     if (iss) {
-        if (*iss == meta->issuer) return true;
-        MCP_LOG(Error, "OAuth authorization response issuer mismatch");
+        if (!iss->empty() && !meta->issuer.empty() && *iss == meta->issuer) return true;
+        MCP_LOG(Error, "OAuth authorization response issuer is empty or mismatched");
         return false;
     }
     if (!meta->authorization_response_iss_parameter_supported) return true;
     if (options_.require_iss_when_advertised) {
         MCP_LOG(Error, "OAuth authorization response carries no 'iss' although the "
             "authorization server advertises authorization_response_iss_parameter_supported; "
-            "rejected because require_iss_when_advertised is enabled (this becomes the default "
-            "from 0.4.0)");
+            "rejected because require_iss_when_advertised is enabled by default");
         return false;
     }
     MCP_LOG(Warning, "OAuth authorization response carries no 'iss' although the "
         "authorization server advertises authorization_response_iss_parameter_supported; "
-        "accepted per local policy (set require_iss_when_advertised to enforce it; rejected by "
-        "default from 0.4.0)");
+        "accepted only because require_iss_when_advertised was explicitly disabled");
     return true;
 }
 
 bool OAuthClientProvider::CodeChallengeS256Supported() const {
     auto meta = MetadataSnapshot();
-    if (!meta) return true;
-    if (meta->code_challenge_methods_supported.empty()) return true;
-    return std::find(meta->code_challenge_methods_supported.begin(),
+    if (!meta) return !options_.require_pkce_metadata;
+    if (meta->code_challenge_methods_supported.empty()) {
+        if (options_.require_pkce_metadata) {
+            MCP_LOG(Error, "OAuth metadata does not advertise code_challenge_methods_supported; "
+                "refusing to start the authorization flow");
+            return false;
+        }
+        return true;
+    }
+    bool supported = std::find(meta->code_challenge_methods_supported.begin(),
         meta->code_challenge_methods_supported.end(), "S256")
         != meta->code_challenge_methods_supported.end();
+    if (!supported) {
+        MCP_LOG(Error, "OAuth metadata does not advertise S256; refusing to start the "
+            "authorization flow");
+    }
+    return supported;
 }
 
 void OAuthClientProvider::NotifyTokenUpdate(const TokenContainer& tokens) const {
@@ -690,12 +813,13 @@ std::vector<std::string> OAuthClientProvider::ResolveScopes() const {
 
 bool OAuthClientProvider::FetchClientMetadataDocument() {
     if (!options_.client_id) return false;
-    if (!IsSafeHttpUrl(*options_.client_id)) {
-        MCP_LOG(Warning, "CIMD: client_id is not a safe http URL; using configured client_id");
+    if (!IsValidCimdClientId(*options_.client_id)) {
+        MCP_LOG(Warning, "CIMD: client_id is not a valid https metadata URL; "
+            "using configured client_id");
         return false;
     }
 
-    auto resp = HttpGetUrl(*options_.client_id);
+    auto resp = HttpGetUrl(*options_.client_id, network_policy_);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) {
         MCP_LOG(Warning, "CIMD: client metadata document unavailable; using configured client_id");
         return false;
@@ -807,10 +931,72 @@ std::string OAuthClientProvider::ResolveClientId() const {
         registration ? registration->client_id : std::string());
 }
 
+std::string OAuthClientProvider::SecretCacheKey(
+    std::string_view issuer, std::string_view client_id, std::string_view resource)
+{
+    std::string key;
+    key.reserve(issuer.size() + client_id.size() + resource.size() + 3);
+    key.append(issuer);
+    key.push_back('\x1F');
+    key.append(client_id);
+    key.push_back('\x1F');
+    key.append(resource);
+    return key;
+}
+
+std::string OAuthClientProvider::SecretScope() const {
+    std::string issuer;
+    if (bound_issuer_ && !bound_issuer_->empty()) issuer = *bound_issuer_;
+    auto meta = MetadataSnapshot();
+    if (meta && !meta->issuer.empty()) issuer = meta->issuer;
+    return SecretCacheKey(issuer, ResolveClientId(), ResolveResourceIndicator());
+}
+
+void OAuthClientProvider::RememberClientSecret(const std::string& secret) {
+    if (!mcp::detail::IsNonEmptySecret(secret)) return;
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    client_secret_cache_[SecretScope()] = secret;
+}
+
+std::optional<std::string> OAuthClientProvider::ResolveClientSecret() const {
+    auto require_valid = [](const std::optional<std::string>& value,
+                            std::string_view source) -> std::optional<std::string> {
+        if (!value) return std::nullopt;
+        std::string candidate = *value;
+        if (!mcp::detail::IsNonEmptySecret(candidate)) {
+            mcp::detail::SecureClear(candidate);
+            MCP_LOG(Error, "OAuth client_secret from " + std::string(source) +
+                " is empty or invalid");
+            throw McpError(McpErrorCode::InvalidParams,
+                "OAuth client_secret from " + std::string(source) +
+                " is empty or invalid");
+        }
+        return candidate;
+    };
+    if (auto configured = require_valid(options_.client_secret, "configuration"))
+        return configured;
+    auto registration = RegistrationSnapshot();
+    if (registration) {
+        if (auto registered = require_valid(registration->client_secret,
+                                            "dynamic registration"))
+            return registered;
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+        auto it = client_secret_cache_.find(SecretScope());
+        if (it != client_secret_cache_.end()) {
+            if (auto cached = require_valid(it->second, "cached registration"))
+                return cached;
+        }
+    }
+    return std::nullopt;
+}
+
 OAuthClientProvider::ClientAuthMethod OAuthClientProvider::ResolveClientAuthMethod() const {
     if (UsesClientAssertion()) return ClientAuthMethod::PrivateKeyJwt;
-    if (!options_.client_secret || options_.client_secret->empty())
-        return ClientAuthMethod::None;
+    auto secret = ResolveClientSecret();
+    if (!secret) return ClientAuthMethod::None;
+    ClientSecretGuard guard(std::move(*secret));
     auto registration = RegistrationSnapshot();
     if (registration && registration->token_endpoint_auth_method) {
         const auto& method = *registration->token_endpoint_auth_method;
@@ -842,13 +1028,23 @@ void OAuthClientProvider::ApplyClientAuthentication(
         form["client_assertion_type"] = std::string(kClientAssertionTypeJwtBearer);
         form["client_assertion"] = CreateClientAssertion();
         return;
-    case ClientAuthMethod::ClientSecretBasic:
+    case ClientAuthMethod::ClientSecretBasic: {
+        auto secret = ResolveClientSecret();
+        if (!secret) throw McpError(McpErrorCode::InvalidParams,
+            "OAuth client_secret_basic requires a client_secret");
+        ClientSecretGuard guard(std::move(*secret));
         headers["Authorization"] = BasicAuthorizationValue(
-            ResolveClientId(), *options_.client_secret);
+            ResolveClientId(), guard.value);
         return;
-    case ClientAuthMethod::ClientSecretPost:
-        form["client_secret"] = *options_.client_secret;
+    }
+    case ClientAuthMethod::ClientSecretPost: {
+        auto secret = ResolveClientSecret();
+        if (!secret) throw McpError(McpErrorCode::InvalidParams,
+            "OAuth client_secret_post requires a client_secret");
+        ClientSecretGuard guard(std::move(*secret));
+        form["client_secret"] = guard.value;
         return;
+    }
     case ClientAuthMethod::None:
         return;
     }
@@ -861,10 +1057,11 @@ bool OAuthClientProvider::RegisterClient() {
     std::string_view application_type = options_.application_type.empty()
         ? std::string_view{"native"}
         : std::string_view{options_.application_type};
-    auto info = ClientRegistrationInfo::Register(
+    auto info = ClientRegistrationInfo::RegisterWithPolicy(
         *meta->registration_endpoint,
-        options_.redirect_uri, "mcp-cpp-client", application_type);
+        options_.redirect_uri, "mcp-cpp-client", application_type, network_policy_);
     if (!info) return false;
+    if (info->client_secret) RememberClientSecret(*info->client_secret);
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     registration_ = std::move(info);
     return true;
@@ -964,10 +1161,15 @@ bool OAuthClientProvider::ParseAndStoreTokenResponse(const JsonValue& json) {
 }
 
 bool OAuthClientProvider::RefreshTokens() {
-    return RefreshTokensInternal() == RefreshOutcome::Refreshed;
+    auto after_wait = [this] { return IsAuthenticated(); };
+    return RunSingleFlight<bool>(refresh_mutex_, refresh_cv_, refresh_in_flight_,
+        refresh_owner_,
+        [this] { return RefreshTokensInternal() == RefreshOutcome::Refreshed; },
+        after_wait, after_wait);
 }
 
 OAuthClientProvider::RefreshOutcome OAuthClientProvider::RefreshTokensInternal() {
+    ValidateClientId();
     auto cached = token_cache_->GetTokens();
     if (!cached || cached->refresh_token.empty()) return RefreshOutcome::TransientFailure;
     if (!EnsureMetadata()) return RefreshOutcome::TransientFailure;
@@ -1036,42 +1238,26 @@ OAuthClientProvider::RefreshOutcome OAuthClientProvider::RefreshTokensInternal()
     return RefreshOutcome::Refreshed;
 }
 
-void OAuthClientProvider::RefreshTokensCoalesced() {
-    for (;;) {
-        std::unique_lock<std::mutex> lock(refresh_mutex_);
-        if (!refresh_in_flight_) {
-            refresh_in_flight_ = true;
-            refresh_owner_ = std::this_thread::get_id();
-            RefreshInFlightGuard guard(refresh_mutex_, refresh_in_flight_,
-                                       refresh_owner_, refresh_cv_);
-            lock.unlock();
-            if (!RefreshTokens())
-                throw McpError(McpErrorCode::InternalError,
-                    "OAuth token refresh failed");
-            return;
-        }
-        if (refresh_owner_ == std::this_thread::get_id()) {
-            MCP_LOG(Warning,
-                "OAuth token refresh re-entered on the refreshing thread; serving the pending token without waiting");
-            return;
-        }
-        refresh_cv_.wait(lock);
-        lock.unlock();
-        auto tokens = token_cache_->GetTokens();
-        if (tokens && TokenResourceMatches(*tokens) && !tokens->WillExpireSoon())
-            return;
-    }
-}
-
 std::string OAuthClientProvider::GetAccessToken() {
+    auto read_token = [this] {
+        auto tokens = token_cache_->GetTokens();
+        return tokens && TokenResourceMatches(*tokens) ? tokens->access_token
+                                                       : std::string{};
+    };
     auto tokens = token_cache_->GetTokens();
-    if (!tokens) return {};
-    if (!TokenResourceMatches(*tokens)) return {};
+    if (!tokens || !TokenResourceMatches(*tokens)) return {};
     if (!tokens->WillExpireSoon() || tokens->refresh_token.empty())
         return tokens->access_token;
-    RefreshTokensCoalesced();
-    tokens = token_cache_->GetTokens();
-    return tokens ? tokens->access_token : std::string{};
+    return RunSingleFlight<std::string>(refresh_mutex_, refresh_cv_,
+        refresh_in_flight_, refresh_owner_,
+        [this, &read_token] {
+            if (RefreshTokensInternal() != RefreshOutcome::Refreshed) {
+                throw McpError(McpErrorCode::InternalError,
+                    "OAuth token refresh failed");
+            }
+            return read_token();
+        },
+        read_token, read_token);
 }
 
 void OAuthClientProvider::Revoke() {
@@ -1110,15 +1296,84 @@ std::string OAuthClientProvider::BuildDPoPProof(
     std::optional<std::string_view> access_token) {
     if (!options_.enable_dpop) return {};
     std::lock_guard<std::mutex> lock(dpop_mutex_);
-    if (!dpop_key_) dpop_key_ = ext::dpop::GenerateKey();
+    if (!dpop_key_) {
+        auto generated = ext::dpop::GenerateKey();
+        if (!ext::dpop::ValidateKey(generated)) {
+            throw McpError(McpErrorCode::InternalError, "DPoP generated key failed validation");
+        }
+        dpop_key_ = generated;
+        token_cache_->StoreDpopKey(generated);
+    }
     std::optional<std::string_view> nonce;
-    if (dpop_nonce_ && !dpop_nonce_->empty()) nonce = *dpop_nonce_;
+    std::string token_type;
+    if (auto tokens = token_cache_->GetTokens();
+        tokens && TokenResourceMatches(*tokens) && !tokens->token_type.empty()) {
+        token_type = tokens->token_type;
+    }
+    if (token_type.empty()) token_type = dpop_nonce_context_token_type_;
+    dpop_nonce_context_url_ = std::string(htu);
+    dpop_nonce_context_token_type_ = token_type;
+    auto bucket = DPoPNonceBucket(htu, token_type);
+    if (!bucket.empty()) {
+        auto it = dpop_nonces_.find(bucket);
+        if (it != dpop_nonces_.end() && !it->second.empty()) nonce = it->second;
+    }
     return ext::dpop::CreateProof(*dpop_key_, htm, htu, access_token, nonce);
 }
 
-void OAuthClientProvider::SetDPoPNonce(std::string nonce) {
+std::string OAuthClientProvider::DPoPNonceBucket(
+    std::string_view url, std::string_view token_type)
+{
+    auto origin = mcp::detail::net::ParseUrlSecurityOrigin(url);
+    if (!origin) return {};
+    auto normalized = mcp::detail::net::ToLowerAsciiCopy(token_type);
+    if (normalized.empty()) normalized = "bearer";
+    return origin->Key() + '\x1F' + normalized;
+}
+
+void OAuthClientProvider::RememberDPoPNonce(
+    std::string_view url, std::string_view token_type, std::string_view nonce)
+{
+    auto bucket = DPoPNonceBucket(url, token_type);
+    if (bucket.empty()) return;
     std::lock_guard<std::mutex> lock(dpop_mutex_);
-    dpop_nonce_ = std::move(nonce);
+    if (nonce.empty()) {
+        dpop_nonces_.erase(bucket);
+        return;
+    }
+    dpop_nonces_[bucket] = std::string(nonce);
+}
+
+void OAuthClientProvider::SetDPoPNonceContext(
+    std::string_view url, std::string_view token_type)
+{
+    std::lock_guard<std::mutex> lock(dpop_mutex_);
+    if (!url.empty()) dpop_nonce_context_url_ = std::string(url);
+    if (!token_type.empty())
+        dpop_nonce_context_token_type_ = std::string(token_type);
+}
+
+std::optional<std::string> OAuthClientProvider::GetDPoPNonce(
+    std::string_view url, std::string_view token_type) const
+{
+    auto bucket = DPoPNonceBucket(url, token_type);
+    if (bucket.empty()) return std::nullopt;
+    std::lock_guard<std::mutex> lock(dpop_mutex_);
+    auto it = dpop_nonces_.find(bucket);
+    if (it == dpop_nonces_.end()) return std::nullopt;
+    return it->second;
+}
+
+void OAuthClientProvider::SetDPoPNonce(std::string nonce) {
+    std::string url;
+    std::string token_type;
+    {
+        std::lock_guard<std::mutex> lock(dpop_mutex_);
+        url = dpop_nonce_context_url_;
+        token_type = dpop_nonce_context_token_type_;
+    }
+    if (url.empty()) url = options_.server_url;
+    RememberDPoPNonce(url, token_type, nonce);
 }
 
 void OAuthClientProvider::ApplyDPoPProofHeader(
@@ -1130,10 +1385,13 @@ void OAuthClientProvider::ApplyDPoPProofHeader(
     auto htu = DpopHtu(context.url);
     if (htu.empty()) return;
     std::optional<std::string_view> access_token;
+    std::string token_type;
     auto tokens = token_cache_->GetTokens();
     if (tokens && !tokens->access_token.empty() && TokenResourceMatches(*tokens)) {
         access_token = tokens->access_token;
+        token_type = tokens->token_type;
     }
+    SetDPoPNonceContext(context.url, token_type);
     std::string proof = BuildDPoPProof(context.http_method, htu, access_token);
     if (proof.empty()) return;
     headers["DPoP"] = std::move(proof);
@@ -1142,12 +1400,30 @@ void OAuthClientProvider::ApplyDPoPProofHeader(
 void OAuthClientProvider::ObserveDPoPNonce(std::string_view dpop_nonce) {
     if (!options_.enable_dpop) return;
     if (dpop_nonce.empty() || dpop_nonce.size() > 1024) return;
-    SetDPoPNonce(std::string(dpop_nonce));
+    std::string url;
+    std::string token_type;
+    {
+        std::lock_guard<std::mutex> lock(dpop_mutex_);
+        url = dpop_nonce_context_url_;
+        token_type = dpop_nonce_context_token_type_;
+    }
+    if (url.empty()) url = options_.server_url;
+    RememberDPoPNonce(url, token_type, dpop_nonce);
+}
+
+void OAuthClientProvider::ObserveDPoPNonce(
+    std::string_view url, std::string_view token_type,
+    std::string_view dpop_nonce)
+{
+    if (!options_.enable_dpop) return;
+    if (dpop_nonce.empty() || dpop_nonce.size() > 1024) return;
+    RememberDPoPNonce(url, token_type, dpop_nonce);
 }
 
 bool OAuthClientProvider::StepUpAuthorization(
     const std::vector<std::string>& additional_scopes)
 {
+    ValidateClientId();
     {
         std::lock_guard<std::recursive_mutex> lock(state_mutex_);
         for (auto& s : additional_scopes) {
@@ -1163,6 +1439,7 @@ bool OAuthClientProvider::StepUpAuthorization(
 
 bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate) {
     try {
+        ValidateClientId();
         if (www_authenticate.size() > 4096) return false;
         auto header = std::string(www_authenticate);
         auto pos = header.find("resource_metadata=");
@@ -1175,7 +1452,7 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
         auto metadata_url = header.substr(pos + 1, end - pos - 1);
         if (!IsSecureEndpointUrl(metadata_url)) return false;
 
-        auto resp = HttpGetUrl(metadata_url);
+        auto resp = HttpGetUrl(metadata_url, network_policy_);
         if (!resp || resp->status_code < 200 || resp->status_code >= 300) return false;
         if (resp->body.size() > 65536) return false;
         JsonValue json;
@@ -1244,9 +1521,11 @@ bool OAuthClientProvider::HandleAuthChallenge(std::string_view www_authenticate)
 
 namespace {
 
-std::optional<JsonValue> FetchMetadataDocument(const std::string& url) {
+std::optional<JsonValue> FetchMetadataDocument(
+    const std::string& url,
+    const std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy>& policy) {
     if (!IsSafeHttpUrl(url)) return std::nullopt;
-    auto resp = HttpGetUrl(url);
+    auto resp = HttpGetUrl(url, policy);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300) return std::nullopt;
     if (resp->body.size() > 65536) return std::nullopt;
     try {
@@ -1271,31 +1550,48 @@ std::optional<std::string> DiscoverAuthorizationServerUrl(const JsonValue& prm) 
 } // anonymous namespace
 
 std::optional<OAuthMetadata> OAuthMetadata::Discover(
-    std::string_view server_url, bool allow_legacy_fallback)
+    std::string_view server_url, bool allow_legacy_fallback,
+    std::optional<std::string_view> expected_resource)
+{
+    return DiscoverWithPolicy(server_url, allow_legacy_fallback, expected_resource, nullptr);
+}
+
+std::optional<OAuthMetadata> OAuthMetadata::DiscoverWithPolicy(
+    std::string_view server_url, bool allow_legacy_fallback,
+    std::optional<std::string_view> expected_resource,
+    std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> policy)
 {
     std::string url(server_url);
     while (!url.empty() && url.back() == '/') url.pop_back();
+    std::string expected(expected_resource ? *expected_resource : std::string_view(url));
 
-    if (auto prm = FetchMetadataDocument(url + "/.well-known/oauth-protected-resource")) {
-        if (auto as_url = DiscoverAuthorizationServerUrl(*prm)) {
+    if (auto prm = FetchMetadataDocument(
+            url + "/.well-known/oauth-protected-resource", policy)) {
+        auto* resource_field = prm->Find("resource");
+        std::optional<std::string> prm_resource;
+        if (resource_field && resource_field->IsString() &&
+            !resource_field->GetString().empty()) {
+            prm_resource = resource_field->GetString();
+        }
+        if (!prm_resource) {
+            MCP_LOG(Error, "OAuth protected-resource metadata is missing 'resource'");
+        } else if (*prm_resource != expected) {
+            MCP_LOG(Error, "OAuth protected-resource metadata resource does not exactly "
+                "match the configured resource identifier");
+        } else if (auto as_url = DiscoverAuthorizationServerUrl(*prm)) {
             std::string as_base(*as_url);
             while (!as_base.empty() && as_base.back() == '/') as_base.pop_back();
             const std::string suffix("/.well-known/oauth-authorization-server");
             std::string as_doc_url = as_base.size() >= suffix.size() &&
                 as_base.compare(as_base.size() - suffix.size(), suffix.size(), suffix) == 0
                 ? as_base : as_base + suffix;
-            if (auto as_doc = FetchMetadataDocument(as_doc_url)) {
+            if (auto as_doc = FetchMetadataDocument(as_doc_url, policy)) {
                 auto meta = ParseMetadataJson(*as_doc);
                 if (meta.issuer.empty() && meta.authorization_endpoint.empty() &&
                     meta.token_endpoint.empty()) {
                     MCP_LOG(Warning, "OAuth authorization server metadata resolved via protected-resource metadata is empty; falling back to RFC8414 discovery");
                 } else {
-                    if (!meta.resource || meta.resource->empty()) {
-                        if (auto* r = prm->Find("resource")) {
-                            if (r->IsString() && !r->GetString().empty())
-                                meta.resource = r->GetString();
-                        }
-                    }
+                    if (!meta.resource || meta.resource->empty()) meta.resource = prm_resource;
                     return meta;
                 }
             } else {
@@ -1308,13 +1604,16 @@ std::optional<OAuthMetadata> OAuthMetadata::Discover(
 
     if (!allow_legacy_fallback) return std::nullopt;
 
-    std::string metadata_url = url + "/.well-known/oauth-authorization-server";
-
-    auto resp = HttpGetUrl(metadata_url);
-    if (resp && resp->status_code >= 200 && resp->status_code < 300) {
-        auto json = JsonValue::Parse(resp->body);
-        if (json.IsObject()) {
-            return ParseMetadataJson(json);
+    for (std::string_view suffix : {
+             "/.well-known/oauth-authorization-server",
+             "/.well-known/openid-configuration"}) {
+        std::string metadata_url = url + std::string(suffix);
+        auto resp = HttpGetUrl(metadata_url, policy);
+        if (resp && resp->status_code >= 200 && resp->status_code < 300) {
+            auto json = JsonValue::Parse(resp->body);
+            if (json.IsObject()) {
+                return ParseMetadataJson(json);
+            }
         }
     }
 
@@ -1326,6 +1625,17 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
     std::string_view redirect_uri,
     std::string_view client_name,
     std::string_view application_type)
+{
+    return RegisterWithPolicy(registration_endpoint, redirect_uri, client_name,
+                              application_type, nullptr);
+}
+
+std::optional<ClientRegistrationInfo> ClientRegistrationInfo::RegisterWithPolicy(
+    std::string_view registration_endpoint,
+    std::string_view redirect_uri,
+    std::string_view client_name,
+    std::string_view application_type,
+    std::shared_ptr<const mcp::detail::net::UrlSecurityPolicy> policy)
 {
     if (!IsSecureEndpointUrl(registration_endpoint)) {
         MCP_LOG(Error, "OAuth registration endpoint rejected: https is required "
@@ -1349,7 +1659,7 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
     std::unordered_map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
 
-    auto resp = HttpPostUrl(std::string(registration_endpoint), body, headers);
+    auto resp = HttpPostUrl(std::string(registration_endpoint), body, headers, policy);
     if (!resp || resp->status_code < 200 || resp->status_code >= 300)
         return std::nullopt;
     if (resp->body.size() > mcp::detail::kMaxDcrBytes)
@@ -1361,8 +1671,12 @@ std::optional<ClientRegistrationInfo> ClientRegistrationInfo::Register(
     ClientRegistrationInfo info;
     if (auto* v = json.Find("client_id"))
         info.client_id = v->GetString();
-    if (auto* v = json.Find("client_secret"))
+    if (auto* v = json.Find("client_secret")) {
+        if (!v->IsString() || !mcp::detail::IsNonEmptySecret(v->GetString()))
+            throw McpError(McpErrorCode::InvalidParams,
+                "OAuth dynamic registration returned an invalid client_secret");
         info.client_secret = v->GetString();
+    }
     if (auto* v = json.Find("token_endpoint_auth_method")) {
         if (v->IsString() && !v->GetString().empty())
             info.token_endpoint_auth_method = v->GetString();

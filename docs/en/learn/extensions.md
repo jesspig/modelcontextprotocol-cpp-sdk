@@ -31,8 +31,13 @@ Skills are the one case where the declaration condition is stricter than the swi
 | `enable_server_card` | declares the server-card extension; the card accessor returns the explicit or default card after validation | the card accessor throws handler error; the HTTP card route is gated separately by the same-named transport switch | yes |
 | `enable_etag_cache` | list-shaped results carry a content hash and unchanged hits fall back to the local stored copy | results carry no hash and conditional requests are not sent | no |
 | `enable_progressive_discovery` | the tool list supports query filtering and paging | the tool list returns the cached full set | no |
-| `enable_file_input` | local and resource references inside tool arguments are sliced by range and small files inlined; remote addresses pass through | arguments pass through verbatim | no |
+| `enable_file_input` | local and resource references inside tool arguments are sliced by range and small files inlined only inside an explicit root allowlist; remote addresses pass through; without configured roots every `file://` reference is rejected | arguments pass through verbatim | no |
 | `enable_triggers_events` | the trigger registry matches by type, delivers the event notification through subscriptions and calls webhooks | the emit call returns immediately and the event is dropped | no |
+
+> [!warning] FileInput old → new behaviour (class B tightening)
+> Old: with `enable_file_input=true` the system temporary directory and the process working directory were implicitly trusted; any `file://` reference under them was read and inlined.
+> New: only roots listed in `ServerOptions::file_input_config.allowed_roots` may be read, compared by path components rather than string prefixes; sensitive files, symlinks/reparse points, hard links, device paths and encoded traversal are always rejected; reference count and bytes are accumulated per tool call and the tool handler is never invoked once a budget is exceeded.
+> How to adapt: configure `allowed_roots` explicitly (include the former temporary or working directory if the old behaviour is still needed); leave the list empty to disable all local files. `enable_file_input` and the public `FileRef` shape are unchanged, `http(s)://` still passes through, and legacy/modern tool semantics are preserved.
 
 Trigger webhooks retry internally (up to three attempts with growing backoff); a final failure only logs a warning and leaves the already-delivered event notification intact. This differs from the "failure is an error" behaviour elsewhere, so treat it separately.
 

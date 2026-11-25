@@ -33,6 +33,7 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -286,6 +287,84 @@ TEST(HttpServerTest, BindHostDefaultRegression) {
     server.Stop();
 }
 
+TEST(HttpServerTest, DefaultBindIsLoopbackOnly) {
+    EXPECT_EQ(mcp::kDefaultBindHost, "127.0.0.1");
+    auto port = PickFreePort(kTestBasePort + 960);
+    mcp::HttpServer server(port);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+    auto r = HttpGet("http://127.0.0.1:" + std::to_string(port) + "/ping");
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 200);
+
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+    char host_name[256] = {};
+    std::string non_loopback;
+    if (gethostname(host_name, sizeof(host_name)) == 0) {
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        addrinfo* resolved = nullptr;
+        if (getaddrinfo(host_name, nullptr, &hints, &resolved) == 0) {
+            for (addrinfo* entry = resolved; entry != nullptr; entry = entry->ai_next) {
+                char text[INET_ADDRSTRLEN] = {};
+                auto* address4 = reinterpret_cast<sockaddr_in*>(entry->ai_addr);
+                if (inet_ntop(AF_INET, &address4->sin_addr, text, sizeof(text)) == nullptr)
+                    continue;
+                std::string address(text);
+                if (address.rfind("127.", 0) != 0) {
+                    non_loopback = std::move(address);
+                    break;
+                }
+            }
+            freeaddrinfo(resolved);
+        }
+    }
+    if (!non_loopback.empty()) {
+#ifdef _WIN32
+        SOCKET probe = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_NE(probe, INVALID_SOCKET);
+#else
+        int probe = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GE(probe, 0);
+#endif
+        struct sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        ASSERT_EQ(inet_pton(AF_INET, non_loopback.c_str(), &addr.sin_addr), 1);
+        EXPECT_NE(connect(probe, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)), 0);
+#ifdef _WIN32
+        closesocket(probe);
+        WSACleanup();
+#else
+        close(probe);
+#endif
+    }
+    server.Stop();
+}
+
+TEST(HttpServerTest, ExplicitWildcardBindAcceptsLoopback) {
+    auto port = PickFreePort(kTestBasePort + 961);
+    mcp::HttpServerOptions opts;
+    opts.bind_host = "0.0.0.0";
+    mcp::HttpServer server(port, opts);
+    server.SetHandler("GET", "/ping", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "pong";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+    auto r = HttpGet("http://127.0.0.1:" + std::to_string(port) + "/ping");
+    ASSERT_NE(r, std::nullopt);
+    EXPECT_EQ(r->status_code, 200);
+    server.Stop();
+}
+
 TEST(HttpServerTest, HostHeaderMissingRejectedNoCrash) {
     auto port = PickFreePort(kTestBasePort + 980);
     mcp::HttpServer server(port);
@@ -496,6 +575,35 @@ TEST(HttpServerTest, OversizedContentLengthReturns413) {
 #endif
     ASSERT_FALSE(first_line.empty());
     EXPECT_NE(first_line.find("413"), std::string::npos);
+    server.Stop();
+}
+
+TEST(HttpServerTest, MalformedFramingRejected) {
+    auto port = PickFreePort(kTestBasePort + 962);
+    mcp::HttpServer server(port);
+    server.SetHandler("POST", "/echo", [](const MCP_Request&, MCP_Response& resp) {
+        resp.body = "ok";
+    });
+    server.Start();
+    ASSERT_TRUE(WaitUntilReady(port));
+
+    const char* requests[] = {
+        "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length:\r\n\r\n",
+        "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2x\r\n\r\n",
+        "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Length: 18446744073709551616\r\n\r\n",
+        "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Length: 2\r\nContent-Length: 2\r\n\r\n",
+        "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\n",
+    };
+    for (const char* request : requests) {
+        RawSocketClient client;
+        ASSERT_TRUE(client.Connect(port, 0, 2000));
+        ASSERT_TRUE(client.Send(request));
+        const auto response = client.ReceiveUntilIdle(std::chrono::milliseconds(500));
+        EXPECT_NE(response.find("400"), std::string::npos) << request;
+    }
     server.Stop();
 }
 

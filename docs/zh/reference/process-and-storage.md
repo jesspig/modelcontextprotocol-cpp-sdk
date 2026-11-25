@@ -163,8 +163,8 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | 创建语义 | `CreateTask` | — | 重复 id 抛 `McpError(McpErrorCode::InvalidParams, "task already exists: " + id)` |
 | 并发模型 | `write_mutex_` 串行写 + `shared_mutex` 读写锁 | — | 读函数只持读锁；写函数全程持 `write_mutex_` |
 | 日志格式 | 每行一条 JSON：`{"task_id":...,"state":{...}}`；删除追加 `{"task_id":...,"removed":true}` | — | 追加写，重放时按行覆盖/删除 |
-| 压缩触发 | `pending_records_ > kMinCompactThreshold + 2 × 存活任务数` | `kMinCompactThreshold = 64` | 追加句柄先离开作用域再计数，避免 Windows 上 `rename` 撞到存储自身的句柄；满足阈值即重写全文件：临时文件落盘 + `fsync`/`FlushFileBuffers` + `rename` 原子替换（内部辅助在 `src/detail/AtomicJsonFile.cpp`），成功后计数归零；压缩失败只记 Error 日志并将计数归零，本次追加仍返回成功 |
-| 损坏处理 | 中间行解析失败 → 复制同名 `.corrupt` 备份并**清空整库**；末行残片只记日志忽略 | — | 兼容旧的 `{"tasks":{...}}` 快照格式 |
+| 压缩触发 | `pending_records_ > kMinCompactThreshold + 2 × 存活任务数` | `kMinCompactThreshold = 64` | 追加句柄先离开作用域再计数，避免 Windows 上 `rename` 撞到存储自身的句柄；满足阈值即重写全文件：临时文件独占创建、创建即收紧权限、落盘 + `fsync`/`FlushFileBuffers` + 相对 `rename` + 父目录 `fsync`（内部辅助在 `src/detail/AtomicJsonFile.cpp`），成功后计数归零；压缩失败只记 Error 日志并将计数归零，本次追加仍返回成功 |
+| 损坏处理 | 记录先解析到临时状态，完整验证成功才发布到内存；中间行解析失败 → 先复制字节一致的 `.corrupt` 备份，再以合法前缀原子重建规范文件；末行残片（文件不以换行结尾）忽略并按合法前缀原子重写 | — | 备份失败保留原文件、不发布内存并抛 `McpError(InternalError)`；重建/重写失败明确抛错，不伪报恢复成功；兼容旧的 `{"tasks":{...}}` 快照格式 |
 | 归属目标 | `mcp-server` 静态库 | — | 示例用法见 `examples/conformance/server/SkillsAndTasks.cpp` |
 
 接口声明在 `include/mcp/storage/FileTaskStore.hpp`，追加、重放、压缩与损坏处理全在 `src/server/FileTaskStore.cpp`。
@@ -189,7 +189,7 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | 符号 | 签名/类型 | 默认值 | 说明 |
 |---|---|---|---|
 | 构造 | `explicit FileEventStore(std::filesystem::path storage_dir)` | — | 参数是**目录**（与 `FileTaskStore` 相反），`create_directories` 失败抛 `std::runtime_error` |
-| `Append` | `override uint64_t` | — | 逐行 JSONL 追加，id 取该会话文件内 `max_id + 1`（不接基类计数器）；末行缺换行先补 |
+| `Append` | `override uint64_t` | — | 会话锁内每次扫描 JSONL 校验 `next_id`/`count`，id 取 `max_id + 1`（不接基类计数器）；`.meta.json` 游标仅为加速缓存，日志缺失、截断、裁剪、备份未落盘或游标超前/落后/损坏时一律从日志重建；`max_id` 达 `uint64` 上限时拒绝追加；末行缺换行先补 |
 | `GetEventsSince` | `override std::vector<std::pair<uint64_t, std::string>> const` | 空 | 全量重扫文件后过滤 `id > last_event_id` |
 | `Clear` | `override void` | — | 删除会话文件（不删锁文件），失败抛 `std::runtime_error` |
 | 文件命名 | `<storage_dir>/sess-<转义 id>.jsonl` 与同名 `.lock` | — | 非 `[A-Za-z0-9_-]` 字符按 `~hh` 十六进制转义，杜绝路径穿越 |
@@ -268,7 +268,7 @@ MCP_API std::unique_ptr<SpawnedProcess> Spawn(const SpawnOptions& options);
 | 符号 | 定位 | 声明位置与细节 |
 |---|---|---|
 | `ITokenCache` | 契约与 `TokenContainer` 字段语义 | 声明在 `include/mcp/client/auth/TokenCache.hpp`；字段与过期语义见 [授权与扩展参考](/zh/reference/auth-and-extensions) |
-| `FileTokenCache` | `mcp-client` 目标内的单文件实现：构造参数是**文件路径**，`tokens_` 为空时 `Save()` 删除文件；Windows 落盘前经 `CryptProtectData` 加密、POSIX 写明文，两者都走仅属主可访问的原子写（辅助在 `src/detail/AtomicJsonFile.cpp`），且 POSIX 载入前拒绝「他人可读或非本人所有」的旧文件；issuer 锚点另存 `<cache_path>.issuer`，空 issuer 即删锚点 | 声明在 `include/mcp/storage/FileTokenCache.hpp`，实现见 `src/client/FileTokenCache.cpp`，归属目标见 `CMakeLists.txt`；细节见 [授权与扩展参考](/zh/reference/auth-and-extensions) |
+| `FileTokenCache` | `mcp-client` 目标内的单文件实现：构造参数是**文件路径**，`tokens_` 为空时 `Save()` 删除文件；Windows 落盘前经 `CryptProtectData` 加密、POSIX 写明文，两者都走仅属主可访问的原子写（辅助在 `src/detail/AtomicJsonFile.cpp`）：临时文件随机名、独占 `O_EXCL`/`CREATE_NEW`、no-follow、创建即收紧权限/ACL，拒绝目录、symlink 与 Windows reparse point，POSIX 相对 `rename` 后 `fsync` 父目录，父目录刷盘失败不报成功，任一阶段失败清理临时文件；且 POSIX 载入前拒绝「他人可读或非本人所有」的旧文件；issuer 锚点另存 `<cache_path>.issuer`，空 issuer 即删锚点 | 声明在 `include/mcp/storage/FileTokenCache.hpp`，实现见 `src/client/FileTokenCache.cpp`，归属目标见 `CMakeLists.txt`；细节见 [授权与扩展参考](/zh/reference/auth-and-extensions) |
 
 头文件位置提醒：`TokenCache.hpp` 实际在 `include/mcp/client/auth/TokenCache.hpp`（不存在 `include/mcp/auth/` 目录）。
 

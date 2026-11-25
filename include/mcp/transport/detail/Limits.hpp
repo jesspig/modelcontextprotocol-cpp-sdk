@@ -18,6 +18,9 @@ inline constexpr size_t kMaxSseEventBytes = 1 * 1024 * 1024;
 inline constexpr size_t kMaxDcrBytes = 1 * 1024 * 1024;
 inline constexpr size_t kMaxStdioFrameBytes = 8 * 1024 * 1024;
 inline constexpr int kMaxHttpRedirects = 5;
+inline constexpr int kMaxWebSocketRedirects = 5;
+inline constexpr size_t kMaxWebSocketHandshakeQueueMessages = 64;
+inline constexpr size_t kMaxWebSocketHandshakeQueueBytes = 1024 * 1024;
 inline constexpr size_t kReadBufferSize = 4096;
 inline constexpr size_t kChannelCapacity = 64;
 inline constexpr size_t kMaxHttpSessions = 10000;
@@ -33,5 +36,7 @@ static_assert(kMaxDcrBytes <= kMaxHttpResponseBytes,
     "the DCR body cap must stay reachable below the HTTP response cap");
 static_assert(kChannelCapacity > 0,
     "a blocking MessageChannel needs non-zero capacity");
+static_assert(kMaxWebSocketHandshakeQueueMessages > 0 && kMaxWebSocketHandshakeQueueBytes > 0,
+    "the pre-101 WebSocket queue needs non-zero message and byte budgets");
 
 }} // namespace mcp::detail

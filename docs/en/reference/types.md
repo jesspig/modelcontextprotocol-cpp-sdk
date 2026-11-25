@@ -164,7 +164,7 @@ All of the above is declared in `include/mcp/McpTypes.hpp`; the two places where
 | `DiscoverRequestParams` / `ListRootsRequestParams` | `struct {}` | — | Empty-parameter requests |
 | `Pagination` | `struct { std::optional<std::string> next_cursor; }` | `nullopt` | Cursor envelope |
 | `FileRef` | `struct { std::string uri; int64_t offset{0}; int64_t length{0}; }` | `0` | `x-mcp-fileref` argument; zero-valued fields are omitted during serialisation |
-| `SubscriptionFilter` | `struct { optional<bool> tools_list_changed/prompts_list_changed/resources_list_changed; vector<string> resource_subscriptions; }` | `nullopt` / `{}` | `subscriptions/listen` filter |
+| `SubscriptionFilter` | `struct { optional<bool> tools_list_changed/prompts_list_changed/resources_list_changed; vector<string> resource_subscriptions; vector<string> task_ids; }` | `nullopt` / `{}` | `subscriptions/listen` filter; `task_ids` maps to the `taskIds` wire field and filters modern task notifications |
 | `SubscriptionsListenRequestParams` | `struct { SubscriptionFilter notifications; optional<RequestMeta> meta; }` | — | Listen-subscription input |
 | `CreateMessageRequestParams` / `SamplingMessage` | `struct { vector<SamplingMessage> messages; int64_t max_tokens; optional<string> stop_reason/model_preference; }` / `struct { role; ContentVariant content; }` | `max_tokens` required | `sampling/*` is deprecated (SEP-2577); the types remain |
 | `SetLevelRequestParams` | `struct { LoggingLevel level; }` | — | Input of `logging/setLevel` |
@@ -214,7 +214,9 @@ All of the above is declared in `include/mcp/McpTypes.hpp`.
 | Symbol | Signature/Type | Default | Notes |
 |---|---|---|---|
 | `TaskStatus` | `enum class { Pending, Working, Completed, Failed, Cancelled, InputRequired }` | `Pending` | Task state machine |
-| `TaskState` | `struct` (17 fields: `task_id`/`owner`/`status`/`result`/`error_message`/`input_required`/`progress`/`progress_total`/`created_at`/`status_message`/`last_updated_at`/`ttl_ms`/`poll_interval_ms`/`input_requests`/`input_responses`/`tool_name`/`tool_arguments`) | `status = Pending`, `progress = 0` | Defined in the **server** header, not in `McpTypes.hpp`; storage details in the [Process and storage reference](/en/reference/process-and-storage) |
+| `TaskState` | `struct` (17 fields: `task_id`/`owner`/`status`/`result`/`error_message`/`input_required`/`progress`/`progress_total`/`created_at`/`status_message`/`last_updated_at`/`ttl_ms`/`poll_interval_ms`/`input_requests`/`input_responses`/`tool_name`/`tool_arguments`) | `status = Pending`, `progress = 0` | Defined in the **server** header, not in `McpTypes.hpp`; `owner` comes from the authenticated principal; storage details in the [Process and storage reference](/en/reference/process-and-storage) |
+| `DetailedTask` | `struct { task_id; status; optional<created_at/last_updated_at/ttl_ms/result/error/input_required/input_requests>; }` | by value | Full payload of modern `notifications/tasks`; `IsValidDetailedTask` checks mandatory and terminal-state fields |
+| `IMcpTaskStore` / `FileTaskStore` / `InMemoryTaskStore` | interface and two implementations | — | New tasks write `owner`; legacy records may have an empty `owner` and are preserved; `CreateTask(id, owner, ttl)` is the new write path |
 | `CreateTaskResult` | `struct : Result { task_id; status; created_at; optional<status_message/last_updated_at/ttl_ms/poll_interval_ms/input_requests>; }` | first three mandatory | Result of creating a task |
 | `GetTaskResult` | `struct` (**does not inherit** `Result`, 14 fields, incl. `task_result_type{"task"}`, `error`, `error_message`, `input_required`, `meta`) | `task_result_type = "task"` | Different base class from `CreateTaskResult`; do not conflate |
 | `UpdateTaskResult` / `CancelTaskResult` | `using ... = EmptyResult` | — | No own fields |

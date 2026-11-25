@@ -41,6 +41,7 @@ public:
     const Implementation& GetServerInfo() const;
     [[nodiscard]] std::optional<std::string> GetInstructions() const;
     std::string_view GetNegotiatedProtocolVersion() const;
+    [[nodiscard]] std::shared_ptr<const NegotiationResult> CurrentNegotiationSnapshot() const;
     [[nodiscard]] bool IsModernProtocol() const;
 
     ListToolsResult ListTools(
@@ -86,6 +87,10 @@ public:
     SkillReadResult ReadSkill(
         std::string_view uri,
         const CacheableRequestOptions& options = {});
+    SkillReadResult ReadSkill(
+        std::string_view uri,
+        const CacheableRequestOptions& options,
+        SkillReadParts parts);
     SkillDirectoryReadResult ReadSkillDirectory(
         std::string_view uri,
         const CacheableRequestOptions& options = {});
@@ -167,6 +172,8 @@ private:
     void InstallSamplingHandler();
     void InstallRootsHandler();
     NegotiationResult NegotiateProtocol();
+    void PublishNegotiation(NegotiationResult result);
+    [[nodiscard]] std::shared_ptr<const NegotiationResult> CurrentNegotiation() const;
 
     std::optional<std::string> AttachProgressCallback(
         const RequestOptions& options, RequestMeta& meta);
@@ -206,7 +213,9 @@ private:
     std::shared_ptr<McpSessionHandler> handler_;
     ClientOptions options_;
 
-    NegotiationResult negotiation_;
+    mutable std::mutex negotiation_mutex_;
+    std::shared_ptr<const NegotiationResult> negotiation_snapshot_;
+    std::vector<std::shared_ptr<const NegotiationResult>> negotiation_history_;
 
     std::optional<SamplingHandler> sampling_handler_;
     std::optional<RootsHandler> roots_handler_;

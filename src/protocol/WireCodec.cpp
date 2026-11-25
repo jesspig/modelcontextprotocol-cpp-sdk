@@ -3,6 +3,8 @@
 #include <mcp/Capabilities.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <mcp/Log.hpp>
+#include <mcp/McpTypes.hpp>
+#include <mcp/server/McpTaskStore.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ProtocolVersion.hpp>
 #include <detail/JsonFields.hpp>
@@ -42,7 +44,7 @@ inline const std::unordered_set<std::string_view> k2025OnlyRequestMethods = {
 inline const std::unordered_set<std::string_view> k2026OnlyRequestMethods = {
     "server/discover",
     "subscriptions/listen",
-    "tasks/get", "tasks/update", "tasks/cancel",
+    "tasks/get", "tasks/update", "tasks/cancel", "tasks/delete",
     "skills/list", "skills/get", "resources/directory/read",
 };
 
@@ -54,12 +56,6 @@ inline const std::unordered_set<std::string_view> kCommonNotifMethods = {
     "notifications/resources/list_changed",
     "notifications/tools/list_changed",
     "notifications/prompts/list_changed",
-    "notifications/tasks/status",
-    "notifications/tasks/working",
-    "notifications/tasks/completed",
-    "notifications/tasks/failed",
-    "notifications/tasks/cancelled",
-    "notifications/tasks/input_required",
     "notifications/triggers/event",
 };
 
@@ -67,10 +63,17 @@ inline const std::unordered_set<std::string_view> k2025OnlyNotifMethods = {
     "notifications/initialized",
     "notifications/elicitation/complete",
     "notifications/roots/list_changed",
+    "notifications/tasks/status",
+    "notifications/tasks/working",
+    "notifications/tasks/completed",
+    "notifications/tasks/failed",
+    "notifications/tasks/cancelled",
+    "notifications/tasks/input_required",
 };
 
 inline const std::unordered_set<std::string_view> k2026OnlyNotifMethods = {
     "notifications/subscriptions/acknowledged",
+    "notifications/tasks",
 };
 
 inline std::unordered_set<std::string_view> MakeEraMethods(
@@ -84,6 +87,22 @@ inline std::unordered_set<std::string_view> MakeEraMethods(
 inline bool IsTaskNameCheckedMethod(std::string_view method) {
     return method == "tasks/get" || method == "tasks/update" ||
         method == "tasks/cancel";
+}
+
+inline bool IsValidTaskIdsFilter(const JsonValue& raw) {
+    const JsonValue* params = raw.Find(detail::kParams);
+    if (!params || !params->IsObject()) return true;
+    const JsonValue* notifications = params->Find(detail::kNotifications);
+    if (!notifications || !notifications->IsObject()) return true;
+    const JsonValue* ids = notifications->Find(detail::kTaskIds);
+    if (!ids) return true;
+    if (!ids->IsArray()) return false;
+    const auto& values = ids->GetArray();
+    if (values.size() > kMaxTaskIdsPerSubscription) return false;
+    for (const auto& value : values) {
+        if (!value.IsString() || value.GetString().empty()) return false;
+    }
+    return true;
 }
 
 WireMessageView BuildWireMessageView(std::string_view jsonrpc,
@@ -206,6 +225,9 @@ public:
             if (!has_meta) {
                 return WireValidation::Invalid;
             }
+            if (method == "subscriptions/listen" && !IsValidTaskIdsFilter(view.raw)) {
+                return WireValidation::Invalid;
+            }
         }
         return WireValidation::Ok;
     }
@@ -235,6 +257,10 @@ public:
         }
         if (raw.Contains("id") || raw.Contains("result") || raw.Contains("error")) {
             return WireValidation::Invalid;
+        }
+        if (method == "notifications/tasks") {
+            const JsonValue* params = raw.Find(detail::kParams);
+            if (!params || !IsValidDetailedTask(*params)) return WireValidation::Invalid;
         }
         return WireValidation::Ok;
     }

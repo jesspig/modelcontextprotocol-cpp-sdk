@@ -8,6 +8,7 @@
 
 #include <mcp/JsonValue.hpp>
 #include <mcp/McpVersion.hpp>
+#include <mcp/ServerRequestContext.hpp>
 #include <mcp/detail/McpParamAnnotations.hpp>
 #include <mcp/ext/ServerCard.hpp>
 
@@ -31,9 +32,12 @@ inline constexpr uint16_t kDefaultPort = 3001;
 
 struct AuthResult {
     bool ok{false};
+    std::string principal;
     std::vector<std::string> scopes;
     std::optional<std::string> resource;
 };
+
+using ServerAuthenticatedCallback = std::function<void(const ServerRequestContext&)>;
 
 using McpParamAnnotationInfo = detail::McpParamAnnotation;
 
@@ -79,6 +83,8 @@ struct StreamableHttpServerOptions {
     };
     std::optional<BearerAuthConfig> bearer_auth;
 
+    ServerAuthenticatedCallback on_authenticated;
+
     std::function<std::vector<McpParamAnnotationInfo>(const std::string& method,
                                                       const std::string& name)>
         resolve_param_annotations;
@@ -111,9 +117,17 @@ private:
     void HandlePost(const HttpRequest& req, HttpResponse& resp);
     void HandleGet(const HttpRequest& req, HttpResponse& resp);
 
-    bool AuthorizeRequest(const HttpRequest& req, HttpResponse& resp);
+    bool AuthorizeRequest(const HttpRequest& req, HttpResponse& resp,
+                          AuthResult& auth_out);
+    ServerRequestContext BuildRequestContext(const AuthResult& auth,
+                                             std::string_view session_id) const;
+    bool BindSessionPrincipal(const ServerRequestContext& ctx);
+    bool VerifySessionOwner(const ServerRequestContext& ctx) const;
+    void LogRequestLifecycle(std::string_view event,
+                             const ServerRequestContext& ctx,
+                             std::string_view detail = {}) const;
     void HandleMetadataRequest(HttpResponse& resp);
-    void HandleServerCardRequest(HttpResponse& resp);
+    void HandleServerCardRequest(const HttpRequest& req, HttpResponse& resp);
     ext::ServerCard BuildDefaultServerCard() const;
 
     std::string BuildSseEvent(JsonRpcMessage msg);
@@ -137,6 +151,7 @@ private:
     bool HasSession(const std::string& session_id);
     void EraseSession(const std::string& session_id);
     static std::string PendingKey(std::string_view session_id,
+                                  std::string_view owner,
                                   const std::string& request_id);
     static std::string EncodeSseStreamTag(std::string_view session_id);
     static bool TagMatchesSession(const std::string& tag,
@@ -154,6 +169,7 @@ private:
         bool prompts{false};
         bool resources{false};
         std::vector<std::string> resource_uris;
+        std::vector<std::string> task_ids;
     };
     static ListenFilter ParseListenFilter(const JsonRpcRequest& req);
     static std::string EncodeListenTag(const ListenFilter& filter,
@@ -161,7 +177,8 @@ private:
     static bool IsListenFilteredNotification(const std::string& method);
     static bool ListenTagAccepts(const std::string& tag,
                                  const std::string& method,
-                                 const std::optional<std::string>& resource_uri);
+                                 const std::optional<std::string>& resource_uri,
+                                 const std::optional<std::string>& task_id = std::nullopt);
 
     StreamableHttpServerOptions options_;
     std::unique_ptr<HttpServer> http_server_;
@@ -177,10 +194,16 @@ private:
     std::atomic<size_t> stateless_inflight_{0};
     struct PendingResponse {
         RequestId request_id;
+        std::string session_id;
+        std::string owner;
         std::shared_ptr<std::promise<JsonRpcMessage>> promise;
     };
     std::unordered_map<std::string, PendingResponse> pending_responses_;
     std::mutex pending_mutex_;
+    mutable std::mutex session_owner_mutex_;
+    std::unordered_map<std::string, std::string> session_owners_;
+    std::mutex delete_mutex_;
+    std::unordered_set<std::string> deletes_in_flight_;
     std::unordered_map<std::string, std::vector<std::string>> request_stream_frames_;
     std::unordered_map<std::string, std::string> progress_token_routes_;
     std::unordered_set<std::string> hold_open_requests_;

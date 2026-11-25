@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <array>
 #include <cstring>
 #include <cerrno>
 #include <limits>
@@ -311,6 +312,28 @@ void TcpSocket::Close() {
     std::unique_lock<std::shared_mutex> guard(io_mutex_);
     int fd = fd_.exchange(kInvalidFd);
     if (fd >= 0) ::close(fd);
+}
+
+std::optional<std::string> TcpSocket::PeerAddress() const {
+    int fd = fd_.load();
+    if (closed_.load() || fd < 0) return std::nullopt;
+    struct sockaddr_storage storage;
+    socklen_t length = sizeof(storage);
+    if (::getpeername(fd, reinterpret_cast<struct sockaddr*>(&storage), &length) != 0)
+        return std::nullopt;
+    std::array<char, 64> text{};
+    if (storage.ss_family == AF_INET) {
+        auto* addr = reinterpret_cast<const struct sockaddr_in*>(&storage);
+        if (::inet_ntop(AF_INET, &addr->sin_addr, text.data(), text.size()) == nullptr)
+            return std::nullopt;
+    } else if (storage.ss_family == AF_INET6) {
+        auto* addr = reinterpret_cast<const struct sockaddr_in6*>(&storage);
+        if (::inet_ntop(AF_INET6, &addr->sin6_addr, text.data(), text.size()) == nullptr)
+            return std::nullopt;
+    } else {
+        return std::nullopt;
+    }
+    return std::string(text.data());
 }
 
 }}} // namespace mcp::detail::net

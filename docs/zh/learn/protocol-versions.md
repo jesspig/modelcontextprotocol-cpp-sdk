@@ -60,23 +60,24 @@
 | `tasks/cancel` | 可用 | 可用 | 同上 |
 | `tasks/result` | 可用 | 拒绝 | 无 |
 | `tasks/list` | 可用 | 拒绝 | 无 |
+| `tasks/delete` | 拒绝 | 可用 | 按 authenticated principal 校验 owner，越权统一回 `TaskNotFound` |
 | `server/discover` | 拒绝 | 可用 | `_meta` 显示旧版本时被拒 |
 | `subscriptions/listen` | 拒绝 | 可用 | 需订阅总开关（默认开） |
 | `skills/list` | 拒绝 | 可用 | 需技能开关与资源能力 |
 | `skills/get` | 拒绝 | 可用 | 同上 |
 | `resources/directory/read` | 拒绝 | 可用 | 还需声明目录读取 |
 
-覆盖 27 个方法名。三处易误读：任务三方法在两套白名单里都出现，是**双时代交集**，而非「仅旧时代」；`tasks/result` 与 `tasks/list` 才是仅旧时代；`server/extensions/list` 是双时代公共成员。
+覆盖 28 个方法名。三处易误读：任务三方法在两套白名单里都出现，是**双时代交集**，而非「仅旧时代」；`tasks/result` 与 `tasks/list` 才是仅旧时代，`tasks/delete` 是仅现代；`server/extensions/list` 是双时代公共成员。
 
 ## 双时代可用性矩阵：通知
 
 | 归属 | 通知名 |
 |------|--------|
-| 双时代公共（14） | `notifications/cancelled`、`notifications/progress`、`notifications/message`、`notifications/resources/updated`、`notifications/resources/list_changed`、`notifications/tools/list_changed`、`notifications/prompts/list_changed`、`notifications/tasks/status`、`notifications/tasks/working`、`notifications/tasks/completed`、`notifications/tasks/failed`、`notifications/tasks/cancelled`、`notifications/tasks/input_required`、`notifications/triggers/event` |
-| 仅旧时代（3） | `notifications/initialized`、`notifications/elicitation/complete`、`notifications/roots/list_changed` |
-| 仅现代时代（1） | `notifications/subscriptions/acknowledged` |
+| 双时代公共（8） | `notifications/cancelled`、`notifications/progress`、`notifications/message`、`notifications/resources/updated`、`notifications/resources/list_changed`、`notifications/tools/list_changed`、`notifications/prompts/list_changed`、`notifications/triggers/event` |
+| 仅旧时代（9） | `notifications/initialized`、`notifications/elicitation/complete`、`notifications/roots/list_changed`、六个 `notifications/tasks/status|working|completed|failed|cancelled|input_required` |
+| 仅现代时代（2） | `notifications/subscriptions/acknowledged`、`notifications/tasks`（载荷为完整 `DetailedTask`，需先订阅，可用 `taskIds` 过滤） |
 
-覆盖 18 个通知名。六个任务通知与触发器事件通知都在公共集合内（服务端确实在发）。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。
+覆盖 19 个通知名。**0.3.13 起现代任务通知只发/收单个 `notifications/tasks`**，六个旧任务通知仅旧时代可用；触发器事件通知仍在双时代公共集合内。现代时代另有形状约束：通知体不得带 `id`、`result`、`error`，否则判为非法。根目录变更通知在客户端还额外要求协商版本不低于 `2025-06-18`。细节见 [0.3.13 发布说明](/zh/migration/0.3.13)。
 
 ## `_meta` 的位置与强制性
 
@@ -120,7 +121,7 @@ Pin 模式跳过协商，也就跳过了服务端能力与信息的获取——�
 
 ## 2026-07-28 修订的破坏性变更
 
-按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](/zh/migration/0.3.9)；最新 patch 的变化见 [0.3.12 发布说明](/zh/migration/0.3.12)。
+按 2026-07-28 规范修订，每条变更一句话概述并附迁移法。0.3.8 → 0.3.9 公共头文件破坏项的完整旧/新写法见 [0.3.9 迁移指南](/zh/migration/0.3.9)；0.3.12 已发布内容见 [0.3.12 发布说明](/zh/migration/0.3.12)；最新版的行为收紧与逐项迁移见 [0.3.13 发布说明](/zh/migration/0.3.13)。
 
 - **URL elicitation 现代语义**——`url` elicitation 仅遵循现代时代语义。迁移：现代时代下 `ElicitUrl` 不再等待 `elicitationId` + `notifications/elicitation/complete`，而转为 MRTR 输入往返（`inputRequests["elicitation"]`，配置 `request_state_key` 时带 `requestState` 签名），经 `tasks/update` `inputResponses` 履行，客户端用 `SetUrlElicitationHandler` 承接（默认拒绝）；遗留 `elicitationId` 等待路径不变。
 - **`_meta` 省略**——空的每请求 `_meta` 改为线上省略，不再发送空对象。迁移：对端须把缺失的 `params._meta` 视为“无元数据”，不得假设空对象必到；发送侧无需补空对象；遗留 `SendRequest` 在 `params` 为空/null 时直接丢弃该字段。

@@ -3,7 +3,7 @@ type: Module
 title: mcp-server 服务端库
 description: McpServer 门面：注册工具/资源/提示词、请求分发、能力推导、progress 推送、requestState 签发、x-mcp-header 参数头解析、任务后台执行与 URL elicitation。
 tags: [server, 工具注册, 资源, 提示词, 任务, progress, elicitation]
-timestamp: 2026-11-18T16:15:39+08:00
+timestamp: 2026-11-25T19:14:24+08:00
 resource: src/server/McpServer.cpp
 ---
 
@@ -37,7 +37,7 @@ resource: src/server/McpServer.cpp
 
 - 声明：`ToolOptions::execution`（`ToolExecution`，`mode == ToolExecutionMode::Task`）经 `RegisterTool` 写入工具定义的 `execution` 字段
 - 触发条件：工具声明 task 模式**且** `options_.task_store` 存在；`tools/call` 任务化路径 2025 与 2026 双时代均放行（modern 下任务状态通知按订阅路由——无订阅者时丢弃，客户端靠轮询取终态）
-- 立即返回：登记取消标志 → `CreateTask` + 置 `Working`（`last_updated_at = created_at`）→ legacy 下发 `notifications/tasks/status`（modern 抑制）→ 同步返回 `CreateTaskResult`（`resultType` 落 `"task"`；2026 扁平只写顶层字段，2025 保留嵌套 `task` 兼容）
+- 立即返回：先校验 authenticated principal 与 per-principal 任务预算 → 登记取消标志 → `CreateTask(id, owner, ttl)` + 置 `Working`（`last_updated_at = created_at`）→ legacy 下发 `notifications/tasks/status`、modern 下发单 `notifications/tasks`（`DetailedTask`）→ 同步返回 `CreateTaskResult`（`resultType` 落 `"task"`；2026 扁平只写顶层字段，2025 保留嵌套 `task` 兼容）
 - 后台执行：`std::async` 调用工具 handler——正常返回（含 `is_error` 结果）序列化入库并落 `Completed`；抛 `McpError` 按原码/消息/data 以错误载荷入库落 `Failed`（`GetTaskResult` 以内联 `error` 透传），其他异常按 `InternalError` 落 `Failed`；取消判定优先于 Failed，`Cancelled` 静默收尾不发通知
 - 协作取消：`RequestContext::IsCancellationRequested()` 读共享取消标志（`shared_ptr<const std::atomic<bool>>`，handler 轮询自愿退出）；`tasks/cancel` 置位标志并落 `Cancelled` 终态，**终态不迁移**（已终态直接返回空结果）；**协议级 `notifications/cancelled` 与任务级取消共用同一标志**，标志在派发前由 `GetIncomingCancellationFlag(req.id)` 注入，故普通（非任务）工具 handler 同样能感知
 - future 进 `pending_async_futures_`（顺带清理已完成项），`Close()` 全部等待
@@ -55,13 +55,22 @@ resource: src/server/McpServer.cpp
 - 变更通知：`SendToolListChanged()` / `SendResourceListChanged()` / `SendPromptListChanged()` 经 `SendListChangedNotification` **按时代分派**（现代走 `NotifySubscribers` 按 filter 过滤，2025 及更早直接广播）；`SendResourceUpdated(uri)` 发布 `notifications/resources/updated`，以 uri 为过滤键，只投递给订阅了该资源的订阅者（[McpServer.hpp](../../include/mcp/server/McpServer.hpp)）
 - `SendLoggingMessage` 的 wire `level` 为**官方字符串**（`SerializeLoggingLevel`，如 `"debug"`/`"error"`）——原数字直写 bug 由官方 conformance 捕获并修正
 - `RequestContext` 持有 `JsonRpcRequest` **值**（替代指针）：异步工具 handler 延迟执行时原请求对象可能已析构，存值使 `GetRequest()` 在异步场景安全；构造多参 `cancellation_flag` 供任务化执行传入协作取消标志
-- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；`tasks/update`/`tasks/cancel` 完成后发送任务状态通知（`tasks/completed|working|cancelled`，modern 经 `NotifySubscribers` 按订阅路由、legacy 广播），`SendTaskStatus` 公开方法发送 `tasks/status`（同样按协商时代二选一路），任务化执行经 `SendTaskNotification` 发 `notifications/tasks/status`
+- 任务状态 wire 值用官方字符串（`TaskStatusToWireString`：working/input_required/completed/failed/cancelled，`Pending→working`）；FileTaskStore 磁盘持久化仍为数字；modern 统一发 `notifications/tasks`（`SerializeDetailedTask` 完整载荷，经 `NotifySubscribers` 与 HTTP listen tag 按 `taskIds` 过滤），legacy 发 `notifications/tasks/*`（`SendNotification` 广播）；`tasks/delete` 为 modern-only owner 校验删除入口；principal 绑定接口 `SetSessionPrincipal`/`ClearSessionPrincipal`/`SetDefaultPrincipal`
+- `ServerRequestContext`（[ServerRequestContext.hpp](../../include/mcp/ServerRequestContext.hpp)）经 `JsonRpcRequest::request_context` 传入，`RequestContext::Identity()` 供 handler 读取；显式区分 sessionful/stateless，owner 解析优先取上下文 principal，再取会话绑定与默认 principal。`TaskState::authorized_scopes` 随任务持久化，访问时与当前 principal 的作用域比对，旧空作用域记录兼容放行
 - `ElicitUrl(url, message, timeout=600s, session_id={})`（URL elicitation，SEP-1034）：发 `elicitation/create`（`mode="url"` + 自增 `elicitationId`），登记 `pending_url_elicitations_` 后等待 `notifications/elicitation/complete` 唤醒，以 `ElicitResult action="accept"` 完成；watchdog 超时抛 `RequestTimeout`；会话解析见 [/classes/mcp-server.md](../classes/mcp-server.md)
 - `tools/list` 序列化缓存 `cached_tools_json_`：`RegisterTool` 置 `nullopt` 失效，`HandleListTools` double-check 重建
 - `resources/read` 两轮遍历（[McpServer.cpp](../../src/server/McpServer.cpp)）：第一轮**静态资源优先**（跳过 `is_template`，`uri_pattern == uri` 精确匹配调 `handler(uri)`）；未命中再逐模板 `detail::UriTemplate::Parse` + `Match`，命中调 `template_handler(uri, variables)`（变量名→pct-decoded 值，[McpServer.hpp](../../include/mcp/server/McpServer.hpp)）；两轮均未命中抛 `InvalidParams "resource not found: <uri>"`。命中分支同样回填 `resources/read` 的 cache hint
 - 分页循环提取为 `PaginateEntries` 模板（resources/templates/prompts 三处共用）
 - 任务结果填充提取为 `MakeGetTaskResultJson`；cache hint 查询用 `GetCacheHint`（`std::less<>` 透明比较器）
 - **六开关门控位置**：etag 构造期同步（`SetEtagCacheEnabled(options_.enable_etag_cache)`，[McpServer.cpp](../../src/server/McpServer.cpp)）、触发器发射门（`EmitTriggerEvent` 开头，关直接 return，[McpServer.cpp](../../src/server/McpServer.cpp)）、渐进发现（`HandleListTools` 开头，关走缓存快照路径，[McpServer.cpp](../../src/server/McpServer.cpp)）、文件输入（`HandleCallTool` 参数解析段，关跳过 file 引用消解，[McpServer.cpp](../../src/server/McpServer.cpp)）、apps `ui://` 读门（`HandleReadResource` 内 `HasAppsUriScheme` 分支，关报 `HandlerError "apps extension is disabled"`，[McpServer.cpp](../../src/server/McpServer.cpp)）、server-card 获取门（`GetServerCard` 开头，关报 `HandlerError "server card is disabled"`，[McpServer.cpp](../../src/server/McpServer.cpp)）；注意 apps/server-card 关态为 `HandlerError` 而非 `MethodNotFound`
+
+- **FileInput 根目录别名**：`FileInputResolver` 同时保存配置路径的绝对词法组件与 canonical 组件，二者分别匹配 URI 路径与 canonical 目标；允许根目录本身是 junction/symlink 别名，实际从 canonical 根打开原始相对路径，根内链接仍逐组件拒绝，canonical 目标逃逸仍失败关闭
+
+## Server Card 服务端/客户端分工
+
+- 服务端 `GetServerCard()`、`ValidateCard`、`SerializeCard` 与 `GET /server-card` 均保留；[ServerCard.cpp](../../src/ext/ServerCard.cpp) 的校验扩展到图标、URL、头值、变量与版本串，序列化在有值时写出 `title`/`icons`/`repository`/`website_url`/`meta`
+- HTTP 卡片响应（[StreamableHttpServerTransport.cpp](../../src/http/StreamableHttpServerTransport.cpp)）提供规范化 body 的强 ETag、`If-None-Match` 弱比较/列表/304 空 body，并额外注册 `GET <endpoint>/server-card` 以匹配客户端发现；CORS 由 [HttpServerImpl.cpp](../../src/http/HttpServerImpl.cpp) 统一提供，卡片处理器不再重复写 `Access-Control-Allow-Origin`，`Access-Control-Expose-Headers` 现含 `ETag`
+- 客户端 `ext::FetchServerCard`/`ParseServerCard`（[ServerCardClient.hpp](../../include/mcp/ext/ServerCardClient.hpp)）独立于 `McpServer` 连接，负责发现、JSON media type 与 body 上限、条件请求，304 无缓存抛 `InvalidParams`
 
 ## requestState 签发（MRTR）
 

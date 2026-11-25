@@ -4,10 +4,14 @@ include(CMakeFindDependencyMacro)
 
 if(@MCP_OPENSSL_ENABLED@)
     find_dependency(OpenSSL)
+    include("${CMAKE_CURRENT_LIST_DIR}/mcpOpenSslVersion.cmake")
+    mcp_validate_openssl_version("${OPENSSL_VERSION}")
 endif()
 
 find_dependency(Threads)
+find_dependency(re2 CONFIG)
 
+include("${CMAKE_CURRENT_LIST_DIR}/mcpThirdParty.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/mcpTargets.cmake")
 
 check_required_components(mcp)

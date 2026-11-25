@@ -91,6 +91,32 @@ inline UrlParts ParseUrl(const std::string& url) {
     return false;
 }
 
+[[nodiscard]] inline bool HasUrlUserInfo(const std::string& url) {
+    auto scheme_pos = url.find("://");
+    if (scheme_pos == std::string::npos) return false;
+    auto start = scheme_pos + 3;
+    auto end = url.find_first_of("/?#", start);
+    auto authority = url.substr(start, end == std::string::npos ? std::string::npos
+                                                               : end - start);
+    return authority.find('@') != std::string::npos;
+}
+
+[[nodiscard]] inline bool IsSafeWebSocketRedirect(const std::string& from_url,
+                                                  const std::string& to_url) {
+    if (to_url.find("://") == std::string::npos) return false;
+    if (HasUrlUserInfo(from_url) || HasUrlUserInfo(to_url)) return false;
+    UrlParts from = ParseUrl(from_url);
+    UrlParts to = ParseUrl(to_url);
+    if (from.host.empty() || to.host.empty()) return false;
+    if (!EqualUrlHost(from.host, to.host)) return false;
+    if (from.scheme != "ws" && from.scheme != "wss") return false;
+    if (to.scheme != "ws" && to.scheme != "wss") return false;
+    if (from.scheme == to.scheme) return from.port == to.port;
+    if (from.scheme == "ws" && to.scheme == "wss")
+        return from.port == to.port || (from.port == 80 && to.port == 443);
+    return false;
+}
+
 inline std::string StripUrlFragment(const std::string& url) {
     auto hash = url.find('#');
     return hash == std::string::npos ? url : url.substr(0, hash);
@@ -107,12 +133,15 @@ inline std::string ResolveRedirectUrl(const std::string& base_url,
         throw std::invalid_argument("invalid redirect location");
     if (loc.find("://") != std::string::npos) return StripUrlFragment(loc);
     UrlParts base = ParseUrl(base_url);
-    if (base.host.empty() || (base.scheme != "http" && base.scheme != "https"))
+    if (base.host.empty() || (base.scheme != "http" && base.scheme != "https" &&
+                              base.scheme != "ws" && base.scheme != "wss"))
         throw std::invalid_argument("invalid base URL for redirect: " + base_url);
     std::string host = base.host.find(':') != std::string::npos ? "[" + base.host + "]" : base.host;
     std::string origin = base.scheme + "://" + host;
     bool default_port = (base.scheme == "https" && base.port == 443) ||
-                        (base.scheme == "http" && base.port == 80);
+                        (base.scheme == "http" && base.port == 80) ||
+                        (base.scheme == "wss" && base.port == 443) ||
+                        (base.scheme == "ws" && base.port == 80);
     if (!default_port) origin += ":" + std::to_string(base.port);
     if (!loc.empty() && loc[0] == '/') return origin + StripUrlFragment(loc);
     std::string path = base.path;

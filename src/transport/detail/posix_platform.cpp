@@ -1,4 +1,5 @@
 #include <mcp/transport/detail/PlatformIO.hpp>
+#include <transport/detail/PosixEnvHelper.hpp>
 #include <mcp/McpError.hpp>
 #include <mcp/ErrorCodes.hpp>
 #include <process/detail/PosixProcessSupport.hpp>
@@ -292,47 +293,14 @@ CreatedProcess CreateProcess(const ProcessStartInfo& info) {
     std::vector<std::string> env_strings;
     std::vector<char*> envp;
     if (has_custom_env) {
-        if (info.inherit_environment) {
-#ifdef __APPLE__
-            for (char** e = *_NSGetEnviron(); *e; ++e) {
-#else
-            for (char** e = ::environ; *e; ++e) {
-#endif
-                env_strings.push_back(*e);
-            }
-        }
-        for (const auto& [key, val] : info.environment_variables) {
-            env_strings.push_back(key + "=" + val);
-        }
+        env_strings = BuildPosixEnvironment(info);
         for (auto& es : env_strings) envp.push_back(es.data());
         envp.push_back(nullptr);
     }
 
-    std::string resolved = info.command;
-    if (has_custom_env && resolved.find('/') == std::string::npos) {
-        const char* path_env = getenv("PATH");
-        if (path_env) {
-            std::string path(path_env);
-            size_t start = 0, end;
-            while ((end = path.find(':', start)) != std::string::npos) {
-                std::string dir = path.substr(start, end - start);
-                if (dir.empty()) dir = ".";
-                std::string candidate = dir + "/" + info.command;
-                if (access(candidate.c_str(), X_OK) == 0) {
-                    resolved = candidate;
-                    break;
-                }
-                start = end + 1;
-            }
-            if (resolved == info.command) {
-                std::string dir = path.substr(start);
-                if (dir.empty()) dir = ".";
-                std::string candidate = dir + "/" + info.command;
-                if (access(candidate.c_str(), X_OK) == 0)
-                    resolved = candidate;
-            }
-        }
-    }
+    std::string resolved = has_custom_env
+        ? ResolvePosixExecutable(env_strings, info.command)
+        : info.command;
 
     pid_t pid = fork();
     if (pid < 0) {

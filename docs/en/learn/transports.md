@@ -8,11 +8,11 @@ A transport only moves JSON-RPC envelopes to the peer; it never arbitrates proto
 |-----------|--------|--------|----------|------|
 | stdio | `StdioClientTransport` | `StdioServerTransport` | pipes on a child process's standard input/output | local one-to-one, host launches the server |
 | Streamable HTTP | `StreamableHttpClientTransport` | `StreamableHttpServerTransport` | HTTP POST for messages, optional GET stream for notifications and streamed results | the default choice for remote deployment |
-| SSE | `SseClientTransport` | no dedicated server class | one long-lived GET push plus POST upstream | talking to servers that still expose the legacy SSE endpoint |
+| SSE | `SseClientTransport` (or `AutoDetect` fallback) | no dedicated server class | one long-lived GET push plus POST upstream | talking to servers that still expose the legacy SSE endpoint |
 | WebSocket | `WebSocketClientTransport` | none | bidirectional frames over TCP | when the peer only offers WebSocket |
 | InMemory | both halves of `InMemoryTransport::CreatePair()` | same | two in-process queues wired together | unit tests and same-process assembly |
 
-Two facts worth stating plainly: **SSE and WebSocket have client implementations only**. The server-side SSE stream is served by `StreamableHttpServerTransport` on the same endpoint when `enable_legacy_sse` is on (off by default; while off, no GET route is registered, so the listen stream and event replay are unavailable). There is no standalone "SSE server class". Treating InMemory as a network substitute, or connecting to this SDK's server over WebSocket, fails immediately because the class does not exist.
+Two facts worth stating plainly: **SSE and WebSocket have client implementations only**. The server-side SSE stream is served by `StreamableHttpServerTransport` on the same endpoint when `enable_legacy_sse` is on (off by default; while off, no GET route is registered, so the listen stream and event replay are unavailable). There is no standalone "SSE server class". Treating InMemory as a network substitute, or connecting to this SDK's server over WebSocket, fails immediately because the class does not exist. `HttpClientTransportOptions::transport_mode` defaults to `AutoDetect`: when the first `initialize` response is 400/404/405 with a body that is not a valid JSON-RPC error envelope, the client falls back to legacy SSE exactly once and replays that initialization message. Explicit `StreamableHttp`/`Sse` modes and `ConnectMode::Pin/Legacy` never fall back.
 
 ## How to Choose
 

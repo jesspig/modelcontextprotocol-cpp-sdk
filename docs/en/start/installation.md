@@ -37,14 +37,14 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/jesspig/modelcontextprotocol-cpp-sdk.git
-    GIT_TAG        0.3.12
+    GIT_TAG        0.3.13
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-Prefer a tag (`0.3.12`) over a branch in `GIT_TAG`; use `master` only for the development line. Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
+Prefer a released tag (`0.3.13`) over a branch in `GIT_TAG`; use `master` only for the development line. `kSdkVersion`, the CMake project version and the package version file all report `0.3.13`. Behavior differences from 0.3.12 are in the [0.3.13 release notes](/en/migration/0.3.13). Dependencies propagate PUBLIC, so linking `mcp-client` or `mcp-server` is enough — do not hand-write the whole chain.
 
 ### Option 2: install, then find_package
 
@@ -59,7 +59,7 @@ find_package(mcp CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE mcp::mcp-client)
 ```
 
-Installation exports `mcpTargets.cmake` with the package version file (`COMPATIBILITY SameMajorVersion`; the version comes from `kSdkVersion` in `include/mcp/McpVersion.hpp`). `find_package` calls `find_dependency(Threads)` for you and `find_dependency(OpenSSL)` when the library was built with OpenSSL (`cmake/mcpConfig.cmake.in`). Exported targets carry the `mcp::` namespace (`CMakeLists.txt`).
+Installation exports `mcpTargets.cmake` with the package version file (`COMPATIBILITY SameMinorVersion`; the version comes from `kSdkVersion` in `include/mcp/McpVersion.hpp`). For 0.x, only same-minor requests no higher than the installed version are accepted: with 0.3.13 installed, requests for 0.3.12/0.3.13 succeed and 0.4.0 is rejected. `find_package` calls `find_dependency(Threads)` and `find_dependency(re2 CONFIG)` for you and loads the installed rapidyaml static archive through the `mcp::ryml` imported target; when the library was built with OpenSSL it also calls `find_dependency(OpenSSL)` and re-validates at consumer time that the major version is 3 or 4 (`cmake/mcpConfig.cmake.in`). Exported targets carry the `mcp::` namespace (`CMakeLists.txt`).
 
 ## Static library inventory
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-Expect configure to print `[mcp] SDK version: 0.3.12` plus the OpenSSL decision, the build to complete without errors, and `ctest` to pass in full (currently 18 test targets, 1037 registered cases on Windows). To verify linking only, build a minimal executable that includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
+Expect configure to print `[mcp] SDK version: 0.3.13` plus the OpenSSL decision, the build to complete without errors, and `ctest` to pass in full. Measured baselines are 1242 registered cases on Windows clang-cl (T-20) / 1243 after the T-21 fix, and 1266 cases on WSL2/Linux Release and sanitizer builds (T-22); the 1037 figure belongs to the released 0.3.12 tag and must not be used to judge regressions in this release. To verify linking only, build a minimal executable that includes `<mcp/client/McpClient.hpp>` and links `mcp-client`.
 
 ## Next steps
 

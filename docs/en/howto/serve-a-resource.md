@@ -71,7 +71,7 @@ A `McpError` thrown from your handler is encoded verbatim as a JSON-RPC error re
 
 Use `ResourceLink` to hand back a reference instead of the contents: missing, non-string or empty `name` and `uri` make the parsing side throw `InvalidParams`, and a negative `size` is rejected the same way (`src/core/Content.cpp`). The name and URI you registered must be non-empty — the same constraints apply when the peer parses your link.
 
-When a client only wants part of a file, it sends a `FileRef`: with `enable_file_input` on, a tool argument holding `{"uri","offset","length"}` is resolved through the very same two-pass match, the full resource is read, and then sliced. `offset` / `length` default to 0, and once present they must be integral (integer, or a double with an integral value) inside the int64 range, otherwise `DeserializeFailed` (`include/mcp/McpTypes.hpp`).
+When a client only wants part of a file, it sends a `FileRef`: with `enable_file_input` on, a tool argument holding `{"uri","offset","length"}` is resolved through the very same two-pass match, the full resource is read, and then sliced. `offset` / `length` default to 0, and once present they must be integral (integer, or a double with an integral value) inside the int64 range, otherwise `DeserializeFailed` (`include/mcp/McpTypes.hpp`). `resource://` references are read outside the registry lock through a handler snapshot; `file://` references are accepted only when their path components match an entry in `ServerOptions::file_input_config.allowed_roots` — sensitive files, link substitution and malformed URIs produce an `is_error` result, while `http(s)://` still passes through unchanged. Reference counts and accumulated bytes are bounded by a per-tool-call budget.
 
 ## Complete code
 

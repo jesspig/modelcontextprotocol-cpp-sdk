@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -85,6 +86,14 @@ struct MCP_API ServerOptions {
     bool enable_etag_cache{false};
     bool enable_progressive_discovery{false};
     bool enable_file_input{false};
+    struct FileInputConfig {
+        std::vector<std::string> allowed_roots;
+        std::size_t max_refs{16};
+        int64_t max_file_bytes{8 * 1024 * 1024};
+        int64_t max_total_bytes{8 * 1024 * 1024};
+        int64_t max_inline_bytes{256 * 1024};
+    };
+    std::optional<FileInputConfig> file_input_config;
     bool enable_triggers_events{false};
 
     [[deprecated("set enable_tasks_extension=true explicitly")]] bool TasksImplicitlyEnabled() const {

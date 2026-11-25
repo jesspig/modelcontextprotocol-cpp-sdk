@@ -37,14 +37,14 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/jesspig/modelcontextprotocol-cpp-sdk.git
-    GIT_TAG        0.3.12
+    GIT_TAG        0.3.13
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
 target_link_libraries(your_target PRIVATE mcp-client mcp-server)
 ```
 
-`GIT_TAG` 建议锁 tag（`0.3.12`）而非分支，取最新开发线才用 `master`。库之间是 PUBLIC 传递依赖，链 `mcp-client` 或 `mcp-server` 就够了，不必手写整条链。
+`GIT_TAG` 建议锁已发布 tag（`0.3.13`）而非分支，取最新开发线才用 `master`。`kSdkVersion`、CMake 工程版本与包版本均为 `0.3.13`。相对 0.3.12 的行为差异见 [0.3.13 发布说明](/zh/migration/0.3.13)。库之间是 PUBLIC 传递依赖，链 `mcp-client` 或 `mcp-server` 就够了，不必手写整条链。
 
 ### 方式二：安装后 find_package
 
@@ -59,7 +59,7 @@ find_package(mcp CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE mcp::mcp-client)
 ```
 
-安装导出的是 `mcpTargets.cmake` 加包版本文件（`COMPATIBILITY SameMajorVersion`，版本号取自 `include/mcp/McpVersion.hpp` 的 `kSdkVersion`）。`find_package` 会替你 `find_dependency(Threads)`，并在本库启用了 OpenSSL 时 `find_dependency(OpenSSL)`（`cmake/mcpConfig.cmake.in`）。
+安装导出的是 `mcpTargets.cmake` 加包版本文件（`COMPATIBILITY SameMinorVersion`，版本号取自 `include/mcp/McpVersion.hpp` 的 `kSdkVersion`）。0.x 下只接受同 minor 且不高于已安装版本的请求：安装 0.3.13 时请求 0.3.12/0.3.13 成功，请求 0.4.0 被拒绝。`find_package` 会替你 `find_dependency(Threads)` 与 `find_dependency(re2 CONFIG)`，并加载随包安装的 rapidyaml 静态库 imported target `mcp::ryml`；本库启用了 OpenSSL 时还会 `find_dependency(OpenSSL)` 并在消费期再次校验主版本只能是 3/4（`cmake/mcpConfig.cmake.in`）。
 
 ## 静态库清单
 
@@ -113,7 +113,7 @@ cmake --build --preset debug
 ctest --preset debug --output-on-failure
 ```
 
-期望：configure 打印 `[mcp] SDK version: 0.3.12` 与 OpenSSL 档位结论；构建零错误；`ctest` 全量通过（当前规模 18 个测试目标、Windows 本机注册 1037 例）。只想验证库能链上，就写一个只 `#include <mcp/client/McpClient.hpp>` 并 `target_link_libraries(... mcp-client)` 的最小可执行文件构建一次。
+期望：configure 打印 `[mcp] SDK version: 0.3.13` 与 OpenSSL 档位结论；构建零错误；`ctest` 全量通过。实测基线为 Windows clang-cl 注册 1242 例（T-20）/ 修复后 1243 例（T-21），WSL2/Linux Release 与 sanitizer 档 1266 例（T-22）；旧发布 tag 的 1037 例是 0.3.12 口径，不要用它判断本版回归。只想验证库能链上，就写一个只 `#include <mcp/client/McpClient.hpp>` 并 `target_link_libraries(... mcp-client)` 的最小可执行文件构建一次。
 
 ## 下一步
 

@@ -59,6 +59,14 @@ SDK 不看令牌内容：`ok` 为假就 401，仅此而已。签名验证、过�
 - `max_request_body_bytes` 超出直接 `413`（`src/http/StreamableHttpServerTransport.cpp`），默认取 `kMaxHttpBodyBytes`；显式设小能挡住大 payload 打满内存。
 - `max_sse_event_bytes` 限制单条 SSE 事件；`sse_keep_alive_ms`（默认 15000）决定注释帧的心跳间隔，用来穿过激进的中间层空闲超时。
 
+## FileInput 信任边界
+
+`enable_file_input` 只影响本进程内 `tools/call` 参数的引用解析，不是线上扩展。开启后必须显式配置 `ServerOptions::file_input_config.allowed_roots`；列表为空时所有 `file://` 引用都返回 `is_error`。白名单按路径组件匹配，不能靠 `root-evil` 这种字符串前缀绕过；根目录的配置路径与 canonical 路径分别参与匹配，因此根目录本身可以是目录联接或符号链接别名，但根目录内部的链接仍由逐组件打开拒绝。目标路径先做严格 URI 解码（拒 NUL、query、fragment、UNC、设备与 drive-relative 路径、ADS、双重编码穿越），再在打开时逐组件防链接替换（POSIX `openat` + `O_NOFOLLOW`，Windows 拒 reparse point 并核对最终句柄路径）。
+
+无论是否在白名单内，环境文件、VCS/SSH/云凭据目录、私钥、证书库、令牌缓存与常见凭据文件名都会被拒绝；普通文件、目录、设备、FIFO、多硬链接与短读/读取中变化同样拒绝。单次工具调用先递增引用数，再累计实际读取字节；`max_refs`、`max_total_bytes`、`max_file_bytes`、`max_inline_bytes` 任一超限即停止，且不会调用工具 handler。资源 handler 与工具 handler 均从注册表快照取得并在锁外调用，并发注册不会阻塞引用解析。
+
+旧行为到新行为：原先开启开关即隐式信任系统临时目录与当前目录；现在必须显式授权根目录。旧调用方把原目录加入 `allowed_roots` 即可恢复等价行为；不配置则彻底禁用本地文件。`http(s)://` 引用保持透传，`FileRef` 公共形状与 legacy/modern 工具语义不变。
+
 ## stateless 与 stateful 的防护差异
 
 <<< @/snippets/protect-an-http-server.cpp#stateless-mode

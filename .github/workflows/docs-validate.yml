@@ -2,16 +2,24 @@ name: Docs Validate
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, 'release/**']
     paths:
       - 'docs/**'
+      - 'include/**'
+      - 'cmake/**'
+      - 'third_party/**'
+      - '.gitmodules'
       - 'CMakeLists.txt'
       - 'tests/docs/**'
       - '.github/workflows/docs-validate.yml'
   pull_request:
-    branches: [develop]
+    branches: [develop, 'release/**']
     paths:
       - 'docs/**'
+      - 'include/**'
+      - 'cmake/**'
+      - 'third_party/**'
+      - '.gitmodules'
       - 'CMakeLists.txt'
       - 'tests/docs/**'
       - '.github/workflows/docs-validate.yml'
@@ -28,6 +36,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
 
       - uses: pnpm/action-setup@v5
         with:

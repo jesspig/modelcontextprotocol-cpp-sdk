@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+
+add_library(mcp::ryml STATIC IMPORTED)
+set_target_properties(mcp::ryml PROPERTIES
+    IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@MCP_THIRD_PARTY_LIBDIR@/mcp-third-party/@MCP_RYML_ARCHIVE@")

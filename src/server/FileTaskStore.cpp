@@ -46,6 +46,12 @@ JsonValue SerializeTaskState(const TaskState& state) {
     JsonValue::Object obj;
     obj["task_id"] = JsonValue(state.task_id);
     obj["owner"] = JsonValue(state.owner);
+    if (!state.authorized_scopes.empty()) {
+        JsonValue::Array scopes;
+        for (const auto& scope : state.authorized_scopes)
+            scopes.push_back(JsonValue(scope));
+        obj["authorized_scopes"] = JsonValue(std::move(scopes));
+    }
     obj["status"] = JsonValue(static_cast<int64_t>(state.status));
     if (state.result) obj[detail::kResult] = *state.result;
     if (state.error_message) obj["error_message"] = JsonValue(*state.error_message);
@@ -68,6 +74,11 @@ TaskState DeserializeTaskState(const JsonValue& j) {
     TaskState state;
     if (auto* v = j.Find("task_id")) state.task_id = v->GetString();
     if (auto* v = j.Find("owner"); v && v->IsString()) state.owner = v->GetString();
+    if (auto* v = j.Find("authorized_scopes"); v && v->IsArray()) {
+        for (const auto& scope : v->GetArray()) {
+            if (scope.IsString()) state.authorized_scopes.push_back(scope.GetString());
+        }
+    }
     if (auto* v = j.Find("status")) state.status = static_cast<TaskStatus>(v->GetInt());
     if (auto* v = j.Find("result"); v && !v->IsNull())
         state.result = *v;
@@ -132,39 +143,64 @@ void FileTaskStore::BackupCorruptFile() {
     std::filesystem::copy_file(storage_path_, backup_path,
         std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
-        MCP_LOG(Error, "task store: failed to back up corrupt file to " + backup_path.string());
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to back up corrupt file " + storage_path_.string() +
+            ": " + ec.message());
     }
 }
 
 void FileTaskStore::LoadTasks() {
     std::error_code ec;
     if (!std::filesystem::exists(storage_path_, ec)) return;
-    std::ifstream file(storage_path_, std::ios::binary);
-    if (!file.is_open()) {
-        BackupCorruptFile();
-        return;
+    std::string content;
+    {
+        std::ifstream file(storage_path_, std::ios::binary);
+        if (!file.is_open()) {
+            BackupCorruptFile();
+            return;
+        }
+        content.assign(std::istreambuf_iterator<char>(file),
+                       std::istreambuf_iterator<char>());
     }
-    std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
     if (content.empty()) return;
 
+    std::unordered_map<std::string, TaskState> loaded;
     try {
         JsonValue json = JsonValue::Parse(content);
         if (json.IsObject()) {
             if (auto* tasks = json.Find("tasks"); tasks && tasks->IsObject()) {
                 for (auto& [key, val] : *tasks) {
-                    tasks_[key] = DeserializeTaskState(val);
+                    loaded[key] = DeserializeTaskState(val);
                 }
+                tasks_.swap(loaded);
+                pending_records_ = 0;
                 return;
             }
         }
     } catch (const std::exception&) {
     }
 
-    LoadRecords(content);
+    size_t pending = 0;
+    auto result = LoadRecords(content, loaded, pending);
+    if (result == LoadResult::Corrupt) {
+        BackupCorruptFile();
+    }
+    if (result != LoadResult::Clean) {
+        if (!RewriteRecovered(loaded)) {
+            throw McpError(McpErrorCode::InternalError,
+                "task store: failed to rebuild recovered state in " + storage_path_.string());
+        }
+        pending = 0;
+    }
+    tasks_.swap(loaded);
+    pending_records_ = pending;
 }
 
-void FileTaskStore::LoadRecords(const std::string& content) {
+FileTaskStore::LoadResult FileTaskStore::LoadRecords(
+    const std::string& content,
+    std::unordered_map<std::string, TaskState>& target,
+    size_t& pending)
+{
     std::vector<std::string> lines;
     size_t start = 0;
     while (start <= content.size()) {
@@ -176,6 +212,7 @@ void FileTaskStore::LoadRecords(const std::string& content) {
         lines.push_back(content.substr(start, pos - start));
         start = pos + 1;
     }
+    bool ends_with_newline = !content.empty() && content.back() == '\n';
 
     for (size_t i = 0; i < lines.size(); ++i) {
         const std::string& line = lines[i];
@@ -184,45 +221,47 @@ void FileTaskStore::LoadRecords(const std::string& content) {
         try {
             json = JsonValue::Parse(line);
         } catch (const std::exception&) {
-            if (i + 1 == lines.size()) {
+            if (i + 1 == lines.size() && !ends_with_newline) {
                 MCP_LOG(Error, "task store: ignoring truncated trailing record in " +
                     storage_path_.string());
-                break;
+                return LoadResult::Truncated;
             }
-            BackupCorruptFile();
-            tasks_.clear();
-            return;
+            return LoadResult::Corrupt;
         }
-        if (!json.IsObject()) {
-            BackupCorruptFile();
-            tasks_.clear();
-            return;
-        }
+        if (!json.IsObject()) return LoadResult::Corrupt;
         if (auto* legacy = json.Find("tasks"); legacy && legacy->IsObject()) {
             for (auto& [key, val] : *legacy) {
-                tasks_[key] = DeserializeTaskState(val);
+                target[key] = DeserializeTaskState(val);
             }
             continue;
         }
         auto* id = json.Find("task_id");
-        if (!id || !id->IsString() || id->GetString().empty()) {
-            BackupCorruptFile();
-            tasks_.clear();
-            return;
-        }
+        if (!id || !id->IsString() || id->GetString().empty()) return LoadResult::Corrupt;
         if (auto* removed = json.Find("removed"); removed && removed->GetBool()) {
-            tasks_.erase(id->GetString());
+            target.erase(id->GetString());
             continue;
         }
         auto* state = json.Find("state");
-        if (!state || !state->IsObject()) {
-            BackupCorruptFile();
-            tasks_.clear();
-            return;
-        }
-        tasks_[id->GetString()] = DeserializeTaskState(*state);
-        ++pending_records_;
+        if (!state || !state->IsObject()) return LoadResult::Corrupt;
+        target[id->GetString()] = DeserializeTaskState(*state);
+        ++pending;
     }
+    return LoadResult::Clean;
+}
+
+bool FileTaskStore::RewriteRecovered(
+    const std::unordered_map<std::string, TaskState>& target)
+{
+    std::string content;
+    for (const auto& [task_id, state] : target) {
+        content += SerializeRecord(task_id, state);
+        content += '\n';
+    }
+    if (!detail::WriteAtomic(storage_path_, content)) {
+        MCP_LOG(Error, "task store: failed to rebuild " + storage_path_.string());
+        return false;
+    }
+    return true;
 }
 
 TaskState FileTaskStore::CreateTask(const std::string& task_id) {
@@ -421,6 +460,31 @@ bool FileTaskStore::SetTaskOwner(const std::string& task_id,
         original = it->second;
         updated = original;
         updated.owner = owner;
+        it->second = updated;
+    }
+    if (!AppendRecord(task_id, updated)) {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it != tasks_.end()) it->second = std::move(original);
+        throw McpError(McpErrorCode::InternalError,
+            "task store: failed to persist task " + task_id);
+    }
+    return true;
+}
+
+bool FileTaskStore::SetTaskScopes(const std::string& task_id,
+                                  const std::vector<std::string>& scopes)
+{
+    std::lock_guard<std::mutex> write_lock(write_mutex_);
+    TaskState original;
+    TaskState updated;
+    {
+        std::unique_lock<std::shared_mutex> data_lock(data_mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return false;
+        original = it->second;
+        updated = original;
+        updated.authorized_scopes = scopes;
         it->second = updated;
     }
     if (!AppendRecord(task_id, updated)) {

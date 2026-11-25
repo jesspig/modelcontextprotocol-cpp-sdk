@@ -3,7 +3,7 @@ type: Concept
 title: OpenSSL 兼容与版本策略
 description: OpenSSL 3.x/4.x 支持矩阵、配置期版本校验、CI 显式锁定、周度 canary 与主版本升级清单。
 tags: [openssl, build, ci, dependency, tls]
-timestamp: 2026-10-30T22:58:50+08:00
+timestamp: 2026-11-25T15:08:55+08:00
 resource: cmake/FetchDependencies.cmake
 ---
 
@@ -31,6 +31,7 @@ resource: cmake/FetchDependencies.cmake
 - `MCP_WITH_OPENSSL=OFF`：不探测、不链接、不定义 `MCP_HAVE_OPENSSL`。
 - `MCP_OPENSSL_EXPECTED_MAJOR`：仅在 CI 使用；非空时断言实际主版本，不匹配即 configure 失败。
 - 版本校验由 `cmake/OpenSslVersion.cmake` 的 `mcp_validate_openssl_version` 与 `mcp_assert_openssl_major` 承担；独立检查脚本为 `scripts/check-openssl-version.cmake`。
+- 消费期复核：ON 档安装包在 `lib/cmake/mcp/mcpOpenSslVersion.cmake` 附带同一校验函数，`cmake/mcpConfig.cmake.in` 在 `find_dependency(OpenSSL)` 之后调用它；伪 5.0.0 与无法解析版本在 `find_package(mcp)` 阶段即失败，OFF 档不安装该脚本。
 
 ## 失败模式
 
@@ -43,6 +44,16 @@ resource: cmake/FetchDependencies.cmake
 | 找到的主版本与 `MCP_OPENSSL_EXPECTED_MAJOR` 不符 | configure 失败，消息含实际版本与预期主版本 |
 
 不支持的主版本**不会**静默关闭 TLS；这是与 `AUTO` 未找到场景的关键区别。
+
+## T-25 三档实测（2026-11-25）
+
+| 档 | 环境 | configure / build / install | 消费项目 | 负向门禁 |
+| --- | --- | --- | --- | --- |
+| OpenSSL 3 ON | WSL2 Ubuntu 26.04.1 + clang 21.1.8，`libssl-dev` 3.5.5，`MCP_OPENSSL_EXPECTED_MAJOR=3` | 0 / 0 / 0 | configure/build/run 0，输出 `SDK=0.3.13` | 消费期伪 5.0.0 与不可解析版本均失败 |
+| OpenSSL 4 ON | 同 WSL2，固定源码 tag `openssl-4.1.0` 本地构建，`OPENSSL_ROOT_DIR` + `EXPECTED_MAJOR=4` | 0 / 0 / 0 | configure/build/run 0，输出 `SDK=0.3.13` | 同上（共用包配置） |
+| OFF | Windows clang-cl 22.1.3，本机未探到 OpenSSL | 0 / 0 / 0 | configure/build/run 0，输出 `SDK=0.3.13` | build.ninja 无 `MCP_HAVE_OPENSSL` / `OpenSSL::`；消费 configure 不解析 OpenSSL |
+
+构建期脚本 `scripts/check-openssl-version.cmake` 放行 3.0.13/3.5.5/4.0.3/4.1.0，拒绝 2.0.0/5.0.0/不可解析值。OpenSSL 4 在本机无 apt 包，改用固定上游 tarball（SHA256 `50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd`）本地编译，非系统包；详见 `.handoff/evidence/T-25/openssl-matrix.txt`。
 
 ## CI 策略
 

@@ -1,5 +1,6 @@
 #include <mcp/storage/FileEventStore.hpp>
 #include <mcp/JsonValue.hpp>
+#include <mcp/Log.hpp>
 #include <mcp/detail/AtomicJsonFile.hpp>
 
 #include <cctype>
@@ -183,8 +184,10 @@ bool ParseCanonicalEventId(std::string_view line, uint64_t& id_out)
         if (line[pos] == '\\') ++pos;
         ++pos;
     }
-    if (pos + 1 != line.size() || line[pos] != '"')
-        return false;
+    if (pos >= line.size() || line[pos] != '"') return false;
+    size_t end = pos + 1;
+    if (end < line.size() && line[end] == '\r') ++end;
+    if (end + 1 != line.size() || line[end] != '}') return false;
     id_out = value;
     return true;
 }
@@ -276,17 +279,6 @@ void RewriteTrimmed(const std::filesystem::path& path,
     }
 }
 
-bool EndsWithNewline(const std::filesystem::path& path)
-{
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) return true;
-    if (file.tellg() <= 0) return true;
-    file.seekg(-1, std::ios::end);
-    char last = 0;
-    file.get(last);
-    return !file.fail() && last == '\n';
-}
-
 std::optional<AppendCursor> LoadAppendCursor(const std::filesystem::path& path)
 {
     auto bytes = ReadFileBytes(path);
@@ -306,15 +298,24 @@ std::optional<AppendCursor> LoadAppendCursor(const std::filesystem::path& path)
     }
 }
 
-void StoreAppendCursor(const std::filesystem::path& path, const AppendCursor& cursor)
+bool StoreAppendCursor(const std::filesystem::path& path, const AppendCursor& cursor)
 {
     JsonValue::Object obj;
     obj["next_id"] = JsonValue(static_cast<int64_t>(cursor.next_id));
     obj["count"] = JsonValue(static_cast<int64_t>(cursor.count));
     if (!detail::WriteAtomic(path, JsonValue(std::move(obj)).Dump())) {
-        throw std::runtime_error("event store: failed to persist cursor " +
-                                 path.string());
+        MCP_LOG(Error, "event store: failed to persist cursor " + path.string());
+        return false;
     }
+    return true;
+}
+
+bool CursorMatchesLog(const AppendCursor& cursor, const ScannedEvents& scanned)
+{
+    if (cursor.next_id == 0 || scanned.max_id == (std::numeric_limits<uint64_t>::max)()) {
+        return false;
+    }
+    return cursor.next_id == scanned.max_id + 1 && cursor.count == scanned.count;
 }
 
 } // anonymous namespace
@@ -349,18 +350,20 @@ uint64_t FileEventStore::Append(
     auto meta_path = SessionMetaFilePath(storage_dir_, session_id);
     SessionFileLock lock(SessionLockPath(session_id));
 
-    AppendCursor cursor;
-    bool ends_with_newline = true;
-    if (auto stored = LoadAppendCursor(meta_path)) {
-        cursor = *stored;
-        ends_with_newline = EndsWithNewline(file_path);
-    } else {
-        auto scanned = ScanEvents(file_path);
-        cursor.next_id = scanned.max_id + 1;
-        cursor.count = scanned.count;
-        ends_with_newline = scanned.ends_with_newline;
+    auto scanned = ScanEvents(file_path);
+    if (scanned.max_id == (std::numeric_limits<uint64_t>::max)()) {
+        throw std::runtime_error("event store: next id overflow for " +
+                                 file_path.string());
     }
-    const uint64_t next_id = cursor.next_id;
+    const uint64_t next_id = scanned.max_id + 1;
+    size_t count = scanned.count;
+
+    if (auto stored = LoadAppendCursor(meta_path)) {
+        if (!CursorMatchesLog(*stored, scanned)) {
+            MCP_LOG(Warning, "event store: cursor mismatch for " + file_path.string() +
+                "; rebuilding from log");
+        }
+    }
 
     {
         std::ofstream file(file_path, std::ios::binary | std::ios::app);
@@ -368,7 +371,7 @@ uint64_t FileEventStore::Append(
             throw std::runtime_error("event store: failed to open " +
                                      file_path.string() + " for append");
         }
-        if (!ends_with_newline) file << '\n';
+        if (!scanned.ends_with_newline) file << '\n';
         file << SerializeEventLine(next_id, event_data);
         file.flush();
         if (!file.good()) {
@@ -377,13 +380,16 @@ uint64_t FileEventStore::Append(
         }
     }
 
-    cursor.next_id = next_id + 1;
-    ++cursor.count;
-    if (cursor.count > kMaxEventsPerSession) {
+    ++count;
+    if (count > kMaxEventsPerSession) {
         auto loaded = LoadEvents(file_path);
         RewriteTrimmed(file_path, loaded.items);
-        cursor.count = loaded.items.size();
+        count = loaded.items.size();
     }
+
+    AppendCursor cursor;
+    cursor.next_id = next_id + 1;
+    cursor.count = count;
     StoreAppendCursor(meta_path, cursor);
     return next_id;
 }

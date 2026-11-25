@@ -1673,6 +1673,68 @@ TEST(McpClientTest, PrivateCachePartitionedByAuthContext) {
     server_handler->Close();
 }
 
+static void RunCacheHintMatrix(bool ttl_nested, bool scope_nested) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    std::atomic<int> calls{0};
+    server_handler->SetRequestHandler(methods::kReadResource,
+        [&calls, ttl_nested, scope_nested](const JsonRpcRequest&,
+            std::promise<JsonValue> p) {
+            calls.fetch_add(1);
+            JsonValue result(JsonValue::object_tag);
+            JsonValue arr(JsonValue::array_tag);
+            JsonValue c(JsonValue::object_tag);
+            c["uri"] = JsonValue("uri-matrix");
+            c["text"] = JsonValue("matrix");
+            arr.PushBack(std::move(c));
+            result["contents"] = std::move(arr);
+            JsonValue hint(JsonValue::object_tag);
+            hint["ttlMs"] = JsonValue(int64_t(ttl_nested ? 50 : 60000));
+            hint["cacheScope"] = JsonValue(scope_nested ? "private" : "public");
+            result["cacheHint"] = std::move(hint);
+            if (!ttl_nested) result["ttlMs"] = JsonValue(int64_t(50));
+            if (!scope_nested) result["cacheScope"] = JsonValue("private");
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    std::string auth_context = "user-a";
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Pin;
+    opts.pin_protocol_version = std::string(kLegacyProtocolVersion);
+    opts.cache_auth_context = [&auth_context] { return auth_context; };
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    ASSERT_EQ(client->ReadResource("uri-matrix").contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 1);
+    auth_context = "user-b";
+    ASSERT_EQ(client->ReadResource("uri-matrix").contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    ASSERT_EQ(client->ReadResource("uri-matrix").contents.size(), 1u);
+    EXPECT_EQ(calls.load(), 3);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, CacheHintTopLevelTtlAndTopLevelScope) {
+    RunCacheHintMatrix(false, false);
+}
+
+TEST(McpClientTest, CacheHintTopLevelTtlAndNestedScope) {
+    RunCacheHintMatrix(false, true);
+}
+
+TEST(McpClientTest, CacheHintNestedTtlAndTopLevelScope) {
+    RunCacheHintMatrix(true, false);
+}
+
+TEST(McpClientTest, CacheHintNestedTtlAndNestedScope) {
+    RunCacheHintMatrix(true, true);
+}
+
 TEST(McpClientTest, CloseDropsPrivateCacheEntries) {
     auto pair_a = InMemoryTransport::CreatePair();
     auto server_a = std::make_shared<McpSessionHandler>(
@@ -2873,6 +2935,133 @@ TEST(McpClientTest, SessionExpiredTriggersReinitAndReplaysOnce) {
     EXPECT_FALSE(tool_result.is_error);
     EXPECT_EQ(initialize_calls.load(), 2);
     EXPECT_EQ(tool_calls.load(), 2);
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, ConcurrentNegotiationSnapshotIsTornFree) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    std::atomic<int> initialize_calls{0};
+    std::atomic<int> tool_calls{0};
+    server_handler->SetRequestHandler(methods::kInitialize,
+        [&initialize_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            bool second = initialize_calls.fetch_add(1) == 1;
+            ServerCapabilities caps;
+            if (second) caps.tools = ToolsCapability{};
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+            result["capabilities"] = SerializeServerCapabilities(caps);
+            result["serverInfo"] = SerializeImplementation(Implementation{
+                second ? "server-v2" : "server-v1", "1.0"});
+            result["instructions"] = JsonValue(second ? "instructions-v2"
+                                                      : "instructions-v1");
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [&tool_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            if (tool_calls.fetch_add(1) == 0) {
+                JsonValue err(JsonValue::object_tag);
+                err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::SessionExpired));
+                err["message"] = JsonValue("session expired");
+                p.set_value(std::move(err));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            result["content"] = JsonValue(JsonValue::array_tag);
+            result["isError"] = JsonValue(false);
+            p.set_value(std::move(result));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Legacy;
+    opts.initialization_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    std::atomic<int> torn{0};
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 3; ++i) {
+        readers.emplace_back([&] {
+            for (int n = 0; n < 400; ++n) {
+                const auto snapshot = client->CurrentNegotiationSnapshot();
+                bool has_tools = snapshot->capabilities.tools.has_value();
+                const std::string& name = snapshot->server_info.name;
+                auto instructions = snapshot->instructions;
+                auto version = snapshot->negotiated_version;
+                bool consistent_v1 = !has_tools && name == "server-v1" &&
+                    instructions && *instructions == "instructions-v1";
+                bool consistent_v2 = has_tools && name == "server-v2" &&
+                    instructions && *instructions == "instructions-v2";
+                if ((!consistent_v1 && !consistent_v2) ||
+                    version != std::string_view(kLegacyProtocolVersion)) {
+                    torn.fetch_add(1);
+                }
+            }
+        });
+    }
+    auto result = client->CallTool("echo");
+    for (auto& reader : readers) reader.join();
+
+    EXPECT_FALSE(result.is_error);
+    EXPECT_EQ(torn.load(), 0);
+    EXPECT_EQ(initialize_calls.load(), 2);
+    EXPECT_EQ(client->GetServerInfo().name, "server-v2");
+    EXPECT_TRUE(client->GetServerCapabilities().tools.has_value());
+
+    client->Close();
+    server_handler->Close();
+}
+
+TEST(McpClientTest, FailedRenegotiationKeepsPreviousSnapshot) {
+    auto pair = InMemoryTransport::CreatePair();
+    auto server_handler = std::make_shared<McpSessionHandler>(
+        std::move(pair.server), MakeWireCodec(std::string(kLegacyProtocolVersion)));
+    std::atomic<int> initialize_calls{0};
+    server_handler->SetRequestHandler(methods::kInitialize,
+        [&initialize_calls](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            if (initialize_calls.fetch_add(1) == 1) {
+                JsonValue err(JsonValue::object_tag);
+                err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::InternalError));
+                err["message"] = JsonValue("negotiation failed");
+                p.set_value(std::move(err));
+                return;
+            }
+            JsonValue result(JsonValue::object_tag);
+            result["protocolVersion"] = JsonValue(std::string(kLegacyProtocolVersion));
+            result["capabilities"] = SerializeServerCapabilities(ServerCapabilities{});
+            result["serverInfo"] = SerializeImplementation(
+                Implementation{"server-v1", "1.0"});
+            result["instructions"] = JsonValue("instructions-v1");
+            p.set_value(std::move(result));
+        });
+    server_handler->SetRequestHandler(methods::kCallTool,
+        [](const JsonRpcRequest&, std::promise<JsonValue> p) {
+            JsonValue err(JsonValue::object_tag);
+            err["code"] = JsonValue(static_cast<int64_t>(McpErrorCode::SessionExpired));
+            err["message"] = JsonValue("session expired");
+            p.set_value(std::move(err));
+        });
+    server_handler->Start();
+
+    ClientOptions opts;
+    opts.connect_mode = ConnectMode::Legacy;
+    opts.initialization_timeout = std::chrono::seconds(5);
+    auto client = McpClient::Create(std::move(pair.client), opts);
+
+    bool threw = false;
+    try {
+        (void)client->CallTool("echo");
+    } catch (const McpError&) {
+        threw = true;
+    }
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(initialize_calls.load(), 2);
+    EXPECT_EQ(client->GetServerInfo().name, "server-v1");
+    ASSERT_TRUE(client->GetInstructions().has_value());
+    EXPECT_EQ(*client->GetInstructions(), "instructions-v1");
 
     client->Close();
     server_handler->Close();
