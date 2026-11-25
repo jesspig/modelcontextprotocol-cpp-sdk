@@ -41,6 +41,7 @@ public:
     const Implementation& GetServerInfo() const;
     [[nodiscard]] std::optional<std::string> GetInstructions() const;
     std::string_view GetNegotiatedProtocolVersion() const;
+    [[nodiscard]] std::shared_ptr<const NegotiationResult> CurrentNegotiationSnapshot() const;
     [[nodiscard]] bool IsModernProtocol() const;
 
     ListToolsResult ListTools(

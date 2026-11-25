@@ -1,6 +1,6 @@
 # 客户端门面（`McpClient`）参考
 
-本页是 `McpClient`、`ClientOptions`、`RequestHandle`/`RequestOutcome` 与 `ConnectMode` 的**唯一权威签名与字段表**；操作步骤见后续 how-to 页面，how-to 页只链接本页、不重复表格。版本协商语义见 `/zh/learn/protocol-versions`，数据类型见 `/zh/reference/types`，错误码见 `/zh/reference/errors`，传输构造见 `/zh/reference/transports`。
+本页是 `McpClient`、`ClientOptions`、`RequestHandle`/`RequestOutcome` 与 `ConnectMode` 的**唯一权威签名与字段表**；操作步骤见后续 how-to 页面，how-to 页只链接本页、不重复表格。版本协商语义见 `/zh/learn/protocol-versions`，数据类型见 `/zh/reference/types`，错误码见 `/zh/reference/errors`，传输构造见 `/zh/reference/transports`。0.3.13 的 Tasks/Skills/会话行为收紧与逐项迁移见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
 
 ## 工厂与生命周期
 

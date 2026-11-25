@@ -8,7 +8,7 @@
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)
 
-**当前状态**：0.3.12（`mcp::kSdkVersion`），五个协议版本、两个时代，124 个一致性测试。支持 Windows（MSVC、clang-cl）、Linux（GCC、Clang）、macOS（Clang）。
+**当前状态**：0.3.13（`mcp::kSdkVersion`），五个协议版本、两个时代，124 个一致性测试。支持 Windows（MSVC、clang-cl）、Linux（GCC、Clang）、macOS（Clang）。
 
 ## 环境要求
 

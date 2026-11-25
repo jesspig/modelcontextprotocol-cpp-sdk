@@ -90,6 +90,11 @@ add_executable(mcp-websocket-tests WebSocketTransportTests.cpp)
 target_link_libraries(mcp-websocket-tests PRIVATE mcp-transport mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-websocket-tests)
 
+add_executable(mcp-stress-tests StressTests.cpp)
+target_link_libraries(mcp-stress-tests PRIVATE
+    mcp-core mcp-transport mcp-http mcp-server mcp-test-support GTest::gtest_main)
+mcp_discover_tests(mcp-stress-tests)
+
 add_executable(mcp-uri-template-tests UriTemplateTests.cpp)
 target_link_libraries(mcp-uri-template-tests PRIVATE mcp-core mcp-test-support GTest::gtest_main)
 mcp_discover_tests(mcp-uri-template-tests)

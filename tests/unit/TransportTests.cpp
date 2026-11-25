@@ -1713,20 +1713,20 @@ void WritePosixExecutable(const std::string& path, const std::string& content, m
 
 TEST(PosixStdioEnvTest, OverridesWinAndDoNotDuplicate) {
     ::setenv("MCP_T11_PARENT", "parent", 1);
-    ProcessStartInfo info;
+    detail::ProcessStartInfo info;
     info.inherit_environment = true;
     info.environment_variables.emplace_back("MCP_T11_KEY", "first");
     info.environment_variables.emplace_back("PATH", "/custom/bin");
     info.environment_variables.emplace_back("MCP_T11_KEY", "last");
-    auto environment = BuildPosixEnvironment(info);
+    auto environment = detail::BuildPosixEnvironment(info);
 
-    EXPECT_EQ(PosixEnvironmentValue(environment, "MCP_T11_KEY").value_or(""), "last");
-    EXPECT_EQ(PosixEnvironmentValue(environment, "PATH").value_or(""), "/custom/bin");
-    EXPECT_EQ(PosixEnvironmentValue(environment, "MCP_T11_PARENT").value_or(""), "parent");
+    EXPECT_EQ(detail::PosixEnvironmentValue(environment, "MCP_T11_KEY").value_or(""), "last");
+    EXPECT_EQ(detail::PosixEnvironmentValue(environment, "PATH").value_or(""), "/custom/bin");
+    EXPECT_EQ(detail::PosixEnvironmentValue(environment, "MCP_T11_PARENT").value_or(""), "parent");
     int key_entries = 0;
     int path_entries = 0;
     for (const auto& entry : environment) {
-        if (entry.compare(0, 13, "MCP_T11_KEY=") == 0) ++key_entries;
+        if (entry.compare(0, 12, "MCP_T11_KEY=") == 0) ++key_entries;
         if (entry.compare(0, 5, "PATH=") == 0) ++path_entries;
     }
     EXPECT_EQ(key_entries, 1);
@@ -1736,14 +1736,14 @@ TEST(PosixStdioEnvTest, OverridesWinAndDoNotDuplicate) {
 
 TEST(PosixStdioEnvTest, NoInheritDoesNotReadParent) {
     ::setenv("MCP_T11_PARENT", "parent", 1);
-    ProcessStartInfo info;
+    detail::ProcessStartInfo info;
     info.inherit_environment = false;
     info.environment_variables.emplace_back("PATH", "/only");
-    auto environment = BuildPosixEnvironment(info);
+    auto environment = detail::BuildPosixEnvironment(info);
 
     ASSERT_EQ(environment.size(), 1u);
     EXPECT_EQ(environment[0], "PATH=/only");
-    EXPECT_FALSE(PosixEnvironmentValue(environment, "MCP_T11_PARENT").has_value());
+    EXPECT_FALSE(detail::PosixEnvironmentValue(environment, "MCP_T11_PARENT").has_value());
     ::unsetenv("MCP_T11_PARENT");
 }
 
@@ -1758,20 +1758,20 @@ TEST(PosixStdioEnvTest, PathSearchUsesFinalEnvironmentAndRejectsDirectories) {
     WritePosixExecutable(non_executable, "#!/bin/sh\nexit 0\n", 0644);
     ASSERT_EQ(::mkdir(directory_entry.c_str(), 0755), 0);
 
-    ProcessStartInfo info;
+    detail::ProcessStartInfo info;
     info.inherit_environment = false;
     info.environment_variables.emplace_back("PATH", directory);
-    auto environment = BuildPosixEnvironment(info);
-    EXPECT_EQ(ResolvePosixExecutable(environment, "tool"), executable);
-    EXPECT_EQ(ResolvePosixExecutable(environment, "asdir"), "asdir");
-    EXPECT_EQ(ResolvePosixExecutable(environment, "noexec"), "noexec");
+    auto environment = detail::BuildPosixEnvironment(info);
+    EXPECT_EQ(detail::ResolvePosixExecutable(environment, "tool"), executable);
+    EXPECT_EQ(detail::ResolvePosixExecutable(environment, "asdir"), "asdir");
+    EXPECT_EQ(detail::ResolvePosixExecutable(environment, "noexec"), "noexec");
 
     info.environment_variables.emplace_back("PATH", "/nonexistent:" + std::string(directory));
-    environment = BuildPosixEnvironment(info);
-    EXPECT_EQ(PosixEnvironmentValue(environment, "PATH").value_or(""),
+    environment = detail::BuildPosixEnvironment(info);
+    EXPECT_EQ(detail::PosixEnvironmentValue(environment, "PATH").value_or(""),
               "/nonexistent:" + std::string(directory));
-    EXPECT_EQ(ResolvePosixExecutable(environment, "tool"), executable);
-    EXPECT_EQ(ResolvePosixExecutable(environment, "/bin/sh"), "/bin/sh");
+    EXPECT_EQ(detail::ResolvePosixExecutable(environment, "tool"), executable);
+    EXPECT_EQ(detail::ResolvePosixExecutable(environment, "/bin/sh"), "/bin/sh");
 
     ::unlink(executable.c_str());
     ::unlink(non_executable.c_str());
@@ -1788,11 +1788,11 @@ TEST(PosixStdioEnvTest, EmptyPathSegmentUsesCurrentDirectory) {
     ASSERT_NE(::getcwd(original, sizeof(original)), nullptr);
     ASSERT_EQ(::chdir(directory), 0);
 
-    ProcessStartInfo info;
+    detail::ProcessStartInfo info;
     info.inherit_environment = false;
     info.environment_variables.emplace_back("PATH", ":");
-    auto environment = BuildPosixEnvironment(info);
-    EXPECT_EQ(ResolvePosixExecutable(environment, "cwdtool"), "./cwdtool");
+    auto environment = detail::BuildPosixEnvironment(info);
+    EXPECT_EQ(detail::ResolvePosixExecutable(environment, "cwdtool"), "./cwdtool");
 
     EXPECT_EQ(::chdir(original), 0);
     ::unlink((std::string(directory) + "/cwdtool").c_str());

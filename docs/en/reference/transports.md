@@ -1,6 +1,6 @@
 # Transports Reference
 
-This page is the **authoritative field table** for the transport layer and the HTTP server substrate; every field, type, and default is checked against the headers. For the conceptual narrative and trade-offs see [Transport concepts](/en/learn/transports); for facade signatures see [Server reference](/en/reference/server) and [Client reference](/en/reference/client); for persistence and processes see [Process and storage reference](/en/reference/process-and-storage). No procedural steps on this page.
+This page is the **authoritative field table** for the transport layer and the HTTP server substrate; every field, type, and default is checked against the headers. For the conceptual narrative and trade-offs see [Transport concepts](/en/learn/transports); for facade signatures see [Server reference](/en/reference/server) and [Client reference](/en/reference/client); for persistence and processes see [Process and storage reference](/en/reference/process-and-storage). No procedural steps on this page. The 0.3.13 HTTP binding, framing, AutoDetect, and session tightening are in the [0.3.13 migration notes](/en/migration/0.3.13).
 
 ## Transport contract
 
@@ -133,7 +133,7 @@ The interfaces are declared in `include/mcp/transport/StdioServerTransport.hpp` 
 | `session_store` | `std::shared_ptr<SessionStore>` | `nullptr` | Session mode only; inject `InMemorySessionStore` etc. for cross-instance adoption |
 | `server_name` | `std::string` | `"mcp-server"` | Name used by discovery |
 | `server_version` | `std::string` | `kSdkVersion` | Version used by discovery |
-| `host` | `std::string` | `""` | Bind address; empty = IPv4 `INADDR_ANY`, accepts IPv4/IPv6 literals, invalid values throw |
+| `host` | `std::string` | `""` | Bind address; the empty value is forwarded to `bind_host` and from 0.3.13 means IPv4 loopback `127.0.0.1` (previously `INADDR_ANY`); explicit `0.0.0.0`/`::` still binds all interfaces; accepts IPv4/IPv6 literals, invalid values throw |
 | `allowed_hosts` | `std::vector<std::string>` | `{}` | Host allow-list; when empty only localhost/loopback passes, and a missing `Host` header is rejected outright |
 | `allowed_origins` | `std::vector<std::string>` | `{}` | Origin allow-list; requests without an `Origin` header pass |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes` (4 MiB) | Request-body cap |

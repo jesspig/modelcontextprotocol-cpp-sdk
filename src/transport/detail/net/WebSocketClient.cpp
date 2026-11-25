@@ -3,6 +3,7 @@
 #include <transport/detail/net/Sha1.hpp>
 #include <transport/detail/net/TlsSocket.hpp>
 #include <mcp/detail/ThreadUtils.hpp>
+#include <mcp/detail/WebSocketFrameParser.hpp>
 #include <mcp/transport/detail/Limits.hpp>
 #include <mcp/transport/detail/Url.hpp>
 #include <mcp/McpError.hpp>
@@ -350,40 +351,27 @@ bool WebSocketClient::ReadFrame(std::string& payload, int& opcode) {
     if (!ReadExact(&b0, 1, kFrameIdleTimeout)) return false;
     if (!ReadExact(&b1, 1, kFrameIdleTimeout)) return false;
 
-    last_fin_ = (b0 & 0x80) != 0;
-    if ((b0 & 0x70) != 0)
-        throw McpError(McpErrorCode::ProtocolViolation, "WebSocket frame has non-zero RSV bits");
-    opcode = b0 & 0x0F;
-    if ((b1 & 0x80) != 0)
-        throw McpError(McpErrorCode::ProtocolViolation,
-                       "WebSocket frame from server must not be masked");
-    uint64_t length = b1 & 0x7F;
-    if (length == 126) {
+    std::string header;
+    header.reserve(10);
+    header.push_back(static_cast<char>(b0));
+    header.push_back(static_cast<char>(b1));
+    const uint8_t length_byte = b1 & 0x7F;
+    if (length_byte == 126) {
         uint8_t ext[2];
         if (!ReadExact(ext, 2, kFrameIdleTimeout)) return false;
-        length = (static_cast<uint64_t>(ext[0]) << 8) | ext[1];
-    } else if (length == 127) {
+        header.push_back(static_cast<char>(ext[0]));
+        header.push_back(static_cast<char>(ext[1]));
+    } else if (length_byte == 127) {
         uint8_t ext[8];
         if (!ReadExact(ext, 8, kFrameIdleTimeout)) return false;
-        if ((ext[0] & 0x80) != 0)
-            throw McpError(McpErrorCode::ProtocolViolation,
-                           "WebSocket frame length exceeds 63 bits");
-        length = 0;
-        for (int i = 0; i < 8; ++i)
-            length = (length << 8) | ext[i];
+        for (int index = 0; index < 8; ++index)
+            header.push_back(static_cast<char>(ext[index]));
     }
-    if (length > kMaxMessageSize)
-        throw McpError(McpErrorCode::ProtocolViolation, "WebSocket frame exceeds size limit");
 
-    bool control = (opcode & 0x08) != 0;
-    if (control) {
-        if (!last_fin_)
-            throw McpError(McpErrorCode::ProtocolViolation,
-                           "WebSocket control frame must not be fragmented");
-        if (length > 125)
-            throw McpError(McpErrorCode::ProtocolViolation,
-                           "WebSocket control frame payload too large");
-    }
+    const WebSocketFrameHeader parsed = ParseWebSocketFrameHeader(header);
+    last_fin_ = parsed.fin;
+    opcode = parsed.opcode;
+    const uint64_t length = parsed.length;
 
     payload.resize(static_cast<std::size_t>(length));
     if (length > 0 && !ReadExact(payload.data(), payload.size(), kFrameIdleTimeout)) return false;

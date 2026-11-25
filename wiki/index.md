@@ -53,6 +53,7 @@ MCP C++ SDK（`mcp-cpp-sdk`）的源码知识库。基于实际源码整理，�
 - [/concepts/span-hooks.md](/concepts/span-hooks.md) — span 边界观测钩子
 - [/concepts/tier1-parity.md](/concepts/tier1-parity.md) — Tier1 技术对标声明（2026-07-28，仅技术对标）
 - [/concepts/schema-validation.md](/concepts/schema-validation.md) — JSON Schema 双引擎、RE2 方言限制与失败关闭预算
+- [/concepts/cross-sdk-interop.md](/concepts/cross-sdk-interop.md) — 官方 TS/Python SDK 四方向互操作矩阵、锁定版本与能力边界
 
 ## 工程（build & tests）
 

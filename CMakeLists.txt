@@ -50,6 +50,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(MCP_BUILD_TESTS "Build unit/integration/conformance tests" OFF)
+option(MCP_BUILD_FUZZ "Build libFuzzer harnesses (Clang/GCC only)" OFF)
 option(MCP_BUILD_EXAMPLES "Build example programs" OFF)
 option(MCP_BUILD_CONFORMANCE "Build conformance server fixture (examples/conformance/server)" OFF)
 option(MCP_BUILD_DOCS_SNIPPETS "Build documentation snippets for syntax validation" OFF)
@@ -92,12 +93,13 @@ set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ABSL_BUILD_TEST_HELPERS OFF CACHE BOOL "" FORCE)
 set(ABSL_MSVC_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
 set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
 set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(RE2_USE_ICU OFF CACHE BOOL "" FORCE)
 set(USEPCRE OFF CACHE BOOL "" FORCE)
-set(RE2_INSTALL OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/abseil-cpp EXCLUDE_FROM_ALL)
-add_subdirectory(third_party/re2 EXCLUDE_FROM_ALL)
+set(RE2_INSTALL ON CACHE BOOL "" FORCE)
+add_subdirectory(third_party/abseil-cpp)
+add_subdirectory(third_party/re2)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rapidyaml/CMakeLists.txt")
     message(FATAL_ERROR
@@ -155,7 +157,9 @@ target_sources(mcp-core PRIVATE
 target_include_directories(mcp-core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 mcp_setup_library(mcp-core)
 target_link_libraries(mcp-core PUBLIC Threads::Threads)
-target_link_libraries(mcp-core PRIVATE $<BUILD_INTERFACE:re2::re2>)
+target_link_libraries(mcp-core PRIVATE
+    $<BUILD_INTERFACE:re2::re2>
+    $<INSTALL_INTERFACE:re2::re2>)
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD ${MCP_UNITY_ENABLED})
 set_property(TARGET mcp-core PROPERTY UNITY_BUILD_BATCH_SIZE ${MCP_UNITY_BATCH})
 
@@ -213,7 +217,9 @@ target_sources(mcp-client PRIVATE
     src/client/auth/OAuthClientProvider.cpp
     src/client/FileTokenCache.cpp)
 target_link_libraries(mcp-client PUBLIC mcp-protocol mcp-ext)
-target_link_libraries(mcp-client PRIVATE $<BUILD_INTERFACE:ryml>)
+target_link_libraries(mcp-client PRIVATE
+    $<BUILD_INTERFACE:ryml>
+    $<INSTALL_INTERFACE:mcp::ryml>)
 if(WIN32)
     target_link_libraries(mcp-client PUBLIC crypt32 bcrypt)
 endif()
@@ -290,9 +296,13 @@ if(MCP_BUILD_TESTS)
         mcp-message-filter-tests mcp-token-cache-tests mcp-task-store-tests
         mcp-event-store-tests mcp-streamable-http-tests mcp-websocket-tests
         mcp-integration-tests mcp-conformance-tests mcp-uri-template-tests
-        mcp-process-tests)
+        mcp-process-tests mcp-stress-tests)
         mcp_enable_werror(${_t})
     endforeach()
+endif()
+
+if(MCP_BUILD_FUZZ)
+    add_subdirectory(tests/fuzz)
 endif()
 
 if(MCP_BUILD_EXAMPLES)
@@ -335,6 +345,21 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES LICENSE
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/mcp-cpp-sdk)
 
+set(MCP_THIRD_PARTY_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
+set(MCP_RYML_ARCHIVE "ryml${CMAKE_STATIC_LIBRARY_SUFFIX}")
+if(NOT WIN32)
+    set(MCP_RYML_ARCHIVE "lib${MCP_RYML_ARCHIVE}")
+endif()
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mcpThirdParty.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/mcpThirdParty.cmake
+    INSTALL_DESTINATION ${MCP_PACKAGE_CMAKEDIR})
+
+install(FILES "$<TARGET_FILE:ryml>"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/mcp-third-party)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/mcpThirdParty.cmake
+    DESTINATION ${MCP_PACKAGE_CMAKEDIR})
+
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mcpConfig.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/mcpConfig.cmake
@@ -343,7 +368,14 @@ configure_package_config_file(
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/mcpConfigVersion.cmake
     VERSION ${MCP_SDK_VERSION}
-    COMPATIBILITY SameMajorVersion)
+    COMPATIBILITY SameMinorVersion)
+
+if(MCP_OPENSSL_ENABLED)
+    install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenSslVersion.cmake
+        DESTINATION ${MCP_PACKAGE_CMAKEDIR}
+        RENAME mcpOpenSslVersion.cmake)
+endif()
 
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/mcpConfig.cmake

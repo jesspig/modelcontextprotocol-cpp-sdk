@@ -3,7 +3,7 @@ type: Concept
 title: JSON Schema 校验双引擎
 description: detail 层保留 legacy 校验入口，并以显式 SchemaMode::Modern2020 启用内部 2020-12 编译/求值核心；说明动态作用域、RE2 方言限制与失败关闭预算。
 tags: [schema, 2020-12, re2, dynamicRef, 预算, fail-closed]
-timestamp: 2026-11-24T22:36:48+08:00
+timestamp: 2026-11-25T20:55:00+08:00
 resource: src/detail/SchemaValidation.cpp
 ---
 
@@ -34,6 +34,10 @@ SDK 内存在两套 JSON Schema 校验语义，边界由调用点显式选择，
 ## 已知边界
 
 `$schema` 只接受标准 2020-12 URI。自定义 metaschema 与 `$vocabulary` 在编译期以 `SL.UnsupportedDialect` 拒绝（错误串含具体 URI 与策略说明）：本引擎不能按 vocabulary 动态启用/停用关键字，静默忽略会产生假通过。官方 Test Suite 固定 commit `e2a68a15cd490750fd6b95e604e4054d7d978d1f`，最近实跑 405 组 / 1300 例 / 142 跳过 / 2 失败，剩余 2 例正是该设计性拒绝，因此不声称官方 suite 完整通过。
+
+T-21 复跑（2026-11-25，WT-RELEASE / `6c947db`，Node 22.23.3）以同一固定 commit 完整执行 corpus，数字逐字一致（405 / 1300 / 142 / 2，驱动退出码 1），本地 15 个守护用例 15/15 通过。142 跳过项静态归因：4 个 `*-legacy.json` 整文件、118 个 compatibility 与 2020 不兼容用例、20 个 `format-assertion` 标签用例；`format` 断言与自定义方言均属明确不支持而非隐藏失败。逐项能力矩阵与 2 例 fail-closed 原文见 `.handoff/evidence/T-21/schema-capability-matrix.md`。
+
+同期纳入官方 [ext-tasks](https://github.com/modelcontextprotocol/ext-tasks) v2 schema 固定快照：`schema/2026-07-28/schema.json` @ `cc9aaac1047a9440b07486e38f37060bbebeef4c`（v0.2.3，blob `1d0ec255...`，SHA256 `BF30AFB7...`，76 个 `$defs`）。以 Ajv 2020-12 方言对 `CreateTaskResult`/`GetTaskRequest`/`GetTaskResult`/`UpdateTaskRequest`/`UpdateTaskResult`/`CancelTaskRequest`/`CancelTaskResult`/`Task`/`Error` 建立 22 个正反例，全部符合预期（缺 `taskId`/`resultType`/`inputResponses`/`message`、非法 `status`、`completed` 缺 `result`、`failed` 缺 `error`、`ttlMs` 类型错误均被拒绝；终态 `cancelled` 可序列化）。正反例证明的是官方 schema 对线结构的约束，不等价于 SDK 序列化逐例对齐，后者仍由 `ProtocolConformance` 守护用例覆盖。
 
 ## 相关页面
 

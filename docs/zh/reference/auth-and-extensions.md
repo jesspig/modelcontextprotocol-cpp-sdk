@@ -1,6 +1,6 @@
 # 授权与扩展参考
 
-本页是授权层（OAuth、PKCE、DPoP、token 缓存）与扩展层（server card、apps、triggers、技能校验）公共符号的**唯一权威字段表**，逐条对照头文件；门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，传输选项见 [传输层参考](/zh/reference/transports)，扩展开关语义见 [扩展开关概念](/zh/learn/extensions)，双时代归属的唯一权威表是 [协议版本](/zh/learn/protocol-versions)，`Skill`/`SkillResource` 等字段见 [类型总表](/zh/reference/types)。本页不含操作步骤；`detail/` 下的类型与函数不属于用户 API，只在解释行为时点名文件，不列入接口表。
+本页是授权层（OAuth、PKCE、DPoP、token 缓存）与扩展层（server card、apps、triggers、技能校验）公共符号的**唯一权威字段表**，逐条对照头文件；门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，传输选项见 [传输层参考](/zh/reference/transports)，扩展开关语义见 [扩展开关概念](/zh/learn/extensions)，双时代归属的唯一权威表是 [协议版本](/zh/learn/protocol-versions)，`Skill`/`SkillResource` 等字段见 [类型总表](/zh/reference/types)。本页不含操作步骤；`detail/` 下的类型与函数不属于用户 API，只在解释行为时点名文件，不列入接口表。0.3.13 的 OAuth/扩展行为收紧与逐项迁移见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
 
 ## OAuth 客户端提供者
 
@@ -41,14 +41,14 @@
 
 1. **origin allowlist**：只接受调用方显式配置的 scheme/host/port，按 scheme 规范化默认端口（http 80、https 443）后精确比较；拒绝 userinfo、`%` 编码 host、纯数字/十六进制编码地址、非法端口。
 2. **DNS 后地址策略**：连接前解析全部 A/AAAA 答案（上限 16），逐条拒绝 loopback、private、link-local、multicast、unspecified、保留地址与 IPv4-mapped IPv6；答案中任一地址非法即整组拒绝。回环仅在精确 host+port 例外下允许。
-3. **防重绑定**：把校验通过的地址集合绑定到实际连接；连接建立后在发送任何字节前以 `getpeername()` 复核 peer 是否仍在该集合中，不符即关闭连接并抛 `ProtocolViolation`。`HttpRequestSpec::peer_address_override` 是测试用的 peer 观察注入点。
+3. **防重绑定**：把校验通过的地址集合绑定到实际连接；连接建立后在发送任何字节前以 `getpeername()` 复核 peer 是否仍在该集合中，不符即关闭连接并抛 `ProtocolViolation`。HTTP 请求规格的内部字段 `peer_address_override` 是测试用的 peer 观察注入点。
 4. **逐跳重定向**：每跳重新执行 scheme + origin allowlist + DNS + 地址策略；默认拒绝跨 origin，超预算（5 跳）失败关闭；跨 origin 删除 `Authorization`、`Cookie`、`client_secret`、`registration_access_token` 等敏感头。当前 HTTP 客户端无代理路径，因此不存在绕过已验证地址的代理分支。
 
 旧行为 → 新行为 → 受影响调用方改法：以前未知 origin/私网地址可被请求，现在连接前拒绝；需要显式放行的部署把 origin 加进 `allowed_authorization_server_origins` 或 `outbound_origin_allowlist`，本地回环 fixture 用 `loopback_port_exceptions` 或由 `server_url` 自动登记。跨域重定向从「同源外放行且只删 Authorization」收紧为默认全拒绝；依赖跨域跳转的调用方需同时命中 allowlist 并显式设置 `allow_cross_origin_redirect = true`。
 
 ### DCR `client_secret` 统一解析
 
-`ResolveClientSecret()` 是唯一解析入口，固定优先级：显式 `client_secret` → DCR 注册响应中的 `client_secret` → 按 issuer/client_id/resource 作用域隔离的既有缓存值。空值、控制字符或超过 4096 字节即失败关闭并抛 `InvalidParams`，异常与日志只写来源类别不写值；临时副本用 `detail::SecureClear` 在失败路径清零。缓存键由 `SecretCacheKey(issuer, client_id, resource)` 生成，不同 issuer 或 principal 不会复用同一 secret。
+`ResolveClientSecret()` 是唯一解析入口，固定优先级：显式 `client_secret` → DCR 注册响应中的 `client_secret` → 按 issuer/client_id/resource 作用域隔离的既有缓存值。空值、控制字符或超过 4096 字节即失败关闭并抛 `InvalidParams`，异常与日志只写来源类别不写值；临时副本用内部助手 `SecureClear` 在失败路径清零。缓存键由 `SecretCacheKey(issuer, client_id, resource)` 生成，不同 issuer 或 principal 不会复用同一 secret。
 
 旧行为 → 新行为 → 受影响调用方改法：以前 DCR 响应里的 `client_secret` 被解析进注册信息却未用于客户端认证，现在会参与 `client_secret_post`/`client_secret_basic`；同时设置显式 secret 时仍以显式值为准。非法 secret 以前以空值发送，现在抛 `InvalidParams`；依赖空 secret 的旧注册响应需提供合法值或改走 `private_key_jwt`。
 

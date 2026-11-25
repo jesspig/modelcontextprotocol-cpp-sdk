@@ -30,6 +30,10 @@ void WriteRawCacheFile(const std::filesystem::path& path,
     std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
     ASSERT_TRUE(ofs.is_open());
     ofs << content;
+    ofs.close();
+#ifndef _WIN32
+    ASSERT_EQ(::chmod(path.c_str(), 0600), 0);
+#endif
 }
 
 } // namespace
@@ -418,7 +422,7 @@ TEST_F(FileTokenCacheTest, AtomicWriteRejectsSymlinkTarget) {
         file << "keep";
     }
     ASSERT_EQ(::symlink(victim.c_str(), cache_path.c_str()), 0);
-    EXPECT_FALSE(detail::WriteAtomic(cache_path, "changed"));
+    EXPECT_FALSE(detail::WriteAtomic(cache_path, std::string("changed")));
     EXPECT_EQ(ReadAtomicBytes(victim), "keep");
     std::error_code ec;
     std::filesystem::remove(cache_path, ec);

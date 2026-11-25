@@ -709,6 +709,10 @@ std::shared_ptr<const NegotiationResult> McpClient::CurrentNegotiation() const {
     return negotiation_snapshot_;
 }
 
+std::shared_ptr<const NegotiationResult> McpClient::CurrentNegotiationSnapshot() const {
+    return CurrentNegotiation();
+}
+
 void McpClient::ClearPendingSubscriptionAck() {
     std::lock_guard<std::mutex> lk(ack_mutex_);
     pending_ack_id_.reset();

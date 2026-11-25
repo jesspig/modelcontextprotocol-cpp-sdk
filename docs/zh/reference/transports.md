@@ -1,6 +1,6 @@
 # 传输层参考
 
-本页是传输层与 HTTP 服务端底座公共符号的**唯一权威字段表**，字段、类型、默认值逐条对照头文件；概念叙述与选型理由见 [传输层概念](/zh/learn/transports)，服务端/客户端门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，持久化与进程见 [进程与存储参考](/zh/reference/process-and-storage)。本页不含操作步骤。
+本页是传输层与 HTTP 服务端底座公共符号的**唯一权威字段表**，字段、类型、默认值逐条对照头文件；概念叙述与选型理由见 [传输层概念](/zh/learn/transports)，服务端/客户端门面签名见 [服务端参考](/zh/reference/server) 与 [客户端参考](/zh/reference/client)，持久化与进程见 [进程与存储参考](/zh/reference/process-and-storage)。本页不含操作步骤。0.3.13 的 HTTP 绑定、边界、AutoDetect 与会话收紧见 [0.3.13 迁移说明](/zh/migration/0.3.13)。
 
 ## 传输契约
 
@@ -133,7 +133,7 @@ POSIX 环境与 PATH 行为收紧（源码兼容）：旧行为是覆盖项直�
 | `session_store` | `std::shared_ptr<SessionStore>` | `nullptr` | 仅会话模式生效；可注入 `InMemorySessionStore` 等实现跨实例接管 |
 | `server_name` | `std::string` | `"mcp-server"` | 发现信息用名 |
 | `server_version` | `std::string` | `kSdkVersion` | 发现信息用版本 |
-| `host` | `std::string` | `""` | 绑定地址；空 = IPv4 `INADDR_ANY`，接受 IPv4/IPv6 字面量，非法值抛异常 |
+| `host` | `std::string` | `""` | 绑定地址；空值转发给 `bind_host`，0.3.13 起等价于 IPv4 loopback `127.0.0.1`（旧行为是 `INADDR_ANY`），显式 `0.0.0.0`/`::` 仍可全网监听；接受 IPv4/IPv6 字面量，非法值抛异常 |
 | `allowed_hosts` | `std::vector<std::string>` | `{}` | Host 白名单；空时仅放行 localhost/回环，缺 `Host` 头直接拒绝 |
 | `allowed_origins` | `std::vector<std::string>` | `{}` | Origin 白名单；无 `Origin` 头时放行 |
 | `max_request_body_bytes` | `std::optional<std::size_t>` | `detail::kMaxHttpBodyBytes`（4 MiB） | 请求体上限 |

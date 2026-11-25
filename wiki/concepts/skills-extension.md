@@ -3,11 +3,13 @@ type: Concept
 title: 技能扩展
 description: SEP-2640 技能扩展：skills/list|get 与 resources/directory/read（2026-only）、skill:// URI 约定、manifest/digest、目录派生视图与缓存，以及客户端惰性读取、真实 YAML frontmatter 安全解析、字节预算、modern/legacy 双路由与诊断语义。
 tags: [skills, 扩展, 2026, resources, 安全, 预算]
-timestamp: 2026-11-24T22:00:00+08:00
+timestamp: 2026-11-25T14:22:00+08:00
 resource: src/server/McpServer.cpp
 ---
 
 # 技能扩展
+
+0.3.13 候选把 blob 内容的 size/digest 改为比对严格 Base64 **解码后**字节，frontmatter 含分隔符时走真实 YAML 解析（无分隔符保持旧自比较），新增 `SkillReadParts` 惰性读取与 `ResolveSkillLocalPath` 安全解析；两参数旧 `ReadSkill` 行为不变。旧行为/新行为/调用方改法见在线文档 `/zh/migration/0.3.13` 与 `/en/migration/0.3.13`，证据见 `.handoff/evidence/T-07/`。
 
 SEP-2640 技能扩展（扩展标识 `io.modelcontextprotocol/skills`，[Capabilities.hpp](../../include/mcp/Capabilities.hpp) 的 `kSkillsExtensionId`）让服务端发布可列举、可按 URI 获取的技能包，并可选支持目录浏览。
 

@@ -2,8 +2,8 @@
 type: Concept
 title: 并发与生命周期
 description: 线程模型（消息循环/超时检查/响应回发、Streamable HTTP 监听流按 stateless 判默认）、Close self-join 陷阱、异步 handler 收尾。
-tags: [并发, 线程, 生命周期, 死锁]
-timestamp: 2026-11-25T01:00:00+08:00
+tags: [并发, 线程, 生命周期, 死锁, sanitizer, 快照]
+timestamp: 2026-11-25T06:00:00+08:00
 resource: include/mcp/detail/ThreadUtils.hpp
 ---
 
@@ -28,6 +28,10 @@ resource: include/mcp/detail/ThreadUtils.hpp
 - `EnqueueResponse`：`response_queue_mutex_` 锁内检查 `closed_`（已关闭则**跳过投递直接丢弃**）
 - 队列任务：先 `wait_for(0)` 快检（同步 handler 零延迟），未就绪则 10ms 间隔轮询 future；等待中观察到 `closed_` 立即中止——**Close 永不阻塞在未被满足的 promise 上**
 - `Close()`：`close_mutex_` 中 CAS 选出**唯一 join owner**（其他调用者以 `kCloseWaitBudget=5s` 有界等 `close_cv_`，同线程重入直接返回）→ 置 `closed_`/`running_` 停接收 → 关通道唤醒消息循环 → pending 全部以既有 `ConnectionClosed` 失败路径结算（**锁外执行**，防回调死锁）→ `response_cv_.notify_all()` → `transport_->Close()`（关 socket/pipe）→ `JoinThreadSafely` 依次 join 消息循环、超时与 response_worker_ → 一次性 `close_done_` 通知
+
+## 协商快照的原子性（T-22 / TSan）
+
+`McpClient` 的四个能力 getter（server capabilities、server info、instructions、negotiated version）都从同一份 `shared_ptr<const NegotiationResult>` 快照读取；发布在 `negotiation_mutex_` 下完成，历史快照保留不销毁，因此单个 getter 不会读到半更新结构。TSan 全量在 `McpClientTest.ConcurrentNegotiationSnapshotIsTornFree` 暴露的是**跨四次独立 getter 调用**的交错：重协商在调用之间发布新快照时，旧守护用例把这种合法交错误判为撕裂。修复为新增公开 `CurrentNegotiationSnapshot()`（[McpClient.hpp](../../include/mcp/client/McpClient.hpp)），守护循环固定同一份不可变快照后逐字段断言，断言强度不变；TSan 未报告数据竞争。不要把四次 getter 的结果拼成跨调用的“事务”快照，需要一致性时读一次 `CurrentNegotiationSnapshot()`。
 
 ## 易翻车点
 
